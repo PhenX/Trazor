@@ -8,7 +8,11 @@ export interface ModelSpec {
 export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
   u2netp: {
     id: 'u2netp',
-    url: 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+    // HF mirror of rembg's u2netp weights: unlike github.com release assets,
+    // huggingface.co/resolve URLs send Access-Control-Allow-Origin, which
+    // browser fetch() requires. (Canonical source:
+    // github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx)
+    url: 'https://huggingface.co/tomjackson2023/rembg/resolve/main/u2netp.onnx',
     approxBytes: 4_600_000,
     license: 'Apache-2.0',
   },

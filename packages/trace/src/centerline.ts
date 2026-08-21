@@ -240,9 +240,15 @@ export function traceCenterline(skeleton: BinaryMask, opts: CenterlineOptions): 
       }
     }
 
+    // A chain may take part in at most ONE merge per pass: mergePair reorients
+    // the survivor's point array, which invalidates the direction/atStart data
+    // captured in every other End record of that chain — pairing it again with
+    // stale records would splice at the wrong end and fabricate phantom
+    // segments across empty space.
+    const consumed = new Set<Chain>()
     for (const ends of byJunction.values()) {
       // Greedily pair the most opposed directions (angle closest to 180°).
-      const available = ends.filter((e) => !e.chain.merged)
+      const available = ends.filter((e) => !e.chain.merged && !consumed.has(e.chain))
       const pairs: [End, End, number][] = []
       for (let i = 0; i < available.length; i++) {
         for (let j = i + 1; j < available.length; j++) {
@@ -256,7 +262,6 @@ export function traceCenterline(skeleton: BinaryMask, opts: CenterlineOptions): 
         }
       }
       pairs.sort((p1, p2) => p1[2] - p2[2]) // most negative cos = straightest
-      const consumed = new Set<Chain>()
       for (const [a, b, cos] of pairs) {
         if (cos > -0.5) break // require > 120° continuation
         if (consumed.has(a.chain) || consumed.has(b.chain)) continue
