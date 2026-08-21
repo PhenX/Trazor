@@ -1,0 +1,522 @@
+/* ---------------------------------------------------------------------------
+ * Vectorizer design tokens + shared primitives.
+ * Dark is the default theme; [data-theme='light'] overrides the palette.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* Surfaces */
+  --bg-0: #0f1115;
+  --bg-1: #171a21;
+  --bg-2: #1e232d;
+  --bg-3: #262d3a;
+  --bg-hover: #2b3342;
+
+  /* Text */
+  --text-1: #e8eaf0;
+  --text-2: #9aa3b2;
+  --text-3: #667082;
+
+  /* Accent + status */
+  --accent: #6c7bff;
+  --accent-strong: #8894ff;
+  --accent-soft: rgba(108, 123, 255, 0.15);
+  --accent-contrast: #ffffff;
+  --success: #3ecf8e;
+  --warn: #f0b03f;
+  --danger: #ff6b6b;
+  --success-soft: rgba(62, 207, 142, 0.14);
+  --warn-soft: rgba(240, 176, 63, 0.14);
+  --danger-soft: rgba(255, 107, 107, 0.14);
+
+  /* Lines + depth */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.45);
+
+  /* Geometry */
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 16px;
+
+  /* Checkerboard (transparency) */
+  --checker-a: #262b35;
+  --checker-b: #1b202a;
+
+  --font: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg-0: #f4f6fa;
+  --bg-1: #ffffff;
+  --bg-2: #eef1f6;
+  --bg-3: #e2e7ef;
+  --bg-hover: #d9dfe9;
+
+  --text-1: #1b2130;
+  --text-2: #5a6474;
+  --text-3: #8b94a5;
+
+  --accent: #5261f0;
+  --accent-strong: #3b4be0;
+  --accent-soft: rgba(82, 97, 240, 0.12);
+  --accent-contrast: #ffffff;
+  --success: #14996a;
+  --warn: #a87413;
+  --danger: #d64545;
+  --success-soft: rgba(20, 153, 106, 0.12);
+  --warn-soft: rgba(168, 116, 19, 0.14);
+  --danger-soft: rgba(214, 69, 69, 0.12);
+
+  --border: rgba(20, 28, 46, 0.12);
+  --border-strong: rgba(20, 28, 46, 0.24);
+  --shadow-1: 0 1px 2px rgba(24, 33, 56, 0.1);
+  --shadow-2: 0 8px 28px rgba(24, 33, 56, 0.16);
+
+  --checker-a: #e8ebf1;
+  --checker-b: #f8fafc;
+
+  color-scheme: light;
+}
+
+/* ------------------------------- Reset ---------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+svg {
+  display: block;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ----------------------------- Scrollbars ------------------------------- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-3) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ------------------------------- Focus ---------------------------------- */
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ------------------------------ Buttons --------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-contrast);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: transparent;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.btn-icon {
+  width: 28px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.btn-sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* -------------------------------- Chips --------------------------------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.chip--accent {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.chip--success {
+  background: var(--success-soft);
+  border-color: transparent;
+  color: var(--success);
+}
+
+.chip--warn {
+  background: var(--warn-soft);
+  border-color: transparent;
+  color: var(--warn);
+}
+
+.chip--danger {
+  background: var(--danger-soft);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+.chip--btn {
+  cursor: pointer;
+}
+
+.chip--btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-1);
+}
+
+/* -------------------------------- Fields -------------------------------- */
+
+.field {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.field:hover {
+  border-color: var(--border-strong);
+}
+
+.field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+select.field {
+  cursor: pointer;
+  appearance: none;
+  padding-right: 22px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+    linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+  background-position:
+    calc(100% - 12px) 55%,
+    calc(100% - 8px) 55%;
+  background-size:
+    4px 4px,
+    4px 4px;
+  background-repeat: no-repeat;
+}
+
+/* ---------------------------- Range inputs ------------------------------ */
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  --range-fill: 0%;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--range-fill),
+    var(--bg-3) var(--range-fill)
+  );
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--text-1);
+  border: none;
+  box-shadow: var(--shadow-1);
+  transition: transform 0.1s ease;
+}
+
+input[type='range']:hover::-webkit-slider-thumb,
+input[type='range']:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.15);
+  background: #fff;
+}
+
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--range-fill),
+    var(--bg-3) var(--range-fill)
+  );
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-1);
+  border: none;
+  box-shadow: var(--shadow-1);
+}
+
+input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ------------------------------ Switches -------------------------------- */
+
+.switch {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.switch[aria-checked='true'] {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.switch[aria-checked='true']::after {
+  transform: translateX(13px);
+  background: #fff;
+}
+
+/* ---------------------------- Checkerboard ------------------------------ */
+
+.checker {
+  background: repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%) 0 0 / 16px
+    16px;
+}
+
+/* ------------------------------ Misc bits ------------------------------- */
+
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.muted {
+  color: var(--text-2);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Segmented control */
+.seg {
+  display: flex;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.seg > button {
+  flex: 1;
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.seg > button:hover {
+  color: var(--text-1);
+}
+
+.seg > button.is-active {
+  background: var(--bg-2);
+  color: var(--text-1);
+  box-shadow: var(--shadow-1);
+}
+
+.seg > button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

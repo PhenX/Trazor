@@ -1,0 +1,32 @@
+{
+  "name": "vectorizer-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client-side raster → SVG vectorization studio",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "preview": "npm run preview -w apps/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.packages.json && npm run typecheck -w apps/web",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt . --check",
+    "e2e": "node scripts/e2e.mjs",
+    "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  }
+}
