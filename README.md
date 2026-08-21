@@ -1,1 +1,146 @@
 # Vectorizer
+
+**Raster → SVG, entirely in your browser.** A vectorization studio that turns
+PNG/JPEG/WebP/GIF/BMP images into clean, editable, cuttable SVG — with no
+server, no upload, no account. Host it on any static host (GitHub Pages
+included); your images never leave the machine.
+
+![Vectorizer screenshot](docs/screenshot.png)
+
+## Why another vectorizer?
+
+Because the tracing algorithm is the product. Vectorizer implements a
+full **Potrace-class curve chain** (from Peter Selinger's 2003 paper — clean-room,
+no GPL code) and applies it **per color layer**, not just to black & white:
+
+- **Crack-boundary decomposition** with turn policies, exact pixel geometry.
+- **Optimal polygon** via penalty-minimizing dynamic programming — staircase
+  noise becomes deliberate straight lines instead of wobble.
+- **Least-squares vertex adjustment** — sub-pixel accurate corners.
+- **Corner-aware smoothing (α_max)** — circles come out round, squares stay
+  sharp, on the same image.
+- **Curve-run optimization** — adjacent Béziers merge while staying within
+  tolerance, so node counts stay low.
+
+On top of that, three things most tracers don't do:
+
+- **Seam-free cutout mode.** In `cutout` layering the color segmentation's
+  boundary network is fitted **once** — every edge shared by two regions is a
+  single curve reused by both (with junction points pinned exactly). Adjacent
+  shapes are mathematically identical along their shared border: **no hairline
+  gaps, no overlaps**, ever. Ideal for cutting machines, screen printing and
+  clean editing.
+- **Centerline tracing.** For pen plotters and engraving, strokes follow the
+  _middle_ of drawn lines (Zhang-Suen skeleton → graph walk → junction
+  continuation merging → Schneider Bézier fitting), with automatic stroke-width
+  estimation from the ink.
+- **Honest fidelity scoring.** Every result is re-rasterized and compared to
+  the source with a mean ΔE in Oklab; the score and a difference heatmap are
+  right in the UI.
+
+## Features
+
+- **Modes**: Color, Grayscale, Black & White (Otsu / fixed / adaptive
+  threshold), Centerline.
+- **Layering**: `stacked` (layers extend underneath — crack-proof, great for
+  illustration) or `cutout` (exact seam-free partition).
+- **Curve modes**: smooth splines, straight polygons, or `pixel` —
+  pixel-perfect rectilinear paths that keep sprite art exact.
+- **Palettes**: automatic Oklab k-means++ (deterministic), _or pick from
+  data-derived suggestions_ — Exact, Balanced, Bold, Rich, Vivid, Muted,
+  Duotone, Mono — or edit any palette color in place (spot colors, brand
+  colors).
+- **Target profiles** with machine-aware defaults and practical notes:
+  Illustration, Photo/Poster, Logo, Screen print, Pixel art, Ink sketch,
+  **Vinyl cutter** (mm units, speck filtering), **Laser engrave**,
+  **Pen plotter** (centerline), **Stencil** (island detection warns about
+  pieces that would fall out).
+- **Local ML tools** (optional, on-device via ONNX Runtime Web, WebGPU with
+  WASM fallback): **background removal** (U²-Netp, ~4.6 MB) and **magic
+  select** — click an object (SlimSAM, ~10 MB) and vectorize just that.
+  Models download once and cache in the browser; the app is fully functional
+  without them.
+- **Auto settings**: instant image-statistics analysis recommends a profile,
+  palette size and preprocessing, with human-readable reasons.
+- **Physical output**: px or **mm units** with real document sizes, precision
+  control, tiny-feature warnings below cuttable size.
+- **Studio UI**: drag & drop / paste / samples, split & difference views with
+  zoom/pan, per-stage timings, palette swatches, node/path/byte stats,
+  download / copy / data-URI export, dark & light themes, keyboard shortcuts.
+- **Deterministic**: same image + same settings ⇒ byte-identical SVG.
+
+## Quick start
+
+```sh
+npm install
+npm run dev        # Vite dev server
+npm run build      # production build → apps/web/dist
+npm run preview    # serve the production build
+```
+
+Everything is static output — deploy `apps/web/dist` anywhere.
+
+### Deploy to GitHub Pages
+
+The included workflow (`.github/workflows/deploy.yml`) builds with
+`BASE_PATH=/<repo>/` and publishes to Pages on every push to `main`
+(enable **Settings → Pages → Source: GitHub Actions** once). Any other static
+host works too: set `BASE_PATH` to the sub-path you serve from (default `/`).
+
+## Architecture
+
+npm-workspaces monorepo, strict TypeScript, zero runtime dependencies in the
+algorithm packages. The pipeline runs in a Web Worker with cooperative
+cancellation (latest settings win; stale runs abort between stages).
+
+| Package              | Role                                                                                                                                                                                    |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@vectorizer/core`   | Shared types, settings schema + profiles, Oklab color math, geometry, deterministic PRNG                                                                                                |
+| `@vectorizer/raster` | Resize, denoise (median/bilateral), background flattening, k-means++ quantization (exact & fixed palettes), Otsu/adaptive thresholds, morphology, Zhang-Suen thinning, chamfer distance |
+| `@vectorizer/trace`  | The tracer: crack decomposition, Potrace-chain fitting, shared boundary graph (seam-free cutout), centerline extraction, Schneider fitting                                              |
+| `@vectorizer/svg`    | Compact SVG serialization (px/mm, evenodd holes, gap-fill strokes) + output analysis                                                                                                    |
+| `@vectorizer/engine` | Mode pipelines, staging/progress/cancellation, warnings, worker protocol + client                                                                                                       |
+| `@vectorizer/ml`     | Background removal & click-to-segment on ONNX Runtime Web, model cache                                                                                                                  |
+| `@vectorizer/assist` | Image statistics → recommended settings & suggested palettes                                                                                                                            |
+| `apps/web`           | Vue 3 + Pinia studio UI                                                                                                                                                                 |
+
+**Pipeline**: decode → resize → denoise → flatten alpha → _(color)_ Oklab
+k-means++ → region cleanup → per-layer Potrace chain (stacked) or shared
+boundary graph (cutout) → _(bw)_ threshold → despeckle → trace →
+_(centerline)_ threshold → thin → graph → fit → serialize → analyze → warn.
+
+Every algorithm's source is cited in [`docs/REFERENCES.md`](docs/REFERENCES.md);
+package API contracts live in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+
+## Development
+
+```sh
+npm test           # vitest — 176 unit tests across all packages
+npm run typecheck  # tsc (packages) + vue-tsc (app)
+npm run lint       # oxlint
+npm run fmt        # oxfmt
+npm run check      # all of the above
+npm run e2e        # real-browser smoke test (builds required; uses system Chromium)
+```
+
+The e2e script drives the built app with Playwright, vectorizes the bundled
+samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
+
+## Notes on licensing
+
+- This repository is **MIT**. The tracing algorithms are implemented from
+  their published papers; no GPL code (e.g. the Potrace reference
+  implementation) was used or linked.
+- ML model weights keep their own licenses (both Apache-2.0): u2netp via the
+  rembg mirror, SlimSAM via the Xenova ONNX export. They are downloaded at
+  runtime, not distributed with this repository.
+
+## Roadmap
+
+- SVG output optimizations (relative path data, path merging by fill)
+- Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
+- Kerf/offset compensation (polygon offsetting) for cutting
+- Gradient detection & mesh-free gradient fills for photo modes
+- Semantic layering with SAM masks (object-per-layer SVG)
+- Differentiable refinement pass (WebGPU) against the source image
+- i18n (FR first)

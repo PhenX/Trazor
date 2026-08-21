@@ -26,6 +26,7 @@
   "devDependencies": {
     "oxfmt": "^0.64.0",
     "oxlint": "^1.79.0",
+    "playwright-core": "^1.62.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"
   }
