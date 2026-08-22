@@ -23,6 +23,7 @@
     "e2e": "node scripts/e2e.mjs",
     "test:render": "node scripts/svg-render-check.mjs",
     "dataset": "node scripts/dataset/generate.mjs",
+    "corpus": "node scripts/corpus/fetch.mjs",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

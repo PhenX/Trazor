@@ -14,6 +14,27 @@ async function openCache(): Promise<Cache | null> {
   }
 }
 
+/**
+ * Reject a body that is obviously not an ONNX model — an HTML page (dev SPA
+ * fallback, an error page, a login redirect) starts with `<` after optional BOM/
+ * whitespace, whereas an ONNX protobuf starts with 0x08 (the ir_version field).
+ * Throwing here (before the caller caches) turns ORT's opaque "protobuf parsing
+ * failed" into an actionable message.
+ */
+function assertModelBytes(buffer: ArrayBuffer, spec: ModelSpec): void {
+  const bytes = new Uint8Array(buffer)
+  let i = 0
+  // Skip a UTF-8 BOM and leading ASCII whitespace.
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) i = 3
+  while (i < bytes.length && (bytes[i] === 0x20 || (bytes[i] >= 0x09 && bytes[i] <= 0x0d))) i++
+  if (bytes.length === 0 || bytes[i] === 0x3c) {
+    throw new Error(
+      `Model for ${spec.id} is not a valid ONNX file (got ${bytes.length === 0 ? 'an empty response' : 'an HTML/XML page'}) from ${spec.url} — ` +
+        `the file is likely missing (in dev, place it at apps/web/public/models/).`,
+    )
+  }
+}
+
 async function downloadModel(spec: ModelSpec, onProgress?: MlProgressFn): Promise<ArrayBuffer> {
   if (typeof fetch === 'undefined') {
     throw new Error('Model download failed (no network access in this environment)')
@@ -27,10 +48,21 @@ async function downloadModel(spec: ModelSpec, onProgress?: MlProgressFn): Promis
   if (!response.ok) {
     throw new Error(`Model download failed (HTTP ${response.status} for ${spec.id})`)
   }
+  // A dev server's SPA fallback answers an unknown path with 200 + index.html, so
+  // response.ok is not enough: an HTML body would then be cached and later fail
+  // ORT with a cryptic "protobuf parsing failed". Reject it here with a clear
+  // message so nothing bad is cached.
+  if ((response.headers.get('Content-Type') ?? '').includes('text/html')) {
+    throw new Error(
+      `Model for ${spec.id} was served as HTML, not a model, from ${spec.url} — ` +
+        `the file is likely missing (in dev, place it at apps/web/public/models/).`,
+    )
+  }
   const total = Number(response.headers.get('Content-Length') ?? '') || 0
   const body = response.body
   if (!body) {
     const buffer = await response.arrayBuffer()
+    assertModelBytes(buffer, spec)
     onProgress?.({
       phase: 'download',
       id: spec.id,
@@ -62,6 +94,7 @@ async function downloadModel(spec: ModelSpec, onProgress?: MlProgressFn): Promis
     out.set(chunk, offset)
     offset += chunk.byteLength
   }
+  assertModelBytes(out.buffer, spec)
   return out.buffer
 }
 

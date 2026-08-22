@@ -81,12 +81,13 @@ Offline, in PyTorch (not part of the repo's Node/TS build):
 - Export PyTorch → **ONNX** (a widely supported opset), then quantize (int8/fp16) with `onnxruntime`'s tooling.
 - **Parity check:** assert the ONNX (WASM EP) output matches PyTorch within tolerance on a fixed sample set before
   shipping weights.
-- **Host it as a project asset, not on a third party.** Drop the ONNX at `apps/web/public/models/edge-prepass.onnx`;
-  Vite serves it **same-origin** from the deployed site, so there is no CORS and no external host (unlike the third-party
-  `u2netp`/SlimSAM, which are fetched from their upstream mirrors). The binary is a few MB and force-tracked by git (the
-  root `.gitignore` keeps scratch weights out but allows that path); reach for **Git LFS** if several models accumulate.
-  The registry already points at `models/edge-prepass.onnx`; the app resolves it against its deploy base at startup with
-  `overrideModelUrl` and `import.meta.env.BASE_URL`.
+- **Host it as a project asset, not on a third party, and don't commit it.** The weights are **not** in git (`*.onnx` is
+  git-ignored). Instead the deploy workflow fetches them from a **GitHub Release** (tag `models`) into
+  `apps/web/public/models/edge-prepass.onnx` just before the build, so Vite serves them **same-origin** from the deployed
+  site — no CORS, no external host (unlike the third-party `u2netp`/SlimSAM, which are fetched from their upstream
+  mirrors), and no multi-MB binary in history. The registry already points at `models/edge-prepass.onnx`; the app resolves
+  it against its deploy base at startup with `overrideModelUrl` and `import.meta.env.BASE_URL`. See
+  [`apps/web/public/models/README.md`](../apps/web/public/models/README.md) for the publish steps.
 
 ## Integration (`@vectorizer/ml`)
 

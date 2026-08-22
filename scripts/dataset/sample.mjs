@@ -13,14 +13,22 @@ import { edgeMap } from './targets.mjs'
 /**
  * @param item {{ index, id, family, split, base, svg, pipeSeed }}
  * @param cfg  resolved DatasetConfig
- * @returns the manifest record (carries `index` for a stable manifest sort)
+ * @returns the manifest record (carries `index` for a stable manifest sort), or
+ *   null when the SVG can't be rasterized (a real corpus has a few) — the caller
+ *   skips it rather than aborting the run.
  */
 export function processItem(item, cfg) {
   const { index, id, family, split, base, svg, pipeSeed } = item
   // One rng drives render → background → degrade, in that order (matches the
   // single-threaded sequence exactly).
   const rng = mulberry32(pipeSeed)
-  const shape = renderShape(svg, cfg, rng)
+  let shape
+  try {
+    shape = renderShape(svg, cfg, rng)
+  } catch {
+    // resvg rejects some real-world SVGs (invalid size, unsupported features).
+    return null
+  }
   const bg = makeBackground(cfg.resolution, cfg.resolution, rng, cfg.degrade.background)
   const clean = compositeOver(shape, bg)
   const input = degrade(clean, cfg, rng)
