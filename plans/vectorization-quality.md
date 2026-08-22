@@ -12,22 +12,22 @@ Branch for this work: `claude/plan-review-b49kxy`.
 
 ## Status snapshot
 
-| Workstream | State | Notes |
-| --- | --- | --- |
-| **A — SVG output optimization** | **Done** | relative/H·V, collinear removal, `<rect>`/`<circle>`/`<ellipse>`, path merging by fill. Verified in a real browser. |
-| **B — curve continuity / adaptive corners** | **Verified, no change needed** | The Potrace midpoint chain already gives G1 at smooth joins and per-vertex corner decisions. Pinned by a regression test. |
-| **C1 — contrast-aware detail preservation** | **Done** | `preserveDetails` keeps small high-contrast regions; opt-in (default off). |
-| **C2 — coverage-based palette pruning** | **Assessed → skipped** | Largely covered already by `mergeSmallRegions` + `autoK`. Marginal net value. |
-| **C3 — edge/saliency-weighted quantization** | **Assessed → deferred** | Real but subtle; `quantize.ts` is an exactly-tested hot path, so invasive for the payoff. |
-| **D — sub-pixel boundaries** | **Not started (large)** | Needs a second, contour-based tracer path (marching squares → closed-polyline fit). Cutout is a separate spike. |
-| **E — fidelity-driven refinement / auto-tuning** | **Not started (gated)** | Blocked on building a deterministic in-engine rasterizer (its own project). |
+| Workstream                                       | State                          | Notes                                                                                                                     |
+| ------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **A — SVG output optimization**                  | **Done**                       | relative/H·V, collinear removal, `<rect>`/`<circle>`/`<ellipse>`, path merging by fill. Verified in a real browser.       |
+| **B — curve continuity / adaptive corners**      | **Verified, no change needed** | The Potrace midpoint chain already gives G1 at smooth joins and per-vertex corner decisions. Pinned by a regression test. |
+| **C1 — contrast-aware detail preservation**      | **Done**                       | `preserveDetails` keeps small high-contrast regions; opt-in (default off).                                                |
+| **C2 — coverage-based palette pruning**          | **Assessed → skipped**         | Largely covered already by `mergeSmallRegions` + `autoK`. Marginal net value.                                             |
+| **C3 — edge/saliency-weighted quantization**     | **Assessed → deferred**        | Real but subtle; `quantize.ts` is an exactly-tested hot path, so invasive for the payoff.                                 |
+| **D — sub-pixel boundaries**                     | **Not started (large)**        | Needs a second, contour-based tracer path (marching squares → closed-polyline fit). Cutout is a separate spike.           |
+| **E — fidelity-driven refinement / auto-tuning** | **Not started (gated)**        | Blocked on building a deterministic in-engine rasterizer (its own project).                                               |
 
 ### Measured result of A (real-browser render check, precision 2)
 
-| sample | bytes saved | render diff vs. un-optimized |
-| --- | --- | --- |
-| sprite (pixel art) | ~12% | maxΔ=1 level, 0.000% of pixels |
-| badge (color) | ~26% | meanΔ 0.008, 0.016% of pixels |
+| sample             | bytes saved | render diff vs. un-optimized   |
+| ------------------ | ----------- | ------------------------------ |
+| sprite (pixel art) | ~12%        | maxΔ=1 level, 0.000% of pixels |
+| badge (color)      | ~26%        | meanΔ 0.008, 0.016% of pixels  |
 
 Traced-fixture microbench (`OPTIMIZE_BENCH=1 npx vitest run packages/engine/test/optimize-bench`):
 path data −35%, whole document −24% (a circle collapses to `<circle>`, −63%).
@@ -78,13 +78,13 @@ on a **0–1 scale**. A just-noticeable difference ≈ **0.02**; `autoK` merges 
 centroids at **0.03**; `fidelity.ts` treats **0.25** as full heat. Any perceptual threshold
 must be expressed in these units — a CIELAB "ΔE < 5" would merge the whole palette.
 
-| Meaning | Use here (`deltaEOk`) |
-| --- | --- |
-| just-noticeable difference | 0.02 |
-| merge similar clusters | 0.03–0.05 (autoK = 0.03) |
-| flag high-error region | 0.04–0.06 |
-| "good" mean fidelity | mean ≈ 0.02–0.03 (score ≈ 0.9, since `score = 1 − 4·meanΔ`) |
-| keep a high-contrast speck | 0.10–0.15 (`preserveDetails` uses 0.1) |
+| Meaning                    | Use here (`deltaEOk`)                                       |
+| -------------------------- | ----------------------------------------------------------- |
+| just-noticeable difference | 0.02                                                        |
+| merge similar clusters     | 0.03–0.05 (autoK = 0.03)                                    |
+| flag high-error region     | 0.04–0.06                                                   |
+| "good" mean fidelity       | mean ≈ 0.02–0.03 (score ≈ 0.9, since `score = 1 − 4·meanΔ`) |
+| keep a high-contrast speck | 0.10–0.15 (`preserveDetails` uses 0.1)                      |
 
 ---
 
@@ -152,14 +152,14 @@ palette shift. Revisit only with a concrete failing case and a benchmark.
 Trace continuous level sets from soft masks (marching squares + bilinear at iso) instead of
 bilevel crack contours, for sub-pixel-accurate anti-aliased edges.
 
-- **Why it's a pilot, not a quick change:** the current tracer decomposes a *binary* mask
+- **Why it's a pilot, not a quick change:** the current tracer decomposes a _binary_ mask
   into integer crack rings, then runs the Potrace chain. Marching-squares output is arbitrary
-  float polylines — a *different* pipeline: soft mask → contours → Douglas-Peucker simplify →
+  float polylines — a _different_ pipeline: soft mask → contours → Douglas-Peucker simplify →
   corner-aware closed fit (reuse `fit.ts`/`simplify.ts`) → hole nesting. That's a second
   tracer path alongside the crack-based one.
 - **Scope it:** stacked color layers and bw/grayscale masks first (they tolerate independent
   per-layer outlines). **Cutout is a separate spike** — per-layer marching squares reintroduce
-  the hairline gaps `boundary.ts` exists to eliminate; a sub-pixel *shared* boundary network is
+  the hairline gaps `boundary.ts` exists to eliminate; a sub-pixel _shared_ boundary network is
   the hard part. Keep exact-pixel decomposition for `pixel` mode and cutout.
 - **Acceptance:** anti-aliased circle contour within ~0.25 px; pixel-art and cutout byte-
   identical to today (proves gating); determinism holds.
@@ -173,7 +173,8 @@ non-deterministic across platforms, so it cannot run in the worker/engine and mu
 back into geometry (breaks the determinism invariant).
 
 Pick one before starting:
-- **E1 (cheap, safe):** keep it app-side and *advisory only* — surface where error concentrates
+
+- **E1 (cheap, safe):** keep it app-side and _advisory only_ — surface where error concentrates
   and suggest setting changes the user applies. No new rasterizer, no determinism risk.
 - **E2 (large):** build a deterministic pure-TS scanline rasterizer in a package so the engine
   can score and refine in the worker. Estimate and approve separately; only then are the
