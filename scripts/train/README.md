@@ -139,12 +139,14 @@ Start here, then adjust from what you see. Sizes are pairs (per `--count`).
 
 ### Data mix (the highest-leverage knob)
 
-Train on both a **procedural** set (unlimited, exact labels — prevents overfitting) and a **real corpus** (fonts, icon
-sets — realistic shapes). `--data` takes several roots and concatenates them:
+Train on both a **procedural** set (unlimited, exact labels — prevents overfitting) and a **real corpus** (icon sets,
+brand marks, flags — realistic shapes). Fetch a ready-made real corpus with `npm run corpus`
+([`../corpus`](../corpus/README.md)), then give `--data` several roots to concatenate:
 
 ```sh
+npm run corpus                                                      # → corpus/ (icons, brands, flags)
+npm run dataset -- --source dir --corpus corpus --count 20000 --out data/real
 npm run dataset -- --source procedural --count 40000 --out data/proc
-npm run dataset -- --source dir --corpus /path/to/svgs --count 20000 --out data/real
 python scripts/train/train.py --data data/proc data/real --epochs 80 --workers 8
 ```
 

@@ -152,9 +152,10 @@ dist/
 e2e-artifacts/
 
 # Generated ML training datasets (scripts/dataset) and the fetched real corpus
-# (scripts/corpus). Both are reproducible from scripts — never committed.
-dataset-out/
-corpus/
+# (scripts/corpus). Both are reproducible from scripts — never committed. Anchored
+# to the repo root so the scripts/ source dirs stay tracked.
+/dataset-out/
+/corpus/
 
 # ML model weights are never committed: the deploy workflow fetches them from a
 # GitHub Release and Vite copies them into the build (served same-origin). So

@@ -37,8 +37,9 @@ for (const s of SPLITS) {
 }
 
 // Assign a split from a stable hash of the split key (mulberry32 avalanches it).
-// For a real corpus the key is the source family (top-level subdir), so no source
-// SVG leaks across splits; procedural samples split on their own id.
+// For a real corpus the key is the source family (the file's subdir path), so a
+// whole pack/bucket lands in one split and no pack straddles them; procedural
+// samples split on their own id.
 function assignSplit(key) {
   const r = mulberry32(hashString(`${cfg.seed}:${key}`))()
   const { train, val } = cfg.split
@@ -105,7 +106,8 @@ function runPool(iterator, jobs, onRecord) {
       active++
       w.on('message', (msg) => {
         if (msg.type === 'record') {
-          onRecord(msg.record)
+          if (msg.record) onRecord(msg.record)
+          else skipped++
           feed(w)
         }
       })
@@ -125,6 +127,7 @@ function runPool(iterator, jobs, onRecord) {
 const records = []
 const started = Date.now()
 let n = 0
+let skipped = 0
 const onRecord = (rec) => {
   records.push(rec)
   if (++n % 64 === 0) console.log(`  ${n} samples…`)
@@ -132,7 +135,11 @@ const onRecord = (rec) => {
 
 const jobs = cfg.jobs > 0 ? cfg.jobs : (availableParallelism?.() ?? cpus().length)
 if (jobs <= 1) {
-  for (const item of buildItems()) onRecord(processItem(item, cfg))
+  for (const item of buildItems()) {
+    const rec = processItem(item, cfg)
+    if (rec) onRecord(rec)
+    else skipped++
+  }
 } else {
   await runPool(buildItems(), jobs, onRecord)
 }
@@ -160,5 +167,8 @@ writeManifest(join(cfg.out, 'manifest.json'), {
 
 console.log(
   `\ndone — ${records.length} samples (train ${counts.train}, val ${counts.val}, test ${counts.test}) ` +
-    `on ${jobs} job${jobs === 1 ? '' : 's'} in ${((Date.now() - started) / 1000).toFixed(1)}s → ${cfg.out}/`,
+    `on ${jobs} job${jobs === 1 ? '' : 's'} in ${((Date.now() - started) / 1000).toFixed(1)}s → ${cfg.out}/` +
+    (skipped > 0
+      ? `\n  (${skipped} SVG${skipped === 1 ? '' : 's'} skipped — resvg could not rasterize them)`
+      : ''),
 )

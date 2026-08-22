@@ -4,7 +4,7 @@
 // drives the train/val/test split so no source family straddles splits.
 
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { chance, gaussian, int, mulberry32, pick, seedFor, uniform } from './random.mjs'
 
 const ARCHETYPES = ['geo', 'blobs', 'rings', 'stripes', 'scatter']
@@ -29,9 +29,13 @@ export function* dirSource(dir, cap) {
   const list = cap > 0 ? files.slice(0, cap) : files
   for (const file of list) {
     const rel = relative(dir, file)
+    const famDir = dirname(rel)
     yield {
       id: rel.replaceAll(sep, '/'),
-      family: rel.split(sep)[0] || 'root', // top-level subdir is the source family
+      // The file's whole subdir path is the source family, so a nested corpus
+      // (e.g. category/pack/bucket) splits per leaf group and no pack straddles
+      // train/val/test. A file directly in `dir` is its own family (flat corpus).
+      family: famDir === '.' ? rel.replaceAll(sep, '/') : famDir.replaceAll(sep, '/'),
       svg: canonicalize(readFileSync(file, 'utf8')),
     }
   }
@@ -47,6 +51,7 @@ function canonicalize(svg) {
 function walkSvg(dir) {
   const out = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue // skip .cache, .git, dotfiles
     const full = join(dir, entry.name)
     if (entry.isDirectory()) out.push(...walkSvg(full))
     else if (entry.name.toLowerCase().endsWith('.svg')) out.push(full)
