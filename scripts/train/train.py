@@ -12,6 +12,7 @@ Early stops when val loss stops improving. See scripts/train/README.md.
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--size", type=int, default=256)
     p.add_argument("--base-channels", type=int, default=16)
+    p.add_argument(
+        "--ssim-weight",
+        type=float,
+        default=0.5,
+        help="cleanup only: weight of the (1-SSIM) term vs L1, in [0,1] (0 = pure L1)",
+    )
     # 0 avoids multiprocessing (safest on Windows); raise it (e.g. 8) for speed.
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=0, help="cap train samples (smoke tests)")
@@ -116,7 +123,11 @@ def main() -> None:
     train_dl = loader(train_ds, True)
     val_dl = loader(val_ds, False)
 
-    loss_fn = cleanup_loss if args.task == "cleanup" else edge_loss
+    loss_fn = (
+        partial(cleanup_loss, ssim_weight=args.ssim_weight)
+        if args.task == "cleanup"
+        else edge_loss
+    )
     metric_fn = psnr if args.task == "cleanup" else f_score
     metric_name = "PSNR" if args.task == "cleanup" else "F"
 

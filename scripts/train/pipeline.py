@@ -76,6 +76,7 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--base-channels", type=int, default=16, help="model width / size")
+    p.add_argument("--ssim-weight", type=float, default=0.5, help="cleanup: (1-SSIM) vs L1 weight, [0,1]")
     p.add_argument("--patience", type=int, default=10, help="early-stop after N stale epochs (0 = off)")
     p.add_argument("--workers", type=int, default=0, help="dataloader workers (raise for speed)")
     p.add_argument("--jobs", type=int, default=0, help="dataset generator threads (0 = CPU count)")
@@ -124,6 +125,7 @@ def main() -> None:
         "--task", args.task,
         "--data", data, "--epochs", str(args.epochs),
         "--batch", str(args.batch), "--base-channels", str(args.base_channels),
+        "--ssim-weight", str(args.ssim_weight),
         "--patience", str(args.patience), "--workers", str(args.workers),
         "--out", ckpt_dir,
     ])
