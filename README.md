@@ -145,3 +145,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
 - i18n (FR first)
+
+The ML approach behind several of these — shape/primitive fitting, semantic layering, the differentiable refinement pass —
+and how a training dataset would be produced (and how determinism is scoped so WebGPU stays allowed) is written up in
+[`docs/ML_STRATEGY.md`](docs/ML_STRATEGY.md).
