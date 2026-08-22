@@ -72,6 +72,17 @@ pip install -r scripts/train/requirements.txt
 
 ## One command
 
+First, on a new machine, run the **sanity check** — it exercises the whole chain (data-gen → train → ONNX export +
+parity) with a tiny throwaway config in ~30s on CPU, writing to the gitignored `checkpoints/smoke/` dir, never the
+shipped model. If it prints `smoke OK`, your toolchain works:
+
+```sh
+python scripts/train/pipeline.py --smoke                 # edge
+python scripts/train/pipeline.py --task cleanup --smoke  # cleanup
+```
+
+Then the real run:
+
 ```sh
 python scripts/train/pipeline.py --count 20000 --epochs 60 --quantize            # edge (default)
 python scripts/train/pipeline.py --task cleanup --count 20000 --epochs 60 --quantize

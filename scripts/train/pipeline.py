@@ -3,9 +3,15 @@
 Cross-platform (Windows / macOS / Linux). Each step is also runnable on its own
 (see scripts/train/README.md). Examples:
 
+    python scripts/train/pipeline.py --smoke                     # ~30s end-to-end sanity check
     python scripts/train/pipeline.py --count 20000 --epochs 40 --quantize
     python scripts/train/pipeline.py --data dataset-out --skip-data --epochs 40
     python scripts/train/pipeline.py --task cleanup --count 20000 --quantize
+
+Run --smoke first on a new machine: it exercises the whole chain (data-gen →
+train → ONNX export + parity) with a tiny throwaway config, writing to the
+gitignored checkpoints/ dir — never the shipped model — so you confirm the
+toolchain works before committing to a full run.
 """
 
 from __future__ import annotations
@@ -52,13 +58,21 @@ DEFAULT_OUT = {
     "cleanup": "apps/web/public/models/cleanup.onnx",
 }
 
+# Fast throwaway config for --smoke: enough to run every step, small enough to
+# finish in well under a minute on CPU.
+SMOKE = {"count": 50, "epochs": 1, "batch": 8, "base_channels": 8}
+SMOKE_DIR = "scripts/train/checkpoints/smoke"  # gitignored; isolated from real checkpoints
+
+# Checkpoint filename per task (mirrors train.py TASKS / export_onnx.DEFAULT_CHECKPOINT).
+CHECKPOINT_NAME = {"edge": "edge-prepass.pt", "cleanup": "cleanup.pt"}
+
 
 def main() -> None:
     require_deps()
     p = argparse.ArgumentParser(description="Generate data, train, and export a pre-pass model.")
     p.add_argument("--task", choices=sorted(DEFAULT_OUT), default="edge", help="edge or cleanup")
     p.add_argument("--count", type=int, default=20000, help="samples to generate")
-    p.add_argument("--data", default="dataset-out")
+    p.add_argument("--data", default=None, help="dataset dir (default: dataset-out; --smoke uses its own isolated dir)")
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--base-channels", type=int, default=16, help="model width / size")
@@ -68,30 +82,62 @@ def main() -> None:
     p.add_argument("--out", default=None, help="ONNX ship path (default: per-task)")
     p.add_argument("--skip-data", action="store_true", help="reuse an existing --data dir")
     p.add_argument("--quantize", action="store_true")
+    p.add_argument(
+        "--smoke",
+        action="store_true",
+        help="fast end-to-end sanity check (tiny data/model, throwaway output — not the shipped model)",
+    )
     args = p.parse_args()
-    out = args.out or DEFAULT_OUT[args.task]
+
+    if args.smoke:
+        # Force the fast config; keep --task/--skip-data/--quantize/--jobs/--workers as given.
+        args.count, args.epochs, args.batch, args.base_channels = (
+            SMOKE["count"],
+            SMOKE["epochs"],
+            SMOKE["batch"],
+            SMOKE["base_channels"],
+        )
+
+    # Resolve paths: smoke stays fully isolated under SMOKE_DIR (gitignored) — its
+    # own dataset dir, checkpoint dir, and ONNX, none of them the real dataset or
+    # the shipped model.
+    data = args.data or (f"{SMOKE_DIR}/data" if args.smoke else "dataset-out")
+    ckpt_dir = SMOKE_DIR if args.smoke else "scripts/train/checkpoints"
+    out = args.out or (
+        f"{SMOKE_DIR}/{args.task}.onnx" if args.smoke else DEFAULT_OUT[args.task]
+    )
+    if args.smoke:
+        print(
+            f"SMOKE: task={args.task} · {args.count} samples · {args.epochs} epoch · "
+            f"base={args.base_channels} → {out} (throwaway, not the shipped model)"
+        )
 
     if args.skip_data:
-        print(f"skipping data generation, using {args.data}")
+        print(f"skipping data generation, using {data}")
     else:
         # The dataset carries both targets (edge + clean), so one generated set
         # trains either task. npm is npm.cmd on Windows; shell=True keeps it portable.
-        run(f'npm run dataset -- --count {args.count} --jobs {args.jobs} --out "{args.data}"', shell=True)
+        run(f'npm run dataset -- --count {args.count} --jobs {args.jobs} --out "{data}"', shell=True)
 
     run([
         sys.executable, str(HERE / "train.py"),
         "--task", args.task,
-        "--data", args.data, "--epochs", str(args.epochs),
+        "--data", data, "--epochs", str(args.epochs),
         "--batch", str(args.batch), "--base-channels", str(args.base_channels),
         "--patience", str(args.patience), "--workers", str(args.workers),
+        "--out", ckpt_dir,
     ])
 
     export = [sys.executable, str(HERE / "export_onnx.py"), "--task", args.task, "--out", out]
+    export += ["--checkpoint", f"{ckpt_dir}/{CHECKPOINT_NAME[args.task]}"]
     if args.quantize:
         export.append("--quantize")
     run(export)
 
-    print(f"\ndone -> {out} (ships same-origin with the app)")
+    if args.smoke:
+        print(f"\nsmoke OK -> {out} (throwaway). Toolchain works — now run a real training pass.")
+    else:
+        print(f"\ndone -> {out} (ships same-origin with the app)")
 
 
 if __name__ == "__main__":
