@@ -11,6 +11,7 @@ import SliderRow from './controls/SliderRow.vue'
 import SwitchRow from './controls/SwitchRow.vue'
 import TextRow from './controls/TextRow.vue'
 import MlTools from './MlTools.vue'
+import SettingsIO from './SettingsIO.vue'
 
 const store = useAppStore()
 const s = computed(() => store.settings)
@@ -110,6 +111,8 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           </ul>
         </div>
       </section>
+
+      <SettingsIO />
 
       <MlTools />
 

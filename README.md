@@ -72,6 +72,9 @@ On top of that, three things most tracers don't do:
   the traced geometry's complexity at a glance, per-stage timings, palette
   swatches, node/path/byte stats, download / copy / data-URI export, dark &
   light themes, keyboard shortcuts.
+- **Portable settings**: export the full configuration as versioned JSON to the
+  clipboard or a `.json` file, and import it back by paste or file — share a
+  recipe or move it between machines. Everything stays local.
 - **Deterministic**: same image + same settings ⇒ byte-identical SVG.
 
 ## Quick start

@@ -24,6 +24,46 @@ Rules that apply to every package:
   (created by them, merged later) in the same citation style, including what
   the reference is used for and the implementing file.
 
+## @vectorizer/core — settings import/export
+
+```ts
+// settings-io.ts — portable, versioned settings snapshots (studio import/export).
+// Bumped when the shape changes incompatibly; readers accept any version and
+// drop unknown fields, so a newer minor-version document still imports.
+export const SETTINGS_EXPORT_VERSION: number
+
+export interface SettingsExport {
+  app: 'vectorizer'
+  kind: 'settings'
+  version: number
+  settings: VectorizeSettings
+  activeProfileId: ProfileId | null
+  profileModified: boolean
+}
+export interface ImportedSettings {
+  settings: VectorizeSettings
+  activeProfileId: ProfileId | null
+  profileModified: boolean
+}
+
+export function createSettingsExport(
+  settings: VectorizeSettings,
+  activeProfileId?: ProfileId | null,
+  profileModified?: boolean,
+): SettingsExport
+// Indented JSON (trailing newline) for a file or the clipboard.
+export function serializeSettings(
+  settings: VectorizeSettings,
+  activeProfileId?: ProfileId | null,
+  profileModified?: boolean,
+): string
+// Accepts the export wrapper or a bare settings object. Keeps only fields the
+// schema defines (derived from DEFAULT_SETTINGS), clamps via normalizeSettings,
+// and validates the profile id. Throws an Error with a readable message when the
+// input is not usable (invalid JSON, not an object, no recognizable settings).
+export function parseSettingsImport(input: string): ImportedSettings
+```
+
 ## @vectorizer/raster
 
 ```ts
