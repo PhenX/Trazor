@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { clamp } from '@vectorizer/core'
 import type { RasterImage } from '@vectorizer/core'
+import { extractGeometry } from '@vectorizer/svg'
+import type { SvgGeometry } from '@vectorizer/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { STAGE_LABELS } from '../lib/format'
+import { formatCount, STAGE_LABELS } from '../lib/format'
 import { useAppStore } from '../store/appStore'
+import PreviewOverlay from './PreviewOverlay.vue'
 
 type ViewMode = 'split' | 'result' | 'original' | 'diff'
 
@@ -19,6 +22,7 @@ const tx = ref(0)
 const ty = ref(0)
 const splitFrac = ref(0.5)
 const checker = ref(true)
+const showNodes = ref(false)
 let hasUserTransformed = false
 let resizeObserver: ResizeObserver | null = null
 
@@ -66,6 +70,22 @@ const svgLayerStyle = computed(() =>
 )
 
 const dividerX = computed(() => tx.value + splitFrac.value * docW.value * scale.value)
+
+// --------------------------- Complexity overlay --------------------------
+// Path anchors, control handles and outlines decoded from the result SVG, so
+// their density shows the geometric complexity. Parsed only while the toggle is
+// on (and only when the SVG layer is visible).
+const geometry = computed<SvgGeometry | null>(() =>
+  showNodes.value && showSvg.value && store.result ? extractGeometry(store.result.svg) : null,
+)
+
+// Clip the overlay to the SVG side of the split so it does not bleed over the
+// original image; unclipped in the full result view.
+const overlayClipX = computed(() => (view.value === 'split' ? dividerX.value : null))
+
+function toggleNodes(): void {
+  showNodes.value = !showNodes.value
+}
 
 const VIEWS: ReadonlyArray<{ id: ViewMode; label: string; key: string }> = [
   { id: 'split', label: 'Split', key: '1' },
@@ -306,7 +326,7 @@ const progressLabel = computed(() => {
 
 const zoomReadout = computed(() => `${Math.round(scale.value * 100)}%`)
 
-defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
+defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
 </script>
 
 <template>
@@ -360,6 +380,30 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
           <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
             <path d="M0 0h7v7H0zM7 7h7v7H7z" fill="currentColor" opacity="0.85" />
             <path d="M7 0h7v7H7zM0 7h7v7H0z" fill="currentColor" opacity="0.25" />
+          </svg>
+        </button>
+        <button
+          class="btn btn-ghost btn-icon btn-sm"
+          :class="{ 'is-on': showNodes }"
+          :disabled="!hasResult"
+          title="Show path nodes & outlines (N)"
+          aria-label="Show path nodes and outlines"
+          :aria-pressed="showNodes"
+          @click="toggleNodes"
+        >
+          <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+            <path
+              d="M2 11 6 4l6 3.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              opacity="0.7"
+            />
+            <path
+              d="M1 10l2 2M3 10l-2 2M5 3l2 2M7 3l-2 2M11 6.5l2 2M13 6.5l-2 2"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
           </svg>
         </button>
       </div>
@@ -419,6 +463,19 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
         </div>
       </div>
 
+      <!-- Complexity overlay (screen space, above the SVG layer) -->
+      <PreviewOverlay
+        v-if="geometry"
+        :geometry="geometry"
+        :scale="scale"
+        :tx="tx"
+        :ty="ty"
+        :doc-w="docW"
+        :doc-h="docH"
+        :clip-x="overlayClipX"
+        :dark="store.theme === 'dark'"
+      />
+
       <!-- Split divider (screen space) -->
       <div
         v-if="view === 'split' && hasResult && image"
@@ -445,6 +502,12 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
       <span v-if="store.magicActive" class="magic-chip chip chip--accent">
         {{ store.magicPoints.length }} point{{ store.magicPoints.length === 1 ? '' : 's' }} ·
         <kbd>Enter</kbd> apply · <kbd>Esc</kbd> cancel
+      </span>
+
+      <!-- Complexity readout -->
+      <span v-if="showNodes && hasResult && store.result" class="nodes-chip chip chip--accent">
+        {{ formatCount(store.result.stats.pathCount) }} paths ·
+        {{ formatCount(store.result.stats.nodeCount) }} nodes
       </span>
 
       <!-- Worker error card -->
@@ -734,6 +797,14 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
   transform: translateX(-50%);
   bottom: 10px;
   z-index: 5;
+}
+
+.nodes-chip {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  pointer-events: none;
 }
 
 .error-card {

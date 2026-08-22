@@ -83,6 +83,10 @@ function onKeyDown(event: KeyboardEvent): void {
     case '0':
       viewport.value?.zoom100()
       break
+    case 'n':
+    case 'N':
+      viewport.value?.toggleNodes()
+      break
     default:
       break
   }
