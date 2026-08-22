@@ -138,7 +138,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 ## Roadmap
 
-- More SVG output optimizations (path merging by fill, elliptical-arc fitting)
+- SVG elliptical-arc (`A`) fitting for near-circular arcs
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Gradient detection & mesh-free gradient fills for photo modes
