@@ -119,7 +119,12 @@ export function adaptiveBinarize(
 // 4-connected components of equal label; components smaller than minArea are
 // absorbed into the most frequent 4-neighbor label (repeat until stable, max 8
 // rounds). -1 stays -1. Mutates and returns `labels`.
-export function mergeSmallRegions(labels: LabelMap, minArea: number): LabelMap
+export interface MergeOptions {
+  oklab: Float32Array // palette colors in Oklab, length count*3, indexed by label
+  keepContrast: number // keep a small region when its Oklab ΔE to the target ≥ this
+}
+// With opts, small high-contrast regions are kept instead of absorbed.
+export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask
 export function maskArea(mask: BinaryMask): number
 

@@ -69,6 +69,11 @@ export interface VectorizeSettings {
   layering: LayeringMode
   /** Regions smaller than this many pixels are merged into their surroundings. */
   minRegionArea: number
+  /**
+   * Keep small regions that are high-contrast against their surroundings (e.g. a
+   * logo dot) instead of merging them away; low-contrast specks still go.
+   */
+  preserveDetails: boolean
   /** Hairline-seam compensation stroke width (px) for cutout rendering; 0 disables. */
   gapFill: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
@@ -141,6 +146,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   palette: null,
   layering: 'stacked',
   minRegionArea: 6,
+  preserveDetails: false,
   gapFill: 0,
   omitBackground: false,
 

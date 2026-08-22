@@ -93,6 +93,29 @@ describe('native engine pipeline', () => {
     expect(byDefault.svg).toBe(optimized.svg)
   })
 
+  it('preserveDetails keeps a small high-contrast dot the flat filter removes', async () => {
+    const dotImage = (): RasterImage => {
+      const img = createRaster(40, 40)
+      fillRaster(img, 255, 255, 255)
+      for (let y = 5; y < 35; y++) {
+        for (let x = 5; x < 35; x++) setPixel(img, x, y, 180, 180, 180)
+      }
+      // A 2×2 black dot (4 px) — below minRegionArea, but maximal contrast.
+      for (let y = 19; y < 21; y++) {
+        for (let x = 19; x < 21; x++) setPixel(img, x, y, 0, 0, 0)
+      }
+      return img
+    }
+    const base = { mode: 'color' as const, paletteSize: 4, minRegionArea: 6 }
+    const flat = await vectorize(dotImage(), settings({ ...base, preserveDetails: false }))
+    const kept = await vectorize(dotImage(), settings({ ...base, preserveDetails: true }))
+    expect(kept.stats.pathCount).toBeGreaterThan(flat.stats.pathCount)
+    const veryDark = (p: string[]): boolean =>
+      p.some((h) => Number.parseInt(h.slice(1, 7), 16) < 0x20_20_20)
+    expect(veryDark(kept.palette)).toBe(true)
+    expect(veryDark(flat.palette)).toBe(false)
+  })
+
   it('warns about stencil islands on a donut in bw mode', async () => {
     const result = await vectorize(
       donut(),
