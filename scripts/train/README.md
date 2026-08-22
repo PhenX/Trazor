@@ -122,7 +122,7 @@ For the cleanup model, pass `--task cleanup` to steps 2 and 3 (reusing the same 
 | `pipeline.py`      | one-shot: data → train → export (cross-platform), `--task` aware                           |
 | `dataset.py`       | reads the generator manifest; input normalization matches Edge/CleanupEnhancer exactly     |
 | `model.py`         | `TinyUNet` (compact U-Net, `out_channels` per task) + the sigmoid export wrapper           |
-| `losses.py`        | edge: class-balanced BCE (HED-style) + soft Dice · cleanup: L1                             |
+| `losses.py`        | edge: class-balanced BCE (HED-style) + soft Dice · cleanup: L1 + (1−SSIM), `--ssim-weight` |
 | `train.py`         | training loop (AdamW + cosine), val F-score / PSNR, early stopping, preview montage        |
 | `export_onnx.py`   | ONNX export + torch/onnxruntime parity check + optional int8 quantization (`--task` aware) |
 | `requirements.txt` | Python deps                                                                                |
@@ -158,6 +158,9 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 - **`--base-channels`** — model width, hence size and capacity. 16 is a good default. Bump to 24 if predictions look
   blurry or miss thin edges (and you have the data); drop to 8–12 if the ONNX must be tiny. Keep it **< 5 MB** with
   `--quantize`.
+- **`--ssim-weight`** (cleanup only) — blends the loss `(1-w)·L1 + w·(1-SSIM)`, default `0.5`. Raise toward `0.7–0.8`
+  for crisper structure/contrast (can slightly shift colors); drop toward `0` for pure L1 (most color-faithful). Ignored
+  for the edge task.
 - **Epochs / early stopping** — don't hand-tune epochs: set a generous `--epochs 80` and let `--patience 10` stop when
   val loss plateaus. `--patience 0` disables it.
 - **`--batch` / `--lr`** — batch as large as your VRAM allows (32–64); keep `--lr 3e-4` (AdamW). Doubling the batch, you

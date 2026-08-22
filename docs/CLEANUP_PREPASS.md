@@ -70,9 +70,10 @@ Offline, in PyTorch (not part of the repo's Node/TS build). One flag switches th
 python scripts/train/pipeline.py --task cleanup --count 20000 --quantize
 ```
 
-- **Loss:** L1 on the sigmoid'd RGB vs. the clean target ([`losses.py`](../scripts/train/losses.py) `cleanup_loss`). L1
-  over L2 keeps edges crisp rather than blurring them — important for a tracer input. A perceptual/SSIM term can be added
-  later if needed.
+- **Loss:** a mix of **L1 + (1 − SSIM)** on the sigmoid'd RGB vs. the clean target
+  ([`losses.py`](../scripts/train/losses.py) `cleanup_loss`). L1 keeps colors/edges accurate; SSIM (a self-contained,
+  differentiable window statistic — no VGG/LPIPS weights) rewards local structure/contrast that L1 alone misses. Blend
+  with `--ssim-weight` (default 0.5; 0 = pure L1).
 - **Optimizer:** AdamW, cosine decay.
 - **Metrics:** PSNR on the held-out split, **plus the downstream metric that matters** — feed cleaned images through the
   tracer and compare the app's **Oklab ΔE fidelity** and node counts against tracing the degraded input directly.
