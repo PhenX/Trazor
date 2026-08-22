@@ -244,4 +244,31 @@ describe('serializeSvg with optimizePaths', () => {
     expect(optimized.startsWith('<svg')).toBe(true)
     expect(optimized.endsWith('</svg>')).toBe(true)
   })
+
+  it('merges consecutive same-fill paths into one element', () => {
+    // Triangles (3 anchors) so they stay <path>, not detected primitives.
+    const tri = (dx: number): PathCommand[] => [
+      { type: 'M', x: dx, y: 0 },
+      { type: 'L', x: dx + 5, y: 0 },
+      { type: 'L', x: dx + 5, y: 9 },
+      { type: 'Z' },
+    ]
+    const merged: SvgDocument = {
+      width: 100,
+      height: 100,
+      unit: 'px',
+      shapes: [
+        { commands: tri(0), fill: '#111111', fillRule: 'evenodd' },
+        { commands: tri(20), fill: '#111111', fillRule: 'evenodd' },
+        { commands: tri(40), fill: '#222222', fillRule: 'evenodd' },
+      ],
+    }
+    expect((serializeSvg(merged, { precision: 2 }).match(/<path /g) ?? []).length).toBe(3)
+    const opt = serializeSvg(merged, { precision: 2, optimizePaths: true })
+    // Two #111111 triangles fold into one path; #222222 stays separate.
+    expect((opt.match(/<path /g) ?? []).length).toBe(2)
+    expect((opt.match(/fill="#111111"/g) ?? []).length).toBe(1)
+    const first = /<path d="([^"]*)" fill="#111111"/.exec(opt)
+    expect((first?.[1].match(/M/g) ?? []).length).toBe(2) // two subpaths in one d
+  })
 })

@@ -112,27 +112,34 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
   }
 }
 
-function serializeShape(
+/**
+ * A shape as either a finished element (primitive or an un-optimized path) or,
+ * when optimizing, a path split into its `d` and paint so consecutive shapes
+ * sharing the exact paint can be merged into one `<path>`.
+ */
+type ShapeOut = { kind: 'element'; svg: string } | { kind: 'path'; d: string; paint: string }
+
+function shapeOut(
   shape: SvgShape,
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
-): string | null {
+): ShapeOut | null {
   if (shape.commands.length === 0) return null
   if (shape.fill === undefined && shape.stroke === undefined) return null
 
   if (optimize) {
     const cleaned = cleanCommands(shape.commands, precision)
     const prim = detectPrimitive(cleaned, precision, roundPrimitives)
-    if (prim !== null) return primitiveElement(prim, shape, precision)
+    if (prim !== null) return { kind: 'element', svg: primitiveElement(prim, shape, precision) }
     const d = assertAttrSafe(optimizePathData(cleaned, precision), 'path data')
     if (d === '') return null
-    return `<path d="${d}"${paintAttrs(shape, precision, true)}/>`
+    return { kind: 'path', d, paint: paintAttrs(shape, precision, true) }
   }
 
   const d = assertAttrSafe(buildPathData(shape.commands, precision), 'path data')
   if (d === '') return null
-  return `<path d="${d}"${paintAttrs(shape, precision, true)}/>`
+  return { kind: 'element', svg: `<path d="${d}"${paintAttrs(shape, precision, true)}/>` }
 }
 
 /**
@@ -171,10 +178,30 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   if (doc.desc !== undefined && doc.desc !== '') {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
-  for (const shape of doc.shapes) {
-    const path = serializeShape(shape, precision, optimize, roundPrimitives)
-    if (path !== null) children.push(path)
+  // Consecutive optimized paths that share identical paint fold into one
+  // <path> (same-fill shapes in our output are disjoint, so the union renders
+  // identically). Primitives and un-optimized paths flush the pending run.
+  let pending: { d: string; paint: string } | null = null
+  const flush = (): void => {
+    if (pending !== null) {
+      children.push(`<path d="${pending.d}"${pending.paint}/>`)
+      pending = null
+    }
   }
+  for (const shape of doc.shapes) {
+    const out = shapeOut(shape, precision, optimize, roundPrimitives)
+    if (out === null) continue
+    if (out.kind === 'element') {
+      flush()
+      children.push(out.svg)
+    } else if (pending !== null && pending.paint === out.paint) {
+      pending.d += ` ${out.d}`
+    } else {
+      flush()
+      pending = { d: out.d, paint: out.paint }
+    }
+  }
+  flush()
 
   if (opts.pretty === true) {
     return `${open}\n  ${children.join('\n  ')}\n</svg>\n`

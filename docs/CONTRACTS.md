@@ -173,8 +173,8 @@ export interface SvgDocument {
 export interface SerializeOptions {
   precision: number // decimals 0..4
   pretty?: boolean // newline per path when true; default compact
-  // relative/H/V `d`, collinear-point removal, exact <rect> detection
-  // (never larger, same geometry); default false
+  // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
+  // merging consecutive same-paint paths (never larger, same geometry); default false
   optimizePaths?: boolean
   // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
   // cutout mode, where a neighbor still traces the Bézier edge; default false
