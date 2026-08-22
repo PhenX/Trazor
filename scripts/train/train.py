@@ -80,8 +80,20 @@ def main() -> None:
     print(f"train {len(train_ds)} | val {len(val_ds)}")
     if len(train_ds) == 0:
         raise SystemExit("no training samples — run `npm run dataset` first")
-    train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers)
-    val_dl = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers)
+    pin = device == "cuda"
+
+    def loader(ds: EdgeDataset, shuffle: bool) -> DataLoader:
+        return DataLoader(
+            ds,
+            batch_size=args.batch,
+            shuffle=shuffle,
+            num_workers=args.workers,
+            pin_memory=pin,  # faster host→GPU copies
+            persistent_workers=args.workers > 0 and len(ds) > 0,  # don't respawn each epoch
+        )
+
+    train_dl = loader(train_ds, True)
+    val_dl = loader(val_ds, False)
 
     model = TinyUNet(args.base_channels).to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -98,7 +110,7 @@ def main() -> None:
         model.train()
         total = 0.0
         for x, y in train_dl:
-            x, y = x.to(device), y.to(device)
+            x, y = x.to(device, non_blocking=pin), y.to(device, non_blocking=pin)
             opt.zero_grad()
             loss = edge_loss(model(x), y)
             loss.backward()
@@ -113,7 +125,7 @@ def main() -> None:
         v_n = 0
         with torch.no_grad():
             for x, y in val_dl:
-                x, y = x.to(device), y.to(device)
+                x, y = x.to(device, non_blocking=pin), y.to(device, non_blocking=pin)
                 logits = model(x)
                 v_loss += edge_loss(logits, y).item() * x.size(0)
                 v_f += f_score(torch.sigmoid(logits), y) * x.size(0)

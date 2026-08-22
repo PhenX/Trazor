@@ -55,6 +55,7 @@ def main() -> None:
     p.add_argument("--base-channels", type=int, default=16, help="model width / size")
     p.add_argument("--patience", type=int, default=10, help="early-stop after N stale epochs (0 = off)")
     p.add_argument("--workers", type=int, default=0, help="dataloader workers (raise for speed)")
+    p.add_argument("--jobs", type=int, default=0, help="dataset generator threads (0 = CPU count)")
     p.add_argument("--out", default="apps/web/public/models/edge-prepass.onnx")
     p.add_argument("--skip-data", action="store_true", help="reuse an existing --data dir")
     p.add_argument("--quantize", action="store_true")
@@ -64,7 +65,7 @@ def main() -> None:
         print(f"skipping data generation, using {args.data}")
     else:
         # npm is a shell command on Windows (npm.cmd); shell=True keeps it portable.
-        run(f'npm run dataset -- --count {args.count} --out "{args.data}"', shell=True)
+        run(f'npm run dataset -- --count {args.count} --jobs {args.jobs} --out "{args.data}"', shell=True)
 
     run([
         sys.executable, str(HERE / "train.py"),

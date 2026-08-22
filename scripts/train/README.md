@@ -105,6 +105,11 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
   val loss plateaus. `--patience 0` disables it.
 - **`--batch` / `--lr`** — batch as large as your VRAM allows (32–64); keep `--lr 3e-4` (AdamW). Doubling the batch, you
   can raise lr ~1.4×.
+- **Parallelism / hardware** — the model math runs on your GPU automatically (or across all CPU cores via PyTorch's
+  intra-op threads if there's no GPU). `--workers N` parallelizes CPU-side data loading (PNG decode + normalize) to keep
+  the GPU fed — set it near your core count; it defaults to `0` (safe on Windows), and `pin_memory` / `persistent_workers`
+  enable automatically. The dataset-generation step is separately multithreaded (`npm run dataset -- --jobs N`, default:
+  CPU count).
 - **Domain gap (the usual culprit)** — if the model scores well on val but poorly in the app on real photos, the fix is
   usually _more degradation_, not a bigger model: raise `noiseStdMax` / `blurSigmaMax` and lower `jpegQuality.min` in
   [`../dataset/config.mjs`](../dataset/README.md) and regenerate.
