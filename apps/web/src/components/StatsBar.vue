@@ -300,4 +300,24 @@ async function copySwatch(hex: string): Promise<void> {
 .spacer {
   flex: 1;
 }
+
+/* Mobile: wrap the clusters instead of overflowing off-screen, and keep the
+   export actions on their own full-width row so Download stays reachable. */
+@media (max-width: 768px) {
+  .stats {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .spacer {
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  .export {
+    flex-wrap: wrap;
+  }
+}
 </style>

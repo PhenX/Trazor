@@ -86,6 +86,66 @@ try {
     return { svg, stats }
   }
 
+  // Verify the mobile layout: a pinned result above an independently scrolling
+  // command panel, plus a toggle that hides/restores the result (see the
+  // ≤768px media queries in the SFCs and the toggle in App.vue).
+  async function checkMobileLayout() {
+    const mobile = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+    })
+    try {
+      const mp = await mobile.newPage()
+      await mp.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' })
+      await mp.waitForSelector('.sample-card', { timeout: 20000 })
+      await mp.locator('.sample-card').nth(0).click()
+      await mp.waitForSelector('.layer-svg svg', { timeout: 120000 })
+      await mp.waitForTimeout(800)
+
+      const layout = await mp.evaluate(() => {
+        const main = document.querySelector('.main')?.getBoundingClientRect()
+        const panel = document.querySelector('.panel')?.getBoundingClientRect()
+        const scroll = document.querySelector('.panel-scroll')
+        return {
+          resultVisible: !!main && main.height > 0,
+          resultAbovePanel: main && panel ? main.top < panel.top : false,
+          commandScrolls: scroll ? scroll.scrollHeight > scroll.clientHeight + 1 : false,
+          noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+        }
+      })
+      if (!layout.resultVisible) fail('mobile: result should be visible by default')
+      if (!layout.resultAbovePanel) fail('mobile: result should sit above the command panel')
+      if (!layout.commandScrolls) fail('mobile: command panel should scroll independently')
+      if (!layout.noHorizontalOverflow) fail('mobile: layout overflows horizontally')
+      await mp.screenshot({ path: join(artifactsDir, 'mobile.png') })
+
+      // The toggle hides the result to free space for the controls…
+      await mp.locator('.result-toggle').click()
+      await mp.waitForTimeout(300)
+      const hidden = await mp.evaluate(
+        () => (document.querySelector('.main')?.getClientRects().length ?? 0) === 0,
+      )
+      if (!hidden) fail('mobile: toggle should hide the result')
+
+      // …and restores it.
+      await mp.locator('.result-toggle').click()
+      await mp.waitForTimeout(300)
+      const restored = await mp.evaluate(
+        () => (document.querySelector('.main')?.getBoundingClientRect().height ?? 0) > 0,
+      )
+      if (!restored) fail('mobile: toggle should restore the result')
+
+      console.log('  mobile: result pinned ✓  above-command ✓  command-scrolls ✓  toggle ✓')
+    } finally {
+      await mobile.close()
+    }
+  }
+
+  console.log('E2E: mobile layout — pinned result + toggle (390×844)…')
+  await checkMobileLayout()
+
   console.log('E2E: sample "Badge" (color, stacked)…')
   const badge = await loadSampleAndTrace(0, 'badge')
   if (!badge.svg.includes('<path')) fail('badge produced no paths')

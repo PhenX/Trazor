@@ -13,6 +13,9 @@ const store = useAppStore()
 const viewport = ref<InstanceType<typeof PreviewViewport> | null>(null)
 const dropZone = ref<InstanceType<typeof DropZone> | null>(null)
 
+// Mobile only: collapse the pinned result to give the command panel more room.
+const resultHidden = ref(false)
+
 // Reflect the theme on <html> so the token overrides in base.css apply.
 watchEffect(() => {
   document.documentElement.dataset.theme = store.theme
@@ -97,12 +100,38 @@ onBeforeUnmount(() => {
 <template>
   <div class="app">
     <AppHeader />
-    <div class="body">
+    <div class="body" :class="{ 'result-collapsed': resultHidden }">
       <SettingsPanel />
       <main class="main">
         <PreviewViewport ref="viewport" />
         <StatsBar />
       </main>
+      <button
+        v-if="store.hasImage"
+        class="result-toggle"
+        type="button"
+        :aria-expanded="!resultHidden"
+        @click="resultHidden = !resultHidden"
+      >
+        <svg
+          class="chev"
+          :class="{ 'is-down': resultHidden }"
+          viewBox="0 0 16 16"
+          width="12"
+          height="12"
+          aria-hidden="true"
+        >
+          <path
+            d="M4 10l4-4 4 4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        {{ resultHidden ? 'Show preview' : 'Hide preview' }}
+      </button>
       <DropZone ref="dropZone" />
     </div>
     <ToastHost />
@@ -131,5 +160,67 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+
+/* The result toggle is a mobile-only affordance; hidden on the desktop split. */
+.result-toggle {
+  display: none;
+}
+
+/* Mobile: stack a pinned result on top of an independently scrolling command
+   panel, with a slim bar to collapse the result when the controls need room. */
+@media (max-width: 768px) {
+  .body {
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .main {
+    /* Pin the result above the settings panel (which is first in DOM order). */
+    order: -2;
+    flex: 0 0 auto;
+    height: 48vh;
+    min-height: 220px;
+  }
+
+  .result-toggle {
+    order: -1;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-top: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .result-toggle:hover {
+    color: var(--text-1);
+  }
+
+  .result-toggle .chev {
+    transition: transform 0.15s ease;
+  }
+
+  .result-toggle .chev.is-down {
+    transform: rotate(180deg);
+  }
+
+  .body.result-collapsed .main {
+    display: none;
+  }
+
+  /* With the result gone the app header already delimits the toggle. */
+  .body.result-collapsed .result-toggle {
+    border-top-color: transparent;
+  }
 }
 </style>

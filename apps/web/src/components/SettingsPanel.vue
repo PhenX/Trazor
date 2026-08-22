@@ -625,6 +625,17 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
   gap: 14px;
 }
 
+/* Mobile: the command fills the space beneath the pinned result and scrolls
+   on its own (the toggle bar above it provides the visual separation). */
+@media (max-width: 768px) {
+  .panel {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+    border-right: none;
+  }
+}
+
 .group {
   display: flex;
   flex-direction: column;
