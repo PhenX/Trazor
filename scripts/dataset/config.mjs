@@ -9,6 +9,8 @@ export const DEFAULTS = {
   resolution: 256, // square output tile size, px
   supersample: 2, // render scale before area-downsample, for anti-aliasing
   seed: 1,
+  jobs: 0, // parallel worker threads; 0 = auto (CPU count), 1 = single-thread
+
   targets: ['edge', 'clean'], // ground-truth heads to emit
   split: { train: 0.8, val: 0.1, test: 0.1 }, // assigned per source family
   geometric: { enabled: true, rotateDeg: 8, scale: 0.15, translateFrac: 0.05 },
@@ -59,6 +61,10 @@ export function parseArgs(argv) {
         cfg.seed = Number(next)
         i++
         break
+      case 'jobs':
+        cfg.jobs = Number(next)
+        i++
+        break
       case 'targets':
         cfg.targets = next.split(',').map((t) => t.trim())
         i++
@@ -96,6 +102,7 @@ Usage: npm run dataset -- [options]
   --resolution <px>          square tile size (default 256)
   --supersample <n>          anti-aliasing render scale (default 2)
   --seed <n>                 base seed (default 1)
+  --jobs <n>                 parallel worker threads (default: CPU count; 1 = single-thread)
   --targets <a,b>            ground-truth heads: edge,clean (default edge,clean)
   --no-geometric             disable rotate/scale/translate augmentation
   --no-jpeg                  disable JPEG degradation

@@ -5,7 +5,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { chance, gaussian, int, pick, uniform } from './random.mjs'
+import { chance, gaussian, int, mulberry32, pick, seedFor, uniform } from './random.mjs'
 
 const ARCHETYPES = ['geo', 'blobs', 'rings', 'stripes', 'scatter']
 
@@ -17,11 +17,11 @@ const PALETTES = [
   ['#ffffff', '#ffd166', '#06d6a0', '#118ab2', '#073b4c'],
 ]
 
-export function* proceduralSource(count, rngFor) {
-  for (let i = 0; i < count; i++) {
-    const family = ARCHETYPES[i % ARCHETYPES.length]
-    yield { id: `proc-${String(i).padStart(5, '0')}`, family, svg: synthSvg(family, rngFor(i)) }
-  }
+/** One procedural sample by index, fully determined by (index, seed). */
+export function proceduralItem(index, seed) {
+  const family = ARCHETYPES[index % ARCHETYPES.length]
+  const rng = mulberry32(seedFor(seed, index * 2))
+  return { id: `proc-${String(index).padStart(5, '0')}`, family, svg: synthSvg(family, rng) }
 }
 
 export function* dirSource(dir, cap) {

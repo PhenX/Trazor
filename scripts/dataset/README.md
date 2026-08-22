@@ -14,8 +14,13 @@ derived from the clean render **before** degradation, so inputs and targets stay
 npm run dataset                       # 64 procedural samples → dataset-out/
 npm run dataset -- --count 500        # more
 npm run dataset -- --source dir --corpus /path/to/svgs --count 2000
+npm run dataset -- --count 20000 --jobs 8   # spread across 8 worker threads
 npm run dataset -- --help             # all options
 ```
+
+Generation runs on worker threads (`--jobs`, default: CPU count; `--jobs 1` for single-thread). It is CPU-bound
+(rasterize + degrade + PNG encode), so this scales roughly linearly with cores — and the output is **byte-identical**
+regardless of `--jobs` (each sample is pure and the manifest is sorted by index).
 
 No corpus is needed to start: the default `procedural` source synthesizes random primitive compositions (the strategy
 doc's procedural data source), which also gives exact ground truth. Point `--source dir --corpus <dir>` at real SVGs
@@ -57,17 +62,19 @@ need byte-identical regeneration across machines.
 
 ## Files
 
-| File           | Role                                                               |
-| -------------- | ------------------------------------------------------------------ |
-| `generate.mjs` | CLI, orchestration, split assignment, manifest                     |
-| `config.mjs`   | defaults + argument parsing + usage                                |
-| `sources.mjs`  | procedural SVG synthesis and real-corpus directory walk            |
-| `render.mjs`   | resvg rasterization, letterbox, geometric augmentation, downsample |
-| `degrade.mjs`  | background, composite, and the photometric degradation ops         |
-| `targets.mjs`  | edge-map ground truth (Sobel)                                      |
-| `imageops.mjs` | RGBA resize / area-downsample / affine / letterbox primitives      |
-| `random.mjs`   | seeded PRNG and distribution helpers                               |
-| `io.mjs`       | PNG writing and manifest                                           |
+| File                | Role                                                               |
+| ------------------- | ------------------------------------------------------------------ |
+| `generate.mjs`      | CLI, worker-pool orchestration, split assignment, manifest         |
+| `sample.mjs`        | one sample end to end (render → degrade → targets → write)         |
+| `sample-worker.mjs` | worker-thread entry: runs `sample.mjs` off the main thread         |
+| `config.mjs`        | defaults + argument parsing + usage                                |
+| `sources.mjs`       | procedural SVG synthesis and real-corpus directory walk            |
+| `render.mjs`        | resvg rasterization, letterbox, geometric augmentation, downsample |
+| `degrade.mjs`       | background, composite, and the photometric degradation ops         |
+| `targets.mjs`       | edge-map ground truth (Sobel)                                      |
+| `imageops.mjs`      | RGBA resize / area-downsample / affine / letterbox primitives      |
+| `random.mjs`        | seeded PRNG and distribution helpers                               |
+| `io.mjs`            | PNG writing and manifest                                           |
 
 ## Extending
 
