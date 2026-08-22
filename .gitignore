@@ -159,5 +159,10 @@ dataset-out/
 *.onnx
 !apps/web/public/models/*.onnx
 
+# Python (scripts/train) — training env and caches
+__pycache__/
+*.pyc
+.venv/
+
 # Design plans and roadmaps are tracked, never ignored.
 !plans/
