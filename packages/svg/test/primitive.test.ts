@@ -151,6 +151,71 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
   })
 })
 
+/** Rotate every coordinate of a path about (cx, cy) by `deg` degrees. */
+function rotatePath(cmds: PathCommand[], cx: number, cy: number, deg: number): PathCommand[] {
+  const a = (deg * Math.PI) / 180
+  const co = Math.cos(a)
+  const si = Math.sin(a)
+  const rot = (x: number, y: number): [number, number] => {
+    const dx = x - cx
+    const dy = y - cy
+    return [cx + dx * co - dy * si, cy + dx * si + dy * co]
+  }
+  return cmds.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M': {
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'M', x, y }
+      }
+      case 'L': {
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'L', x, y }
+      }
+      case 'Q': {
+        const [x1, y1] = rot(c.x1, c.y1)
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'Q', x1, y1, x, y }
+      }
+      case 'C': {
+        const [x1, y1] = rot(c.x1, c.y1)
+        const [x2, y2] = rot(c.x2, c.y2)
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'C', x1, y1, x2, y2, x, y }
+      }
+      default:
+        return c
+    }
+  })
+}
+
+describe('detectPrimitive — rotated ellipse (gated)', () => {
+  it('detects a rotated ellipse, its radii and angle', () => {
+    const cmds = rotatePath(ellipsePath(60, 50, 40, 18), 60, 50, 30)
+    expect(detectPrimitive(cmds, 2, false)).toBeNull() // gated like other round primitives
+    const p = detectPrimitive(cmds, 2, true) as Extract<Primitive, { kind: 'ellipse' }>
+    expect(p.kind).toBe('ellipse')
+    expect(p.cx).toBeCloseTo(60, 0)
+    expect(p.cy).toBeCloseTo(50, 0)
+    // Radii come back in either order depending on which axis `angle` names.
+    expect(Math.max(p.rx, p.ry)).toBeCloseTo(40, 0)
+    expect(Math.min(p.rx, p.ry)).toBeCloseTo(18, 0)
+    expect(p.angle).toBeDefined()
+  })
+
+  it('keeps an axis-aligned ellipse un-rotated (no transform needed)', () => {
+    const p = detectPrimitive(ellipsePath(60, 60, 40, 20), 2, true) as Extract<
+      Primitive,
+      { kind: 'ellipse' }
+    >
+    expect(p.angle === undefined || Math.abs(p.angle) < 0.5).toBe(true)
+  })
+
+  it('does not rotate-match a non-ellipse', () => {
+    const rotRect = rotatePath(rectPath(0, 0, 40, 20), 20, 10, 25)
+    expect(detectPrimitive(rotRect, 2, true)?.kind).not.toBe('ellipse')
+  })
+})
+
 const primitiveDoc = (commands: PathCommand[]): SvgDocument => ({
   width: 100,
   height: 100,
@@ -190,5 +255,15 @@ describe('serializeSvg primitive emission', () => {
       roundPrimitives: true,
     })
     expect(round).toMatch(/<rect [^>]*\brx="/)
+  })
+
+  it('emits <ellipse> with a rotate transform for a rotated ellipse', () => {
+    const commands = rotatePath(ellipsePath(60, 50, 40, 18), 60, 50, 30)
+    const round = serializeSvg(doc(commands), {
+      precision: 2,
+      optimizePaths: true,
+      roundPrimitives: true,
+    })
+    expect(round).toMatch(/<ellipse [^>]*transform="rotate\(/)
   })
 })

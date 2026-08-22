@@ -329,6 +329,63 @@ function elementCommands(tag: SvgElementKind, attrs: string): PathCommand[] {
   }
 }
 
+/** Rotate every coordinate of `commands` about (cx, cy) by `deg` degrees. */
+function rotateCommands(
+  commands: PathCommand[],
+  deg: number,
+  cx: number,
+  cy: number,
+): PathCommand[] {
+  const a = (deg * Math.PI) / 180
+  const co = Math.cos(a)
+  const si = Math.sin(a)
+  const rot = (x: number, y: number): [number, number] => {
+    const dx = x - cx
+    const dy = y - cy
+    return [cx + dx * co - dy * si, cy + dx * si + dy * co]
+  }
+  return commands.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M': {
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'M', x, y }
+      }
+      case 'L': {
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'L', x, y }
+      }
+      case 'Q': {
+        const [x1, y1] = rot(c.x1, c.y1)
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'Q', x1, y1, x, y }
+      }
+      case 'C': {
+        const [x1, y1] = rot(c.x1, c.y1)
+        const [x2, y2] = rot(c.x2, c.y2)
+        const [x, y] = rot(c.x, c.y)
+        return { type: 'C', x1, y1, x2, y2, x, y }
+      }
+      default:
+        return c
+    }
+  })
+}
+
+/** Apply a `transform` attribute (only `rotate(a [cx cy])`, what the serializer emits). */
+function applyTransform(commands: PathCommand[], attrs: string): PathCommand[] {
+  const tf = attr(attrs, 'transform')
+  if (tf === null) return commands
+  const m = /rotate\(\s*([+-]?[\d.eE]+)(?:[\s,]+([+-]?[\d.eE]+)[\s,]+([+-]?[\d.eE]+))?\s*\)/.exec(
+    tf,
+  )
+  if (m === null) return commands
+  const deg = Number(m[1])
+  if (!Number.isFinite(deg)) return commands
+  const cx = m[2] === undefined ? 0 : Number(m[2])
+  const cy = m[3] === undefined ? 0 : Number(m[3])
+  return rotateCommands(commands, deg, cx, cy)
+}
+
 function viewBoxSize(svg: string): { width: number | null; height: number | null } {
   const m = /(?<![\w-])viewBox\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(svg)
   if (m === null) return { width: null, height: null }
@@ -351,7 +408,7 @@ export function extractGeometry(svg: string): SvgGeometry {
   const shapes: SvgGeometryShape[] = []
   for (const m of svg.matchAll(/<(path|rect|circle|ellipse|line|polyline|polygon)\b([^>]*)>/g)) {
     const kind = m[1] as SvgElementKind
-    const commands = elementCommands(kind, m[2])
+    const commands = applyTransform(elementCommands(kind, m[2]), m[2])
     if (commands.length > 0) shapes.push({ kind, commands })
   }
   return { width, height, shapes }

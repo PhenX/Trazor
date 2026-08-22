@@ -14,7 +14,8 @@ export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
   | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number }
   | { kind: 'circle'; cx: number; cy: number; r: number }
-  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
+  // `angle` (deg, about the center) is present only for a rotated ellipse.
+  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; angle?: number }
 
 interface Pt {
   x: number
@@ -137,7 +138,131 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   ) {
     return round({ kind: 'ellipse', cx: ecx, cy: ecy, rx, ry }, precision)
   }
-  return null
+
+  return detectRotatedEllipse(start, ops, precision)
+}
+
+/** Point on a cubic at parameter t (Bernstein form). */
+function cubicPoint(p0: Pt, c: Extract<PathCommand, { type: 'C' }>, t: number): Pt {
+  const u = 1 - t
+  const a = u * u * u
+  const b = 3 * u * u * t
+  const cc = 3 * u * t * t
+  const d = t * t * t
+  return {
+    x: a * p0.x + b * c.x1 + cc * c.x2 + d * c.x,
+    y: a * p0.y + b * c.y1 + cc * c.y2 + d * c.y,
+  }
+}
+
+/** Max deviation of `samples` from an axis-aligned ellipse after de-rotating by θ about the centroid. */
+function ellipseResidual(samples: Pt[], cmx: number, cmy: number, theta: number): number {
+  const co = Math.cos(theta)
+  const si = Math.sin(theta)
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const p of samples) {
+    const dx = p.x - cmx
+    const dy = p.y - cmy
+    const rx = dx * co + dy * si
+    const ry = -dx * si + dy * co
+    if (rx < minX) minX = rx
+    if (rx > maxX) maxX = rx
+    if (ry < minY) minY = ry
+    if (ry > maxY) maxY = ry
+  }
+  const ax = (maxX - minX) / 2
+  const ay = (maxY - minY) / 2
+  if (ax <= 0 || ay <= 0) return Infinity
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  let max = 0
+  for (const p of samples) {
+    const dx = p.x - cmx
+    const dy = p.y - cmy
+    const nx = (dx * co + dy * si - cx) / ax
+    const ny = (-dx * si + dy * co - cy) / ay
+    max = Math.max(max, Math.abs(Math.hypot(nx, ny) - 1) * Math.min(ax, ay))
+  }
+  return max
+}
+
+/**
+ * A rotated (general) ellipse: orient by the sample covariance (PCA), refine the
+ * angle by a small local scan, then accept only if every densely-sampled
+ * boundary point lies on the axis-aligned ellipse of the de-rotated cloud within
+ * tolerance. Emits `<ellipse>` + a `rotate` transform. Same discipline as the
+ * axis-aligned path, so a shape that is not really an ellipse is rejected.
+ */
+function detectRotatedEllipse(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
+  // Dense boundary samples: the start anchor plus three interior points per arc.
+  const samples: Pt[] = [start]
+  let prev = start
+  for (const op of ops) {
+    if (op.type !== 'C') return null
+    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    samples.push({ x: op.x, y: op.y })
+    prev = { x: op.x, y: op.y }
+  }
+  if (samples.length < 8) return null
+
+  const cmx = samples.reduce((s, p) => s + p.x, 0) / samples.length
+  const cmy = samples.reduce((s, p) => s + p.y, 0) / samples.length
+  let sxx = 0
+  let syy = 0
+  let sxy = 0
+  for (const p of samples) {
+    const dx = p.x - cmx
+    const dy = p.y - cmy
+    sxx += dx * dx
+    syy += dy * dy
+    sxy += dx * dy
+  }
+  const theta0 = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+
+  // Local refinement: the covariance axis is close but sampling is uneven.
+  let bestTheta = theta0
+  let bestErr = Infinity
+  for (let i = -8; i <= 8; i++) {
+    const theta = theta0 + (i * Math.PI) / 180
+    const err = ellipseResidual(samples, cmx, cmy, theta)
+    if (err < bestErr) {
+      bestErr = err
+      bestTheta = theta
+    }
+  }
+
+  const co = Math.cos(bestTheta)
+  const si = Math.sin(bestTheta)
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const p of samples) {
+    const dx = p.x - cmx
+    const dy = p.y - cmy
+    const rx = dx * co + dy * si
+    const ry = -dx * si + dy * co
+    if (rx < minX) minX = rx
+    if (rx > maxX) maxX = rx
+    if (ry < minY) minY = ry
+    if (ry > maxY) maxY = ry
+  }
+  const rx = (maxX - minX) / 2
+  const ry = (maxY - minY) / 2
+  if (rx <= 0 || ry <= 0) return null
+  const tol = Math.max(0.6, Math.min(rx, ry) * 0.02)
+  if (bestErr > tol) return null
+
+  // De-rotated center, mapped back to source coordinates.
+  const lcx = (minX + maxX) / 2
+  const lcy = (minY + maxY) / 2
+  const cx = cmx + lcx * co - lcy * si
+  const cy = cmy + lcx * si + lcy * co
+  const angle = (bestTheta * 180) / Math.PI
+  return round({ kind: 'ellipse', cx, cy, rx, ry, angle }, precision)
 }
 
 /** Signed distance from a point to an axis-aligned rounded rectangle (circular corners). */
@@ -238,7 +363,14 @@ function round(prim: Primitive, precision: number): Primitive {
   }
   if (prim.kind === 'circle')
     return { kind: 'circle', cx: q(prim.cx), cy: q(prim.cy), r: q(prim.r) }
-  return { kind: 'ellipse', cx: q(prim.cx), cy: q(prim.cy), rx: q(prim.rx), ry: q(prim.ry) }
+  return {
+    kind: 'ellipse',
+    cx: q(prim.cx),
+    cy: q(prim.cy),
+    rx: q(prim.rx),
+    ry: q(prim.ry),
+    ...(prim.angle !== undefined ? { angle: q(prim.angle) } : {}),
+  }
 }
 
 /**

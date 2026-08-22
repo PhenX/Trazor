@@ -247,9 +247,9 @@ export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
   | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
   | { kind: 'circle'; cx: number; cy: number; r: number }
-  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
+  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; angle?: number } // angle (deg) ⇒ rotated, emitted as <ellipse> + rotate transform
 // The primitive a single closed subpath represents, or null. `allowRound` gates
-// the sub-pixel circle/ellipse matches; rectangles are always exact.
+// the sub-pixel circle/ellipse matches (including rotated ellipses); rectangles are always exact.
 export function detectPrimitive(
   commands: readonly PathCommand[],
   precision: number,
@@ -280,7 +280,8 @@ export interface SvgGeometry {
 // (anchor points, Bézier handles, outlines). Regex-based, no DOM; exact on our
 // serializer output, best-effort on foreign SVGs. Paths resolve relative/H/V/S/T
 // shorthands to absolute M/L/Q/C/Z; rect/circle/ellipse/line/polyline/polygon
-// convert to equivalent commands (round primitives via the 4-Bézier kappa arc).
+// convert to equivalent commands (round primitives via the 4-Bézier kappa arc);
+// a `rotate(a [cx cy])` transform (what the serializer emits) is applied.
 export function extractGeometry(svg: string): SvgGeometry
 ```
 
