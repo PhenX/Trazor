@@ -35,8 +35,9 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // it from the very site it is served from — no CORS, no external host. This
     // default is relative; the app resolves it against its deploy base at startup
     // with overrideModelUrl(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`).
-    // No weights exist yet: train per docs/EDGE_PREPASS.md on scripts/dataset
-    // output and drop the file in place. Until then create() fails soft (the
+    // Weights are not committed: the deploy workflow fetches them from a GitHub
+    // Release into apps/web/public/models/ at build time (train per
+    // docs/EDGE_PREPASS.md). Until a build includes them, create() fails soft (the
     // fetch 404s) and the app traces exactly as it does today.
     url: 'models/edge-prepass.onnx',
     approxBytes: 3_000_000,
@@ -47,9 +48,10 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // The project's own model (see edge-prepass above for the same-origin
     // rationale): shipped as a static app asset, resolved against the deploy base
     // at startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/cleanup.onnx`).
-    // No weights exist yet: train per docs/CLEANUP_PREPASS.md (scripts/train
-    // --task cleanup) and drop the file in place. Until then create() fails soft
-    // (the fetch 404s) and the app leaves the image untouched.
+    // Weights are not committed: the deploy workflow fetches them from a GitHub
+    // Release into apps/web/public/models/ at build time (train per
+    // docs/CLEANUP_PREPASS.md, scripts/train --task cleanup). Until a build
+    // includes them, create() fails soft and the app leaves the image untouched.
     url: 'models/cleanup.onnx',
     approxBytes: 3_000_000,
     license: 'MIT',

@@ -12,8 +12,10 @@ Two tasks share this scaffold, selected with `--task` (one generated dataset tra
 | `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)       |
 | `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md) |
 
-These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed;
-you generate them here and drop the `.onnx` in place.
+These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
+git; you generate them here and publish them to the `models` GitHub Release, from which the deploy workflow fetches them
+at build time (see [`apps/web/public/models/README.md`](../../apps/web/public/models/README.md)). For a purely local
+try, dropping the `.onnx` into `apps/web/public/models/` also works — it's git-ignored.
 
 ## From scratch
 

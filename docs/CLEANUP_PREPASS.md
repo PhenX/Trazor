@@ -84,10 +84,12 @@ Identical to the edge pre-pass, task-aware ([`export_onnx.py`](../scripts/train/
 
 - Export PyTorch → **ONNX**, verify torch/onnxruntime parity within tolerance, then quantize (int8/fp16).
 - Output shape is asserted `[1, 3, size, size]`.
-- **Host it as a project asset, not on a third party.** Drop the ONNX at `apps/web/public/models/cleanup.onnx`; Vite
-  serves it **same-origin** (no CORS, no external host — unlike the third-party `u2netp`/SlimSAM, which keep fetching from
-  their upstream mirrors). The registry points at `models/cleanup.onnx`; the app resolves it against its deploy base at
-  runtime with `overrideModelUrl` and `import.meta.env.BASE_URL`.
+- **Host it as a project asset, not on a third party, and don't commit it.** `*.onnx` is git-ignored; the deploy workflow
+  fetches the weights from a **GitHub Release** (tag `models`) into `apps/web/public/models/cleanup.onnx` at build time, so
+  Vite serves them **same-origin** (no CORS, no external host — unlike the third-party `u2netp`/SlimSAM, which keep
+  fetching from their upstream mirrors) with no binary in git history. The registry points at `models/cleanup.onnx`; the
+  app resolves it against its deploy base with `overrideModelUrl` and `import.meta.env.BASE_URL`. See
+  [`apps/web/public/models/README.md`](../apps/web/public/models/README.md) for the publish steps.
 
 ## Integration (`@vectorizer/ml`)
 
