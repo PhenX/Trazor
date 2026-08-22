@@ -1,9 +1,12 @@
-"""Compact U-Net for the edge / boundary pre-pass (docs/EDGE_PREPASS.md).
+"""Compact U-Net for the on-device pre-pass models.
 
-The network returns logits; training uses a numerically stable
-*-with-logits loss. The ONNX export wraps it with a Sigmoid so the shipped
-model outputs probabilities in [0, 1] — exactly what EdgeEnhancer
-(packages/ml/src/edge.ts) reads back.
+Two tasks share this network, differing only in the head width:
+- edge (docs/EDGE_PREPASS.md): 1 channel, a boundary probability map.
+- cleanup (docs/CLEANUP_PREPASS.md): 3 channels, a denoised RGB image.
+
+The network returns logits/pre-activations; training uses the matching loss.
+The ONNX export wraps it with a Sigmoid so the shipped model outputs values in
+[0, 1] — exactly what EdgeEnhancer / CleanupEnhancer (packages/ml/src) read back.
 """
 
 from __future__ import annotations
@@ -29,9 +32,12 @@ class DoubleConv(nn.Module):
 
 
 class TinyUNet(nn.Module):
-    """Three-level U-Net; `base` sets the channel width, hence the model size."""
+    """Three-level U-Net; `base` sets the channel width, hence the model size.
 
-    def __init__(self, base: int = 16) -> None:
+    `out_channels` is 1 for the edge task, 3 for the cleanup (RGB) task.
+    """
+
+    def __init__(self, base: int = 16, out_channels: int = 1) -> None:
         super().__init__()
         self.enc1 = DoubleConv(3, base)
         self.enc2 = DoubleConv(base, base * 2)
@@ -41,7 +47,7 @@ class TinyUNet(nn.Module):
         self.dec2 = DoubleConv(base * 4, base * 2)
         self.up1 = nn.ConvTranspose2d(base * 2, base, 2, stride=2)
         self.dec1 = DoubleConv(base * 2, base)
-        self.head = nn.Conv2d(base, 1, 1)
+        self.head = nn.Conv2d(base, out_channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         e1 = self.enc1(x)
@@ -49,7 +55,7 @@ class TinyUNet(nn.Module):
         b = self.bottleneck(self.pool(e2))
         d2 = self.dec2(torch.cat([self.up2(b), e2], dim=1))
         d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
-        return self.head(d1)  # logits [N, 1, H, W]
+        return self.head(d1)  # [N, out_channels, H, W]
 
 
 class SigmoidWrapper(nn.Module):

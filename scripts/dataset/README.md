@@ -1,8 +1,9 @@
 # Dataset generator
 
 A seeded, reproducible pipeline that turns SVGs into aligned `(degraded raster → ground-truth)` training pairs for the
-on-device conditioning models in [`../../docs/ML_STRATEGY.md`](../../docs/ML_STRATEGY.md). The first model it feeds — a
-learned edge pre-pass — is specced in [`../../docs/EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md).
+on-device conditioning models in [`../../docs/ML_STRATEGY.md`](../../docs/ML_STRATEGY.md). It feeds two models from one
+run — the learned edge pre-pass ([`../../docs/EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md), the `edge/` target) and the
+cleanup pre-pass ([`../../docs/CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md), the `clean/` target).
 
 The core idea (see the strategy doc): rendering an SVG gives a _perfectly aligned_ raster + vector pair for free; the
 make-or-break step is **degrading the raster input** so the model survives real photos, scans and JPEGs. Ground truth is

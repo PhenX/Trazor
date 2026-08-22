@@ -27,6 +27,7 @@ const mlReady = computed(() => store.mlState.availability?.available === true)
 const removeBusy = computed(() => store.mlState.removeBg.busy)
 const magicBusy = computed(() => store.mlState.magic.busy)
 const edgeBusy = computed(() => store.mlState.edge.busy)
+const cleanupBusy = computed(() => store.mlState.cleanup.busy)
 
 async function refreshUsage(): Promise<void> {
   try {
@@ -72,7 +73,9 @@ onMounted(() => {
       <div class="tool">
         <button
           class="btn tool-btn"
-          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
+          :disabled="
+            !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
+          "
           :title="mlReady ? 'Remove the background with a local U²-Net model' : backendBadge.title"
           @click="store.removeBackground()"
         >
@@ -111,8 +114,64 @@ onMounted(() => {
       <div class="tool">
         <button
           class="btn tool-btn"
+          :disabled="
+            !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
+          "
+          :title="
+            mlReady
+              ? 'ML cleanup — denoise / deblock the image before tracing (all modes; needs the cleanup model)'
+              : backendBadge.title
+          "
+          @click="store.cleanUp()"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path
+              d="M9.5 2.5 11 5.5 14 7l-3 1.5L9.5 11.5 8 8.5 5 7l3-1.5z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M3.5 10.5 4.4 12.3 6 13l-1.6.8L3.5 15.5 2.7 13.8 1 13l1.7-.7z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.1"
+              stroke-linejoin="round"
+              opacity="0.7"
+            />
+          </svg>
+          {{ cleanupBusy ? 'Cleaning up…' : 'Clean up (ML)' }}
+        </button>
+        <div
+          v-if="cleanupBusy"
+          class="progress"
+          role="progressbar"
+          :aria-label="store.mlState.cleanup.phase"
+        >
+          <div
+            class="progress-fill"
+            :class="{ indeterminate: store.mlState.cleanup.progress === null }"
+            :style="
+              store.mlState.cleanup.progress !== null
+                ? { width: `${store.mlState.cleanup.progress * 100}%` }
+                : {}
+            "
+          />
+        </div>
+        <p v-if="cleanupBusy" class="phase">{{ store.mlState.cleanup.phase }}</p>
+        <p v-else class="phase instructions">
+          Rewrites pixels for the tracer · needs the cleanup model.
+        </p>
+      </div>
+
+      <div class="tool">
+        <button
+          class="btn tool-btn"
           :class="{ 'is-active': store.magicActive }"
-          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
+          :disabled="
+            !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
+          "
           :title="mlReady ? 'Click regions to keep or exclude (SlimSAM)' : backendBadge.title"
           :aria-pressed="store.magicActive"
           @click="store.toggleMagicSelect()"
@@ -152,7 +211,9 @@ onMounted(() => {
         <button
           class="btn tool-btn"
           :class="{ 'is-active': store.edgePrepass }"
-          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
+          :disabled="
+            !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
+          "
           :title="
             mlReady
               ? 'ML edge pre-pass — protects thin features from despeckling on noisy input (all modes)'

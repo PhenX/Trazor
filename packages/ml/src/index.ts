@@ -1,4 +1,5 @@
 export { BackgroundRemover } from './background'
+export { CleanupEnhancer } from './cleanup'
 export { detectBackend } from './detect'
 export { EdgeEnhancer } from './edge'
 export { MODEL_REGISTRY, overrideModelUrl } from './registry'

@@ -140,6 +140,7 @@ export const useAppStore = defineStore('app', () => {
     removeBg: { busy: false, progress: null, phase: '' } as MlToolState,
     magic: { busy: false, progress: null, phase: '' } as MlToolState,
     edge: { busy: false, progress: null, phase: '' } as MlToolState,
+    cleanup: { busy: false, progress: null, phase: '' } as MlToolState,
   })
   const magicActive = ref(false)
   const magicPoints = ref<MagicPoint[]>([])
@@ -156,6 +157,7 @@ export const useAppStore = defineStore('app', () => {
   let segmenter: import('@vectorizer/ml').MagicSegmenter | null = null
   let segmenterImage: RasterImage | null = null
   let edgeModel: import('@vectorizer/ml').EdgeEnhancer | null = null
+  let cleanupModel: import('@vectorizer/ml').CleanupEnhancer | null = null
   // Edge hint cached per working image (independent of trace settings).
   let edgeHintImage: RasterImage | null = null
   let edgeHint: GrayImage | null = null
@@ -480,6 +482,41 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  /**
+   * One-shot ML cleanup pre-pass: replaces the working image with a denoised/
+   * deblocked version so the classical tracer runs on cleaner pixels in any mode
+   * (docs/CLEANUP_PREPASS.md). The project's own model, served same-origin from
+   * the app's static assets. Fail-soft: with no weights it toasts and leaves the
+   * image untouched. Undo via "Restore original".
+   */
+  async function cleanUp(): Promise<void> {
+    const image = workingImage.value
+    if (!image || mlState.cleanup.busy) return
+    mlState.cleanup = { busy: true, progress: null, phase: 'Preparing' }
+    const onProgress = (p: MlProgress): void => {
+      const info = mlPhaseInfo(p)
+      mlState.cleanup = { busy: true, progress: info.progress, phase: info.phase }
+    }
+    try {
+      const ml = await import('@vectorizer/ml')
+      ml.overrideModelUrl(
+        'cleanup',
+        new URL(`${import.meta.env.BASE_URL}models/cleanup.onnx`, location.origin).href,
+      )
+      cleanupModel ??= await ml.CleanupEnhancer.create({ onProgress })
+      const out = await cleanupModel.run(image, { onProgress })
+      // Only apply if the user hasn't swapped images mid-run.
+      if (workingImage.value === image) {
+        workingImage.value = out.image
+        notify('Cleaned up — tracing the denoised image', 'success')
+      }
+    } catch (e) {
+      notify(`Cleanup unavailable: ${errorMessage(e)}`, 'error')
+    } finally {
+      mlState.cleanup = { busy: false, progress: null, phase: '' }
+    }
+  }
+
   function restoreOriginal(): void {
     if (!sourceImage.value) return
     cancelMagicSelect()
@@ -628,6 +665,7 @@ export const useAppStore = defineStore('app', () => {
     ensureMlAvailability,
     setEdgePrepass,
     removeBackground,
+    cleanUp,
     restoreOriginal,
     toggleMagicSelect,
     cancelMagicSelect,

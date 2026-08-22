@@ -1,9 +1,12 @@
-"""Train the edge pre-pass model on the generator's dataset.
+"""Train an on-device pre-pass model on the generator's dataset.
 
-Auto-detects CUDA. Saves the best checkpoint (by val loss) to
-`scripts/train/checkpoints/edge-prepass.pt` and, beside it, a `preview.png`
-montage (input · prediction · target) for eyeballing quality. Early stops when
-val loss stops improving. See scripts/train/README.md.
+Two tasks (`--task`):
+- edge (default): 1-channel boundary map → checkpoints/edge-prepass.pt
+- cleanup: 3-channel denoised RGB → checkpoints/cleanup.pt
+
+Auto-detects CUDA. Saves the best checkpoint (by val loss) and, beside it, a
+`preview.png` montage (input · prediction · target) for eyeballing quality.
+Early stops when val loss stops improving. See scripts/train/README.md.
 """
 
 from __future__ import annotations
@@ -16,13 +19,20 @@ import torch
 from PIL import Image
 from torch.utils.data import DataLoader
 
-from dataset import IMAGENET_MEAN, IMAGENET_STD, EdgeDataset
-from losses import edge_loss
+from dataset import IMAGENET_MEAN, IMAGENET_STD, PrepassDataset
+from losses import cleanup_loss, edge_loss
 from model import TinyUNet
+
+# Per-task config: output channels, checkpoint name, and ONNX output tensor name.
+TASKS = {
+    "edge": {"out_channels": 1, "checkpoint": "edge-prepass.pt", "output_name": "edges"},
+    "cleanup": {"out_channels": 3, "checkpoint": "cleanup.pt", "output_name": "output"},
+}
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train the edge pre-pass model.")
+    p = argparse.ArgumentParser(description="Train an on-device pre-pass model.")
+    p.add_argument("--task", choices=sorted(TASKS), default="edge", help="which model to train")
     # One or more dataset roots (npm run dataset outputs) — concatenated to mix.
     p.add_argument("--data", nargs="+", required=True, help="dataset root(s)")
     p.add_argument("--out", default="scripts/train/checkpoints")
@@ -49,7 +59,20 @@ def f_score(prob: torch.Tensor, target: torch.Tensor, thresh: float = 0.5, eps: 
     return float(2 * prec * rec / (prec + rec + eps))
 
 
-def save_preview(model: torch.nn.Module, ds: EdgeDataset, path: Path, device: str, n: int = 4) -> None:
+def psnr(prob: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> float:
+    mse = ((prob - target) ** 2).mean()
+    return float(10.0 * torch.log10(1.0 / (mse + eps)))
+
+
+def to_rgb(chw: np.ndarray) -> np.ndarray:
+    """A [C,H,W] array in [0,1] → [H,W,3] uint8, tiling gray to RGB."""
+    hwc = chw.transpose(1, 2, 0)
+    if hwc.shape[2] == 1:
+        hwc = np.repeat(hwc, 3, axis=2)
+    return np.clip(hwc * 255, 0, 255).astype(np.uint8)
+
+
+def save_preview(model: torch.nn.Module, ds: PrepassDataset, path: Path, device: str, n: int = 4) -> None:
     """Save an [input | prediction | target] montage for up to n val samples."""
     n = min(n, len(ds))
     if n == 0:
@@ -59,30 +82,28 @@ def save_preview(model: torch.nn.Module, ds: EdgeDataset, path: Path, device: st
     with torch.no_grad():
         for i in range(n):
             x, y = ds[i]
-            prob = torch.sigmoid(model(x.unsqueeze(0).to(device)))[0, 0].cpu().numpy()
-            rgb = np.clip((x.numpy().transpose(1, 2, 0) * IMAGENET_STD + IMAGENET_MEAN) * 255, 0, 255)
-            pred = np.clip(prob * 255, 0, 255)
-            tgt = np.clip(y[0].numpy() * 255, 0, 255)
-            gray3 = lambda g: np.stack([g, g, g], axis=-1)  # noqa: E731
-            rows.append(np.concatenate([rgb, gray3(pred), gray3(tgt)], axis=1).astype(np.uint8))
+            pred = torch.sigmoid(model(x.unsqueeze(0).to(device)))[0].cpu().numpy()
+            rgb = np.clip((x.numpy().transpose(1, 2, 0) * IMAGENET_STD + IMAGENET_MEAN) * 255, 0, 255).astype(np.uint8)
+            rows.append(np.concatenate([rgb, to_rgb(pred), to_rgb(y.numpy())], axis=1))
     Image.fromarray(np.concatenate(rows, axis=0)).save(path)
 
 
 def main() -> None:
     args = parse_args()
+    cfg = TASKS[args.task]
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
-    print(f"device: {device} | data: {', '.join(args.data)}")
+    print(f"task: {args.task} | device: {device} | data: {', '.join(args.data)}")
 
-    train_ds = EdgeDataset(args.data, "train", args.size, args.limit)
-    val_ds = EdgeDataset(args.data, "val", args.size)
+    train_ds = PrepassDataset(args.data, "train", args.size, args.limit, task=args.task)
+    val_ds = PrepassDataset(args.data, "val", args.size, task=args.task)
     print(f"train {len(train_ds)} | val {len(val_ds)}")
     if len(train_ds) == 0:
-        raise SystemExit("no training samples — run `npm run dataset` first")
+        raise SystemExit(f"no training samples for task {args.task!r} — run `npm run dataset` first")
     pin = device == "cuda"
 
-    def loader(ds: EdgeDataset, shuffle: bool) -> DataLoader:
+    def loader(ds: PrepassDataset, shuffle: bool) -> DataLoader:
         return DataLoader(
             ds,
             batch_size=args.batch,
@@ -95,9 +116,13 @@ def main() -> None:
     train_dl = loader(train_ds, True)
     val_dl = loader(val_ds, False)
 
-    model = TinyUNet(args.base_channels).to(device)
+    loss_fn = cleanup_loss if args.task == "cleanup" else edge_loss
+    metric_fn = psnr if args.task == "cleanup" else f_score
+    metric_name = "PSNR" if args.task == "cleanup" else "F"
+
+    model = TinyUNet(args.base_channels, out_channels=cfg["out_channels"]).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model: TinyUNet(base={args.base_channels}) — {n_params / 1e6:.2f}M params")
+    print(f"model: TinyUNet(base={args.base_channels}, out={cfg['out_channels']}) — {n_params / 1e6:.2f}M params")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))
 
@@ -112,7 +137,7 @@ def main() -> None:
         for x, y in train_dl:
             x, y = x.to(device, non_blocking=pin), y.to(device, non_blocking=pin)
             opt.zero_grad()
-            loss = edge_loss(model(x), y)
+            loss = loss_fn(model(x), y)
             loss.backward()
             opt.step()
             total += loss.item() * x.size(0)
@@ -121,18 +146,18 @@ def main() -> None:
 
         model.eval()
         v_loss = 0.0
-        v_f = 0.0
+        v_m = 0.0
         v_n = 0
         with torch.no_grad():
             for x, y in val_dl:
                 x, y = x.to(device, non_blocking=pin), y.to(device, non_blocking=pin)
                 logits = model(x)
-                v_loss += edge_loss(logits, y).item() * x.size(0)
-                v_f += f_score(torch.sigmoid(logits), y) * x.size(0)
+                v_loss += loss_fn(logits, y).item() * x.size(0)
+                v_m += metric_fn(torch.sigmoid(logits), y) * x.size(0)
                 v_n += x.size(0)
         val_loss = v_loss / v_n if v_n else float("nan")
-        val_f = v_f / v_n if v_n else float("nan")
-        print(f"epoch {epoch + 1}/{args.epochs} | train {train_loss:.4f} | val {val_loss:.4f} | val F {val_f:.3f}")
+        val_m = v_m / v_n if v_n else float("nan")
+        print(f"epoch {epoch + 1}/{args.epochs} | train {train_loss:.4f} | val {val_loss:.4f} | val {metric_name} {val_m:.3f}")
 
         score = val_loss if v_n else train_loss
         if score < best - 1e-5:
@@ -142,23 +167,25 @@ def main() -> None:
             torch.save(
                 {
                     "state_dict": model.state_dict(),
+                    "task": args.task,
+                    "out_channels": cfg["out_channels"],
                     "base_channels": args.base_channels,
                     "size": args.size,
                     "mean": IMAGENET_MEAN.tolist(),
                     "std": IMAGENET_STD.tolist(),
                     "input_name": "input",
-                    "output_name": "edges",
+                    "output_name": cfg["output_name"],
                 },
-                out_dir / "edge-prepass.pt",
+                out_dir / cfg["checkpoint"],
             )
-            save_preview(model, val_ds if v_n else train_ds, out_dir / "preview.png", device)
+            save_preview(model, val_ds if v_n else train_ds, out_dir / f"preview-{args.task}.png", device)
         else:
             stale += 1
             if args.patience > 0 and stale >= args.patience:
                 print(f"early stop: no val improvement for {args.patience} epochs")
                 break
 
-    print(f"best {best:.4f} at epoch {best_epoch} → {out_dir / 'edge-prepass.pt'}")
+    print(f"best {best:.4f} at epoch {best_epoch} → {out_dir / cfg['checkpoint']}")
 
 
 if __name__ == "__main__":

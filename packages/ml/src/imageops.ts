@@ -357,6 +357,34 @@ export function planTiles(
   return out
 }
 
+/**
+ * Assemble three [0,1] channel planes into an RGBA image: `byte = round(v*255)`
+ * (clamped). Alpha is copied from `alpha` (an interleaved RGBA source, alpha
+ * channel read) when given, else opaque. The Uint8ClampedArray store is the
+ * discretization boundary that keeps a cleaned image reproducible downstream.
+ */
+export function rgbPlanesToImage(
+  r: Float32Array,
+  g: Float32Array,
+  b: Float32Array,
+  width: number,
+  height: number,
+  alpha: Uint8ClampedArray | null,
+): RasterImage {
+  const n = width * height
+  if (r.length < n || g.length < n || b.length < n) {
+    throw new RangeError('plane shorter than its dimensions')
+  }
+  const data = new Uint8ClampedArray(n * 4)
+  for (let i = 0, o = 0; i < n; i++, o += 4) {
+    data[o] = r[i] * 255 // Uint8ClampedArray rounds + clamps on store
+    data[o + 1] = g[i] * 255
+    data[o + 2] = b[i] * 255
+    data[o + 3] = alpha ? alpha[o + 3] : 255
+  }
+  return { width, height, data }
+}
+
 /** Triangular window (peak at center, 1 at the edges) for seamless overlap blending. */
 function triWindow(n: number): Float32Array {
   const w = new Float32Array(n)

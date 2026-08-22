@@ -6,7 +6,7 @@ JPEG-crushed input. This is a spec, not shipped code. Its training data is produ
 [`../scripts/dataset`](../scripts/dataset/README.md) (the `edge/` target).
 
 A lower-integration-risk sibling — a **cleanup pre-pass** (image→image restoration) — trains from the same dataset (the
-`clean/` target) and is described at the end.
+`clean/` target) and is specified in [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md).
 
 ## Where it sits
 
@@ -137,11 +137,11 @@ export class EdgeEnhancer {
 
 ## Sibling: cleanup pre-pass (same data, lower integration risk)
 
-A small U-Net that predicts the **clean image** (`clean/` target) instead of edges. It integrates as a straight
-replacement of the preprocessed RGBA before `quantize`/`binarize` — **no changes to the tracer**, and discretization still
-happens downstream at quantize/threshold exactly as today, so determinism handling is trivial. Same `EdgeEnhancer`-shaped
-class (`run` returns `{ image: RasterImage }`), same dataset, same training loop with an L1/L2 + perceptual loss instead of
-BCE. Choose this first if integration risk matters more than the extra boundary robustness the edge head brings.
+A small U-Net that predicts the **clean image** (`clean/` target) instead of edges, integrating as a straight replacement
+of the preprocessed RGBA before `quantize`/`binarize` — **no changes to the tracer**. It is implemented (`CleanupEnhancer`
+
+- a one-shot studio button + `scripts/train --task cleanup`) and specified in [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md).
+  The two compose: clean up first, then trace with the edge hint on.
 
 ## References
 

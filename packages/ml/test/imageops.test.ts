@@ -16,6 +16,7 @@ import {
   packNchw,
   planeToMask,
   planTiles,
+  rgbPlanesToImage,
   SAM_MEAN,
   SAM_STD,
   smoothstep,
@@ -283,6 +284,34 @@ describe('planTiles', () => {
     expect(xs[0]).toBe(0)
     expect(xs[xs.length - 1]).toBe(width - tile)
     for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeLessThanOrEqual(tile)
+  })
+})
+
+describe('rgbPlanesToImage', () => {
+  it('interleaves three planes and scales [0,1] to bytes', () => {
+    const r = Float32Array.from([0, 1])
+    const g = Float32Array.from([0.5, 0.25])
+    const b = Float32Array.from([1, 0])
+    const img = rgbPlanesToImage(r, g, b, 2, 1, null)
+    expect(img.width).toBe(2)
+    expect(img.height).toBe(1)
+    // Uint8ClampedArray rounds on store: 0.5*255=127.5→128, 0.25*255=63.75→64.
+    expect([...img.data]).toEqual([0, 128, 255, 255, 255, 64, 0, 255])
+  })
+
+  it('copies alpha from the source and clamps out-of-range values', () => {
+    const r = Float32Array.from([2]) // >1 clamps to 255
+    const g = Float32Array.from([-1]) // <0 clamps to 0
+    const b = Float32Array.from([0.5])
+    const src = Uint8ClampedArray.from([9, 9, 9, 42])
+    const img = rgbPlanesToImage(r, g, b, 1, 1, src)
+    expect([...img.data]).toEqual([255, 0, 128, 42])
+  })
+
+  it('rejects planes shorter than the dimensions', () => {
+    expect(() =>
+      rgbPlanesToImage(new Float32Array(1), new Float32Array(2), new Float32Array(2), 2, 1, null),
+    ).toThrow(RangeError)
   })
 })
 

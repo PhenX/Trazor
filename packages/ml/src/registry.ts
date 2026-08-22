@@ -1,5 +1,5 @@
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass'
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass' | 'cleanup'
   url: string
   approxBytes: number
   license: string
@@ -39,6 +39,18 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // output and drop the file in place. Until then create() fails soft (the
     // fetch 404s) and the app traces exactly as it does today.
     url: 'models/edge-prepass.onnx',
+    approxBytes: 3_000_000,
+    license: 'MIT',
+  },
+  cleanup: {
+    id: 'cleanup',
+    // The project's own model (see edge-prepass above for the same-origin
+    // rationale): shipped as a static app asset, resolved against the deploy base
+    // at startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/cleanup.onnx`).
+    // No weights exist yet: train per docs/CLEANUP_PREPASS.md (scripts/train
+    // --task cleanup) and drop the file in place. Until then create() fails soft
+    // (the fetch 404s) and the app leaves the image untouched.
+    url: 'models/cleanup.onnx',
     approxBytes: 3_000_000,
     license: 'MIT',
   },

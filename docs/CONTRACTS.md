@@ -256,8 +256,8 @@ export interface MlAvailability {
 export function detectBackend(): Promise<MlAvailability>
 
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass'
-  url: string // absolute https for third-party models; project-relative for edge-prepass (same-origin)
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass' | 'cleanup'
+  url: string // absolute https for third-party models; project-relative for edge-prepass/cleanup (same-origin)
   approxBytes: number
   license: string
 }
@@ -305,6 +305,18 @@ export class EdgeEnhancer {
   }): Promise<EdgeEnhancer>
   // Boundary probability map ([0,1]) at the input resolution; large images are tiled.
   run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ edges: GrayImage }>
+  dispose(): void
+}
+
+export class CleanupEnhancer {
+  // Optional Tier-2 image→image cleanup pre-pass (docs/CLEANUP_PREPASS.md).
+  // preferBackend 'wasm' pins the deterministic backend (reproducible mode).
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<CleanupEnhancer>
+  // Cleaned RGB at the input resolution (source alpha preserved); large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
 ```

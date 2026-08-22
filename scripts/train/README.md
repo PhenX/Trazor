@@ -1,9 +1,16 @@
-# Training the edge pre-pass model
+# Training the on-device pre-pass models
 
-Offline PyTorch training for the on-device edge pre-pass ([`../../docs/EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)).
-It reads the dataset from [`../dataset`](../dataset/README.md), trains a compact U-Net, and exports an ONNX model that
-drops straight into the app at `apps/web/public/models/edge-prepass.onnx` (served same-origin — see
+Offline PyTorch training for the app's on-device pre-pass models. It reads the dataset from
+[`../dataset`](../dataset/README.md), trains a compact U-Net, and exports an ONNX model that drops straight into the app
+under `apps/web/public/models/` (served same-origin — see
 [`../../apps/web/public/models/README.md`](../../apps/web/public/models/README.md)).
+
+Two tasks share this scaffold, selected with `--task` (one generated dataset trains either — it carries both targets):
+
+| `--task`         | predicts               | target  | ships as            | spec                                                  |
+| ---------------- | ---------------------- | ------- | ------------------- | ----------------------------------------------------- |
+| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)       |
+| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md) |
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed;
 you generate them here and drop the `.onnx` in place.
@@ -40,37 +47,41 @@ CUDA and use it when present.)
 ## One command
 
 ```sh
-python scripts/train/pipeline.py --count 20000 --epochs 60 --quantize
+python scripts/train/pipeline.py --count 20000 --epochs 60 --quantize            # edge (default)
+python scripts/train/pipeline.py --task cleanup --count 20000 --epochs 60 --quantize
 ```
 
-This generates the dataset, trains, and writes `apps/web/public/models/edge-prepass.onnx`. Add `--workers 8` to speed up
+This generates the dataset, trains, and writes `apps/web/public/models/<task>.onnx`. Add `--workers 8` to speed up
 data loading (leave it at the default `0` if you hit a multiprocessing error on Windows). Reuse an existing dataset with
-`--data dataset-out --skip-data`.
+`--data dataset-out --skip-data` — the same set trains both tasks, so generate once and run the two commands with
+`--skip-data`.
 
 ## Or step by step
 
 ```sh
-# 1. data  (→ dataset-out/, see ../dataset/README.md)
+# 1. data  (→ dataset-out/, see ../dataset/README.md; carries both edge + clean targets)
 npm run dataset -- --count 20000 --out dataset-out
 
 # 2. train (auto-uses your GPU; --data accepts several roots to mix; best → scripts/train/checkpoints/)
-python scripts/train/train.py --data dataset-out --epochs 80 --batch 32 --workers 8
+python scripts/train/train.py --task edge --data dataset-out --epochs 80 --batch 32 --workers 8
 
-# 3. export (→ apps/web/public/models/edge-prepass.onnx, with a torch/onnx parity check)
-python scripts/train/export_onnx.py --quantize
+# 3. export (→ apps/web/public/models/<task>.onnx, with a torch/onnx parity check)
+python scripts/train/export_onnx.py --task edge --quantize
 ```
+
+For the cleanup model, pass `--task cleanup` to steps 2 and 3 (reusing the same `dataset-out`).
 
 ## What each file does
 
-| File               | Role                                                                           |
-| ------------------ | ------------------------------------------------------------------------------ |
-| `pipeline.py`      | one-shot: data → train → export (cross-platform)                               |
-| `dataset.py`       | reads the generator manifest; input normalization matches EdgeEnhancer exactly |
-| `model.py`         | `TinyUNet` (compact U-Net) + the sigmoid export wrapper                        |
-| `losses.py`        | class-balanced BCE (HED-style) + soft Dice                                     |
-| `train.py`         | training loop (AdamW + cosine), val F-score, early stopping, preview montage   |
-| `export_onnx.py`   | ONNX export + torch/onnxruntime parity check + optional int8 quantization      |
-| `requirements.txt` | Python deps                                                                    |
+| File               | Role                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| `pipeline.py`      | one-shot: data → train → export (cross-platform), `--task` aware                           |
+| `dataset.py`       | reads the generator manifest; input normalization matches Edge/CleanupEnhancer exactly     |
+| `model.py`         | `TinyUNet` (compact U-Net, `out_channels` per task) + the sigmoid export wrapper           |
+| `losses.py`        | edge: class-balanced BCE (HED-style) + soft Dice · cleanup: L1                             |
+| `train.py`         | training loop (AdamW + cosine), val F-score / PSNR, early stopping, preview montage        |
+| `export_onnx.py`   | ONNX export + torch/onnxruntime parity check + optional int8 quantization (`--task` aware) |
+| `requirements.txt` | Python deps                                                                                |
 
 ## Recipes & tuning
 
@@ -116,12 +127,14 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 
 ### Reading the run
 
-- **train / val loss** should fall then plateau; **val F** (an ODS-like edge F-score, a proxy) should rise.
-- **`checkpoints/preview.png`** is written on every improvement — columns are **input · prediction · target** for a few
-  val samples. Smeared predictions → add capacity or data; missed faint boundaries → increase contrast/degradation
+- **train / val loss** should fall then plateau; the val proxy metric rises — **val F** (an ODS-like edge F-score) for
+  `edge`, **val PSNR** (dB) for `cleanup`.
+- **`checkpoints/preview-<task>.png`** is written on every improvement — columns are **input · prediction · target** for
+  a few val samples. Smeared predictions → add capacity or data; missed faint boundaries → increase contrast/degradation
   variety in the data.
-- **The real metric is the app's Oklab ΔE.** Once the ONNX is in place, toggle **Edge pre-pass** on a few noisy B&W
-  inputs and compare ΔE / node count against off — that, not val F, is what ships.
+- **The real metric is the app's Oklab ΔE.** Once the ONNX is in place, use the tool it feeds (**Edge pre-pass** toggle,
+  or **Clean up (ML)** button) on a few noisy inputs and compare ΔE / node count against off — that, not the val proxy,
+  is what ships.
 
 ### Determinism
 
@@ -129,5 +142,5 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 tiles larger images at run time), and the export bakes in the sigmoid — so the browser sees exactly what you trained.
 `export_onnx.py` asserts torch/onnxruntime parity before you ship.
 
-Once `apps/web/public/models/edge-prepass.onnx` exists, `EdgeEnhancer.create()` loads it; until then it fails soft and
-the app traces classically.
+Once `apps/web/public/models/<task>.onnx` exists, the matching class (`EdgeEnhancer` / `CleanupEnhancer`) loads it; until
+then it fails soft and the app traces classically (or leaves the image untouched).

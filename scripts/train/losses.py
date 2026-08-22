@@ -1,9 +1,12 @@
-"""Loss for the edge pre-pass: class-balanced BCE (HED-style) + soft Dice.
+"""Losses for the on-device pre-pass models.
 
-Boundary pixels are sparse (the generator's own samples run ~5-8% edge pixels),
-so plain BCE collapses to predicting "no edge". HED's beta weighting rebalances
-positives against negatives; the Dice term further counters the imbalance. Both
-operate on the soft [0,1] target the generator produces.
+- edge: class-balanced BCE (HED-style) + soft Dice. Boundary pixels are sparse
+  (the generator's own samples run ~5-8% edge pixels), so plain BCE collapses to
+  predicting "no edge". HED's beta weighting rebalances positives against
+  negatives; the Dice term further counters the imbalance. Both operate on the
+  soft [0,1] target the generator produces.
+- cleanup: L1 on the sigmoid'd RGB output vs the clean [0,1] target. L1 (over L2)
+  keeps edges crisp instead of blurring them, which matters for a tracer input.
 """
 
 from __future__ import annotations
@@ -24,3 +27,7 @@ def edge_loss(logits: torch.Tensor, target: torch.Tensor, edge_thresh: float = 0
     inter = (prob * target).sum()
     dice = 1.0 - (2.0 * inter + 1.0) / (prob.sum() + target.sum() + 1.0)
     return bce + dice
+
+
+def cleanup_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    return F.l1_loss(torch.sigmoid(logits), target)

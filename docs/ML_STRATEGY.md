@@ -218,9 +218,9 @@ Pick **one** sub-problem, prove the whole loop small, then scale the data. **A r
 seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md) and the model spec in
 [`EDGE_PREPASS.md`](EDGE_PREPASS.md):
 
-1. Choose **Learned edge pre-pass** (stage 1) or **Cleanup pre-pass** (stage 2) — both are image→image, the easiest to
-   supervise and the clearest win on bad inputs. (Primitive detection, stage 3, is the highest _visible_ quality gain but
-   a bigger build; do it second.)
+1. Choose **Learned edge pre-pass** (stage 1, [`EDGE_PREPASS.md`](EDGE_PREPASS.md)) or **Cleanup pre-pass** (stage 2,
+   [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md)) — both are image→image, the easiest to supervise and the clearest win on
+   bad inputs. (Primitive detection, stage 3, is the highest _visible_ quality gain but a bigger build; do it second.)
 2. Build **~20k synthetic pairs** with the generator (`npm run dataset`): SVG source → resvg render → degradation
    pipeline → aligned `(input, edge/clean)` pairs, split by source family. It ships with a procedural source (no corpus
    needed) and a `--source dir` mode for real SVGs.

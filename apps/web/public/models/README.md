@@ -15,6 +15,14 @@ it here as `edge-prepass.onnx`. `MODEL_REGISTRY['edge-prepass']` already points 
 resolves that against its deploy base. Until the file exists, `EdgeEnhancer.create()` fails soft and the app traces
 classically.
 
+## cleanup.onnx
+
+The learned cleanup pre-pass (see [`../../../../docs/CLEANUP_PREPASS.md`](../../../../docs/CLEANUP_PREPASS.md)) — an
+image→image denoise/deblock that the studio's **Clean up (ML)** button runs before tracing, in any mode. Not committed yet
+— train it with `python scripts/train/pipeline.py --task cleanup` (same dataset as the edge model) and drop the ONNX here
+as `cleanup.onnx`. `MODEL_REGISTRY.cleanup` already points at `models/cleanup.onnx`. Until the file exists,
+`CleanupEnhancer.create()` fails soft and the working image is left untouched.
+
 `*.onnx` here is force-tracked (the repo's root `.gitignore` keeps scratch weights out but allows this directory). The
 binary is a few MB; if the repo accumulates several models, track them with **Git LFS** (`git lfs track
 "apps/web/public/models/*.onnx"`) to keep clones lean.
