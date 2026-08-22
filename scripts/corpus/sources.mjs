@@ -12,8 +12,15 @@
 // CC-BY-SA (share-alike). Attribution lives in the generated corpus/LICENSES.md.
 
 /**
- * @typedef {{ category: string, id: string, pkg: string, version: string,
- *   dir: string, license: string, home: string, optional?: boolean }} Source
+ * @typedef {{
+ *   category: string, id: string, license: string, home: string,
+ *   type?: 'npm' | 'git' | 'wikimedia',   // default 'npm'
+ *   pkg?: string, version?: string,       // npm
+ *   repo?: string, ref?: string,          // git
+ *   query?: string, wikimediaCategory?: string, // wikimedia (one of)
+ *   dir?: string,                         // subdir of npm/git package ('' = whole repo)
+ *   optional?: boolean,                   // excluded from the default run (needs --all)
+ * }} Source
  */
 
 /** @type {Source[]} */
@@ -98,15 +105,53 @@ export const SOURCES = [
     home: 'https://flagicons.lipis.dev',
   },
 
-  // Emoji — colorful, complex paths. Large + CC-BY-SA, so off by default (--all).
+  // Emoji — colorful, complex paths (the color set, not the monochrome one).
+  // Large + CC-BY-SA, so off by default (--all).
   {
     category: 'emoji',
     id: 'openmoji',
     pkg: 'openmoji',
     version: 'latest',
-    dir: '',
+    dir: 'color/svg',
     license: 'CC-BY-SA-4.0',
     home: 'https://openmoji.org',
+    optional: true,
+  },
+
+  // ---- Non-npm sources (general artwork, not icon glyphs) ----
+
+  // General illustrations (git) — CC0 hand-drawn illustration pack: colorful,
+  // multi-shape scenes, closer to real vectorizer inputs than icon glyphs.
+  {
+    category: 'illustrations',
+    id: 'gophers',
+    type: 'git',
+    repo: 'https://github.com/MariaLetta/free-gophers-pack',
+    dir: '',
+    license: 'CC0-1.0',
+    home: 'https://github.com/MariaLetta/free-gophers-pack',
+  },
+
+  // General clip-art & artwork via the Wikimedia Commons API (PD/CC0 only).
+  // Opt-in (--all): large, and the API rate-limits shared IPs (e.g. CI) — run it
+  // from your own machine. openclipart's CC0 library is mirrored on Commons under
+  // Category:Openclipart, so we pull it through the same reliable API.
+  {
+    category: 'clipart',
+    id: 'openclipart',
+    type: 'wikimedia',
+    wikimediaCategory: 'Openclipart',
+    license: 'CC0-1.0',
+    home: 'https://openclipart.org',
+    optional: true,
+  },
+  {
+    category: 'general',
+    id: 'wikimedia',
+    type: 'wikimedia',
+    query: 'illustration',
+    license: 'PD/CC0',
+    home: 'https://commons.wikimedia.org',
     optional: true,
   },
 ]
