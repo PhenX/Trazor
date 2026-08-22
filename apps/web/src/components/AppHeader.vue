@@ -1,0 +1,126 @@
+<script setup lang="ts">
+import { useAppStore } from '../store/appStore'
+
+const store = useAppStore()
+</script>
+
+<template>
+  <header class="header">
+    <div class="brand">
+      <svg class="glyph" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+        <path
+          d="M7 24C12 8 20 8 25 24"
+          fill="none"
+          stroke="var(--accent)"
+          stroke-width="2.5"
+          stroke-linecap="round"
+        />
+        <path d="M7 24 12 13M25 24 20 13" stroke="var(--text-3)" stroke-width="1.4" />
+        <circle cx="12" cy="13" r="1.8" fill="var(--text-2)" />
+        <circle cx="20" cy="13" r="1.8" fill="var(--text-2)" />
+        <rect x="4.8" y="21.8" width="4.4" height="4.4" rx="1" fill="var(--text-1)" />
+        <rect x="22.8" y="21.8" width="4.4" height="4.4" rx="1" fill="var(--text-1)" />
+      </svg>
+      <span class="wordmark">Vectorizer</span>
+      <span class="tagline">raster → SVG, entirely in your browser</span>
+    </div>
+
+    <div class="actions">
+      <button
+        class="btn btn-ghost btn-icon"
+        :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        :aria-label="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        @click="store.toggleTheme()"
+      >
+        <svg
+          v-if="store.theme === 'dark'"
+          viewBox="0 0 16 16"
+          width="15"
+          height="15"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path
+            d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M12.8 3.2l-1.4 1.4M4.6 11.4l-1.4 1.4"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linecap="round"
+          />
+        </svg>
+        <svg v-else viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <path
+            d="M13.5 9.7A5.6 5.6 0 0 1 6.3 2.5a5.6 5.6 0 1 0 7.2 7.2Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+      <a
+        class="btn btn-ghost btn-icon"
+        href="https://github.com/PhenX/Vectorizer"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="View source on GitHub"
+        aria-label="View source on GitHub"
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+          />
+        </svg>
+      </a>
+    </div>
+  </header>
+</template>
+
+<style scoped>
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 46px;
+  padding: 0 12px 0 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.glyph {
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+.wordmark {
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.tagline {
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .tagline {
+    display: none;
+  }
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+</style>

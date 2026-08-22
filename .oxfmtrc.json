@@ -1,0 +1,12 @@
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/generated/**", "package-lock.json"]
+}

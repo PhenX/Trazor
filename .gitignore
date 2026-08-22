@@ -141,3 +141,12 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Build outputs
+dist/
+.vite/
+*.tsbuildinfo
+
+
+# Local E2E artifacts
+e2e-artifacts/

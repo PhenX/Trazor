@@ -1,0 +1,14 @@
+{
+  "name": "@vectorizer/svg",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SVG document model, compact serialization and output analysis",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vectorizer/core": "*"
+  }
+}

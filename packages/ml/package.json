@@ -1,0 +1,15 @@
+{
+  "name": "@vectorizer/ml",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local in-browser ML tools: background removal and click-to-segment (ONNX Runtime Web)",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@vectorizer/core": "*",
+    "onnxruntime-web": "^1.27.0"
+  }
+}
