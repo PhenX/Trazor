@@ -35,6 +35,7 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  signedThresholdField,
   toGrayscale,
   zhangSuenThin,
 } from '@vectorizer/raster'
@@ -405,6 +406,10 @@ async function inkPipeline(
   run.stage('palette')
   const gray = toGrayscale(image)
   let mask: BinaryMask
+  // Signed boundary field for sub-pixel trace refinement. Only the global
+  // threshold has a single crossing level to build it from; adaptive and pixel
+  // mode trace on the exact lattice.
+  let coverage: GrayImage | undefined
   if (settings.thresholdMode === 'adaptive') {
     mask = adaptiveBinarize(
       gray,
@@ -417,6 +422,7 @@ async function inkPipeline(
     const t =
       settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
     mask = binarize(gray, t, settings.invert, opaque)
+    if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
   }
   await run.tick()
 
@@ -437,6 +443,7 @@ async function inkPipeline(
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
       cornerThreshold: settings.cornerThreshold,
+      coverage,
       turnPolicy: settings.turnPolicy,
       // With a hint, the guided despeckle is the speck filter (it already dropped
       // everything small that the hint did not protect), so the tracer must not

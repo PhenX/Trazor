@@ -25,6 +25,7 @@ The output is a standalone page (open it directly, or embed its SVGs in a doc).
 
 ## Index
 
-| Demo                                            | Shows                                                                                    |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------- |
-| [`adaptive-corners`](adaptive-corners.ts)       | Closed-ring corner handling with vs. without the angle/scale `cornerThreshold` (spline). |
+| Demo                                        | Shows                                                                                    |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`adaptive-corners`](adaptive-corners.ts)   | Closed-ring corner handling with vs. without the angle/scale `cornerThreshold` (spline). |
+| [`subpixel-boundary`](subpixel-boundary.ts) | Anti-aliased edges traced with vs. without the sub-pixel `coverage` field.               |

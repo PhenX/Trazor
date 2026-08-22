@@ -1,4 +1,4 @@
-import type { BinaryMask, CurveMode, PathCommand, TurnPolicy } from '@vectorizer/core'
+import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@vectorizer/core'
 import type { CrackPath } from './crack'
 import { decomposeMask, ringBounds, ringContains } from './crack'
 import { adjustVertices } from './potrace/adjust'
@@ -7,6 +7,7 @@ import { optimalPolyline } from './potrace/polyfit'
 import { smoothClosed } from './potrace/smooth'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
+import { refineRingToField } from './refine'
 
 export interface TraceCurveOptions {
   curveMode: CurveMode
@@ -20,6 +21,13 @@ export interface TraceCurveOptions {
    * (byte-identical to no threshold); supply it for angle/scale-aware corners.
    */
   cornerThreshold?: number
+  /**
+   * Signed boundary field (positive inside a region, zero at the true edge) at
+   * mask resolution. When present, boundary vertices are refined onto its zero
+   * level for sub-pixel, de-staircased edges. Omit for exact lattice geometry
+   * (byte-identical). Ignored in `pixel` curveMode.
+   */
+  coverage?: GrayImage
 }
 
 export interface TraceMaskOptions extends TraceCurveOptions {
@@ -105,8 +113,13 @@ export function closedPathToCommands(ring: FlatPoints, opts: TraceCurveOptions):
   const vertexIdx = optimalPolyline(ext)
   if (vertexIdx.length < 4) return pixelCommands(ring)
 
-  const sums = computeSums(ext)
-  const adjusted = adjustVertices(ext, sums, vertexIdx, true)
+  // The optimal polygon picks vertices on the integer lattice (its straightness
+  // analysis needs unit steps); sub-pixel refinement then feeds only the moment
+  // sums and vertex adjustment, so each segment's best-fit line tracks the true
+  // edge rather than the staircase.
+  const geom = opts.coverage ? refineRingToField(ext, opts.coverage) : ext
+  const sums = computeSums(geom)
+  const adjusted = adjustVertices(geom, sums, vertexIdx, true)
 
   if (opts.curveMode === 'polygon') {
     const out: PathCommand[] = [{ type: 'M', x: adjusted[0], y: adjusted[1] }]

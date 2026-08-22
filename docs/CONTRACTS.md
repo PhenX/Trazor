@@ -156,6 +156,11 @@ export function adaptiveBinarize(
   invert: boolean,
   mask?: BinaryMask | null,
 ): BinaryMask // integral-image local mean, clamped windows at edges
+export function signedThresholdField(
+  gray: GrayImage,
+  threshold01: number,
+  invert: boolean,
+): GrayImage // centered coverage in [-0.5, 0.5]: +inside/−outside, 0 at the crossing; feeds trace `coverage`
 
 // regions.ts
 // 4-connected components of equal label; components smaller than minArea are

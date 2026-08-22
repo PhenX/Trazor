@@ -59,6 +59,32 @@ export function otsuThreshold(gray: GrayImage, mask?: BinaryMask | null): number
 }
 
 /**
+ * Signed boundary field for sub-pixel trace refinement, in [-0.5, 0.5]: positive
+ * where `binarize` marks ink, negative outside, zero at the exact `threshold01`
+ * crossing (sign follows `invert`). Each side is normalized by its own distance
+ * to the extreme (dark→−`t`, light→`1−t`), so the fully-ink and fully-background
+ * levels map to symmetric ±0.5. That symmetry is what keeps a hard edge's zero
+ * contour exactly on the pixel lattice (no spurious shift when `t ≠ 0.5`), while
+ * an anti-aliased ramp still crosses zero at its true sub-pixel position.
+ */
+export function signedThresholdField(
+  gray: GrayImage,
+  threshold01: number,
+  invert: boolean,
+): GrayImage {
+  const { width, height, data } = gray
+  const out = new Float32Array(data.length)
+  const s = invert ? -1 : 1
+  const inScale = 0.5 / Math.max(threshold01, 1e-6)
+  const outScale = 0.5 / Math.max(1 - threshold01, 1e-6)
+  for (let i = 0; i < data.length; i++) {
+    const d = threshold01 - data[i]
+    out[i] = s * d * (d > 0 ? inScale : outScale)
+  }
+  return { width, height, data: out }
+}
+
+/**
  * Ink = 1 where `gray < threshold01` (dark on light), XOR `invert`.
  * Out-of-mask pixels are 0 regardless of `invert`.
  */
