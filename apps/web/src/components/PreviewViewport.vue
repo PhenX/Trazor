@@ -481,6 +481,19 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut })
   flex: 0 0 auto;
 }
 
+/* Mobile: the viewport fills the pinned result region (.main sets its height).
+   Let the toolbar wrap so its controls never overflow a narrow screen. */
+@media (max-width: 768px) {
+  .toolbar {
+    height: auto;
+    min-height: 38px;
+    flex-wrap: wrap;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    row-gap: 5px;
+  }
+}
+
 .tabs {
   display: flex;
   gap: 2px;
