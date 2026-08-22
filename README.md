@@ -94,6 +94,8 @@ npm-workspaces monorepo, strict TypeScript, zero runtime dependencies in the
 algorithm packages. The pipeline runs in a Web Worker with cooperative
 cancellation (latest settings win; stale runs abort between stages).
 
+![How Vectorizer works](docs/how-it-works.svg)
+
 | Package              | Role                                                                                                                                                                                    |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@vectorizer/core`   | Shared types, settings schema + profiles, Oklab color math, geometry, deterministic PRNG                                                                                                |
