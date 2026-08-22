@@ -168,12 +168,16 @@ export interface SvgDocument {
 export interface SerializeOptions {
   precision: number // decimals 0..4
   pretty?: boolean // newline per path when true; default compact
+  optimizePaths?: boolean // relative/H/V-compacted `d` (never larger, same geometry); default false
 }
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
+// Shortest `d` for the same geometry as buildPathData: per-command absolute vs
+// relative vs H/V selection, quantized on the output grid (drift-free deltas).
+export function optimizePathData(commands: readonly PathCommand[], precision: number): string
 export interface SvgAnalysis {
   pathCount: number
-  nodeCount: number // command letters excluding Z/z
+  nodeCount: number // draw-command letters [MLHVQCTSAmlhvqctsa] excluding Z/z
   colorCount: number
   palette: string[] // distinct fills+strokes, hex-normalized, no 'none'
   byteLength: number // UTF-8

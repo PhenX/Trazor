@@ -1,5 +1,6 @@
 export { analyzeSvg } from './analyze'
 export type { SvgAnalysis } from './analyze'
 export { buildPathData, formatNumber } from './pathdata'
+export { optimizePathData } from './optimize'
 export { serializeSvg } from './serialize'
 export type { SerializeOptions, SvgDocument, SvgShape } from './serialize'

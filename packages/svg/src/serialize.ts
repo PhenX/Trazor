@@ -6,6 +6,7 @@
 
 import type { PathCommand } from '@vectorizer/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
+import { optimizePathData } from './optimize'
 
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
@@ -37,6 +38,11 @@ export interface SerializeOptions {
   precision: number
   /** Newline per path when true; default compact (no whitespace between tags). */
   pretty?: boolean
+  /**
+   * Compact `d` values with relative/`H`/`V` command selection (never larger,
+   * same geometry). Default false ⇒ absolute `M`/`L`/`Q`/`C` only.
+   */
+  optimizePaths?: boolean
 }
 
 /** Stable marker emitted right after the opening tag. */
@@ -66,11 +72,14 @@ function assertAttrSafe(value: string, what: string): string {
   return value
 }
 
-function serializeShape(shape: SvgShape, precision: number): string | null {
+function serializeShape(shape: SvgShape, precision: number, optimize: boolean): string | null {
   if (shape.commands.length === 0) return null
   if (shape.fill === undefined && shape.stroke === undefined) return null
 
-  const d = assertAttrSafe(buildPathData(shape.commands, precision), 'path data')
+  const raw = optimize
+    ? optimizePathData(shape.commands, precision)
+    : buildPathData(shape.commands, precision)
+  const d = assertAttrSafe(raw, 'path data')
   if (d === '') return null
 
   let attrs = `d="${d}"`
@@ -94,6 +103,7 @@ function serializeShape(shape: SvgShape, precision: number): string | null {
  */
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   const precision = clampPrecision(opts.precision)
+  const optimize = opts.optimizePaths === true
   const w = formatNumber(doc.width, precision)
   const h = formatNumber(doc.height, precision)
 
@@ -122,7 +132,7 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
   for (const shape of doc.shapes) {
-    const path = serializeShape(shape, precision)
+    const path = serializeShape(shape, precision, optimize)
     if (path !== null) children.push(path)
   }
 

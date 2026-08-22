@@ -79,8 +79,8 @@ describe('analyzeSvg on foreign SVG text', () => {
       '</svg>'
     const a = analyzeSvg(svg)
     expect(a.pathCount).toBe(2)
-    // d letters in [MLQCTSAmlqctsa]: M from the first path, m and l from the second.
-    expect(a.nodeCount).toBe(3)
+    // Draw letters (Z excluded): M h v H from the first path, m l from the second.
+    expect(a.nodeCount).toBe(6)
     // #ABC expands and merges with #AABBCC; RED lowercases; none is excluded.
     expect(a.palette).toEqual(['#aabbcc', 'red'])
     expect(a.colorCount).toBe(2)
