@@ -3,6 +3,8 @@ import {
   DEFAULT_SETTINGS,
   getProfile,
   normalizeSettings,
+  parseSettingsImport,
+  serializeSettings,
   TARGET_PROFILES,
 } from '@vectorizer/core'
 import type {
@@ -234,6 +236,30 @@ export const useAppStore = defineStore('app', () => {
     activeProfileId.value = null
     profileModified.value = false
     assistRationale.value = null
+  }
+
+  /** Serialize the current settings (+ profile context) as a versioned JSON document. */
+  function exportSettings(): string {
+    return serializeSettings(settings.value, activeProfileId.value, profileModified.value)
+  }
+
+  /**
+   * Apply settings from an exported JSON document (or a bare settings object).
+   * Returns whether the import succeeded; failures surface as a toast.
+   */
+  function importSettings(text: string): boolean {
+    try {
+      const imported = parseSettingsImport(text)
+      settings.value = imported.settings
+      activeProfileId.value = imported.activeProfileId
+      profileModified.value = imported.profileModified
+      assistRationale.value = null
+      notify('Settings imported', 'success')
+      return true
+    } catch (e) {
+      notify(`Import failed: ${errorMessage(e)}`, 'error')
+      return false
+    }
   }
 
   async function autoRecommend(): Promise<void> {
@@ -558,6 +584,8 @@ export const useAppStore = defineStore('app', () => {
     updateSettings,
     resetField,
     resetSettings,
+    exportSettings,
+    importSettings,
     autoRecommend,
     dismissRationale,
     setFixedPalette,

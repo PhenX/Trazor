@@ -1,14 +1,19 @@
-/** Trigger a client-side download of an SVG document. */
-export function downloadSvg(svg: string, filename: string): void {
-  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
+/** Trigger a client-side download of a text document. */
+export function downloadText(text: string, filename: string, mime = 'text/plain'): void {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = filename.endsWith('.svg') ? filename : `${filename}.svg`
+  a.download = filename
   document.body.append(a)
   a.click()
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 5000)
+}
+
+/** Trigger a client-side download of an SVG document. */
+export function downloadSvg(svg: string, filename: string): void {
+  downloadText(svg, filename.endsWith('.svg') ? filename : `${filename}.svg`, 'image/svg+xml')
 }
 
 /** Copy text to the clipboard; falls back to a hidden textarea. Resolves to success. */
