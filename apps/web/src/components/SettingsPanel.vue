@@ -553,6 +553,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           hint="Decimal places for SVG coordinates"
           @update:model-value="set('precision', $event)"
         />
+        <SwitchRow
+          label="Minify paths"
+          :model-value="s.optimizeSvg"
+          :default-value="D.optimizeSvg"
+          hint="Compact path data with relative and H/V commands — identical shapes, smaller file"
+          @update:model-value="set('optimizeSvg', $event)"
+        />
         <ControlRow label="Units" hint="px for screens, mm for physical machines">
           <div class="seg unit-seg">
             <button :class="{ 'is-active': s.unit === 'px' }" @click="set('unit', 'px')">px</button>

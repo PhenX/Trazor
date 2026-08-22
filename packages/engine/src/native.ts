@@ -153,7 +153,7 @@ export async function vectorize(
       title: settings.svgTitle || undefined,
       shapes,
     },
-    { precision: settings.precision },
+    { precision: settings.precision, optimizePaths: settings.optimizeSvg },
   )
   run.progress(0.6)
   const analysis = analyzeSvg(svg)

@@ -114,6 +114,8 @@ export interface VectorizeSettings {
   fillColor: string
   /** Decimal places for SVG coordinates. */
   precision: number
+  /** Compact path data with relative + H/V commands (identical geometry, smaller file). */
+  optimizeSvg: boolean
   unit: 'px' | 'mm'
   /** Physical width when `unit` is `mm`; 0 derives it from 96 dpi. */
   widthMm: number
@@ -162,6 +164,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
 
   fillColor: '#000000',
   precision: 2,
+  optimizeSvg: true,
   unit: 'px',
   widthMm: 0,
   svgTitle: '',
