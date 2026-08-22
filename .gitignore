@@ -151,5 +151,8 @@ dist/
 # Local E2E artifacts
 e2e-artifacts/
 
+# Generated ML training datasets (scripts/dataset)
+dataset-out/
+
 # Design plans and roadmaps are tracked, never ignored.
 !plans/

@@ -34,11 +34,11 @@ _some_ of them; classical work covers the rest.
 
 ## Three ML families, and which one fits this project
 
-| Family | Representative | Data needed | Runs on-device (WASM/WebGPU)? | Verdict here |
-| --- | --- | --- | --- | --- |
-| End-to-end **SVG-code generation** | StarVector (1.4 B params, trained on ~2 M SVGs) | Huge | No — far too large | ✗ Also hallucinates geometry; wrong tool for faithful tracing |
-| **Optimization** with a differentiable rasterizer | LIVE / DiffVG | **None** | No — minutes to hours per image | ✗ For live use. ✓ **Offline** as a data/oracle tool (below) |
-| **Surgical** small models on sub-problems | U²-Netp, SlimSAM (already shipped) | Small–moderate | **Yes** — this is the proven path here | ✓ **Our lane** |
+| Family                                            | Representative                                  | Data needed    | Runs on-device (WASM/WebGPU)?          | Verdict here                                                  |
+| ------------------------------------------------- | ----------------------------------------------- | -------------- | -------------------------------------- | ------------------------------------------------------------- |
+| End-to-end **SVG-code generation**                | StarVector (1.4 B params, trained on ~2 M SVGs) | Huge           | No — far too large                     | ✗ Also hallucinates geometry; wrong tool for faithful tracing |
+| **Optimization** with a differentiable rasterizer | LIVE / DiffVG                                   | **None**       | No — minutes to hours per image        | ✗ For live use. ✓ **Offline** as a data/oracle tool (below)   |
+| **Surgical** small models on sub-problems         | U²-Netp, SlimSAM (already shipped)              | Small–moderate | **Yes** — this is the proven path here | ✓ **Our lane**                                                |
 
 Sources for all three are in [References](#references).
 
@@ -137,12 +137,12 @@ on already-good paths is bounded. A pass that nudges Bézier control points by G
 
 There is no single number — it depends entirely on which model above you build. Grounded ranges:
 
-| What you're training | Realistic size | Notes |
-| --- | --- | --- |
-| Prototype, to prove a sub-model _learns_ | **5k–20k pairs** | Enough to see signal and de-risk the approach |
-| Production small ONNX conditioning model (edge / cleanup / primitive) | **50k–200k pairs** | Heavy augmentation multiplies effective size |
-| From-scratch icon generator (DeepSVG-style) | **~100k SVGs** collected, filtered | Only yields a simple-icon generator; not recommended |
-| Foundation model (StarVector-style) | **500k–2M+** | Not on-device viable; out of scope |
+| What you're training                                                  | Realistic size                     | Notes                                                |
+| --------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------- |
+| Prototype, to prove a sub-model _learns_                              | **5k–20k pairs**                   | Enough to see signal and de-risk the approach        |
+| Production small ONNX conditioning model (edge / cleanup / primitive) | **50k–200k pairs**                 | Heavy augmentation multiplies effective size         |
+| From-scratch icon generator (DeepSVG-style)                           | **~100k SVGs** collected, filtered | Only yields a simple-icon generator; not recommended |
+| Foundation model (StarVector-style)                                   | **500k–2M+**                       | Not on-device viable; out of scope                   |
 
 The honest headline: for the surgical path **you do not need millions**. Diversity and _input realism_ dominate raw count
 — 50k well-degraded, diverse pairs beat 1M pristine ones that look nothing like real uploads.
@@ -214,14 +214,19 @@ Then add corruptions specific to _real vectorizer inputs_, which generic super-r
 
 ## A concrete first milestone
 
-Pick **one** sub-problem, prove the whole loop small, then scale the data:
+Pick **one** sub-problem, prove the whole loop small, then scale the data. **A runnable scaffold already exists** — the
+seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md) and the model spec in
+[`EDGE_PREPASS.md`](EDGE_PREPASS.md):
 
 1. Choose **Learned edge pre-pass** (stage 1) or **Cleanup pre-pass** (stage 2) — both are image→image, the easiest to
    supervise and the clearest win on bad inputs. (Primitive detection, stage 3, is the highest _visible_ quality gain but
    a bigger build; do it second.)
-2. Build **~20k synthetic pairs**: corpus → canonicalize → resvg render → degradation pipeline → aligned pairs.
-3. Train a small model, export to **ONNX**, and wire it as an optional Tier-2 conditioning stage in `@vectorizer/ml`,
-   discretizing its output before the tracer (per the [two-tier contract](#determinism-and-webgpu-a-two-tier-contract)).
+2. Build **~20k synthetic pairs** with the generator (`npm run dataset`): SVG source → resvg render → degradation
+   pipeline → aligned `(input, edge/clean)` pairs, split by source family. It ships with a procedural source (no corpus
+   needed) and a `--source dir` mode for real SVGs.
+3. Train the small model per [`EDGE_PREPASS.md`](EDGE_PREPASS.md), export to **ONNX**, and wire it as an optional Tier-2
+   conditioning stage in `@vectorizer/ml` (an `EdgeEnhancer` mirroring `BackgroundRemover`), discretizing its output
+   before the tracer (per the [two-tier contract](#determinism-and-webgpu-a-two-tier-contract)).
 4. Measure against the existing **Oklab ΔE fidelity score** the app already computes — held out by source family — and
    only then scale to 50k–200k.
 
