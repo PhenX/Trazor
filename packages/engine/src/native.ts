@@ -163,7 +163,16 @@ export async function vectorize(
   let palette: string[] = []
 
   if (settings.mode === 'color' || settings.mode === 'grayscale') {
-    await colorPipeline(run, image, opaque, settings, shapes, warnings, (p) => (palette = p))
+    await colorPipeline(
+      run,
+      image,
+      opaque,
+      settings,
+      shapes,
+      warnings,
+      (p) => (palette = p),
+      ctx?.edgeHint,
+    )
   } else {
     await inkPipeline(
       run,
@@ -243,6 +252,7 @@ async function colorPipeline(
   shapes: SvgShape[],
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
+  edgeHint: GrayImage | undefined,
 ): Promise<void> {
   run.stage('palette')
   const q = quantize(image, {
@@ -264,6 +274,9 @@ async function colorPipeline(
   await run.tick()
 
   run.stage('segment')
+  // Edge hint (if any) protects small regions on a predicted boundary from the
+  // size-based merge; with no hint this is byte-identical to the plain merge.
+  const protect = edgeProtectMask(edgeHint, image.width, image.height)
   if (settings.preserveDetails) {
     const oklab = new Float32Array(q.paletteHex.length * 3)
     for (let i = 0; i < q.paletteHex.length; i++) {
@@ -276,7 +289,13 @@ async function colorPipeline(
       oklab[i * 3 + 1] = a
       oklab[i * 3 + 2] = b
     }
-    mergeSmallRegions(q.labels, settings.minRegionArea, { oklab, keepContrast: DETAIL_CONTRAST })
+    mergeSmallRegions(q.labels, settings.minRegionArea, {
+      oklab,
+      keepContrast: DETAIL_CONTRAST,
+      protect: protect ?? undefined,
+    })
+  } else if (protect) {
+    mergeSmallRegions(q.labels, settings.minRegionArea, { protect })
   } else {
     mergeSmallRegions(q.labels, settings.minRegionArea)
   }
@@ -303,9 +322,9 @@ async function colorPipeline(
     curveOptimize: settings.curveOptimize,
     optTolerance: settings.optTolerance,
   }
-  // With detail preservation, the contrast-aware merge above is the sole speck
+  // With detail preservation or an edge hint, the merge above is the sole speck
   // filter — the tracer must not drop the small regions it deliberately kept.
-  const traceMinArea = settings.preserveDetails ? 1 : Math.max(1, settings.minRegionArea)
+  const traceMinArea = settings.preserveDetails || protect ? 1 : Math.max(1, settings.minRegionArea)
   const usedPalette: string[] = []
 
   if (settings.layering === 'cutout') {

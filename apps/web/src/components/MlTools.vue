@@ -155,7 +155,7 @@ onMounted(() => {
           :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
           :title="
             mlReady
-              ? 'ML edge pre-pass — sharpens B&W / centerline tracing on noisy input'
+              ? 'ML edge pre-pass — protects thin features from despeckling on noisy input (all modes)'
               : backendBadge.title
           "
           :aria-pressed="store.edgePrepass"
@@ -203,7 +203,7 @@ onMounted(() => {
         </div>
         <p v-if="edgeBusy" class="phase">{{ store.mlState.edge.phase }}</p>
         <p v-else-if="store.edgePrepass" class="phase instructions">
-          Applies to B&amp;W &amp; centerline modes · needs the edge-prepass model.
+          Applies to every mode · needs the edge-prepass model.
         </p>
       </div>
 

@@ -64,6 +64,33 @@ describe('mergeSmallRegions', () => {
     expect([...labels.data]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
   })
 
+  it('keeps a small region marked by the protect mask', () => {
+    const rows = [
+      [0, 0, 0, 1],
+      [0, 2, 2, 1],
+      [0, 0, 0, 1],
+    ]
+    const labels = labelMap(4, 3, rows, 3)
+    const protect = { width: 4, height: 3, data: new Uint8Array(12) }
+    protect.data[1 * 4 + 1] = 1 // one pixel of region 2 sits on a predicted edge
+    mergeSmallRegions(labels, 3, { protect })
+    expect(labels.data[1 * 4 + 1]).toBe(2)
+    expect(labels.data[1 * 4 + 2]).toBe(2)
+  })
+
+  it('still merges a small region the protect mask does not cover', () => {
+    const rows = [
+      [0, 0, 0, 1],
+      [0, 2, 2, 1],
+      [0, 0, 0, 1],
+    ]
+    const labels = labelMap(4, 3, rows, 3)
+    const protect = { width: 4, height: 3, data: new Uint8Array(12) }
+    protect.data[0] = 1 // marks a background pixel, not region 2
+    mergeSmallRegions(labels, 3, { protect })
+    expect([...labels.data]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
+  })
+
   it('keeps -1 pixels and regions surrounded only by -1', () => {
     const rows = [
       [-1, -1, -1, -1],

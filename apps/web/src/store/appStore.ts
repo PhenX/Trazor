@@ -417,14 +417,14 @@ export const useAppStore = defineStore('app', () => {
   }
 
   /**
-   * Produce the edge hint for the current image when the pre-pass is on and the
-   * mode consumes it (bw/centerline). Cached per image; fail-soft — on any model
-   * error it toasts, turns the toggle off, and returns null so tracing proceeds
+   * Produce the edge hint for the current image when the pre-pass is on. Every
+   * mode consumes it — bw/centerline guard the despeckle, color/grayscale guard
+   * the small-region merge. Cached per image; fail-soft — on any model error it
+   * toasts, turns the toggle off, and returns null so tracing proceeds
    * classically. The model is served same-origin from the app's static assets.
    */
   async function ensureEdgeHint(image: RasterImage): Promise<GrayImage | null> {
     if (!edgePrepass.value) return null
-    if (settings.value.mode !== 'bw' && settings.value.mode !== 'centerline') return null
     if (edgeHintImage === image && edgeHint) return edgeHint
     mlState.edge = { busy: true, progress: null, phase: 'Preparing' }
     const onProgress = (p: MlProgress): void => {

@@ -108,16 +108,18 @@ export class EdgeEnhancer {
 
 - **Backend & cache:** reuse `detectBackend()` (WebGPU → WASM), `ModelStore` (Cache Storage), and the `MlProgress`
   reporting already in the package. Same lazy `import('onnxruntime-web')` inside the factory so the main bundle stays lean.
-- **Consumers of the boundary map** (`@vectorizer/engine`):
-  - **bw / centerline (implemented):** the hint crosses the worker boundary as an optional Float32 plane
-    (`WorkerInMessage.edgeHint` → `EngineContext.edgeHint`), is resized to the working resolution and thresholded (the
-    discretization boundary), and drives `despeckleMaskGuided` so thin real features survive the size filter. In bw mode
-    the tracer then keeps them — `minArea` drops to 1 when a hint is present, mirroring `preserveDetails` in color.
-  - **color / stacked (future):** pass the boundary map as an extra cost into `mergeSmallRegions` so region boundaries
-    prefer predicted edges.
-- **App wiring (implemented):** the studio's ML tools panel has an **Edge pre-pass (ML)** toggle. When on (in bw /
-  centerline modes), the store runs `EdgeEnhancer` on the working image, caches the result per image, and passes it as the
-  fourth argument to `VectorizerClient.vectorize`. It is fail-soft: with no weights at
+- **Consumers of the boundary map** (`@vectorizer/engine`): the hint crosses the worker boundary as an optional Float32
+  plane (`WorkerInMessage.edgeHint` → `EngineContext.edgeHint`), is resized to the working resolution and thresholded once
+  (the shared `edgeProtectMask` — the discretization boundary), then feeds every mode:
+  - **bw / centerline (implemented):** drives `despeckleMaskGuided` so thin real features survive the size filter. In bw
+    mode the tracer then keeps them — `minArea` drops to 1 when a hint is present, mirroring `preserveDetails` in color.
+  - **color / stacked (implemented):** the same protect mask is passed to `mergeSmallRegions` (`MergeOptions.protect`), so a
+    small region with any pixel on a predicted boundary is kept rather than absorbed by the size-based merge; `traceMinArea`
+    then drops to 1 so the tracer keeps it too. It composes with `preserveDetails` (contrast keep) — either reason keeps a
+    region. With no hint the merge is byte-identical to today's.
+- **App wiring (implemented):** the studio's ML tools panel has an **Edge pre-pass (ML)** toggle. When on (in every mode),
+  the store runs `EdgeEnhancer` on the working image, caches the result per image, and passes it as the fourth argument to
+  `VectorizerClient.vectorize`. It is fail-soft: with no weights at
   `apps/web/public/models/edge-prepass.onnx` it toasts and switches itself back off, and tracing proceeds classically.
 - **Determinism:** the boundary map is **discretized** (threshold / snap) before it reaches `crack.ts`, so the trace stays
   byte-identical across devices except at knife-edge pixels; a **reproducible mode** pins `EdgeEnhancer` to the WASM

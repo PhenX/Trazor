@@ -246,6 +246,36 @@ describe('native engine pipeline', () => {
     const again = await vectorize(speckImage(), s, { edgeHint: hint })
     expect(again.svg).toBe(withHint.svg)
   })
+
+  it('an edge hint protects a small color region the merge would drop', async () => {
+    const dotImage = (): RasterImage => {
+      const img = createRaster(40, 40)
+      fillRaster(img, 255, 255, 255)
+      for (let y = 5; y < 35; y++) {
+        for (let x = 5; x < 35; x++) setPixel(img, x, y, 180, 180, 180)
+      }
+      // A 2×2 black dot (4 px) — below minRegionArea, maximal contrast.
+      for (let y = 19; y < 21; y++) {
+        for (let x = 19; x < 21; x++) setPixel(img, x, y, 0, 0, 0)
+      }
+      return img
+    }
+    const s = settings({ mode: 'color', paletteSize: 4, minRegionArea: 6 })
+    const none = await vectorize(dotImage(), s)
+    const hint = { width: 40, height: 40, data: new Float32Array(40 * 40) }
+    for (let y = 19; y < 21; y++) {
+      for (let x = 19; x < 21; x++) hint.data[y * 40 + x] = 1 // mark the dot as a boundary
+    }
+    const withHint = await vectorize(dotImage(), s, { edgeHint: hint })
+    expect(withHint.stats.pathCount).toBeGreaterThan(none.stats.pathCount)
+    const veryDark = (p: string[]): boolean =>
+      p.some((h) => Number.parseInt(h.slice(1, 7), 16) < 0x20_20_20)
+    expect(veryDark(withHint.palette)).toBe(true)
+    expect(veryDark(none.palette)).toBe(false)
+    // Same hint ⇒ identical output.
+    const again = await vectorize(dotImage(), s, { edgeHint: hint })
+    expect(again.svg).toBe(withHint.svg)
+  })
 })
 
 describe('worker protocol', () => {

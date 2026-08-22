@@ -6,14 +6,19 @@ import { createMask, deltaEOkSq } from '@vectorizer/core'
 import type { BinaryMask, LabelMap } from '@vectorizer/core'
 
 export interface MergeOptions {
-  /** Palette colors in Oklab, length `labels.count * 3`, indexed by label. */
-  oklab: Float32Array
+  /** Palette colors in Oklab, length `labels.count * 3`, indexed by label. Enables the contrast keep. */
+  oklab?: Float32Array
   /**
    * Keep a small region instead of absorbing it when its Oklab ΔE to the
    * would-be target label is at least this (a high-contrast detail, e.g. a
-   * logo dot). Low-contrast specks still merge away.
+   * logo dot). Low-contrast specks still merge away. Requires `oklab`.
    */
-  keepContrast: number
+  keepContrast?: number
+  /**
+   * 1 = keep this pixel's small region even below `minArea` — a discretized edge
+   * hint (from EdgeEnhancer), so features on a predicted boundary survive.
+   */
+  protect?: BinaryMask
 }
 
 /**
@@ -23,8 +28,9 @@ export interface MergeOptions {
  * rounds. -1 pixels stay -1. Mutates and returns `labels`.
  *
  * With `opts`, a small component is kept (not merged) when its color differs
- * from the target label's by at least `keepContrast` in Oklab, preserving small
- * high-contrast features while still clearing low-contrast noise.
+ * from the target label's by at least `keepContrast` in Oklab, or when any of
+ * its pixels lies on the `protect` mask (a discretized edge hint), preserving
+ * small high-contrast features while still clearing low-contrast noise.
  */
 export function mergeSmallRegions(
   labels: LabelMap,
@@ -32,7 +38,8 @@ export function mergeSmallRegions(
   opts?: MergeOptions,
 ): LabelMap {
   if (minArea <= 1) return labels
-  const keepSq = opts ? opts.keepContrast * opts.keepContrast : 0
+  const keepSq = opts?.keepContrast ? opts.keepContrast * opts.keepContrast : 0
+  const prot = opts?.protect?.data ?? null
   const { width: w, height: h, data } = labels
   const n = w * h
   const comp = new Int32Array(n)
@@ -85,8 +92,10 @@ export function mergeSmallRegions(
       const start = compStart[id]
       const lab = data[order[start]]
       neighborCount.clear()
+      let guarded = false
       for (let s = start; s < start + size; s++) {
         const p = order[s]
+        if (prot !== null && prot[p] !== 0) guarded = true
         const x = p - ((p / w) | 0) * w
         if (x > 0 && comp[p - 1] !== id && data[p - 1] !== -1 && data[p - 1] !== lab) {
           neighborCount.set(data[p - 1], (neighborCount.get(data[p - 1]) ?? 0) + 1)
@@ -101,6 +110,7 @@ export function mergeSmallRegions(
           neighborCount.set(data[p + w], (neighborCount.get(data[p + w]) ?? 0) + 1)
         }
       }
+      if (guarded) continue // a protected edge pixel — keep this small region
       let bestLab = -1
       let bestCnt = 0
       for (const [lb, c] of neighborCount) {
@@ -110,7 +120,7 @@ export function mergeSmallRegions(
         }
       }
       if (bestLab !== -1) {
-        if (opts && contrastExceeds(opts.oklab, lab, bestLab, keepSq)) continue // keep the detail
+        if (opts?.oklab && contrastExceeds(opts.oklab, lab, bestLab, keepSq)) continue // keep the detail
         for (let s = start; s < start + size; s++) data[order[s]] = bestLab
         merged = true
       }
