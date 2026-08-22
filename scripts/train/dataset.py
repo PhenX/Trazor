@@ -1,9 +1,10 @@
 """Torch dataset over the generator's output (scripts/dataset).
 
-Reads `manifest.json` and yields (input, edge-target) tensors for one split. The
-input normalization matches EdgeEnhancer / packNchw (packages/ml/src/imageops.ts)
-exactly — same ImageNet mean/std on [0,1] RGB — so a model trained here behaves
-the same way in the browser.
+Reads one or more `manifest.json` roots and yields (input, edge-target) tensors
+for a split, concatenated — so a procedural set and a real-corpus set can be
+mixed in one training run (`--data proc real`). The input normalization matches
+EdgeEnhancer / packNchw (packages/ml/src/imageops.ts) exactly, so a model
+trained here behaves the same in the browser.
 """
 
 from __future__ import annotations
@@ -22,31 +23,48 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 class EdgeDataset(Dataset):
-    def __init__(self, root: str | Path, split: str, size: int = 256, limit: int = 0) -> None:
-        self.root = Path(root)
-        manifest = json.loads((self.root / "manifest.json").read_text())
-        samples = [s for s in manifest["samples"] if s["split"] == split and s.get("edge")]
-        self.samples = samples[:limit] if limit > 0 else samples
+    def __init__(
+        self,
+        roots: str | Path | list[str | Path],
+        split: str,
+        size: int = 256,
+        limit: int = 0,
+    ) -> None:
+        if isinstance(roots, (str, Path)):
+            roots = [roots]
         self.size = size
+        # Each sample remembers its own root so paths resolve across mixed sets.
+        self.samples: list[tuple[Path, dict]] = []
+        for r in roots:
+            root = Path(r)
+            manifest = json.loads((root / "manifest.json").read_text())
+            for s in manifest["samples"]:
+                if s["split"] == split and s.get("edge"):
+                    self.samples.append((root, s))
+        if limit > 0:
+            self.samples = self.samples[:limit]
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _load_rgb(self, rel: str) -> np.ndarray:
-        img = Image.open(self.root / rel).convert("RGB")
+    def _load_rgb(self, root: Path, rel: str) -> np.ndarray:
+        img = Image.open(root / rel).convert("RGB")
         if img.size != (self.size, self.size):
             img = img.resize((self.size, self.size), Image.BILINEAR)
         x = np.asarray(img, dtype=np.float32) / 255.0
         x = (x - IMAGENET_MEAN) / IMAGENET_STD
         return np.ascontiguousarray(x.transpose(2, 0, 1))  # CHW
 
-    def _load_edge(self, rel: str) -> np.ndarray:
-        img = Image.open(self.root / rel).convert("L")
+    def _load_edge(self, root: Path, rel: str) -> np.ndarray:
+        img = Image.open(root / rel).convert("L")
         if img.size != (self.size, self.size):
             img = img.resize((self.size, self.size), Image.BILINEAR)
         y = np.asarray(img, dtype=np.float32) / 255.0
         return y[None, ...]  # 1HW
 
     def __getitem__(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
-        s = self.samples[i]
-        return torch.from_numpy(self._load_rgb(s["input"])), torch.from_numpy(self._load_edge(s["edge"]))
+        root, s = self.samples[i]
+        return (
+            torch.from_numpy(self._load_rgb(root, s["input"])),
+            torch.from_numpy(self._load_edge(root, s["edge"])),
+        )

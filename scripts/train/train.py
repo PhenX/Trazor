@@ -1,7 +1,9 @@
 """Train the edge pre-pass model on the generator's dataset.
 
 Auto-detects CUDA. Saves the best checkpoint (by val loss) to
-`scripts/train/checkpoints/edge-prepass.pt`. See scripts/train/README.md.
+`scripts/train/checkpoints/edge-prepass.pt` and, beside it, a `preview.png`
+montage (input · prediction · target) for eyeballing quality. Early stops when
+val loss stops improving. See scripts/train/README.md.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
 
 from dataset import IMAGENET_MEAN, IMAGENET_STD, EdgeDataset
@@ -20,9 +23,10 @@ from model import TinyUNet
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train the edge pre-pass model.")
-    p.add_argument("--data", required=True, help="dataset root (npm run dataset output)")
+    # One or more dataset roots (npm run dataset outputs) — concatenated to mix.
+    p.add_argument("--data", nargs="+", required=True, help="dataset root(s)")
     p.add_argument("--out", default="scripts/train/checkpoints")
-    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--size", type=int, default=256)
@@ -30,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     # 0 avoids multiprocessing (safest on Windows); raise it (e.g. 8) for speed.
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=0, help="cap train samples (smoke tests)")
+    p.add_argument("--patience", type=int, default=10, help="early-stop after N stale epochs (0 = off)")
     p.add_argument("--device", default="auto", help="auto | cuda | cpu")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -44,12 +49,31 @@ def f_score(prob: torch.Tensor, target: torch.Tensor, thresh: float = 0.5, eps: 
     return float(2 * prec * rec / (prec + rec + eps))
 
 
+def save_preview(model: torch.nn.Module, ds: EdgeDataset, path: Path, device: str, n: int = 4) -> None:
+    """Save an [input | prediction | target] montage for up to n val samples."""
+    n = min(n, len(ds))
+    if n == 0:
+        return
+    rows = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(n):
+            x, y = ds[i]
+            prob = torch.sigmoid(model(x.unsqueeze(0).to(device)))[0, 0].cpu().numpy()
+            rgb = np.clip((x.numpy().transpose(1, 2, 0) * IMAGENET_STD + IMAGENET_MEAN) * 255, 0, 255)
+            pred = np.clip(prob * 255, 0, 255)
+            tgt = np.clip(y[0].numpy() * 255, 0, 255)
+            gray3 = lambda g: np.stack([g, g, g], axis=-1)  # noqa: E731
+            rows.append(np.concatenate([rgb, gray3(pred), gray3(tgt)], axis=1).astype(np.uint8))
+    Image.fromarray(np.concatenate(rows, axis=0)).save(path)
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
-    print(f"device: {device}")
+    print(f"device: {device} | data: {', '.join(args.data)}")
 
     train_ds = EdgeDataset(args.data, "train", args.size, args.limit)
     val_ds = EdgeDataset(args.data, "val", args.size)
@@ -68,6 +92,8 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     best = float("inf")
+    best_epoch = 0
+    stale = 0
     for epoch in range(args.epochs):
         model.train()
         total = 0.0
@@ -97,8 +123,10 @@ def main() -> None:
         print(f"epoch {epoch + 1}/{args.epochs} | train {train_loss:.4f} | val {val_loss:.4f} | val F {val_f:.3f}")
 
         score = val_loss if v_n else train_loss
-        if score < best:
+        if score < best - 1e-5:
             best = score
+            best_epoch = epoch + 1
+            stale = 0
             torch.save(
                 {
                     "state_dict": model.state_dict(),
@@ -111,7 +139,14 @@ def main() -> None:
                 },
                 out_dir / "edge-prepass.pt",
             )
-    print(f"best {best:.4f} → {out_dir / 'edge-prepass.pt'}")
+            save_preview(model, val_ds if v_n else train_ds, out_dir / "preview.png", device)
+        else:
+            stale += 1
+            if args.patience > 0 and stale >= args.patience:
+                print(f"early stop: no val improvement for {args.patience} epochs")
+                break
+
+    print(f"best {best:.4f} at epoch {best_epoch} → {out_dir / 'edge-prepass.pt'}")
 
 
 if __name__ == "__main__":

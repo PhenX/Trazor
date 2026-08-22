@@ -27,8 +27,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Generate data, train, and export the edge pre-pass model.")
     p.add_argument("--count", type=int, default=20000, help="samples to generate")
     p.add_argument("--data", default="dataset-out")
-    p.add_argument("--epochs", type=int, default=40)
+    p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
+    p.add_argument("--base-channels", type=int, default=16, help="model width / size")
+    p.add_argument("--patience", type=int, default=10, help="early-stop after N stale epochs (0 = off)")
     p.add_argument("--workers", type=int, default=0, help="dataloader workers (raise for speed)")
     p.add_argument("--out", default="apps/web/public/models/edge-prepass.onnx")
     p.add_argument("--skip-data", action="store_true", help="reuse an existing --data dir")
@@ -44,7 +46,8 @@ def main() -> None:
     run([
         sys.executable, str(HERE / "train.py"),
         "--data", args.data, "--epochs", str(args.epochs),
-        "--batch", str(args.batch), "--workers", str(args.workers),
+        "--batch", str(args.batch), "--base-channels", str(args.base_channels),
+        "--patience", str(args.patience), "--workers", str(args.workers),
     ])
 
     export = [sys.executable, str(HERE / "export_onnx.py"), "--out", args.out]
