@@ -23,7 +23,30 @@ def run(cmd: list[str] | str, shell: bool = False) -> None:
     subprocess.run(cmd, cwd=REPO_ROOT, shell=shell, check=True)
 
 
+def require_deps() -> None:
+    """Fail early with an actionable message when the Python deps are missing.
+
+    The subprocess steps use this same interpreter (sys.executable), so checking
+    here catches a mis-set venv before any work runs. A CUDA torch wheel does not
+    always pull numpy, so a torch-only install can still be missing packages.
+    """
+    missing = []
+    for mod, pkg in (("numpy", "numpy"), ("PIL", "pillow"), ("onnx", "onnx"), ("onnxruntime", "onnxruntime")):
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        raise SystemExit(
+            f"missing Python deps: {', '.join(missing)}\n"
+            "activate your venv, then install them:\n"
+            "  pip install -r scripts/train/requirements.txt\n"
+            f"(this interpreter: {sys.executable})"
+        )
+
+
 def main() -> None:
+    require_deps()
     p = argparse.ArgumentParser(description="Generate data, train, and export the edge pre-pass model.")
     p.add_argument("--count", type=int, default=20000, help="samples to generate")
     p.add_argument("--data", default="dataset-out")
