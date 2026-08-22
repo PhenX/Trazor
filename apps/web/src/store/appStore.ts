@@ -6,6 +6,7 @@ import {
   TARGET_PROFILES,
 } from '@vectorizer/core'
 import type {
+  GrayImage,
   ProfileId,
   RasterImage,
   StageId,
@@ -56,6 +57,7 @@ interface PersistedState {
   activeProfileId?: ProfileId | null
   profileModified?: boolean
   theme?: Theme
+  edgePrepass?: boolean
 }
 
 function loadPersisted(): PersistedState {
@@ -137,9 +139,12 @@ export const useAppStore = defineStore('app', () => {
     availability: null as MlAvailability | null,
     removeBg: { busy: false, progress: null, phase: '' } as MlToolState,
     magic: { busy: false, progress: null, phase: '' } as MlToolState,
+    edge: { busy: false, progress: null, phase: '' } as MlToolState,
   })
   const magicActive = ref(false)
   const magicPoints = ref<MagicPoint[]>([])
+  /** Optional ML edge pre-pass, consumed by bw/centerline tracing. */
+  const edgePrepass = ref(persisted.edgePrepass === true)
 
   // Non-reactive machinery
   let client: VectorizerClient | null = null
@@ -150,6 +155,10 @@ export const useAppStore = defineStore('app', () => {
   let remover: import('@vectorizer/ml').BackgroundRemover | null = null
   let segmenter: import('@vectorizer/ml').MagicSegmenter | null = null
   let segmenterImage: RasterImage | null = null
+  let edgeModel: import('@vectorizer/ml').EdgeEnhancer | null = null
+  // Edge hint cached per working image (independent of trace settings).
+  let edgeHintImage: RasterImage | null = null
+  let edgeHint: GrayImage | null = null
   const suggestionCache = new WeakMap<RasterImage, PaletteSuggestion[]>()
 
   // ------------------------------ Derived --------------------------------
@@ -340,11 +349,19 @@ export const useAppStore = defineStore('app', () => {
     busy.value = true
     error.value = null
     try {
+      // Optional ML edge hint (cached per image; null when off or unsupported).
+      const hint = (await ensureEdgeHint(image)) ?? undefined
+      if (runId !== runCounter) return // superseded while preparing the hint
       // The client copies the pixel buffer before transferring it, so the
       // working image stays intact for the preview and later runs.
-      const res = await getClient().vectorize(image, settings.value, (stage, overall) => {
-        if (runId === runCounter) progress.value = { stage, overall }
-      })
+      const res = await getClient().vectorize(
+        image,
+        settings.value,
+        (stage, overall) => {
+          if (runId === runCounter) progress.value = { stage, overall }
+        },
+        hint,
+      )
       if (runId !== runCounter) return
       result.value = res
       busy.value = false
@@ -377,7 +394,7 @@ export const useAppStore = defineStore('app', () => {
     }, RUN_DEBOUNCE_MS)
   }
 
-  watch([workingImage, settings], () => {
+  watch([workingImage, settings, edgePrepass], () => {
     if (workingImage.value) run()
   })
 
@@ -397,6 +414,46 @@ export const useAppStore = defineStore('app', () => {
     } finally {
       mlState.probing = false
     }
+  }
+
+  /**
+   * Produce the edge hint for the current image when the pre-pass is on and the
+   * mode consumes it (bw/centerline). Cached per image; fail-soft — on any model
+   * error it toasts, turns the toggle off, and returns null so tracing proceeds
+   * classically. The model is served same-origin from the app's static assets.
+   */
+  async function ensureEdgeHint(image: RasterImage): Promise<GrayImage | null> {
+    if (!edgePrepass.value) return null
+    if (settings.value.mode !== 'bw' && settings.value.mode !== 'centerline') return null
+    if (edgeHintImage === image && edgeHint) return edgeHint
+    mlState.edge = { busy: true, progress: null, phase: 'Preparing' }
+    const onProgress = (p: MlProgress): void => {
+      const info = mlPhaseInfo(p)
+      mlState.edge = { busy: true, progress: info.progress, phase: info.phase }
+    }
+    try {
+      const ml = await import('@vectorizer/ml')
+      // Resolve the project model against the deploy base (served same-origin).
+      ml.overrideModelUrl(
+        'edge-prepass',
+        new URL(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`, location.origin).href,
+      )
+      edgeModel ??= await ml.EdgeEnhancer.create({ onProgress })
+      const { edges } = await edgeModel.run(image, { onProgress })
+      edgeHintImage = image
+      edgeHint = edges
+      return edges
+    } catch (e) {
+      notify(`Edge pre-pass unavailable: ${errorMessage(e)}`, 'error')
+      edgePrepass.value = false // don't retry every run until the model exists
+      return null
+    } finally {
+      mlState.edge = { busy: false, progress: null, phase: '' }
+    }
+  }
+
+  function setEdgePrepass(on: boolean): void {
+    edgePrepass.value = on
   }
 
   async function removeBackground(): Promise<void> {
@@ -506,7 +563,7 @@ export const useAppStore = defineStore('app', () => {
 
   // ---------------------------- Persistence ------------------------------
   watch(
-    [settings, activeProfileId, profileModified, theme],
+    [settings, activeProfileId, profileModified, theme, edgePrepass],
     () => {
       try {
         const state: PersistedState = {
@@ -514,6 +571,7 @@ export const useAppStore = defineStore('app', () => {
           activeProfileId: activeProfileId.value,
           profileModified: profileModified.value,
           theme: theme.value,
+          edgePrepass: edgePrepass.value,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -544,6 +602,7 @@ export const useAppStore = defineStore('app', () => {
     mlState,
     magicActive,
     magicPoints,
+    edgePrepass,
     // derived
     hasImage,
     activeProfile,
@@ -567,6 +626,7 @@ export const useAppStore = defineStore('app', () => {
     removePaletteEntry,
     run,
     ensureMlAvailability,
+    setEdgePrepass,
     removeBackground,
     restoreOriginal,
     toggleMagicSelect,

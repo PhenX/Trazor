@@ -26,6 +26,7 @@ const backendBadge = computed(() => {
 const mlReady = computed(() => store.mlState.availability?.available === true)
 const removeBusy = computed(() => store.mlState.removeBg.busy)
 const magicBusy = computed(() => store.mlState.magic.busy)
+const edgeBusy = computed(() => store.mlState.edge.busy)
 
 async function refreshUsage(): Promise<void> {
   try {
@@ -71,7 +72,7 @@ onMounted(() => {
       <div class="tool">
         <button
           class="btn tool-btn"
-          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy"
+          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
           :title="mlReady ? 'Remove the background with a local U²-Net model' : backendBadge.title"
           @click="store.removeBackground()"
         >
@@ -111,7 +112,7 @@ onMounted(() => {
         <button
           class="btn tool-btn"
           :class="{ 'is-active': store.magicActive }"
-          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy"
+          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
           :title="mlReady ? 'Click regions to keep or exclude (SlimSAM)' : backendBadge.title"
           :aria-pressed="store.magicActive"
           @click="store.toggleMagicSelect()"
@@ -144,6 +145,65 @@ onMounted(() => {
         <p v-else-if="store.magicActive" class="phase instructions">
           click = keep · alt / right-click = exclude · <kbd>Enter</kbd> apply ·
           <kbd>Esc</kbd> cancel
+        </p>
+      </div>
+
+      <div class="tool">
+        <button
+          class="btn tool-btn"
+          :class="{ 'is-active': store.edgePrepass }"
+          :disabled="!store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy"
+          :title="
+            mlReady
+              ? 'ML edge pre-pass — sharpens B&W / centerline tracing on noisy input'
+              : backendBadge.title
+          "
+          :aria-pressed="store.edgePrepass"
+          @click="store.setEdgePrepass(!store.edgePrepass)"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <rect
+              x="2.5"
+              y="2.5"
+              width="11"
+              height="11"
+              rx="2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-dasharray="2 1.6"
+              opacity="0.5"
+            />
+            <path
+              d="M2.5 10.5 6 7l3 2.5L13.5 5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          {{ store.edgePrepass ? 'Edge pre-pass — on' : 'Edge pre-pass (ML)' }}
+        </button>
+        <div
+          v-if="edgeBusy"
+          class="progress"
+          role="progressbar"
+          :aria-label="store.mlState.edge.phase"
+        >
+          <div
+            class="progress-fill"
+            :class="{ indeterminate: store.mlState.edge.progress === null }"
+            :style="
+              store.mlState.edge.progress !== null
+                ? { width: `${store.mlState.edge.progress * 100}%` }
+                : {}
+            "
+          />
+        </div>
+        <p v-if="edgeBusy" class="phase">{{ store.mlState.edge.phase }}</p>
+        <p v-else-if="store.edgePrepass" class="phase instructions">
+          Applies to B&amp;W &amp; centerline modes · needs the edge-prepass model.
         </p>
       </div>
 

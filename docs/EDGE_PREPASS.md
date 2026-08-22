@@ -115,9 +115,10 @@ export class EdgeEnhancer {
     the tracer then keeps them — `minArea` drops to 1 when a hint is present, mirroring `preserveDetails` in color.
   - **color / stacked (future):** pass the boundary map as an extra cost into `mergeSmallRegions` so region boundaries
     prefer predicted edges.
-- **App wiring (remaining):** the studio should run `EdgeEnhancer` on the source and pass its `edges` as the fourth
-  argument to `VectorizerClient.vectorize`, behind a UI toggle. It stays dormant (fail-soft, no hint sent) until the
-  weights at `apps/web/public/models/edge-prepass.onnx` exist.
+- **App wiring (implemented):** the studio's ML tools panel has an **Edge pre-pass (ML)** toggle. When on (in bw /
+  centerline modes), the store runs `EdgeEnhancer` on the working image, caches the result per image, and passes it as the
+  fourth argument to `VectorizerClient.vectorize`. It is fail-soft: with no weights at
+  `apps/web/public/models/edge-prepass.onnx` it toasts and switches itself back off, and tracing proceeds classically.
 - **Determinism:** the boundary map is **discretized** (threshold / snap) before it reaches `crack.ts`, so the trace stays
   byte-identical across devices except at knife-edge pixels; a **reproducible mode** pins `EdgeEnhancer` to the WASM
   backend via `create({ preferBackend: 'wasm' })` for a hard cross-device guarantee. The pure classical path (no `EdgeEnhancer` engaged) is unchanged and remains
