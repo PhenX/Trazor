@@ -105,6 +105,8 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
   switch (prim.kind) {
     case 'rect':
       return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}"${paint}/>`
+    case 'rrect':
+      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}" rx="${n(prim.r)}"${paint}/>`
     case 'circle':
       return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
     case 'ellipse':

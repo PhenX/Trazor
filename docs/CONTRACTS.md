@@ -70,6 +70,8 @@ export function parseSettingsImport(input: string): ImportedSettings
 // resize.ts — area-averaged box downscale. Returns input object unchanged when
 // maxDimension is 0 or the image already fits. Never upscales.
 export function resizeToFit(image: RasterImage, maxDimension: number): RasterImage
+// Bilinear single-channel resize (e.g. an edge hint → the working resolution).
+export function resizeGray(image: GrayImage, width: number, height: number): GrayImage
 
 // filters.ts — all return new images, alpha handled sensibly (blur blurs it,
 // median/bilateral preserve it).
@@ -160,10 +162,12 @@ export function adaptiveBinarize(
 // absorbed into the most frequent 4-neighbor label (repeat until stable, max 8
 // rounds). -1 stays -1. Mutates and returns `labels`.
 export interface MergeOptions {
-  oklab: Float32Array // palette colors in Oklab, length count*3, indexed by label
-  keepContrast: number // keep a small region when its Oklab ΔE to the target ≥ this
+  oklab?: Float32Array // palette colors in Oklab, length count*3, indexed by label
+  keepContrast?: number // keep a small region when its Oklab ΔE to the target ≥ this (needs oklab)
+  protect?: BinaryMask // 1 = keep this pixel's small region even below minArea (edge hint)
 }
-// With opts, small high-contrast regions are kept instead of absorbed.
+// With opts, small regions are kept instead of absorbed when high-contrast
+// (keepContrast+oklab) or on a protected edge pixel (protect).
 export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask
 export function maskArea(mask: BinaryMask): number
@@ -174,6 +178,13 @@ export function erode(mask: BinaryMask, radius: number): BinaryMask
 // Remove 8-connected foreground specks < minArea AND fill 4-connected background
 // holes < minArea (holes = background components not touching the border).
 export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask
+// As despeckleMask, but a component overlapping `protect` (1 = protected) is kept
+// even below minArea; `protect` null reproduces despeckleMask byte-for-byte.
+export function despeckleMaskGuided(
+  mask: BinaryMask,
+  minArea: number,
+  protect: BinaryMask | null,
+): BinaryMask
 
 // thin.ts
 export function zhangSuenThin(mask: BinaryMask): BinaryMask // classic two-pass thinning
@@ -229,6 +240,7 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
+  | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
 // The primitive a single closed subpath represents, or null. `allowRound` gates
@@ -301,8 +313,8 @@ export interface MlAvailability {
 export function detectBackend(): Promise<MlAvailability>
 
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder'
-  url: string
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass' | 'cleanup'
+  url: string // absolute https for third-party models; project-relative for edge-prepass/cleanup (same-origin)
   approxBytes: number
   license: string
 }
@@ -338,6 +350,30 @@ export class MagicSegmenter {
     mask: BinaryMask
     score: number
   }>
+  dispose(): void
+}
+
+export class EdgeEnhancer {
+  // Optional Tier-2 edge/boundary pre-pass (docs/EDGE_PREPASS.md).
+  // preferBackend 'wasm' pins the deterministic backend (reproducible mode).
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<EdgeEnhancer>
+  // Boundary probability map ([0,1]) at the input resolution; large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ edges: GrayImage }>
+  dispose(): void
+}
+
+export class CleanupEnhancer {
+  // Optional Tier-2 image→image cleanup pre-pass (docs/CLEANUP_PREPASS.md).
+  // preferBackend 'wasm' pins the deterministic backend (reproducible mode).
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<CleanupEnhancer>
+  // Cleaned RGB at the input resolution (source alpha preserved); large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
 ```
@@ -389,6 +425,7 @@ export type WorkerInMessage =
       height: number
       buffer: ArrayBuffer
       settings: VectorizeSettings
+      edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
     }
   | { type: 'cancel'; id: number }
 export type WorkerOutMessage =
@@ -408,6 +445,7 @@ export class VectorizerClient {
     image: RasterImage,
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
+    edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
   ): Promise<VectorizeResult>
   dispose(): void
 }
@@ -415,6 +453,8 @@ export function createNativeEngine(): VectorizerEngine
 export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
+  // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
+  // bw mode; absent, tracing is byte-identical to the classical path.
   ctx?: EngineContext,
 ): Promise<VectorizeResult>
 ```

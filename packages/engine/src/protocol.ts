@@ -10,6 +10,8 @@ export type WorkerInMessage =
       /** RGBA bytes, transferred. */
       buffer: ArrayBuffer
       settings: VectorizeSettings
+      /** Optional edge-hint plane: Float32, `width`×`height`, transferred. */
+      edgeHint?: ArrayBuffer
     }
   | { type: 'cancel'; id: number }
 

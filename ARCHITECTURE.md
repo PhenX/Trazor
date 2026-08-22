@@ -4,6 +4,11 @@ Whole-repo reference: what exists and where. The **rules** for changing it live 
 before editing. Exact exported signatures live in [`docs/CONTRACTS.md`](docs/CONTRACTS.md); this map describes structure
 and intent, not every file.
 
+![How Vectorizer works — the runtime pipeline, the optional on-device edge pre-pass, and the offline training loop that produces its model](docs/how-it-works.svg)
+
+_Raster → clean SVG through the deterministic core; the optional edge pre-pass (Tier 2) is discretized before the tracer,
+so output stays byte-identical without it. Animated SVG — open it in a browser to see the flow._
+
 ## Shape
 
 ```

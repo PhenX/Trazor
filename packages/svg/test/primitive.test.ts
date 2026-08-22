@@ -25,6 +25,23 @@ function ellipsePath(cx: number, cy: number, rx: number, ry: number): PathComman
   ]
 }
 
+/** Axis-aligned rounded rectangle: straight edges + kappa cubic corner arcs. */
+function roundedRectPath(x0: number, y0: number, x1: number, y1: number, r: number): PathCommand[] {
+  const k = 0.5522847498 * r
+  return [
+    { type: 'M', x: x0 + r, y: y0 },
+    { type: 'L', x: x1 - r, y: y0 },
+    { type: 'C', x1: x1 - r + k, y1: y0, x2: x1, y2: y0 + r - k, x: x1, y: y0 + r },
+    { type: 'L', x: x1, y: y1 - r },
+    { type: 'C', x1: x1, y1: y1 - r + k, x2: x1 - r + k, y2: y1, x: x1 - r, y: y1 },
+    { type: 'L', x: x0 + r, y: y1 },
+    { type: 'C', x1: x0 + r - k, y1: y1, x2: x0, y2: y1 - r + k, x: x0, y: y1 - r },
+    { type: 'L', x: x0, y: y0 + r },
+    { type: 'C', x1: x0, y1: y0 + r - k, x2: x0 + r - k, y2: y0, x: x0 + r, y: y0 },
+    { type: 'Z' },
+  ]
+}
+
 describe('detectPrimitive — rectangles (exact)', () => {
   it('detects an axis-aligned rectangle in any mode', () => {
     expect(detectPrimitive(rectPath(4, 6, 20, 30), 2, false)).toEqual({
@@ -101,6 +118,39 @@ describe('detectPrimitive — circles and ellipses (gated)', () => {
   })
 })
 
+describe('detectPrimitive — rounded rectangles (gated)', () => {
+  it('detects a rounded rect only when round primitives are allowed', () => {
+    const cmds = roundedRectPath(10, 10, 90, 60, 12)
+    expect(detectPrimitive(cmds, 2, false)).toBeNull()
+    const p = detectPrimitive(cmds, 2, true) as Extract<Primitive, { kind: 'rrect' }>
+    expect(p.kind).toBe('rrect')
+    expect(p.x).toBeCloseTo(10, 0)
+    expect(p.y).toBeCloseTo(10, 0)
+    expect(p.width).toBeCloseTo(80, 0)
+    expect(p.height).toBeCloseTo(50, 0)
+    expect(p.r).toBeCloseTo(12, 0)
+  })
+
+  it('keeps a true circle as a circle, not a pill', () => {
+    expect(detectPrimitive(ellipsePath(50, 50, 30, 30), 2, true)?.kind).toBe('circle')
+  })
+
+  it('keeps a plain rectangle exact (not a rounded rect)', () => {
+    expect(detectPrimitive(rectPath(0, 0, 10, 10), 2, true)?.kind).toBe('rect')
+  })
+
+  it('rejects a rounded blob (not axis-aligned edges)', () => {
+    const blob: PathCommand[] = [
+      { type: 'M', x: 0, y: 0 },
+      { type: 'C', x1: 40, y1: -10, x2: 60, y2: 30, x: 30, y: 40 },
+      { type: 'L', x: 12, y: 44 },
+      { type: 'C', x1: 10, y1: 50, x2: -20, y2: 10, x: 0, y: 0 },
+      { type: 'Z' },
+    ]
+    expect(detectPrimitive(blob, 2, true)).toBeNull()
+  })
+})
+
 const primitiveDoc = (commands: PathCommand[]): SvgDocument => ({
   width: 100,
   height: 100,
@@ -129,5 +179,16 @@ describe('serializeSvg primitive emission', () => {
       roundPrimitives: true,
     })
     expect(round).toContain('<circle ')
+  })
+
+  it('emits <rect rx> for a rounded rectangle only when roundPrimitives is set', () => {
+    const commands = roundedRectPath(10, 10, 90, 60, 10)
+    expect(serializeSvg(doc(commands), { precision: 2, optimizePaths: true })).toContain('<path ')
+    const round = serializeSvg(doc(commands), {
+      precision: 2,
+      optimizePaths: true,
+      roundPrimitives: true,
+    })
+    expect(round).toMatch(/<rect [^>]*\brx="/)
   })
 })

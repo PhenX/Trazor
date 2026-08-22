@@ -22,12 +22,16 @@
     "fmt:check": "oxfmt . --check",
     "e2e": "node scripts/e2e.mjs",
     "test:render": "node scripts/svg-render-check.mjs",
+    "dataset": "node scripts/dataset/generate.mjs",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "jpeg-js": "^0.4.4",
     "oxfmt": "^0.64.0",
     "oxlint": "^1.79.0",
     "playwright-core": "^1.62.1",
+    "pngjs": "^7.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"
   }

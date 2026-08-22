@@ -291,3 +291,140 @@ export function planeToMask(
   for (let i = 0; i < data.length; i++) data[i] = plane[i] > threshold ? 1 : 0
   return { width, height, data }
 }
+
+/** Clamp a float plane into [0,1] in place-free fashion (fresh array). */
+export function clampPlane01(plane: Float32Array): Float32Array {
+  const out = new Float32Array(plane.length)
+  for (let i = 0; i < plane.length; i++) {
+    const v = plane[i]
+    out[i] = v < 0 ? 0 : v > 1 ? 1 : v
+  }
+  return out
+}
+
+/** Copy the `width`×`height` RGBA region at (x0, y0) out of an image (in-bounds). */
+export function cropRgba(
+  image: RasterImage,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+): RasterImage {
+  const src = image.data
+  const out = new Uint8ClampedArray(width * height * 4)
+  const srcRow = image.width * 4
+  const dstRow = width * 4
+  for (let y = 0; y < height; y++) {
+    const s = (y0 + y) * srcRow + x0 * 4
+    out.set(src.subarray(s, s + dstRow), y * dstRow)
+  }
+  return { width, height, data: out }
+}
+
+/** Top-left corner of one tile in a tiled sweep. */
+export interface TilePlacement {
+  x: number
+  y: number
+}
+
+/** Start offsets that cover [0, size) with `tile`-wide windows stepping by `tile − overlap`, last window flush to the end. */
+function axisStarts(size: number, tile: number, overlap: number): number[] {
+  if (tile >= size) return [0]
+  const step = Math.max(1, tile - overlap)
+  const starts: number[] = []
+  for (let s = 0; s < size - tile; s += step) starts.push(s)
+  const last = size - tile
+  if (starts[starts.length - 1] !== last) starts.push(last)
+  return starts
+}
+
+/**
+ * Cover a `width`×`height` image with overlapping `tileW`×`tileH` tiles (every
+ * tile fully in-bounds; the trailing tiles are flush to the right/bottom edge).
+ * A dimension smaller than its tile yields a single tile at 0.
+ */
+export function planTiles(
+  width: number,
+  height: number,
+  tileW: number,
+  tileH: number,
+  overlap: number,
+): TilePlacement[] {
+  const xs = axisStarts(width, tileW, overlap)
+  const ys = axisStarts(height, tileH, overlap)
+  const out: TilePlacement[] = []
+  for (const y of ys) for (const x of xs) out.push({ x, y })
+  return out
+}
+
+/**
+ * Assemble three [0,1] channel planes into an RGBA image: `byte = round(v*255)`
+ * (clamped). Alpha is copied from `alpha` (an interleaved RGBA source, alpha
+ * channel read) when given, else opaque. The Uint8ClampedArray store is the
+ * discretization boundary that keeps a cleaned image reproducible downstream.
+ */
+export function rgbPlanesToImage(
+  r: Float32Array,
+  g: Float32Array,
+  b: Float32Array,
+  width: number,
+  height: number,
+  alpha: Uint8ClampedArray | null,
+): RasterImage {
+  const n = width * height
+  if (r.length < n || g.length < n || b.length < n) {
+    throw new RangeError('plane shorter than its dimensions')
+  }
+  const data = new Uint8ClampedArray(n * 4)
+  for (let i = 0, o = 0; i < n; i++, o += 4) {
+    data[o] = r[i] * 255 // Uint8ClampedArray rounds + clamps on store
+    data[o + 1] = g[i] * 255
+    data[o + 2] = b[i] * 255
+    data[o + 3] = alpha ? alpha[o + 3] : 255
+  }
+  return { width, height, data }
+}
+
+/** Triangular window (peak at center, 1 at the edges) for seamless overlap blending. */
+function triWindow(n: number): Float32Array {
+  const w = new Float32Array(n)
+  for (let i = 0; i < n; i++) w[i] = Math.min(i + 1, n - i)
+  return w
+}
+
+/**
+ * Blend per-tile planes back into one `width`×`height` plane by triangular-weighted
+ * averaging over overlaps. `placements` and `planes` are parallel; each plane is
+ * row-major `tileW`×`tileH`. Deterministic given the same inputs.
+ */
+export function stitchPlane(
+  width: number,
+  height: number,
+  tileW: number,
+  tileH: number,
+  placements: readonly TilePlacement[],
+  planes: readonly Float32Array[],
+): Float32Array {
+  const acc = new Float32Array(width * height)
+  const wsum = new Float32Array(width * height)
+  const wx = triWindow(tileW)
+  const wy = triWindow(tileH)
+  for (let t = 0; t < placements.length; t++) {
+    const { x: px, y: py } = placements[t]
+    const plane = planes[t]
+    for (let ty = 0; ty < tileH; ty++) {
+      const wyt = wy[ty]
+      const accRow = (py + ty) * width
+      const planeRow = ty * tileW
+      for (let tx = 0; tx < tileW; tx++) {
+        const w = wyt * wx[tx]
+        const gi = accRow + px + tx
+        acc[gi] += plane[planeRow + tx] * w
+        wsum[gi] += w
+      }
+    }
+  }
+  const out = new Float32Array(width * height)
+  for (let i = 0; i < out.length; i++) out[i] = wsum[i] > 0 ? acc[i] / wsum[i] : 0
+  return out
+}

@@ -75,11 +75,27 @@ export function erode(mask: BinaryMask, radius: number): BinaryMask {
  * the input mask; a new mask is returned.
  */
 export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
+  return despeckleMaskGuided(mask, minArea, null)
+}
+
+/**
+ * Like {@link despeckleMask}, but a component is left untouched when any of its
+ * pixels overlaps `protect` (1 = protected), even when it is below `minArea` —
+ * so a boundary map (e.g. EdgeEnhancer's, thresholded to a mask) keeps thin real
+ * features a size filter would otherwise erase. `protect` must match the mask
+ * dimensions; passing `null` reproduces {@link despeckleMask} byte-for-byte.
+ */
+export function despeckleMaskGuided(
+  mask: BinaryMask,
+  minArea: number,
+  protect: BinaryMask | null,
+): BinaryMask {
   const { width: w, height: h, data: src } = mask
   const n = w * h
   const out = createMask(w, h)
   out.data.set(src)
   if (minArea <= 1) return out
+  const prot = protect?.data ?? null
   const visited = new Uint8Array(n)
   const stack = new Int32Array(n)
   const bag = new Int32Array(n)
@@ -89,11 +105,13 @@ export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
     if (src[i] === 0 || visited[i] !== 0) continue
     let sp = 0
     let size = 0
+    let guarded = false
     stack[sp++] = i
     visited[i] = 1
     while (sp > 0) {
       const p = stack[--sp]
       bag[size++] = p
+      if (prot !== null && prot[p] !== 0) guarded = true
       const x = p - ((p / w) | 0) * w
       const y = (p / w) | 0
       for (let dy = -1; dy <= 1; dy++) {
@@ -111,7 +129,7 @@ export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
         }
       }
     }
-    if (size < minArea) {
+    if (size < minArea && !guarded) {
       for (let s = 0; s < size; s++) out.data[bag[s]] = 0
     }
   }
@@ -123,11 +141,13 @@ export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
     let sp = 0
     let size = 0
     let touchesBorder = false
+    let guarded = false
     stack[sp++] = i
     visited[i] = 1
     while (sp > 0) {
       const p = stack[--sp]
       bag[size++] = p
+      if (prot !== null && prot[p] !== 0) guarded = true
       const x = p - ((p / w) | 0) * w
       const y = (p / w) | 0
       if (x === 0 || y === 0 || x === w - 1 || y === h - 1) touchesBorder = true
@@ -148,7 +168,7 @@ export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
         stack[sp++] = p + w
       }
     }
-    if (!touchesBorder && size < minArea) {
+    if (!touchesBorder && size < minArea && !guarded) {
       for (let s = 0; s < size; s++) out.data[bag[s]] = 1
     }
   }

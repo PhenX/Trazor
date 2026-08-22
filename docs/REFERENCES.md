@@ -95,3 +95,7 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Curvilinear Feature Alignment”, _SIGGRAPH Asia_ 2009**, and
   **J. Kopf & D. Lischinski, “Depixelizing Pixel Art”, _SIGGRAPH_ 2011** —
   background for the pixel-art and gradient-handling roadmap items.
+- **ML & dataset roadmap.** Prospective ML models (DeepSVG, StarVector,
+  LIVE/DiffVG, edge and degradation networks) and how a training set would be
+  produced are discussed in [`ML_STRATEGY.md`](ML_STRATEGY.md). Citations move
+  into this file once the corresponding code ships.

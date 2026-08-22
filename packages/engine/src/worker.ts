@@ -1,5 +1,5 @@
 import { CancelledError } from '@vectorizer/core'
-import type { RasterImage, VectorizeSettings } from '@vectorizer/core'
+import type { GrayImage, RasterImage, VectorizeSettings } from '@vectorizer/core'
 import { vectorize } from './native'
 import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'
 
@@ -24,14 +24,23 @@ export function installWorkerHandler(scope: WorkerScope): void {
     }
     if (msg.type !== 'vectorize') return
 
-    const { id, width, height, buffer, settings } = msg
+    const { id, width, height, buffer, settings, edgeHint } = msg
     const image: RasterImage = { width, height, data: new Uint8ClampedArray(buffer) }
-    void run(id, image, settings)
+    const hint: GrayImage | undefined = edgeHint
+      ? { width, height, data: new Float32Array(edgeHint) }
+      : undefined
+    void run(id, image, settings, hint)
   })
 
-  async function run(id: number, image: RasterImage, settings: VectorizeSettings) {
+  async function run(
+    id: number,
+    image: RasterImage,
+    settings: VectorizeSettings,
+    edgeHint?: GrayImage,
+  ) {
     try {
       const result = await vectorize(image, settings, {
+        edgeHint,
         shouldCancel: () => cancelled.has(id),
         onProgress: (stage, overall) => {
           const now = Date.now()

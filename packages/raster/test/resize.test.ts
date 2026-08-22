@@ -1,7 +1,7 @@
 import { mulberry32 } from '@vectorizer/core'
 import { describe, expect, it } from 'vitest'
-import { resizeToFit } from '../src/index'
-import { channelMeans, rasterOf } from './helpers'
+import { resizeGray, resizeToFit } from '../src/index'
+import { channelMeans, grayOf, rasterOf } from './helpers'
 
 describe('resizeToFit', () => {
   it('returns the same object when maxDimension is 0', () => {
@@ -70,5 +70,26 @@ describe('resizeToFit', () => {
     for (let c = 0; c < 4; c++) {
       expect(Math.abs(inMeans[c] - outMeans[c])).toBeLessThanOrEqual(1)
     }
+  })
+})
+
+describe('resizeGray', () => {
+  it('returns a fresh copy at identity size', () => {
+    const g = grayOf(2, 2, (x, y) => x + 2 * y)
+    const out = resizeGray(g, 2, 2)
+    expect(out).not.toBe(g)
+    expect(Array.from(out.data)).toEqual([0, 1, 2, 3])
+  })
+
+  it('bilinearly resamples a 1-D ramp (center-aligned, edge-clamped)', () => {
+    const out = resizeGray(
+      grayOf(2, 1, (x) => x),
+      4,
+      1,
+    )
+    expect(out.width).toBe(4)
+    // sx = 0.5; sample centers clamp to 0, 0.25, 0.75, 1.
+    const expected = [0, 0.25, 0.75, 1]
+    for (let i = 0; i < expected.length; i++) expect(out.data[i]).toBeCloseTo(expected[i], 6)
   })
 })

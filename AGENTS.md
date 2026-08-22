@@ -13,7 +13,8 @@ where, how to run and verify things, and the conventions that apply everywhere.
 Reference material worth opening when you need the map rather than the rules: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 (whole repo), [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md) (the tracer),
 [`docs/CONTRACTS.md`](docs/CONTRACTS.md) (exact package APIs), [`docs/REFERENCES.md`](docs/REFERENCES.md)
-(algorithm & model sources).
+(algorithm & model sources), and [`docs/ML_STRATEGY.md`](docs/ML_STRATEGY.md) (ML & dataset roadmap: where ML fits, how
+determinism is scoped for WebGPU, and how to build a training set).
 
 ## Project overview
 

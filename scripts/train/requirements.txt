@@ -1,0 +1,10 @@
+# Offline training deps for the edge pre-pass model (not part of the JS build/CI).
+# For an NVIDIA GPU, install a CUDA build of torch first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# then `pip install -r requirements.txt` for the rest. On CPU-only, plain
+# `pip install -r requirements.txt` is enough (slower).
+torch>=2.2
+numpy>=1.24
+pillow>=10.0
+onnx>=1.15
+onnxruntime>=1.17
