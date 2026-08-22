@@ -214,6 +214,7 @@ describe('optimizePathData', () => {
 })
 
 describe('serializeSvg with optimizePaths', () => {
+  // L-shaped hexagon: axis-aligned (exercises H/V) but not a detectable rect.
   const doc: SvgDocument = {
     width: 100,
     height: 100,
@@ -223,7 +224,9 @@ describe('serializeSvg with optimizePaths', () => {
         commands: [
           { type: 'M', x: 4, y: 4 },
           { type: 'L', x: 96, y: 4 },
-          { type: 'L', x: 96, y: 96 },
+          { type: 'L', x: 96, y: 40 },
+          { type: 'L', x: 40, y: 40 },
+          { type: 'L', x: 40, y: 96 },
           { type: 'L', x: 4, y: 96 },
           { type: 'Z' },
         ],
@@ -237,7 +240,7 @@ describe('serializeSvg with optimizePaths', () => {
     const plain = serializeSvg(doc, { precision: 2 })
     const optimized = serializeSvg(doc, { precision: 2, optimizePaths: true })
     expect(optimized.length).toBeLessThanOrEqual(plain.length)
-    expect(optimized).toContain('d="M 4 4 H 96 V 96 H 4 Z"')
+    expect(optimized).toContain('d="M 4 4 H 96 V 40 H 40 V 96 H 4 Z"')
     expect(optimized.startsWith('<svg')).toBe(true)
     expect(optimized.endsWith('</svg>')).toBe(true)
   })

@@ -78,7 +78,8 @@ describe('analyzeSvg on foreign SVG text', () => {
       '<path d="m1 1 l2 2" stroke="none"/>' +
       '</svg>'
     const a = analyzeSvg(svg)
-    expect(a.pathCount).toBe(2)
+    // The <rect> counts as a drawable shape alongside the two <path>s.
+    expect(a.pathCount).toBe(3)
     // Draw letters (Z excluded): M h v H from the first path, m l from the second.
     expect(a.nodeCount).toBe(6)
     // #ABC expands and merges with #AABBCC; RED lowercases; none is excluded.

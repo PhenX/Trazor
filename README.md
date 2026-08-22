@@ -63,8 +63,8 @@ On top of that, three things most tracers don't do:
 - **Auto settings**: instant image-statistics analysis recommends a profile,
   palette size and preprocessing, with human-readable reasons.
 - **Physical output**: px or **mm units** with real document sizes, precision
-  control, **path minification** (relative + H/V commands), tiny-feature
-  warnings below cuttable size.
+  control, **path minification** (relative/H/V commands, collinear cleanup,
+  `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
 - **Studio UI**: drag & drop / paste / samples, split & difference views with
   zoom/pan, per-stage timings, palette swatches, node/path/byte stats,
   download / copy / data-URI export, dark & light themes, keyboard shortcuts.
@@ -138,7 +138,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 ## Roadmap
 
-- More SVG output optimizations (path merging by fill, arc & primitive detection)
+- More SVG output optimizations (path merging by fill, elliptical-arc fitting)
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Gradient detection & mesh-free gradient fills for photo modes

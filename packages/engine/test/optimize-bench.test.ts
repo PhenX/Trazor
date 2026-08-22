@@ -67,12 +67,17 @@ describe('optimizePaths on traced shapes', () => {
     for (const { mask: m } of fixtures) {
       const doc = docFor(m)
       const plain = serializeSvg(doc, { precision: 2 })
-      const optimized = serializeSvg(doc, { precision: 2, optimizePaths: true })
+      const optimized = serializeSvg(doc, {
+        precision: 2,
+        optimizePaths: true,
+        roundPrimitives: true,
+      })
       expect(bytes(optimized)).toBeLessThanOrEqual(bytes(plain))
       const a = analyzeSvg(plain)
       const b = analyzeSvg(optimized)
       expect(b.pathCount).toBe(a.pathCount)
-      expect(b.nodeCount).toBe(a.nodeCount)
+      // Collinear removal and <rect> detection can only drop nodes, never add.
+      expect(b.nodeCount).toBeLessThanOrEqual(a.nodeCount)
       expect(b.colorCount).toBe(a.colorCount)
     }
   })
@@ -87,7 +92,11 @@ describe('optimizePaths on traced shapes', () => {
     for (const { name, mask: m } of fixtures) {
       const doc = docFor(m)
       const plain = serializeSvg(doc, { precision: 2 })
-      const optimized = serializeSvg(doc, { precision: 2, optimizePaths: true })
+      const optimized = serializeSvg(doc, {
+        precision: 2,
+        optimizePaths: true,
+        roundPrimitives: true,
+      })
       const dp = bytes(plain)
       const dopt = bytes(optimized)
       const pp = pathDataBytes(plain)

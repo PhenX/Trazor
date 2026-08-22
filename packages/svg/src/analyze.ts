@@ -5,6 +5,7 @@
  */
 
 export interface SvgAnalysis {
+  /** Drawable shape elements: `<path>` plus `<rect>`/`<circle>`/`<ellipse>`/`<line>`/`<polyline>`/`<polygon>`. */
   pathCount: number
   /** Draw-command letters (`[MLHVQCTSAmlhvqctsa]`) across all `d` attributes — Z/z excluded. */
   nodeCount: number
@@ -39,7 +40,8 @@ function quoted(m: RegExpMatchArray, first: number): string {
 }
 
 export function analyzeSvg(svg: string): SvgAnalysis {
-  const pathCount = (svg.match(/<path\b/g) ?? []).length
+  const pathCount = (svg.match(/<(?:path|rect|circle|ellipse|line|polyline|polygon)\b/g) ?? [])
+    .length
 
   let nodeCount = 0
   for (const m of svg.matchAll(/(?<![\w-])d\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {

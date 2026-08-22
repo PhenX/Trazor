@@ -7,6 +7,9 @@
 import type { PathCommand } from '@vectorizer/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
+import { cleanCommands } from './clean'
+import { detectPrimitive } from './primitive'
+import type { Primitive } from './primitive'
 
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
@@ -39,10 +42,17 @@ export interface SerializeOptions {
   /** Newline per path when true; default compact (no whitespace between tags). */
   pretty?: boolean
   /**
-   * Compact `d` values with relative/`H`/`V` command selection (never larger,
-   * same geometry). Default false ⇒ absolute `M`/`L`/`Q`/`C` only.
+   * Compact `d` values with relative/`H`/`V` command selection, collinear-point
+   * removal, and exact `<rect>` detection (never larger, same geometry).
+   * Default false ⇒ absolute `M`/`L`/`Q`/`C` only.
    */
   optimizePaths?: boolean
+  /**
+   * When optimizing, also emit `<circle>`/`<ellipse>` for near-circular loops
+   * (a sub-pixel change). Leave off for cutout mode, where a neighbor still
+   * traces the Bézier boundary and must match exactly. Default false.
+   */
+  roundPrimitives?: boolean
 }
 
 /** Stable marker emitted right after the opening tag. */
@@ -72,20 +82,12 @@ function assertAttrSafe(value: string, what: string): string {
   return value
 }
 
-function serializeShape(shape: SvgShape, precision: number, optimize: boolean): string | null {
-  if (shape.commands.length === 0) return null
-  if (shape.fill === undefined && shape.stroke === undefined) return null
-
-  const raw = optimize
-    ? optimizePathData(shape.commands, precision)
-    : buildPathData(shape.commands, precision)
-  const d = assertAttrSafe(raw, 'path data')
-  if (d === '') return null
-
-  let attrs = `d="${d}"`
+/** Fill/stroke/id attributes shared by `<path>` and primitive elements. */
+function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean): string {
+  let attrs = ''
   const fill = shape.fill === undefined ? 'none' : assertAttrSafe(shape.fill, 'fill')
   attrs += ` fill="${fill}"`
-  if (shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
+  if (includeFillRule && shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
   if (shape.stroke !== undefined) attrs += ` stroke="${assertAttrSafe(shape.stroke, 'stroke')}"`
   if (shape.strokeWidth !== undefined) {
     attrs += ` stroke-width="${formatNumber(shape.strokeWidth, precision)}"`
@@ -93,7 +95,44 @@ function serializeShape(shape: SvgShape, precision: number, optimize: boolean): 
   if (shape.strokeLinecap !== undefined) attrs += ` stroke-linecap="${shape.strokeLinecap}"`
   if (shape.strokeLinejoin !== undefined) attrs += ` stroke-linejoin="${shape.strokeLinejoin}"`
   if (shape.id !== undefined && shape.id !== '') attrs += ` id="${xmlEscape(shape.id)}"`
-  return `<path ${attrs}/>`
+  return attrs
+}
+
+/** A detected primitive as its SVG element (fill-rule dropped — a single region). */
+function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): string {
+  const paint = paintAttrs(shape, precision, false)
+  const n = (v: number): string => formatNumber(v, precision)
+  switch (prim.kind) {
+    case 'rect':
+      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}"${paint}/>`
+    case 'circle':
+      return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
+    case 'ellipse':
+      return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${paint}/>`
+  }
+}
+
+function serializeShape(
+  shape: SvgShape,
+  precision: number,
+  optimize: boolean,
+  roundPrimitives: boolean,
+): string | null {
+  if (shape.commands.length === 0) return null
+  if (shape.fill === undefined && shape.stroke === undefined) return null
+
+  if (optimize) {
+    const cleaned = cleanCommands(shape.commands, precision)
+    const prim = detectPrimitive(cleaned, precision, roundPrimitives)
+    if (prim !== null) return primitiveElement(prim, shape, precision)
+    const d = assertAttrSafe(optimizePathData(cleaned, precision), 'path data')
+    if (d === '') return null
+    return `<path d="${d}"${paintAttrs(shape, precision, true)}/>`
+  }
+
+  const d = assertAttrSafe(buildPathData(shape.commands, precision), 'path data')
+  if (d === '') return null
+  return `<path d="${d}"${paintAttrs(shape, precision, true)}/>`
 }
 
 /**
@@ -104,6 +143,7 @@ function serializeShape(shape: SvgShape, precision: number, optimize: boolean): 
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   const precision = clampPrecision(opts.precision)
   const optimize = opts.optimizePaths === true
+  const roundPrimitives = opts.roundPrimitives === true
   const w = formatNumber(doc.width, precision)
   const h = formatNumber(doc.height, precision)
 
@@ -132,7 +172,7 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
   for (const shape of doc.shapes) {
-    const path = serializeShape(shape, precision, optimize)
+    const path = serializeShape(shape, precision, optimize, roundPrimitives)
     if (path !== null) children.push(path)
   }
 

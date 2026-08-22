@@ -153,7 +153,13 @@ export async function vectorize(
       title: settings.svgTitle || undefined,
       shapes,
     },
-    { precision: settings.precision, optimizePaths: settings.optimizeSvg },
+    {
+      precision: settings.precision,
+      optimizePaths: settings.optimizeSvg,
+      // Circle/ellipse detection is a sub-pixel change; keep it off for cutout,
+      // where the neighbor still traces the Bézier boundary and must match.
+      roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
+    },
   )
   run.progress(0.6)
   const analysis = analyzeSvg(svg)

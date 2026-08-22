@@ -168,13 +168,31 @@ export interface SvgDocument {
 export interface SerializeOptions {
   precision: number // decimals 0..4
   pretty?: boolean // newline per path when true; default compact
-  optimizePaths?: boolean // relative/H/V-compacted `d` (never larger, same geometry); default false
+  // relative/H/V `d`, collinear-point removal, exact <rect> detection
+  // (never larger, same geometry); default false
+  optimizePaths?: boolean
+  // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
+  // cutout mode, where a neighbor still traces the Bézier edge; default false
+  roundPrimitives?: boolean
 }
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
 // Shortest `d` for the same geometry as buildPathData: per-command absolute vs
 // relative vs H/V selection, quantized on the output grid (drift-free deltas).
 export function optimizePathData(commands: readonly PathCommand[], precision: number): string
+// Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
+export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
+export type Primitive =
+  | { kind: 'rect'; x: number; y: number; width: number; height: number }
+  | { kind: 'circle'; cx: number; cy: number; r: number }
+  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
+// The primitive a single closed subpath represents, or null. `allowRound` gates
+// the sub-pixel circle/ellipse matches; rectangles are always exact.
+export function detectPrimitive(
+  commands: readonly PathCommand[],
+  precision: number,
+  allowRound: boolean,
+): Primitive | null
 export interface SvgAnalysis {
   pathCount: number
   nodeCount: number // draw-command letters [MLHVQCTSAmlhvqctsa] excluding Z/z

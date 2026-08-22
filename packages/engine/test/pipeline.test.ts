@@ -81,9 +81,9 @@ describe('native engine pipeline', () => {
   it('optimizeSvg compacts path data without changing the geometry', async () => {
     const plain = await vectorize(thickPlus(), settings({ mode: 'bw', optimizeSvg: false }))
     const optimized = await vectorize(thickPlus(), settings({ mode: 'bw', optimizeSvg: true }))
-    // Same shapes and nodes, strictly-not-larger bytes.
+    // Same shapes; never more nodes or bytes (cleanup/primitives may drop some).
     expect(optimized.stats.pathCount).toBe(plain.stats.pathCount)
-    expect(optimized.stats.nodeCount).toBe(plain.stats.nodeCount)
+    expect(optimized.stats.nodeCount).toBeLessThanOrEqual(plain.stats.nodeCount)
     expect(optimized.stats.byteLength).toBeLessThanOrEqual(plain.stats.byteLength)
     // The axis-aligned plus engages H/V shorthands the absolute encoding lacks.
     expect(/d="[^"]*[HV]/.test(optimized.svg)).toBe(true)
