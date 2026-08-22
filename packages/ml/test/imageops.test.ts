@@ -5,17 +5,21 @@ import {
   argmax,
   bilinearResizePlane,
   bilinearResizeRgba,
+  clampPlane01,
   computeLetterbox,
   cropPlane,
+  cropRgba,
   IMAGENET_MEAN,
   IMAGENET_STD,
   mapPointToLetterbox,
   minMaxNormalize,
   packNchw,
   planeToMask,
+  planTiles,
   SAM_MEAN,
   SAM_STD,
   smoothstep,
+  stitchPlane,
 } from '../src/imageops'
 
 const raster = (width: number, height: number, rgba: number[]): RasterImage => ({
@@ -233,5 +237,71 @@ describe('planeToMask', () => {
     expect(Array.from(mask.data)).toEqual([0, 0, 1, 1])
     expect(mask.width).toBe(2)
     expect(mask.height).toBe(2)
+  })
+})
+
+describe('clampPlane01', () => {
+  it('clamps values into [0,1]', () => {
+    const out = clampPlane01(Float32Array.from([-0.5, 0, 0.25, 1, 2]))
+    expect(out.length).toBe(5)
+    closeTo(out, [0, 0, 0.25, 1, 1])
+  })
+})
+
+describe('cropRgba', () => {
+  it('copies an in-bounds sub-rectangle', () => {
+    const img = raster(
+      3,
+      2,
+      [
+        // prettier-ignore
+        0, 0, 0, 255, 10, 0, 0, 255, 20, 0, 0, 255, 30, 0, 0, 255, 40, 0, 0, 255, 50, 0, 0, 255,
+      ],
+    )
+    const crop = cropRgba(img, 1, 0, 2, 2)
+    expect(crop.width).toBe(2)
+    expect(crop.height).toBe(2)
+    expect([...crop.data]).toEqual([10, 0, 0, 255, 20, 0, 0, 255, 40, 0, 0, 255, 50, 0, 0, 255])
+  })
+})
+
+describe('planTiles', () => {
+  it('returns a single tile when the image fits within one', () => {
+    expect(planTiles(100, 80, 100, 80, 16)).toEqual([{ x: 0, y: 0 }])
+  })
+
+  it('covers the image with in-bounds tiles flush to the far edge', () => {
+    const width = 300
+    const tile = 128
+    const overlap = 32
+    const tiles = planTiles(width, 100, tile, 100, overlap)
+    for (const t of tiles) {
+      expect(t.x).toBeGreaterThanOrEqual(0)
+      expect(t.x + tile).toBeLessThanOrEqual(width)
+    }
+    const xs = [...new Set(tiles.map((t) => t.x))].toSorted((a, b) => a - b)
+    expect(xs[0]).toBe(0)
+    expect(xs[xs.length - 1]).toBe(width - tile)
+    for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeLessThanOrEqual(tile)
+  })
+})
+
+describe('stitchPlane', () => {
+  it('reconstructs a plane from overlapping tiles', () => {
+    const width = 40
+    const height = 24
+    const tileW = 16
+    const tileH = 16
+    const ref = new Float32Array(width * height)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) ref[y * width + x] = x * 0.01 + y * 0.02
+    }
+    const placements = planTiles(width, height, tileW, tileH, 6)
+    const planes = placements.map((p) => cropPlane(ref, width, p.x, p.y, tileW, tileH))
+    // Every output pixel is a weighted average of identical samples of the ramp,
+    // so stitching returns the original plane.
+    const stitched = stitchPlane(width, height, tileW, tileH, placements, planes)
+    expect(stitched.length).toBe(width * height)
+    closeTo(stitched, [...ref], 4)
   })
 })

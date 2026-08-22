@@ -244,8 +244,8 @@ export interface MlAvailability {
 export function detectBackend(): Promise<MlAvailability>
 
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder'
-  url: string
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass'
+  url: string // absolute https for third-party models; project-relative for edge-prepass (same-origin)
   approxBytes: number
   license: string
 }
@@ -281,6 +281,18 @@ export class MagicSegmenter {
     mask: BinaryMask
     score: number
   }>
+  dispose(): void
+}
+
+export class EdgeEnhancer {
+  // Optional Tier-2 edge/boundary pre-pass (docs/EDGE_PREPASS.md).
+  // preferBackend 'wasm' pins the deterministic backend (reproducible mode).
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<EdgeEnhancer>
+  // Boundary probability map ([0,1]) at the input resolution; large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ edges: GrayImage }>
   dispose(): void
 }
 ```

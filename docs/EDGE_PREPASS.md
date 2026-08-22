@@ -81,29 +81,27 @@ Offline, in PyTorch (not part of the repo's Node/TS build):
 - Export PyTorch → **ONNX** (a widely supported opset), then quantize (int8/fp16) with `onnxruntime`'s tooling.
 - **Parity check:** assert the ONNX (WASM EP) output matches PyTorch within tolerance on a fixed sample set before
   shipping weights.
-- Mirror the weights on a **CORS-enabled host** (Hugging Face `resolve/` URLs) — GitHub release assets lack the headers,
-  per the repo's ML troubleshooting note.
+- **Host it as a project asset, not on a third party.** Drop the ONNX at `apps/web/public/models/edge-prepass.onnx`;
+  Vite serves it **same-origin** from the deployed site, so there is no CORS and no external host (unlike the third-party
+  `u2netp`/SlimSAM, which are fetched from their upstream mirrors). The binary is a few MB and force-tracked by git (the
+  root `.gitignore` keeps scratch weights out but allows that path); reach for **Git LFS** if several models accumulate.
+  The registry already points at `models/edge-prepass.onnx`; the app resolves it against its deploy base at startup with
+  `overrideModelUrl` and `import.meta.env.BASE_URL`.
 
 ## Integration (`@vectorizer/ml`)
 
-Mirror the existing `BackgroundRemover` surface exactly:
+Mirror the existing `BackgroundRemover` surface, plus a reproducible-mode backend option (this is the shipped API):
 
 ```ts
-// Add to the model registry union and MODEL_REGISTRY.
-export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass'
-  url: string
-  approxBytes: number
-  license: string
-}
-
+// edge-prepass is added to the ModelSpec id union and MODEL_REGISTRY.
 export class EdgeEnhancer {
-  static create(onProgress?: MlProgressFn): Promise<EdgeEnhancer>
-  // Returns a boundary probability map aligned to `image`.
-  run(
-    image: RasterImage,
-    opts?: { backend?: MlBackend; tile?: number; onProgress?: MlProgressFn },
-  ): Promise<{ edges: GrayImage }>
+  // preferBackend: 'wasm' pins the deterministic backend (reproducible mode).
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<EdgeEnhancer>
+  // Boundary probability map ([0,1] GrayImage) at the input resolution; large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ edges: GrayImage }>
   dispose(): void
 }
 ```
@@ -117,7 +115,7 @@ export class EdgeEnhancer {
     predicted edges.
 - **Determinism:** the boundary map is **discretized** (threshold / snap) before it reaches `crack.ts`, so the trace stays
   byte-identical across devices except at knife-edge pixels; a **reproducible mode** pins `EdgeEnhancer` to the WASM
-  backend for a hard cross-device guarantee. The pure classical path (no `EdgeEnhancer` engaged) is unchanged and remains
+  backend via `create({ preferBackend: 'wasm' })` for a hard cross-device guarantee. The pure classical path (no `EdgeEnhancer` engaged) is unchanged and remains
   the tested, byte-identical baseline.
 - **Fail-soft:** if the model is unavailable or `detectBackend()` reports none, skip the stage and trace as today.
 

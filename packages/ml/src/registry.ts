@@ -1,5 +1,5 @@
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder'
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass'
   url: string
   approxBytes: number
   license: string
@@ -27,6 +27,20 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     url: 'https://huggingface.co/Xenova/slimsam-77-uniform/resolve/main/onnx/prompt_encoder_mask_decoder_quantized.onnx',
     approxBytes: 4_200_000,
     license: 'Apache-2.0',
+  },
+  'edge-prepass': {
+    id: 'edge-prepass',
+    // The project's own model, not a third-party one: it ships as a same-origin
+    // static asset of the app (apps/web/public/models/), so the browser fetches
+    // it from the very site it is served from — no CORS, no external host. This
+    // default is relative; the app resolves it against its deploy base at startup
+    // with overrideModelUrl(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`).
+    // No weights exist yet: train per docs/EDGE_PREPASS.md on scripts/dataset
+    // output and drop the file in place. Until then create() fails soft (the
+    // fetch 404s) and the app traces exactly as it does today.
+    url: 'models/edge-prepass.onnx',
+    approxBytes: 3_000_000,
+    license: 'MIT',
   },
 }
 

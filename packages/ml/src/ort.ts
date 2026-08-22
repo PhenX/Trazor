@@ -55,6 +55,9 @@ export async function createModelSession(
   buffer: ArrayBuffer,
   label: string,
   onProgress?: MlProgressFn,
+  // 'wasm' pins the deterministic WASM backend (reproducible mode); undefined
+  // keeps the default WebGPU-then-WASM preference.
+  preferBackend?: MlBackend,
 ): Promise<ModelSession> {
   let ort: OrtModule
   try {
@@ -64,7 +67,7 @@ export async function createModelSession(
   }
   onProgress?.({ phase: 'compile' })
   const bytes = new Uint8Array(buffer)
-  if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+  if (preferBackend !== 'wasm' && typeof navigator !== 'undefined' && 'gpu' in navigator) {
     try {
       const session = await ort.InferenceSession.create(bytes, { executionProviders: ['webgpu'] })
       recordBackend('webgpu')

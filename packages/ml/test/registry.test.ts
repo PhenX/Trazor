@@ -2,16 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { MODEL_REGISTRY, overrideModelUrl } from '../src/registry'
 
 describe('MODEL_REGISTRY', () => {
-  it('declares all three models with consistent ids and https URLs', () => {
-    const ids = ['u2netp', 'slimsam-encoder', 'slimsam-decoder'] as const
+  it('declares every model with a consistent id, positive size, and license', () => {
+    const ids = ['u2netp', 'slimsam-encoder', 'slimsam-decoder', 'edge-prepass'] as const
     expect(Object.keys(MODEL_REGISTRY).toSorted()).toEqual([...ids].toSorted())
     for (const id of ids) {
       const spec = MODEL_REGISTRY[id]
       expect(spec.id).toBe(id)
-      expect(spec.url).toMatch(/^https:\/\//)
       expect(spec.approxBytes).toBeGreaterThan(0)
       expect(spec.license.length).toBeGreaterThan(0)
     }
+  })
+
+  it('fetches third-party models over https and the project model same-origin', () => {
+    for (const id of ['u2netp', 'slimsam-encoder', 'slimsam-decoder'] as const) {
+      expect(MODEL_REGISTRY[id].url).toMatch(/^https:\/\//)
+    }
+    // The project's own model is a relative path resolved against the app's base.
+    const edge = MODEL_REGISTRY['edge-prepass'].url
+    expect(edge).not.toMatch(/^https?:\/\//)
+    expect(edge).toMatch(/\.onnx$/)
   })
 })
 
