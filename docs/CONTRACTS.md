@@ -30,6 +30,8 @@ Rules that apply to every package:
 // resize.ts — area-averaged box downscale. Returns input object unchanged when
 // maxDimension is 0 or the image already fits. Never upscales.
 export function resizeToFit(image: RasterImage, maxDimension: number): RasterImage
+// Bilinear single-channel resize (e.g. an edge hint → the working resolution).
+export function resizeGray(image: GrayImage, width: number, height: number): GrayImage
 
 // filters.ts — all return new images, alpha handled sensibly (blur blurs it,
 // median/bilateral preserve it).
@@ -134,6 +136,13 @@ export function erode(mask: BinaryMask, radius: number): BinaryMask
 // Remove 8-connected foreground specks < minArea AND fill 4-connected background
 // holes < minArea (holes = background components not touching the border).
 export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask
+// As despeckleMask, but a component overlapping `protect` (1 = protected) is kept
+// even below minArea; `protect` null reproduces despeckleMask byte-for-byte.
+export function despeckleMaskGuided(
+  mask: BinaryMask,
+  minArea: number,
+  protect: BinaryMask | null,
+): BinaryMask
 
 // thin.ts
 export function zhangSuenThin(mask: BinaryMask): BinaryMask // classic two-pass thinning
@@ -344,6 +353,7 @@ export type WorkerInMessage =
       height: number
       buffer: ArrayBuffer
       settings: VectorizeSettings
+      edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
     }
   | { type: 'cancel'; id: number }
 export type WorkerOutMessage =
@@ -363,6 +373,7 @@ export class VectorizerClient {
     image: RasterImage,
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
+    edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
   ): Promise<VectorizeResult>
   dispose(): void
 }
@@ -370,6 +381,8 @@ export function createNativeEngine(): VectorizerEngine
 export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
+  // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
+  // bw mode; absent, tracing is byte-identical to the classical path.
   ctx?: EngineContext,
 ): Promise<VectorizeResult>
 ```

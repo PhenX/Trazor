@@ -1,4 +1,4 @@
-import type { RasterImage } from './raster'
+import type { GrayImage, RasterImage } from './raster'
 import type { VectorizeMode, VectorizeSettings } from './settings'
 
 /** Pipeline stages, in execution order, used for progress reporting. */
@@ -49,6 +49,13 @@ export interface EngineContext {
   onProgress?: (stage: StageId, overall: number) => void
   /** Polled between work chunks; return true to abort with CancelledError. */
   shouldCancel?: () => boolean
+  /**
+   * Optional boundary probability map (e.g. from @vectorizer/ml's EdgeEnhancer)
+   * at the source-image resolution. When present, the pipeline discretizes it and
+   * uses it as a Tier-2 hint to protect thin features; absent, tracing is
+   * byte-identical to the classical path.
+   */
+  edgeHint?: GrayImage
 }
 
 /** Thrown (and rejected with) when `shouldCancel` interrupts a run. */

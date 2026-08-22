@@ -225,6 +225,27 @@ describe('native engine pipeline', () => {
     await vectorize(redSquareOnWhite(), settings({ mode: 'color' }))
     expect(JSON.stringify(DEFAULT_SETTINGS)).toBe(before)
   })
+
+  it('an edge hint protects a small bw feature the size filter would drop', async () => {
+    const speckImage = (): RasterImage => {
+      const img = createRaster(60, 60)
+      fillRaster(img, 255, 255, 255)
+      for (let y = 15; y < 45; y++) {
+        for (let x = 15; x < 45; x++) setPixel(img, x, y, 0, 0, 0)
+      }
+      setPixel(img, 5, 5, 0, 0, 0) // 1px speck, below minRegionArea
+      return img
+    }
+    const s = settings({ mode: 'bw', minRegionArea: 2, thresholdMode: 'auto' })
+    const none = await vectorize(speckImage(), s)
+    const hint = { width: 60, height: 60, data: new Float32Array(60 * 60) }
+    hint.data[5 * 60 + 5] = 1 // mark the speck as a real boundary
+    const withHint = await vectorize(speckImage(), s, { edgeHint: hint })
+    expect(withHint.stats.pathCount).toBe(none.stats.pathCount + 1)
+    // Same hint ⇒ identical output.
+    const again = await vectorize(speckImage(), s, { edgeHint: hint })
+    expect(again.svg).toBe(withHint.svg)
+  })
 })
 
 describe('worker protocol', () => {
@@ -264,5 +285,37 @@ describe('worker protocol', () => {
     expect(result!.result.svg).toContain('<svg')
     const progress = outbox.filter((m) => (m as { type: string }).type === 'progress')
     expect(progress.length).toBeGreaterThan(0)
+  })
+
+  it('accepts an optional edge hint through the worker message', async () => {
+    const { installWorkerHandler } = await import('@vectorizer/engine')
+    type Listener = (ev: { data: unknown }) => void
+    let listener: Listener | null = null
+    const outbox: unknown[] = []
+    const scope = {
+      addEventListener: (_type: 'message', fn: Listener) => {
+        listener = fn
+      },
+      postMessage: (msg: unknown) => {
+        outbox.push(msg)
+      },
+    }
+    installWorkerHandler(scope)
+
+    const img = redSquareOnWhite()
+    listener!({
+      data: {
+        type: 'vectorize',
+        id: 7,
+        width: img.width,
+        height: img.height,
+        buffer: img.data.slice().buffer,
+        settings: settings({ mode: 'bw', thresholdMode: 'auto' }),
+        edgeHint: new Float32Array(img.width * img.height).buffer,
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const result = outbox.find((m) => (m as { type: string }).type === 'result')
+    expect(result).toBeDefined()
   })
 })

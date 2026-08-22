@@ -109,10 +109,15 @@ export class EdgeEnhancer {
 - **Backend & cache:** reuse `detectBackend()` (WebGPU → WASM), `ModelStore` (Cache Storage), and the `MlProgress`
   reporting already in the package. Same lazy `import('onnxruntime-web')` inside the factory so the main bundle stays lean.
 - **Consumers of the boundary map** (`@vectorizer/engine`):
-  - **bw / centerline:** after `binarize`/`adaptiveBinarize`, use the boundary map to guide `despeckleMask` and snap the
-    mask edge to predicted boundaries (a guided/joint step) → cleaner cracks into `traceMask`.
-  - **color / stacked:** pass the boundary map as an extra cost into `mergeSmallRegions` so region boundaries prefer
-    predicted edges.
+  - **bw / centerline (implemented):** the hint crosses the worker boundary as an optional Float32 plane
+    (`WorkerInMessage.edgeHint` → `EngineContext.edgeHint`), is resized to the working resolution and thresholded (the
+    discretization boundary), and drives `despeckleMaskGuided` so thin real features survive the size filter. In bw mode
+    the tracer then keeps them — `minArea` drops to 1 when a hint is present, mirroring `preserveDetails` in color.
+  - **color / stacked (future):** pass the boundary map as an extra cost into `mergeSmallRegions` so region boundaries
+    prefer predicted edges.
+- **App wiring (remaining):** the studio should run `EdgeEnhancer` on the source and pass its `edges` as the fourth
+  argument to `VectorizerClient.vectorize`, behind a UI toggle. It stays dormant (fail-soft, no hint sent) until the
+  weights at `apps/web/public/models/edge-prepass.onnx` exist.
 - **Determinism:** the boundary map is **discretized** (threshold / snap) before it reaches `crack.ts`, so the trace stays
   byte-identical across devices except at knife-edge pixels; a **reproducible mode** pins `EdgeEnhancer` to the WASM
   backend via `create({ preferBackend: 'wasm' })` for a hard cross-device guarantee. The pure classical path (no `EdgeEnhancer` engaged) is unchanged and remains

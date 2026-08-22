@@ -10,6 +10,7 @@ import {
 import type {
   BinaryMask,
   EngineContext,
+  GrayImage,
   RasterImage,
   StageId,
   StageTiming,
@@ -24,7 +25,7 @@ import {
   bilateralFilter,
   binarize,
   borderDominantColor,
-  despeckleMask,
+  despeckleMaskGuided,
   estimateStrokeWidth,
   flattenImage,
   gaussianBlur,
@@ -32,6 +33,7 @@ import {
   mergeSmallRegions,
   otsuThreshold,
   quantize,
+  resizeGray,
   resizeToFit,
   toGrayscale,
   zhangSuenThin,
@@ -45,6 +47,27 @@ const QUANTIZE_SEED = 0x02f6e2b1
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
+
+/** Boundary-map probability above which a pixel counts as a protected edge. */
+const EDGE_PROTECT_THRESHOLD = 0.5
+
+/**
+ * Discretize an edge hint into a protect mask at the working resolution: resize
+ * to (width, height) when needed, then threshold. The threshold is the
+ * determinism boundary — a fixed cutoff, so upstream (possibly WebGPU) float
+ * noise in the hint cannot change the discrete mask the tracer consumes.
+ */
+function edgeProtectMask(
+  hint: GrayImage | undefined,
+  width: number,
+  height: number,
+): BinaryMask | null {
+  if (!hint) return null
+  const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
+  const data = new Uint8Array(width * height)
+  for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
+  return { width, height, data }
+}
 
 /** Cumulative progress budget per stage (sums to 1). */
 const STAGE_BUDGET: Record<StageId, number> = {
@@ -142,7 +165,16 @@ export async function vectorize(
   if (settings.mode === 'color' || settings.mode === 'grayscale') {
     await colorPipeline(run, image, opaque, settings, shapes, warnings, (p) => (palette = p))
   } else {
-    await inkPipeline(run, image, opaque, settings, shapes, warnings, (p) => (palette = p))
+    await inkPipeline(
+      run,
+      image,
+      opaque,
+      settings,
+      shapes,
+      warnings,
+      (p) => (palette = p),
+      ctx?.edgeHint,
+    )
   }
 
   // ---- svg ----
@@ -348,6 +380,7 @@ async function inkPipeline(
   shapes: SvgShape[],
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
+  edgeHint: GrayImage | undefined,
 ): Promise<void> {
   run.stage('palette')
   const gray = toGrayscale(image)
@@ -368,7 +401,10 @@ async function inkPipeline(
   await run.tick()
 
   run.stage('segment')
-  mask = despeckleMask(mask, settings.minRegionArea)
+  // Edge hint (if any) protects thin real features from the size-based despeckle;
+  // with no hint this is byte-identical to despeckleMask.
+  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+  mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
   await run.tick()
 
   run.stage('trace')
@@ -381,7 +417,10 @@ async function inkPipeline(
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
       turnPolicy: settings.turnPolicy,
-      minArea: Math.max(1, settings.minRegionArea),
+      // With a hint, the guided despeckle is the speck filter (it already dropped
+      // everything small that the hint did not protect), so the tracer must not
+      // re-drop the small features it kept — mirrors preserveDetails in color.
+      minArea: protect ? 1 : Math.max(1, settings.minRegionArea),
     })
     for (const shape of traced) {
       shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })

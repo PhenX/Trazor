@@ -5,7 +5,7 @@
  * non-integer scale factors are handled exactly. The two separable passes
  * multiply out to the exact 2D box filter.
  */
-import type { RasterImage } from '@vectorizer/core'
+import type { GrayImage, RasterImage } from '@vectorizer/core'
 
 interface BoxTaps {
   start: Int32Array
@@ -126,4 +126,35 @@ export function resizeToFit(image: RasterImage, maxDimension: number): RasterIma
     }
   }
   return { width: dw, height: dh, data: out }
+}
+
+/**
+ * Bilinear resample of a single-channel float image to an exact size, center-
+ * aligned and edge-clamped. Used to bring an edge hint to the working image
+ * resolution before it is discretized. Returns a fresh image (a copy at identity).
+ */
+export function resizeGray(image: GrayImage, width: number, height: number): GrayImage {
+  const { width: w, height: h, data } = image
+  if (width <= 0 || height <= 0) throw new RangeError('resize target must be positive')
+  if (width === w && height === h) return { width, height, data: new Float32Array(data) }
+  const out = new Float32Array(width * height)
+  const sx = w / width
+  const sy = h / height
+  const last = (v: number, hi: number): number => (v < 0 ? 0 : v > hi ? hi : v)
+  for (let y = 0; y < height; y++) {
+    const fy = last((y + 0.5) * sy - 0.5, h - 1)
+    const y0 = Math.floor(fy)
+    const y1 = Math.min(h - 1, y0 + 1)
+    const wy = fy - y0
+    for (let x = 0; x < width; x++) {
+      const fx = last((x + 0.5) * sx - 0.5, w - 1)
+      const x0 = Math.floor(fx)
+      const x1 = Math.min(w - 1, x0 + 1)
+      const wx = fx - x0
+      const top = data[y0 * w + x0] + (data[y0 * w + x1] - data[y0 * w + x0]) * wx
+      const bot = data[y1 * w + x0] + (data[y1 * w + x1] - data[y1 * w + x0]) * wx
+      out[y * width + x] = top + (bot - top) * wy
+    }
+  }
+  return { width, height, data: out }
 }

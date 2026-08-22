@@ -1,5 +1,11 @@
 import { CancelledError } from '@vectorizer/core'
-import type { RasterImage, StageId, VectorizeResult, VectorizeSettings } from '@vectorizer/core'
+import type {
+  GrayImage,
+  RasterImage,
+  StageId,
+  VectorizeResult,
+  VectorizeSettings,
+} from '@vectorizer/core'
 import type { WorkerInMessage, WorkerOutMessage } from './protocol'
 
 interface PendingJob {
@@ -25,6 +31,8 @@ export class VectorizerClient {
     image: RasterImage,
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
+    // Optional boundary hint (from EdgeEnhancer), same dimensions as `image`.
+    edgeHint?: GrayImage,
   ): Promise<VectorizeResult> {
     this.cancelPending()
     const worker = this.ensureWorker()
@@ -32,8 +40,14 @@ export class VectorizerClient {
 
     return new Promise<VectorizeResult>((resolve, reject) => {
       this.jobs.set(id, { resolve, reject, onProgress, settled: false })
-      // Copy: transferring the original buffer would detach the caller's image.
+      // Copy: transferring the original buffers would detach the caller's data.
       const buffer = image.data.slice().buffer
+      const transfer: Transferable[] = [buffer]
+      let hint: ArrayBuffer | undefined
+      if (edgeHint) {
+        hint = edgeHint.data.slice().buffer
+        transfer.push(hint)
+      }
       const msg: WorkerInMessage = {
         type: 'vectorize',
         id,
@@ -41,8 +55,9 @@ export class VectorizerClient {
         height: image.height,
         buffer,
         settings,
+        edgeHint: hint,
       }
-      worker.postMessage(msg, [buffer])
+      worker.postMessage(msg, transfer)
     })
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { despeckleMask, dilate, erode, maskArea } from '../src/index'
+import { despeckleMask, despeckleMaskGuided, dilate, erode, maskArea } from '../src/index'
 import { maskOf } from './helpers'
 
 describe('dilate', () => {
@@ -111,5 +111,39 @@ describe('despeckleMask', () => {
     const before = new Uint8Array(mask.data)
     despeckleMask(mask, 4)
     expect(mask.data).toEqual(before)
+  })
+})
+
+describe('despeckleMaskGuided', () => {
+  it('protects a small foreground speck that overlaps the protect mask', () => {
+    const mask = maskOf(12, 10, (x, y) => {
+      if (x >= 1 && x <= 5 && y >= 1 && y <= 5) return true // 5x5 blob
+      return x === 9 && y === 2 // single-pixel speck
+    })
+    const protect = maskOf(12, 10, (x, y) => x === 9 && y === 2)
+    const kept = despeckleMaskGuided(mask, 3, protect)
+    expect(kept.data[2 * 12 + 9]).toBe(1) // speck survives
+    expect(maskArea(kept)).toBe(26)
+    // Unprotected, the same speck is removed.
+    expect(despeckleMaskGuided(mask, 3, null).data[2 * 12 + 9]).toBe(0)
+  })
+
+  it('protects a small hole from being filled', () => {
+    const mask = maskOf(7, 7, (x, y) => {
+      if (x === 3 && y === 3) return false // 1px interior hole
+      return x >= 0 && x <= 6 && y >= 1 && y <= 5
+    })
+    const protect = maskOf(7, 7, (x, y) => x === 3 && y === 3)
+    expect(despeckleMaskGuided(mask, 2, protect).data[3 * 7 + 3]).toBe(0) // hole kept open
+    expect(despeckleMaskGuided(mask, 2, null).data[3 * 7 + 3]).toBe(1) // filled without protection
+  })
+
+  it('null protect reproduces despeckleMask byte-for-byte', () => {
+    const mask = maskOf(12, 10, (x, y) => {
+      if (x >= 1 && x <= 5 && y >= 1 && y <= 5) return true
+      if (x === 9 && y === 2) return true
+      return (x === 8 && y === 7) || (x === 9 && y === 8)
+    })
+    expect(despeckleMaskGuided(mask, 3, null).data).toEqual(despeckleMask(mask, 3).data)
   })
 })
