@@ -150,3 +150,6 @@ dist/
 
 # Local E2E artifacts
 e2e-artifacts/
+
+# Design plans and roadmaps are tracked, never ignored.
+!plans/

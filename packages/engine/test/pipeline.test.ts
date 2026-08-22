@@ -78,6 +78,44 @@ describe('native engine pipeline', () => {
     expect(a.svg).toBe(b.svg)
   })
 
+  it('optimizeSvg compacts path data without changing the geometry', async () => {
+    const plain = await vectorize(thickPlus(), settings({ mode: 'bw', optimizeSvg: false }))
+    const optimized = await vectorize(thickPlus(), settings({ mode: 'bw', optimizeSvg: true }))
+    // Same shapes; never more nodes or bytes (cleanup/primitives may drop some).
+    expect(optimized.stats.pathCount).toBe(plain.stats.pathCount)
+    expect(optimized.stats.nodeCount).toBeLessThanOrEqual(plain.stats.nodeCount)
+    expect(optimized.stats.byteLength).toBeLessThanOrEqual(plain.stats.byteLength)
+    // The axis-aligned plus engages H/V shorthands the absolute encoding lacks.
+    expect(/d="[^"]*[HV]/.test(optimized.svg)).toBe(true)
+    expect(/d="[^"]*[HV]/.test(plain.svg)).toBe(false)
+    // On by default.
+    const byDefault = await vectorize(thickPlus(), settings({ mode: 'bw' }))
+    expect(byDefault.svg).toBe(optimized.svg)
+  })
+
+  it('preserveDetails keeps a small high-contrast dot the flat filter removes', async () => {
+    const dotImage = (): RasterImage => {
+      const img = createRaster(40, 40)
+      fillRaster(img, 255, 255, 255)
+      for (let y = 5; y < 35; y++) {
+        for (let x = 5; x < 35; x++) setPixel(img, x, y, 180, 180, 180)
+      }
+      // A 2×2 black dot (4 px) — below minRegionArea, but maximal contrast.
+      for (let y = 19; y < 21; y++) {
+        for (let x = 19; x < 21; x++) setPixel(img, x, y, 0, 0, 0)
+      }
+      return img
+    }
+    const base = { mode: 'color' as const, paletteSize: 4, minRegionArea: 6 }
+    const flat = await vectorize(dotImage(), settings({ ...base, preserveDetails: false }))
+    const kept = await vectorize(dotImage(), settings({ ...base, preserveDetails: true }))
+    expect(kept.stats.pathCount).toBeGreaterThan(flat.stats.pathCount)
+    const veryDark = (p: string[]): boolean =>
+      p.some((h) => Number.parseInt(h.slice(1, 7), 16) < 0x20_20_20)
+    expect(veryDark(kept.palette)).toBe(true)
+    expect(veryDark(flat.palette)).toBe(false)
+  })
+
   it('warns about stencil islands on a donut in bw mode', async () => {
     const result = await vectorize(
       donut(),

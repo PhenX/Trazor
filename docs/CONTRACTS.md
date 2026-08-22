@@ -119,7 +119,12 @@ export function adaptiveBinarize(
 // 4-connected components of equal label; components smaller than minArea are
 // absorbed into the most frequent 4-neighbor label (repeat until stable, max 8
 // rounds). -1 stays -1. Mutates and returns `labels`.
-export function mergeSmallRegions(labels: LabelMap, minArea: number): LabelMap
+export interface MergeOptions {
+  oklab: Float32Array // palette colors in Oklab, length count*3, indexed by label
+  keepContrast: number // keep a small region when its Oklab ΔE to the target ≥ this
+}
+// With opts, small high-contrast regions are kept instead of absorbed.
+export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask
 export function maskArea(mask: BinaryMask): number
 
@@ -168,12 +173,34 @@ export interface SvgDocument {
 export interface SerializeOptions {
   precision: number // decimals 0..4
   pretty?: boolean // newline per path when true; default compact
+  // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
+  // merging consecutive same-paint paths (never larger, same geometry); default false
+  optimizePaths?: boolean
+  // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
+  // cutout mode, where a neighbor still traces the Bézier edge; default false
+  roundPrimitives?: boolean
 }
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
+// Shortest `d` for the same geometry as buildPathData: per-command absolute vs
+// relative vs H/V selection, quantized on the output grid (drift-free deltas).
+export function optimizePathData(commands: readonly PathCommand[], precision: number): string
+// Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
+export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
+export type Primitive =
+  | { kind: 'rect'; x: number; y: number; width: number; height: number }
+  | { kind: 'circle'; cx: number; cy: number; r: number }
+  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
+// The primitive a single closed subpath represents, or null. `allowRound` gates
+// the sub-pixel circle/ellipse matches; rectangles are always exact.
+export function detectPrimitive(
+  commands: readonly PathCommand[],
+  precision: number,
+  allowRound: boolean,
+): Primitive | null
 export interface SvgAnalysis {
   pathCount: number
-  nodeCount: number // command letters excluding Z/z
+  nodeCount: number // draw-command letters [MLHVQCTSAmlhvqctsa] excluding Z/z
   colorCount: number
   palette: string[] // distinct fills+strokes, hex-normalized, no 'none'
   byteLength: number // UTF-8

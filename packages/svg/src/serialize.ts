@@ -6,6 +6,10 @@
 
 import type { PathCommand } from '@vectorizer/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
+import { optimizePathData } from './optimize'
+import { cleanCommands } from './clean'
+import { detectPrimitive } from './primitive'
+import type { Primitive } from './primitive'
 
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
@@ -37,6 +41,18 @@ export interface SerializeOptions {
   precision: number
   /** Newline per path when true; default compact (no whitespace between tags). */
   pretty?: boolean
+  /**
+   * Compact `d` values with relative/`H`/`V` command selection, collinear-point
+   * removal, and exact `<rect>` detection (never larger, same geometry).
+   * Default false ⇒ absolute `M`/`L`/`Q`/`C` only.
+   */
+  optimizePaths?: boolean
+  /**
+   * When optimizing, also emit `<circle>`/`<ellipse>` for near-circular loops
+   * (a sub-pixel change). Leave off for cutout mode, where a neighbor still
+   * traces the Bézier boundary and must match exactly. Default false.
+   */
+  roundPrimitives?: boolean
 }
 
 /** Stable marker emitted right after the opening tag. */
@@ -66,17 +82,12 @@ function assertAttrSafe(value: string, what: string): string {
   return value
 }
 
-function serializeShape(shape: SvgShape, precision: number): string | null {
-  if (shape.commands.length === 0) return null
-  if (shape.fill === undefined && shape.stroke === undefined) return null
-
-  const d = assertAttrSafe(buildPathData(shape.commands, precision), 'path data')
-  if (d === '') return null
-
-  let attrs = `d="${d}"`
+/** Fill/stroke/id attributes shared by `<path>` and primitive elements. */
+function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean): string {
+  let attrs = ''
   const fill = shape.fill === undefined ? 'none' : assertAttrSafe(shape.fill, 'fill')
   attrs += ` fill="${fill}"`
-  if (shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
+  if (includeFillRule && shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
   if (shape.stroke !== undefined) attrs += ` stroke="${assertAttrSafe(shape.stroke, 'stroke')}"`
   if (shape.strokeWidth !== undefined) {
     attrs += ` stroke-width="${formatNumber(shape.strokeWidth, precision)}"`
@@ -84,7 +95,51 @@ function serializeShape(shape: SvgShape, precision: number): string | null {
   if (shape.strokeLinecap !== undefined) attrs += ` stroke-linecap="${shape.strokeLinecap}"`
   if (shape.strokeLinejoin !== undefined) attrs += ` stroke-linejoin="${shape.strokeLinejoin}"`
   if (shape.id !== undefined && shape.id !== '') attrs += ` id="${xmlEscape(shape.id)}"`
-  return `<path ${attrs}/>`
+  return attrs
+}
+
+/** A detected primitive as its SVG element (fill-rule dropped — a single region). */
+function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): string {
+  const paint = paintAttrs(shape, precision, false)
+  const n = (v: number): string => formatNumber(v, precision)
+  switch (prim.kind) {
+    case 'rect':
+      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}"${paint}/>`
+    case 'circle':
+      return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
+    case 'ellipse':
+      return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${paint}/>`
+  }
+}
+
+/**
+ * A shape as either a finished element (primitive or an un-optimized path) or,
+ * when optimizing, a path split into its `d` and paint so consecutive shapes
+ * sharing the exact paint can be merged into one `<path>`.
+ */
+type ShapeOut = { kind: 'element'; svg: string } | { kind: 'path'; d: string; paint: string }
+
+function shapeOut(
+  shape: SvgShape,
+  precision: number,
+  optimize: boolean,
+  roundPrimitives: boolean,
+): ShapeOut | null {
+  if (shape.commands.length === 0) return null
+  if (shape.fill === undefined && shape.stroke === undefined) return null
+
+  if (optimize) {
+    const cleaned = cleanCommands(shape.commands, precision)
+    const prim = detectPrimitive(cleaned, precision, roundPrimitives)
+    if (prim !== null) return { kind: 'element', svg: primitiveElement(prim, shape, precision) }
+    const d = assertAttrSafe(optimizePathData(cleaned, precision), 'path data')
+    if (d === '') return null
+    return { kind: 'path', d, paint: paintAttrs(shape, precision, true) }
+  }
+
+  const d = assertAttrSafe(buildPathData(shape.commands, precision), 'path data')
+  if (d === '') return null
+  return { kind: 'element', svg: `<path d="${d}"${paintAttrs(shape, precision, true)}/>` }
 }
 
 /**
@@ -94,6 +149,8 @@ function serializeShape(shape: SvgShape, precision: number): string | null {
  */
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   const precision = clampPrecision(opts.precision)
+  const optimize = opts.optimizePaths === true
+  const roundPrimitives = opts.roundPrimitives === true
   const w = formatNumber(doc.width, precision)
   const h = formatNumber(doc.height, precision)
 
@@ -121,10 +178,30 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   if (doc.desc !== undefined && doc.desc !== '') {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
-  for (const shape of doc.shapes) {
-    const path = serializeShape(shape, precision)
-    if (path !== null) children.push(path)
+  // Consecutive optimized paths that share identical paint fold into one
+  // <path> (same-fill shapes in our output are disjoint, so the union renders
+  // identically). Primitives and un-optimized paths flush the pending run.
+  let pending: { d: string; paint: string } | null = null
+  const flush = (): void => {
+    if (pending !== null) {
+      children.push(`<path d="${pending.d}"${pending.paint}/>`)
+      pending = null
+    }
   }
+  for (const shape of doc.shapes) {
+    const out = shapeOut(shape, precision, optimize, roundPrimitives)
+    if (out === null) continue
+    if (out.kind === 'element') {
+      flush()
+      children.push(out.svg)
+    } else if (pending !== null && pending.paint === out.paint) {
+      pending.d += ` ${out.d}`
+    } else {
+      flush()
+      pending = { d: out.d, paint: out.paint }
+    }
+  }
+  flush()
 
   if (opts.pretty === true) {
     return `${open}\n  ${children.join('\n  ')}\n</svg>\n`

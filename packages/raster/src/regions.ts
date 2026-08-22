@@ -2,17 +2,37 @@
  * Label-map region cleanup. Connected components are found with explicit
  * stack-based flood fill (no recursion — images can be 4096×4096).
  */
-import { createMask } from '@vectorizer/core'
+import { createMask, deltaEOkSq } from '@vectorizer/core'
 import type { BinaryMask, LabelMap } from '@vectorizer/core'
+
+export interface MergeOptions {
+  /** Palette colors in Oklab, length `labels.count * 3`, indexed by label. */
+  oklab: Float32Array
+  /**
+   * Keep a small region instead of absorbing it when its Oklab ΔE to the
+   * would-be target label is at least this (a high-contrast detail, e.g. a
+   * logo dot). Low-contrast specks still merge away.
+   */
+  keepContrast: number
+}
 
 /**
  * Absorb 4-connected components smaller than `minArea` into their most
  * frequent 4-neighbor label (excluding -1 and the component's own label).
  * Ties resolve to the smallest label id. Repeats until stable, at most 8
  * rounds. -1 pixels stay -1. Mutates and returns `labels`.
+ *
+ * With `opts`, a small component is kept (not merged) when its color differs
+ * from the target label's by at least `keepContrast` in Oklab, preserving small
+ * high-contrast features while still clearing low-contrast noise.
  */
-export function mergeSmallRegions(labels: LabelMap, minArea: number): LabelMap {
+export function mergeSmallRegions(
+  labels: LabelMap,
+  minArea: number,
+  opts?: MergeOptions,
+): LabelMap {
   if (minArea <= 1) return labels
+  const keepSq = opts ? opts.keepContrast * opts.keepContrast : 0
   const { width: w, height: h, data } = labels
   const n = w * h
   const comp = new Int32Array(n)
@@ -90,6 +110,7 @@ export function mergeSmallRegions(labels: LabelMap, minArea: number): LabelMap {
         }
       }
       if (bestLab !== -1) {
+        if (opts && contrastExceeds(opts.oklab, lab, bestLab, keepSq)) continue // keep the detail
         for (let s = start; s < start + size; s++) data[order[s]] = bestLab
         merged = true
       }
@@ -97,6 +118,16 @@ export function mergeSmallRegions(labels: LabelMap, minArea: number): LabelMap {
     if (!merged) break
   }
   return labels
+}
+
+/** True when two palette labels differ by at least `keepSq` (squared Oklab ΔE). */
+function contrastExceeds(oklab: Float32Array, a: number, b: number, keepSq: number): boolean {
+  const ai = a * 3
+  const bi = b * 3
+  return (
+    deltaEOkSq(oklab[ai], oklab[ai + 1], oklab[ai + 2], oklab[bi], oklab[bi + 1], oklab[bi + 2]) >=
+    keepSq
+  )
 }
 
 /** 1 where `labels.data[i] === label`, else 0. */

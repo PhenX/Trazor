@@ -43,6 +43,9 @@ import type { SvgShape } from '@vectorizer/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
+/** Oklab ΔE above which a small region counts as a keep-worthy detail. */
+const DETAIL_CONTRAST = 0.1
+
 /** Cumulative progress budget per stage (sums to 1). */
 const STAGE_BUDGET: Record<StageId, number> = {
   preprocess: 0.12,
@@ -153,7 +156,13 @@ export async function vectorize(
       title: settings.svgTitle || undefined,
       shapes,
     },
-    { precision: settings.precision },
+    {
+      precision: settings.precision,
+      optimizePaths: settings.optimizeSvg,
+      // Circle/ellipse detection is a sub-pixel change; keep it off for cutout,
+      // where the neighbor still traces the Bézier boundary and must match.
+      roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
+    },
   )
   run.progress(0.6)
   const analysis = analyzeSvg(svg)
@@ -223,7 +232,22 @@ async function colorPipeline(
   await run.tick()
 
   run.stage('segment')
-  mergeSmallRegions(q.labels, settings.minRegionArea)
+  if (settings.preserveDetails) {
+    const oklab = new Float32Array(q.paletteHex.length * 3)
+    for (let i = 0; i < q.paletteHex.length; i++) {
+      const [L, a, b] = rgbToOklab(
+        q.paletteRgb[i * 3] / 255,
+        q.paletteRgb[i * 3 + 1] / 255,
+        q.paletteRgb[i * 3 + 2] / 255,
+      )
+      oklab[i * 3] = L
+      oklab[i * 3 + 1] = a
+      oklab[i * 3 + 2] = b
+    }
+    mergeSmallRegions(q.labels, settings.minRegionArea, { oklab, keepContrast: DETAIL_CONTRAST })
+  } else {
+    mergeSmallRegions(q.labels, settings.minRegionArea)
+  }
   const labels = q.labels
   const counts = new Uint32Array(labels.count)
   for (let i = 0; i < labels.data.length; i++) {
@@ -247,12 +271,15 @@ async function colorPipeline(
     curveOptimize: settings.curveOptimize,
     optTolerance: settings.optTolerance,
   }
+  // With detail preservation, the contrast-aware merge above is the sole speck
+  // filter — the tracer must not drop the small regions it deliberately kept.
+  const traceMinArea = settings.preserveDetails ? 1 : Math.max(1, settings.minRegionArea)
   const usedPalette: string[] = []
 
   if (settings.layering === 'cutout') {
     const regions = traceLabelMap(labels, {
       ...curveOpts,
-      minArea: Math.max(1, settings.minRegionArea),
+      minArea: traceMinArea,
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
@@ -294,7 +321,7 @@ async function colorPipeline(
       const traced = traceMask(layerMask, {
         ...curveOpts,
         turnPolicy: settings.turnPolicy,
-        minArea: Math.max(1, settings.minRegionArea),
+        minArea: traceMinArea,
       })
       const fill = q.paletteHex[order[i]]
       if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)

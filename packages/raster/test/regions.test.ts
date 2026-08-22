@@ -37,6 +37,33 @@ describe('mergeSmallRegions', () => {
     expect([...labels.data]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
   })
 
+  it('keeps a small region that is high-contrast against its target', () => {
+    const rows = [
+      [0, 0, 0, 1],
+      [0, 2, 2, 1],
+      [0, 0, 0, 1],
+    ]
+    const labels = labelMap(4, 3, rows, 3)
+    // Label 2 (would merge into 0) is far from 0 in Oklab ⇒ kept as a detail.
+    const oklab = new Float32Array([0, 0, 0, 0.5, 0, 0, 1, 0, 0])
+    mergeSmallRegions(labels, 3, { oklab, keepContrast: 0.1 })
+    expect(labels.data[1 * 4 + 1]).toBe(2)
+    expect(labels.data[1 * 4 + 2]).toBe(2)
+  })
+
+  it('still merges a small low-contrast region under contrast mode', () => {
+    const rows = [
+      [0, 0, 0, 1],
+      [0, 2, 2, 1],
+      [0, 0, 0, 1],
+    ]
+    const labels = labelMap(4, 3, rows, 3)
+    // Label 2 is barely different from 0 ⇒ noise, merged away as usual.
+    const oklab = new Float32Array([0, 0, 0, 0.5, 0, 0, 0.05, 0, 0])
+    mergeSmallRegions(labels, 3, { oklab, keepContrast: 0.1 })
+    expect([...labels.data]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
+  })
+
   it('keeps -1 pixels and regions surrounded only by -1', () => {
     const rows = [
       [-1, -1, -1, -1],

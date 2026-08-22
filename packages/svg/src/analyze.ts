@@ -5,8 +5,9 @@
  */
 
 export interface SvgAnalysis {
+  /** Drawable shape elements: `<path>` plus `<rect>`/`<circle>`/`<ellipse>`/`<line>`/`<polyline>`/`<polygon>`. */
   pathCount: number
-  /** Draw-command letters (`[MLQCTSAmlqctsa]`) across all `d` attributes — Z/z excluded. */
+  /** Draw-command letters (`[MLHVQCTSAmlhvqctsa]`) across all `d` attributes — Z/z excluded. */
   nodeCount: number
   colorCount: number
   /** Distinct fills + strokes in document order, hex-normalized, without `none`/`transparent`. */
@@ -39,11 +40,12 @@ function quoted(m: RegExpMatchArray, first: number): string {
 }
 
 export function analyzeSvg(svg: string): SvgAnalysis {
-  const pathCount = (svg.match(/<path\b/g) ?? []).length
+  const pathCount = (svg.match(/<(?:path|rect|circle|ellipse|line|polyline|polygon)\b/g) ?? [])
+    .length
 
   let nodeCount = 0
   for (const m of svg.matchAll(/(?<![\w-])d\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
-    nodeCount += (quoted(m, 1).match(/[MLQCTSAmlqctsa]/g) ?? []).length
+    nodeCount += (quoted(m, 1).match(/[MLHVQCTSAmlhvqctsa]/g) ?? []).length
   }
 
   // Collect paints with their source offsets so the palette keeps document order.

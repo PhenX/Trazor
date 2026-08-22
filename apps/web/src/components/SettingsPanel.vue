@@ -339,6 +339,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           hint="Regions smaller than this many pixels are merged away"
           @update:model-value="set('minRegionArea', $event)"
         />
+        <SwitchRow
+          label="Keep details"
+          :model-value="s.preserveDetails"
+          :default-value="D.preserveDetails"
+          hint="Keep small high-contrast features (e.g. a logo dot) instead of merging them away"
+          @update:model-value="set('preserveDetails', $event)"
+        />
         <SliderRow
           v-if="s.layering === 'cutout'"
           label="Gap fill"
@@ -552,6 +559,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :default-value="D.precision"
           hint="Decimal places for SVG coordinates"
           @update:model-value="set('precision', $event)"
+        />
+        <SwitchRow
+          label="Minify paths"
+          :model-value="s.optimizeSvg"
+          :default-value="D.optimizeSvg"
+          hint="Compact path data with relative and H/V commands — identical shapes, smaller file"
+          @update:model-value="set('optimizeSvg', $event)"
         />
         <ControlRow label="Units" hint="px for screens, mm for physical machines">
           <div class="seg unit-seg">
