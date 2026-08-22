@@ -15,34 +15,60 @@ Two tasks share this scaffold, selected with `--task` (one generated dataset tra
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed;
 you generate them here and drop the `.onnx` in place.
 
-## Setup (Windows / macOS / Linux)
+## From scratch
 
-From the repo root. First make sure the JS deps are installed (`npm install`) — the data step uses `npm run dataset`.
+You need three things on the machine, then one bootstrap command. Everything runs from the **repo root** and installs
+nothing globally — the Python side lives entirely in a local `.venv`.
 
-Create and activate a virtualenv:
+### Prerequisites (both platforms)
+
+1. **Node 18+** and the repo's JS deps — the data step is `npm run dataset`:
+   ```sh
+   npm install
+   ```
+2. **Python 3.10+** — [python.org](https://www.python.org/downloads/) (on Windows, tick _“Add python.exe to PATH”_).
+3. **For GPU training, an NVIDIA GPU + driver.** Install/refresh the driver from
+   [nvidia.com/Download](https://www.nvidia.com/Download/index.aspx), then confirm the toolchain sees it:
+   ```sh
+   nvidia-smi          # prints your GPU + the max CUDA version the driver supports
+   ```
+   No GPU is fine — training falls back to CPU automatically (slower). You do **not** need the full CUDA Toolkit; the
+   PyTorch CUDA wheel bundles what it needs.
+
+### Bootstrap the Python env
+
+One script creates `.venv` and installs PyTorch + the training deps into it.
 
 ```powershell
-# Windows (PowerShell)
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# Windows (PowerShell), from the repo root
+.\scripts\train\setup.ps1 -Cuda cu124   # GPU: use the cuXXX tag ≤ the CUDA version nvidia-smi printed
+.\scripts\train\setup.ps1               # CPU-only (omit -Cuda)
 ```
 
 ```sh
-# macOS / Linux
-python3 -m venv .venv
-source .venv/bin/activate
+# Linux / macOS, from the repo root
+sh scripts/train/setup.sh --cuda cu124   # pin a specific CUDA build (e.g. an older driver)
+sh scripts/train/setup.sh                # default wheel: CUDA-enabled on Linux, CPU on macOS
 ```
 
-Install PyTorch for your GPU, then the rest. Pick the CUDA build that matches your driver from
-<https://pytorch.org/get-started/locally/> — for example:
+Pick the `cuXXX` tag from <https://pytorch.org/get-started/locally/> (e.g. `cu121`, `cu124`) — it must be **≤** the CUDA
+version `nvidia-smi` reported. The script prints `CUDA available: True` and your device name when the GPU is wired up
+correctly; if it says `False` after a `-Cuda`/`--cuda` install, the tag is wrong for your driver — re-run with a lower one.
+
+> **Windows execution-policy note:** the bootstrap calls the venv's Python directly, so it works as-is. Only _activating_
+> the venv (`.\.venv\Scripts\Activate.ps1`) can hit _“running scripts is disabled on this system”_ — either run this once,
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or skip activation and call `.venv\Scripts\python.exe` directly
+> (the commands below show both).
+
+### Manual alternative
+
+If you'd rather not use the bootstrap script:
 
 ```sh
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+python3 -m venv .venv && . .venv/bin/activate            # Windows: py -m venv .venv ; .\.venv\Scripts\Activate.ps1
+pip install torch --index-url https://download.pytorch.org/whl/cu124   # GPU only; skip for CPU
 pip install -r scripts/train/requirements.txt
 ```
-
-(No GPU? Just `pip install -r scripts/train/requirements.txt` — it works on CPU, only slower. The scripts auto-detect
-CUDA and use it when present.)
 
 ## One command
 
@@ -55,6 +81,9 @@ This generates the dataset, trains, and writes `apps/web/public/models/<task>.on
 data loading (leave it at the default `0` if you hit a multiprocessing error on Windows). Reuse an existing dataset with
 `--data dataset-out --skip-data` — the same set trains both tasks, so generate once and run the two commands with
 `--skip-data`.
+
+The examples assume the venv is activated. If you skipped activation (see the note above), just call the venv's Python:
+`.venv/bin/python …` on Linux/macOS, `.venv\Scripts\python.exe …` on Windows.
 
 ## Or step by step
 
@@ -75,6 +104,8 @@ For the cleanup model, pass `--task cleanup` to steps 2 and 3 (reusing the same 
 
 | File               | Role                                                                                       |
 | ------------------ | ------------------------------------------------------------------------------------------ |
+| `setup.sh`         | bootstrap the `.venv` + deps (Linux / macOS), optional `--cuda cuXXX`                      |
+| `setup.ps1`        | bootstrap the `.venv` + deps (Windows), optional `-Cuda cuXXX`                             |
 | `pipeline.py`      | one-shot: data → train → export (cross-platform), `--task` aware                           |
 | `dataset.py`       | reads the generator manifest; input normalization matches Edge/CleanupEnhancer exactly     |
 | `model.py`         | `TinyUNet` (compact U-Net, `out_channels` per task) + the sigmoid export wrapper           |

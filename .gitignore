@@ -159,6 +159,9 @@ dataset-out/
 *.onnx
 !apps/web/public/models/*.onnx
 
+# Training scratch: checkpoints (.pt) and preview montages (scripts/train)
+scripts/train/checkpoints/
+
 # Python (scripts/train) — training env and caches
 __pycache__/
 *.pyc
