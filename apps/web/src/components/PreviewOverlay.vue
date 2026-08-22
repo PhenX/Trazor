@@ -2,12 +2,15 @@
 import type { PathCommand } from '@vectorizer/core'
 import type { SvgGeometry } from '@vectorizer/svg'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { SHAPE_KIND_TOKEN } from '../lib/overlay'
 
 /**
  * Inspection overlay: draws the traced SVG's path outlines, on-curve anchor
  * points (small `x`) and Bézier control handles on a canvas above the preview,
- * so the density and shape of the geometry is visible at a glance. Purely a
- * read-out — it never captures pointer events.
+ * so the density and shape of the geometry is visible at a glance. Each element
+ * kind is tinted with its own color (traced paths vs. rect/circle/ellipse
+ * primitives), so simplified shapes stand out. Purely a read-out — it never
+ * captures pointer events.
  *
  * Everything is drawn in screen space and redrawn on any pan/zoom, so anchor
  * marks keep a constant on-screen size at every zoom level. Geometry points are
@@ -53,7 +56,7 @@ function countGeometry(geo: SvgGeometry | null): void {
   controlCount = 0
   if (!geo) return
   for (const shape of geo.shapes) {
-    for (const cmd of shape) {
+    for (const cmd of shape.commands) {
       if (cmd.type === 'Z') continue
       nodeCount++
       if (cmd.type === 'Q') controlCount += 1
@@ -127,82 +130,113 @@ function draw(): void {
   const my = (y: number): number => props.ty + y * sy
 
   const styles = getComputedStyle(el)
-  const accent = styles.getPropertyValue('--accent').trim() || '#6c7bff'
-  const accentStrong = styles.getPropertyValue('--accent-strong').trim() || '#8894ff'
+  const tokenCache = new Map<string, string>()
+  const tokenColor = (token: string): string => {
+    let c = tokenCache.get(token)
+    if (c === undefined) {
+      c = styles.getPropertyValue(token).trim() || '#6c7bff'
+      tokenCache.set(token, c)
+    }
+    return c
+  }
   const halo = props.dark ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.55)'
-
-  // Outlines — one path for the whole document.
-  const outline = new Path2D()
-  for (const shape of geo.shapes) replayOutline(outline, shape, sx, sy)
-  ctx.lineJoin = 'round'
-  ctx.lineCap = 'round'
-  ctx.strokeStyle = accent
-  ctx.globalAlpha = 0.85
-  ctx.lineWidth = OUTLINE_WIDTH
-  ctx.stroke(outline)
-  ctx.globalAlpha = 1
 
   const showNodes = nodeCount <= NODE_LIMIT
   const showHandles = showNodes && controlCount > 0 && controlCount <= HANDLE_LIMIT
 
-  // Bézier handles: lines tying each control point to its anchor, plus a small
-  // square at every control point (drawn on top, so distinct from the anchor
-  // crosses).
-  if (showHandles) {
-    const handles = new Path2D()
-    const dots: number[] = []
-    for (const shape of geo.shapes) {
+  // Group every shape into a per-color bucket keyed by its element kind, so all
+  // paths, all rects, etc. can each be stroked in one pass in their own hue.
+  const buckets = new Map<string, Bucket>()
+  const bucketFor = (color: string): Bucket => {
+    let b = buckets.get(color)
+    if (b === undefined) {
+      b = { outline: new Path2D(), handles: new Path2D(), dots: [], marks: new Path2D() }
+      buckets.set(color, b)
+    }
+    return b
+  }
+
+  for (const shape of geo.shapes) {
+    const b = bucketFor(tokenColor(SHAPE_KIND_TOKEN[shape.kind]))
+    replayOutline(b.outline, shape.commands, sx, sy)
+    if (showNodes) {
+      for (const cmd of shape.commands) {
+        if (cmd.type !== 'Z') addCross(b.marks, mx(cmd.x), my(cmd.y))
+      }
+    }
+    if (showHandles) {
       let cx = 0
       let cy = 0
-      for (const cmd of shape) {
+      for (const cmd of shape.commands) {
         if (cmd.type === 'M' || cmd.type === 'L') {
           cx = cmd.x
           cy = cmd.y
         } else if (cmd.type === 'Q') {
-          addHandle(handles, dots, mx(cx), my(cy), mx(cmd.x1), my(cmd.y1))
-          handles.moveTo(mx(cmd.x), my(cmd.y))
-          handles.lineTo(mx(cmd.x1), my(cmd.y1))
+          addHandle(b.handles, b.dots, mx(cx), my(cy), mx(cmd.x1), my(cmd.y1))
+          b.handles.moveTo(mx(cmd.x), my(cmd.y))
+          b.handles.lineTo(mx(cmd.x1), my(cmd.y1))
           cx = cmd.x
           cy = cmd.y
         } else if (cmd.type === 'C') {
-          addHandle(handles, dots, mx(cx), my(cy), mx(cmd.x1), my(cmd.y1))
-          addHandle(handles, dots, mx(cmd.x), my(cmd.y), mx(cmd.x2), my(cmd.y2))
+          addHandle(b.handles, b.dots, mx(cx), my(cy), mx(cmd.x1), my(cmd.y1))
+          addHandle(b.handles, b.dots, mx(cmd.x), my(cmd.y), mx(cmd.x2), my(cmd.y2))
           cx = cmd.x
           cy = cmd.y
         }
       }
     }
-    ctx.strokeStyle = accent
-    ctx.globalAlpha = 0.4
-    ctx.lineWidth = HANDLE_WIDTH
-    ctx.stroke(handles)
-    ctx.globalAlpha = 0.6
-    ctx.fillStyle = accent
-    const side = CONTROL_RADIUS * 2
-    for (let p = 0; p < dots.length; p += 2) {
-      ctx.fillRect(dots[p] - CONTROL_RADIUS, dots[p + 1] - CONTROL_RADIUS, side, side)
-    }
-    ctx.globalAlpha = 1
   }
 
-  // Anchor marks — small crosses, haloed so they read over any fill.
-  if (showNodes) {
-    const marks = new Path2D()
-    for (const shape of geo.shapes) {
-      for (const cmd of shape) {
-        if (cmd.type === 'Z') continue
-        addCross(marks, mx(cmd.x), my(cmd.y))
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+
+  // Outlines (bottom layer).
+  ctx.globalAlpha = 0.85
+  ctx.lineWidth = OUTLINE_WIDTH
+  for (const [color, b] of buckets) {
+    ctx.strokeStyle = color
+    ctx.stroke(b.outline)
+  }
+
+  // Bézier handles: lines to each control point, then a small square on it.
+  if (showHandles) {
+    const side = CONTROL_RADIUS * 2
+    for (const [color, b] of buckets) {
+      ctx.strokeStyle = color
+      ctx.globalAlpha = 0.4
+      ctx.lineWidth = HANDLE_WIDTH
+      ctx.stroke(b.handles)
+      ctx.fillStyle = color
+      ctx.globalAlpha = 0.6
+      for (let p = 0; p < b.dots.length; p += 2) {
+        ctx.fillRect(b.dots[p] - CONTROL_RADIUS, b.dots[p + 1] - CONTROL_RADIUS, side, side)
       }
     }
-    ctx.strokeStyle = halo
-    ctx.lineWidth = NODE_WIDTH + 1.5
-    ctx.stroke(marks)
-    ctx.strokeStyle = accentStrong
-    ctx.lineWidth = NODE_WIDTH
-    ctx.stroke(marks)
   }
 
+  // Anchor marks — small crosses on top, haloed so they read over any fill.
+  if (showNodes) {
+    for (const [color, b] of buckets) {
+      ctx.globalAlpha = 1
+      ctx.strokeStyle = halo
+      ctx.lineWidth = NODE_WIDTH + 1.5
+      ctx.stroke(b.marks)
+      ctx.strokeStyle = color
+      ctx.lineWidth = NODE_WIDTH
+      ctx.stroke(b.marks)
+    }
+  }
+
+  ctx.globalAlpha = 1
   if (props.clipX !== null) ctx.restore()
+}
+
+/** Per-color accumulation of everything drawn for one element kind. */
+interface Bucket {
+  outline: Path2D
+  handles: Path2D
+  dots: number[]
+  marks: Path2D
 }
 
 /** Add a handle line (anchor → control) and record the control point. */

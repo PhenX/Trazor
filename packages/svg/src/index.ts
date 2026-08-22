@@ -1,7 +1,7 @@
 export { analyzeSvg } from './analyze'
 export type { SvgAnalysis } from './analyze'
 export { extractGeometry } from './geometry'
-export type { SvgGeometry } from './geometry'
+export type { SvgElementKind, SvgGeometry, SvgGeometryShape } from './geometry'
 export { buildPathData, formatNumber } from './pathdata'
 export { optimizePathData } from './optimize'
 export { cleanCommands } from './clean'

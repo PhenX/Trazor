@@ -18,7 +18,8 @@ src/
   App.vue                layout grid, keyboard shortcuts, theme binding
   store/appStore.ts       the single source of truth (Pinia setup store)
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
-  lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers
+  lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
+                          overlay (per-element-kind colors/labels for the complexity overlay)
   components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, StatsBar, ExportBar, ToastHost
   components/controls/    ControlRow / SliderRow / SelectRow / SwitchRow / ColorRow / TextRow
   styles/base.css         design tokens (dark + light), shared component classes

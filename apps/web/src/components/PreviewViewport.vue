@@ -2,9 +2,10 @@
 import { clamp } from '@vectorizer/core'
 import type { RasterImage } from '@vectorizer/core'
 import { extractGeometry } from '@vectorizer/svg'
-import type { SvgGeometry } from '@vectorizer/svg'
+import type { SvgElementKind, SvgGeometry } from '@vectorizer/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatCount, STAGE_LABELS } from '../lib/format'
+import { SHAPE_KIND_LABEL, SHAPE_KIND_TOKEN } from '../lib/overlay'
 import { useAppStore } from '../store/appStore'
 import PreviewOverlay from './PreviewOverlay.vue'
 
@@ -86,6 +87,31 @@ const overlayClipX = computed(() => (view.value === 'split' ? dividerX.value : n
 function toggleNodes(): void {
   showNodes.value = !showNodes.value
 }
+
+// Per-kind tally for the overlay legend: how many of each element kind, sorted
+// most-common first, each with the color the overlay tints it.
+interface LegendItem {
+  kind: SvgElementKind
+  count: number
+  token: string
+  label: string
+}
+const overlayLegend = computed<LegendItem[]>(() => {
+  const geo = geometry.value
+  if (!geo) return []
+  const counts = new Map<SvgElementKind, number>()
+  for (const shape of geo.shapes) {
+    counts.set(shape.kind, (counts.get(shape.kind) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([kind, count]) => ({
+      kind,
+      count,
+      token: SHAPE_KIND_TOKEN[kind],
+      label: SHAPE_KIND_LABEL[kind],
+    }))
+    .toSorted((a, b) => b.count - a.count)
+})
 
 const VIEWS: ReadonlyArray<{ id: ViewMode; label: string; key: string }> = [
   { id: 'split', label: 'Split', key: '1' },
@@ -504,11 +530,13 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
         <kbd>Enter</kbd> apply · <kbd>Esc</kbd> cancel
       </span>
 
-      <!-- Complexity readout -->
-      <span v-if="showNodes && hasResult && store.result" class="nodes-chip chip chip--accent">
-        {{ formatCount(store.result.stats.pathCount) }} paths ·
-        {{ formatCount(store.result.stats.nodeCount) }} nodes
-      </span>
+      <!-- Complexity readout: a per-element-kind legend, colored to match the overlay -->
+      <div v-if="showNodes && overlayLegend.length" class="nodes-chip chip">
+        <span v-for="item in overlayLegend" :key="item.kind" class="legend-item">
+          <span class="legend-dot" :style="{ background: `var(${item.token})` }" />
+          {{ formatCount(item.count) }} {{ item.label }}{{ item.count === 1 ? '' : 's' }}
+        </span>
+      </div>
 
       <!-- Worker error card -->
       <div v-if="store.error && !store.busy" class="error-card card">
@@ -804,7 +832,23 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   right: 10px;
   bottom: 10px;
   z-index: 5;
+  height: auto;
+  padding: 3px 9px;
+  gap: 9px;
   pointer-events: none;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
 }
 
 .error-card {

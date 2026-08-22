@@ -208,10 +208,16 @@ export interface SvgAnalysis {
   height: number | null // from viewBox
 }
 export function analyzeSvg(svg: string): SvgAnalysis
+export type SvgElementKind =
+  'path' | 'rect' | 'circle' | 'ellipse' | 'line' | 'polyline' | 'polygon'
+export interface SvgGeometryShape {
+  kind: SvgElementKind // source element, so an overlay can tint primitives apart
+  commands: PathCommand[] // absolute M/L/Q/C/Z for this element
+}
 export interface SvgGeometry {
   width: number | null // viewBox size (overlay coordinate space)
   height: number | null
-  shapes: PathCommand[][] // one absolute command list per drawable element, in document order
+  shapes: SvgGeometryShape[] // one per drawable element, in document order
 }
 // Decode SVG text back into the absolute path model for inspection overlays
 // (anchor points, Bézier handles, outlines). Regex-based, no DOM; exact on our

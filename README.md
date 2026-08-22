@@ -67,10 +67,11 @@ On top of that, three things most tracers don't do:
   `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
 - **Studio UI**: drag & drop / paste / samples, split & difference views with
   zoom/pan, a **node overlay** (toggle, `N`) that draws every path's anchor
-  points, Bézier handles and outlines so you can see the traced geometry's
-  complexity at a glance, per-stage timings, palette swatches, node/path/byte
-  stats, download / copy / data-URI export, dark & light themes, keyboard
-  shortcuts.
+  points, Bézier handles and outlines — color-coded by element kind (traced
+  paths vs. `rect`/`circle`/`ellipse` primitives, with a legend) so you can see
+  the traced geometry's complexity at a glance, per-stage timings, palette
+  swatches, node/path/byte stats, download / copy / data-URI export, dark &
+  light themes, keyboard shortcuts.
 - **Deterministic**: same image + same settings ⇒ byte-identical SVG.
 
 ## Quick start

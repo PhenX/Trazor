@@ -5,21 +5,39 @@
  * it runs in Node and workers like {@link analyzeSvg}. Best-effort on foreign
  * SVGs; exact on our own serializer output.
  *
- * Every drawable element becomes one `PathCommand[]` in absolute coordinates:
- * `<path>` data is parsed (absolute/relative, `H`/`V`/`S`/`T` shorthands
- * resolved), and `<rect>`/`<circle>`/`<ellipse>`/`<line>`/`<polyline>`/`<polygon>`
- * are converted to the equivalent commands (circles/ellipses via the standard
- * four-Bézier arc approximation).
+ * Every drawable element becomes one shape whose `commands` are absolute
+ * coordinates: `<path>` data is parsed (absolute/relative, `H`/`V`/`S`/`T`
+ * shorthands resolved), and `<rect>`/`<circle>`/`<ellipse>`/`<line>`/
+ * `<polyline>`/`<polygon>` are converted to the equivalent commands
+ * (circles/ellipses via the standard four-Bézier arc approximation). Each shape
+ * keeps its source element `kind`, so an overlay can tint primitives apart from
+ * traced paths.
  */
 
 import type { PathCommand } from '@vectorizer/core'
+
+/** Source element a shape came from. */
+export type SvgElementKind =
+  | 'path'
+  | 'rect'
+  | 'circle'
+  | 'ellipse'
+  | 'line'
+  | 'polyline'
+  | 'polygon'
+
+export interface SvgGeometryShape {
+  kind: SvgElementKind
+  /** Absolute path commands for this element. */
+  commands: PathCommand[]
+}
 
 export interface SvgGeometry {
   /** viewBox width/height (the overlay coordinate space); null when absent. */
   width: number | null
   height: number | null
-  /** Absolute path commands per drawable element, in document order. */
-  shapes: PathCommand[][]
+  /** One entry per drawable element, in document order. */
+  shapes: SvgGeometryShape[]
 }
 
 /** Control-point offset that approximates a quarter circle with one cubic. */
@@ -278,7 +296,7 @@ function pointsCommands(attrs: string, close: boolean): PathCommand[] {
   return out
 }
 
-function elementCommands(tag: string, attrs: string): PathCommand[] {
+function elementCommands(tag: SvgElementKind, attrs: string): PathCommand[] {
   switch (tag) {
     case 'path': {
       const d = attr(attrs, 'd')
@@ -330,10 +348,11 @@ function viewBoxSize(svg: string): { width: number | null; height: number | null
  */
 export function extractGeometry(svg: string): SvgGeometry {
   const { width, height } = viewBoxSize(svg)
-  const shapes: PathCommand[][] = []
+  const shapes: SvgGeometryShape[] = []
   for (const m of svg.matchAll(/<(path|rect|circle|ellipse|line|polyline|polygon)\b([^>]*)>/g)) {
-    const commands = elementCommands(m[1], m[2])
-    if (commands.length > 0) shapes.push(commands)
+    const kind = m[1] as SvgElementKind
+    const commands = elementCommands(kind, m[2])
+    if (commands.length > 0) shapes.push({ kind, commands })
   }
   return { width, height, shapes }
 }
