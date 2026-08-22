@@ -321,6 +321,7 @@ async function colorPipeline(
     smoothing: settings.smoothing,
     curveOptimize: settings.curveOptimize,
     optTolerance: settings.optTolerance,
+    cornerThreshold: settings.cornerThreshold,
   }
   // With detail preservation or an edge hint, the merge above is the sole speck
   // filter — the tracer must not drop the small regions it deliberately kept.
@@ -435,6 +436,7 @@ async function inkPipeline(
       smoothing: settings.smoothing,
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
+      cornerThreshold: settings.cornerThreshold,
       turnPolicy: settings.turnPolicy,
       // With a hint, the guided despeckle is the speck filter (it already dropped
       // everything small that the hint did not protect), so the tracer must not

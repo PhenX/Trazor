@@ -194,9 +194,11 @@ describe('native engine pipeline', () => {
     for (let y = 100; y < 103; y++) {
       for (let x = 100; x < 103; x++) setPixel(img, x, y, 0, 0, 0)
     }
+    // 200 px → 50 mm is 0.25 mm/px, so the 3 px square is ~0.75 mm — genuinely
+    // sub-millimeter regardless of how its corners are rendered.
     const result = await vectorize(
       img,
-      settings({ mode: 'bw', unit: 'mm', widthMm: 100, minRegionArea: 1 }),
+      settings({ mode: 'bw', unit: 'mm', widthMm: 50, minRegionArea: 1 }),
     )
     expect(result.svg).toContain('mm"')
     expect(result.warnings.some((w) => w.code === 'tiny-features')).toBe(true)

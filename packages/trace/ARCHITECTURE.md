@@ -42,7 +42,10 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
 3. **Vertex adjustment** (`adjust.ts`, §2.3.1) — move each polygon vertex to the least-squares intersection of its two
    incident edge lines, constrained to the unit square around the lattice vertex.
 4. **Corner analysis + smoothing** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides
-   corner vs smooth at each vertex; smooth vertices become cubic pieces through the edge midpoints.
+   corner vs smooth at each vertex; smooth vertices become cubic pieces through the edge midpoints. When a
+   `cornerThreshold` is supplied it refines that call to be angle- and scale-aware: a vertex whose shorter incident edge is
+   sub-pixel is never a corner (staircase/aliasing jags stay smooth), a genuinely sharp interior angle is always a corner,
+   and the α metric governs only the shallow middle. Omitting it is byte-identical to the pure α behavior.
 5. **Curve optimization** (`opticurve.ts`, §2.4) — merge runs of adjacent cubics into one while it stays within
    `optTolerance`, keeping node counts low.
 

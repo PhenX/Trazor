@@ -101,7 +101,11 @@ export interface VectorizeSettings {
   curveOptimize: boolean
   /** Max deviation (px) allowed when merging curves. */
   optTolerance: number
-  /** Interior angle (deg) below which an open-path vertex is pinned as a corner. */
+  /**
+   * Interior angle (deg) below which a vertex is pinned as a corner — applied to
+   * open centerline paths and to closed filled/region rings alike. Above it,
+   * pixel-scale jags stay smooth and the curve-chain α metric governs.
+   */
   cornerThreshold: number
   /** Max fitting error (px) for open-path (centerline) Bézier fitting. */
   fitTolerance: number

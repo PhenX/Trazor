@@ -378,7 +378,7 @@ function fitOpenChain(points: FlatPoints, opts: TraceCurveOptions): PathCommand[
   }
 
   const alphamax = (opts.smoothing * 4) / 3
-  const pieces = smoothOpen(adjusted, alphamax)
+  const pieces = smoothOpen(adjusted, alphamax, opts.cornerThreshold)
   const out: PathCommand[] = []
   const mid0x = (adjusted[0] + adjusted[2]) / 2
   const mid0y = (adjusted[1] + adjusted[3]) / 2

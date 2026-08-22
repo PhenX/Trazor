@@ -14,6 +14,12 @@ export interface TraceCurveOptions {
   smoothing: number
   curveOptimize: boolean
   optTolerance: number
+  /**
+   * Interior angle (deg) below which a vertex is pinned as a corner, and above
+   * which pixel-scale jags stay smooth. Omit for the pure Selinger α behavior
+   * (byte-identical to no threshold); supply it for angle/scale-aware corners.
+   */
+  cornerThreshold?: number
 }
 
 export interface TraceMaskOptions extends TraceCurveOptions {
@@ -115,7 +121,7 @@ export function closedPathToCommands(ring: FlatPoints, opts: TraceCurveOptions):
   // Drop the duplicated last vertex for the cyclic stages.
   const ringVerts = adjusted.slice(0, adjusted.length - 2)
   const alphamax = (opts.smoothing * 4) / 3
-  const pieces = smoothClosed(ringVerts, alphamax)
+  const pieces = smoothClosed(ringVerts, alphamax, opts.cornerThreshold)
 
   // The path starts at the end anchor of the last piece.
   const lastPiece = pieces[pieces.length - 1]
