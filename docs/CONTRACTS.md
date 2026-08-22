@@ -198,6 +198,7 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
+  | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
 // The primitive a single closed subpath represents, or null. `allowRound` gates

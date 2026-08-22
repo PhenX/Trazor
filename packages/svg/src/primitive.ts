@@ -12,6 +12,7 @@ import { clampPrecision } from './pathdata'
 
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
+  | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number }
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
 
@@ -139,6 +140,80 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   return null
 }
 
+/** Signed distance from a point to an axis-aligned rounded rectangle (circular corners). */
+function roundedRectSdf(
+  px: number,
+  py: number,
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  r: number,
+): number {
+  const qx = Math.abs(px - cx) - (hx - r)
+  const qy = Math.abs(py - cy) - (hy - r)
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r
+}
+
+/**
+ * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
+ * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
+ * scan and accepts only if every densely sampled boundary point lies on that
+ * rounded rect within tolerance, so a shape that is not really one is rejected.
+ */
+function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
+  if (ops.length < 4 || !ops.every((o) => o.type === 'L' || o.type === 'C')) return null
+  if (!ops.some((o) => o.type === 'C')) return null // corners must be arcs
+
+  // Dense samples: anchors plus each segment's midpoint (a non-axis-aligned edge
+  // or a wrong corner then fails the fit).
+  const samples: Pt[] = [start]
+  let prev = start
+  for (const op of ops) {
+    if (op.type === 'C') samples.push(cubicMid(prev, op))
+    else samples.push({ x: (prev.x + op.x) / 2, y: (prev.y + op.y) / 2 })
+    samples.push({ x: op.x, y: op.y })
+    prev = { x: op.x, y: op.y }
+  }
+
+  const xs = samples.map((p) => p.x)
+  const ys = samples.map((p) => p.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  const hx = (maxX - minX) / 2
+  const hy = (maxY - minY) / 2
+  if (hx <= 0 || hy <= 0) return null
+
+  const maxR = Math.min(hx, hy)
+  const tol = Math.max(0.75, maxR * 0.03)
+  // Fit the corner radius by scanning for the smallest max-error.
+  let bestR = 0
+  let bestErr = Infinity
+  const steps = 64
+  for (let i = 1; i <= steps; i++) {
+    const r = (maxR * i) / steps
+    let err = 0
+    for (const p of samples) {
+      const d = Math.abs(roundedRectSdf(p.x, p.y, cx, cy, hx, hy, r))
+      if (d > err) err = d
+    }
+    if (err < bestErr) {
+      bestErr = err
+      bestR = r
+    }
+  }
+  if (bestErr > tol) return null
+  if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
+  return round(
+    { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
+    precision,
+  )
+}
+
 function round(prim: Primitive, precision: number): Primitive {
   const p = clampPrecision(precision)
   const q = (v: number): number => Number(v.toFixed(p))
@@ -149,6 +224,16 @@ function round(prim: Primitive, precision: number): Primitive {
       y: q(prim.y),
       width: q(prim.width),
       height: q(prim.height),
+    }
+  }
+  if (prim.kind === 'rrect') {
+    return {
+      kind: 'rrect',
+      x: q(prim.x),
+      y: q(prim.y),
+      width: q(prim.width),
+      height: q(prim.height),
+      r: q(prim.r),
     }
   }
   if (prim.kind === 'circle')
@@ -170,5 +255,10 @@ export function detectPrimitive(
   const scale = 10 ** clampPrecision(precision)
   const rect = detectRect(loop.start, loop.ops, scale)
   if (rect) return rect
-  return allowRound ? detectRound(loop.start, loop.ops, precision) : null
+  if (!allowRound) return null
+  // Circle/ellipse first so a true circle stays `<circle>`, not a pill `<rect rx>`.
+  return (
+    detectRound(loop.start, loop.ops, precision) ??
+    detectRoundedRect(loop.start, loop.ops, precision)
+  )
 }
