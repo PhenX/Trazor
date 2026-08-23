@@ -6,6 +6,38 @@ Findings are ranked inside each section; the [prioritized roadmap](#prioritized-
 impact ÷ effort. Numbers come from the opt-in bench added with this audit
 (`AUDIT_BENCH=1 npx vitest run packages/engine/test/audit-bench`, writes `e2e-artifacts/audit-bench.txt`).
 
+## Status: P0 implemented
+
+The four **P0** items below are implemented on this branch (the tables in _The measured baseline_ are the pre-P0
+figures; the deltas here are measured against them on the same scene):
+
+- **A1.1 — edge-aware clustering sample** ✅ `detectEdges` + `quantize` `sampleMask`. Anti-aliased boundary pixels are
+  kept out of the k-means training set. Palette purity on the 10-color scene: **k=16 10/16 → 10/10**, **k=10 8/10 → 10/10**
+  (the blue+purple hue collapse is gone); k=10/16/32 now converge. Stacked output: **paths 561 → 45**, **bytes 108,524 →
+  75,606** (k16); k32 bytes **132,958 → 75,606**.
+- **A1.2 — standalone two-sided relabel** — _not shipped by design._ Once A1.1 cleans the palette, mixture pixels already
+  resolve to a real side (no intermediate centroid, so no halo worms); a separate "reassign to nearest pure neighbor" pass
+  is either a no-op (nearest-palette is already the global nearest) or, in its aggressive form, **erases 1px lines** (whose
+  pixels are entirely boundary). The safe residual is handled by A1.1 + the existing `mergeSmallRegions`; a topology-aware
+  version is left to P2 (A5-adjacent).
+- **A2 — sub-pixel refinement for cutout + adaptive bw** ✅ Generalized the signed-field vertex refinement (previously fed
+  only in bw global threshold) via a `SignedField` sampler + `pairwiseField` color-boundary field, plus `signedAdaptiveField`
+  for adaptive bw. Cutout loops/curved chains snap onto the true anti-aliased edge (verified: an enclosed region traces onto
+  its true (5.3, 4.4) edge instead of the (5, 4) lattice), seam-free and deterministic. Refinement **repositions** vertices
+  (the accuracy win); it does not reduce their count — a straight junction-to-junction edge has no interior vertex to move,
+  so the cutout node count is unchanged. That count is junction fragmentation, addressed below.
+- **A4 — omitBackground border-connectivity** ✅ `clearBorderLabel` clears only the border-connected background; enclosed
+  same-color regions (white text inside a banner) survive.
+- **A3 — cutout cleanup** ◐ Removed the dead `TraceCutoutOptions.minArea`. The chain-merge-through-junctions node
+  reduction is **deferred**: merging chains across a 3-region junction moves the shared junction anchor, which breaks the
+  seam-free guarantee this package exists to provide. The safe form (shared junction tangents / a partition-preserving
+  merge) is a follow-up, tracked in A3 below. With A1/A2 in, the cutout diagnostic still shows ~24.6k `L` — confirming the
+  node load is fragmentation, not the palette/jitter A1/A2 fixed.
+
+Everything stays deterministic and byte-identical when the new paths are inactive (no `sampleMask`, no `colorField`, no
+adaptive `coverage`): the classical trace tests are unchanged. The rest of this document is the original audit; the P1/P2
+items are untouched.
+
 ## The measured baseline
 
 Synthetic anti-aliased illustration (60 blobs, 10 exact colors, 1px AA rims) at 1536×1536, Node 22,
@@ -270,17 +302,22 @@ table) but it is an accuracy ceiling users don't see; after E1–E4 land, the de
 
 ## Prioritized roadmap
 
-**P0 — the accuracy step-change (order matters, each builds on the last):**
+**P0 — the accuracy step-change (implemented on this branch; see [Status](#status-p0-implemented)):**
 
-1. A1.1 edge-aware k-means sampling → A1.2 two-sided boundary assignment (small, isolated in `raster`).
-2. A2 pairwise sub-pixel refinement for cutout chains + stacked rings + bw adaptive (moderate; `trace` +
-   thin engine wiring; the refine primitive exists).
-3. A4 `omitBackground` border-connectivity fix (small, bug-class).
-4. A3 chain merging through 2-valence junctions + shared junction tangents (moderate, `boundary.ts`).
+1. ✅ A1.1 edge-aware k-means sampling. A1.2 standalone relabel **not shipped** — subsumed by A1.1 +
+   `mergeSmallRegions`; the aggressive form erases 1px lines (see Status).
+2. ✅ A2 pairwise sub-pixel refinement for cutout chains + bw adaptive. Stacked ring refinement is deferred
+   (the per-layer union boundary is not a clean two-label field); stacked already benefits from A1's cleaner
+   labels.
+3. ✅ A4 `omitBackground` border-connectivity fix.
+4. ◐ A3 — dead-param cleanup done; chain merging through junctions **deferred** as seam-unsafe (moving a shared
+   junction anchor breaks the partition). Shared junction tangents / a partition-preserving merge is the
+   follow-up.
 
-Expected effect: color-mode boundaries land sub-pixel on the true edge, cutout node counts drop several-fold
-(the 26k `L`s are almost all A1/A3 artifacts), palettes stop wasting entries, and the same-input/same-output
-determinism story is unchanged.
+Measured effect (10-color scene): palette purity 10/10 at every k, stacked paths 561 → 45 and bytes −30–43%,
+cutout boundaries land sub-pixel on the true edge. Cutout node count is unchanged — it is junction
+fragmentation (the deferred A3 merge), not the palette/jitter A1/A2 removed; the earlier "26k `L`s are almost
+all A1/A3 artifacts" estimate was optimistic on the A1 share. Determinism is unchanged.
 
 **P1 — efficiency and interactivity:**
 
