@@ -78,3 +78,52 @@ npm run eval:prepass -- --data /tmp/ds --pred /tmp/pred --split train --limit 8
 
 A perfect (clean) hint over a noisy input protects real detail but also preserves noise-driven regions, so it is a
 useful sanity check, not a target — a trained model predicts a sparser, denoised hint.
+
+---
+
+# Trazor vs. VTracer (tracer comparison)
+
+`tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
+tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
+each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
+reports, per family, the same **Oklab ΔE** fidelity metric plus node count, byte size, and wall-clock time.
+
+It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
+segmentation. Re-run it after either and watch the photo/gradient gap close **without** regressing the flat / line-art
+buckets.
+
+## Run it
+
+```sh
+cargo install vtracer          # once — or set VTRACER_BIN / pass --vtracer <bin>
+npm run eval:corpus            # write the built-in corpus → scripts/eval/corpus
+npm run eval:tracers -- --montage --json eval-artifacts/tracers/report.json
+```
+
+VTracer is **optional**: with no binary found the harness reports Trazor alone and says so. Each image is traced at both
+tools' _intended_ settings for its family — Trazor's matching target profile and the vtracer flags a user would pick
+(`--preset photo`, `--colormode bw`, `--mode pixel`, …) — so it's tool-vs-tool, not one hobbled against the other.
+
+### Options (`tracer-compare.ts`)
+
+| flag        | default                  | meaning                                                       |
+| ----------- | ------------------------ | ------------------------------------------------------------- |
+| `--data`    | `scripts/eval/corpus`    | folder of PNGs (+ optional `families.json` tagging each file) |
+| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written             |
+| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                    |
+| `--profile` | per-family               | force one Trazor profile for every image                      |
+| `--limit`   | `0` (all)                | cap images                                                    |
+| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer          |
+| `--json`    | —                        | also write the report as JSON                                 |
+
+## The corpus
+
+`make-corpus.mjs` (`npm run eval:corpus`) writes a small, deterministic, **browser-free** image set spanning the families
+where the two tracers trade places (`badge`/`peaks` flat, `bloom` illustration, `ink` line-art, `sprite` pixel, `sunset`
+photo/gradient) plus a `families.json` tag map. It's git-ignored and reproducible — never committed.
+
+> **It is a signal generator, not a benchmark of record.** The built-in images are _synthetic and clean_, so they
+> under-represent VTracer's real strength: actual photographs with fine texture and hundreds of colors, where Trazor's
+> fixed-palette quantization bands. For a trustworthy verdict, point `--data` at a folder of **real photos** (any PNGs;
+> add a `families.json` to tag them). Read ΔE next to node count and bytes, not alone — higher fidelity bought with far
+> more nodes is a different trade than a genuine win.

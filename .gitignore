@@ -151,6 +151,11 @@ dist/
 # Local E2E artifacts
 e2e-artifacts/
 
+# Tracer-comparison corpus + artifacts (scripts/eval) — reproducible from
+# `npm run eval:corpus`, so never committed. Anchored so scripts/eval source stays tracked.
+/eval-artifacts/
+scripts/eval/corpus/
+
 # Generated ML training datasets (scripts/dataset) and the fetched real corpus
 # (scripts/corpus). Both are reproducible from scripts — never committed. Anchored
 # to the repo root so the scripts/ source dirs stay tracked.

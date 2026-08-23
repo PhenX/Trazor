@@ -31,9 +31,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { Resvg } from '@resvg/resvg-js'
 import { PNG } from 'pngjs'
-import { DEFAULT_SETTINGS, deltaEOk, rgbToOklab } from '@trazor/core'
+import { DEFAULT_SETTINGS } from '@trazor/core'
 import type {
   EngineContext,
   GrayImage,
@@ -42,6 +41,7 @@ import type {
   VectorizeSettings,
 } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
+import { meanDeltaE, rasterizeSvg, readRgba, score } from './lib'
 
 type Task = 'edge' | 'cleanup' | 'field'
 
@@ -98,12 +98,6 @@ function parseArgs(argv: string[]): Args {
   return a
 }
 
-/** Read an RGBA PNG as a RasterImage (fresh Uint8ClampedArray, length w*h*4). */
-function readRgba(path: string): RasterImage {
-  const png = PNG.sync.read(readFileSync(path))
-  return { width: png.width, height: png.height, data: new Uint8ClampedArray(png.data) }
-}
-
 /** Read a gray/RGBA PNG as a [0,1] boundary hint (R channel / 255). */
 function readHint(path: string): GrayImage {
   const png = PNG.sync.read(readFileSync(path))
@@ -111,39 +105,6 @@ function readHint(path: string): GrayImage {
   const data = new Float32Array(n)
   for (let i = 0; i < n; i++) data[i] = png.data[i * 4] / 255
   return { width: png.width, height: png.height, data }
-}
-
-/** Rasterize an SVG string over white at the given width (resvg). */
-function rasterizeSvg(svg: string, width: number): RasterImage {
-  const resvg = new Resvg(svg, {
-    background: 'rgba(255,255,255,1)',
-    fitTo: { mode: 'width', value: width },
-  })
-  const r = resvg.render()
-  return { width: r.width, height: r.height, data: new Uint8ClampedArray(r.pixels) }
-}
-
-/**
- * Mean Oklab ΔE between two equally-sized RGBA rasters, both taken as opaque over
- * white (mirrors apps/web/src/lib/fidelity.ts). Ignores alpha — the rendered SVG
- * is composited over white by resvg and the clean target is already opaque.
- */
-function meanDeltaE(a: RasterImage, b: RasterImage): number {
-  const n = Math.min(a.data.length, b.data.length) >> 2
-  let sum = 0
-  for (let p = 0; p < n; p++) {
-    const i = p * 4
-    const [l1, a1, b1] = rgbToOklab(a.data[i] / 255, a.data[i + 1] / 255, a.data[i + 2] / 255)
-    const [l2, a2, b2] = rgbToOklab(b.data[i] / 255, b.data[i + 1] / 255, b.data[i + 2] / 255)
-    sum += deltaEOk(l1, a1, b1, l2, a2, b2)
-  }
-  return n > 0 ? sum / n : 0
-}
-
-/** app score: 1 − 4·ΔE, clamped to [0,1] (apps/web/src/lib/fidelity.ts). */
-function score(dE: number): number {
-  const s = 1 - dE * 4
-  return s < 0 ? 0 : s > 1 ? 1 : s
 }
 
 interface Trace {
