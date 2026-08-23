@@ -86,7 +86,8 @@ useful sanity check, not a target — a trained model predicts a sparser, denois
 `tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
 tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
 each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
-reports, per family, the same **Oklab ΔE** fidelity metric plus node count, byte size, and wall-clock time.
+reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE and a p95 worst-tail (the localized
+band/hue errors a whole-image mean dilutes away), plus node count, byte size, and wall-clock time.
 
 It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
 segmentation. Re-run it after either and watch the photo/gradient gap close **without** regressing the flat / line-art
@@ -115,16 +116,17 @@ for every image instead.
 
 ### Options (`tracer-compare.ts`)
 
-| flag        | default                  | meaning                                                             |
-| ----------- | ------------------------ | ------------------------------------------------------------------- |
-| `--data`    | `scripts/eval/corpus`    | folder of PNG/JPEG images (+ optional `families.json` tags)         |
-| `--max-dim` | `1600`                   | resize inputs to this longest side before tracing both (0 = native) |
-| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written                   |
-| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                          |
-| `--profile` | per-family               | force one Trazor profile for every image                            |
-| `--limit`   | `0` (all)                | cap images                                                          |
-| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer                |
-| `--json`    | —                        | also write the report as JSON                                       |
+| flag        | default                  | meaning                                                              |
+| ----------- | ------------------------ | -------------------------------------------------------------------- |
+| `--data`    | `scripts/eval/corpus`    | folder of PNG/JPEG images (+ optional `families.json` tags)          |
+| `--max-dim` | `1600`                   | resize inputs to this longest side before tracing both (0 = native)  |
+| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written                    |
+| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                           |
+| `--profile` | auto                     | force one Trazor profile for all (else each image's auto settings)   |
+| `--set k=v` | —                        | override a Trazor setting for every image (repeatable) for ablations |
+| `--limit`   | `0` (all)                | cap images                                                           |
+| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer                 |
+| `--json`    | —                        | also write the report as JSON                                        |
 
 ## The corpus
 

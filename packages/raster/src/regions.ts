@@ -141,6 +141,85 @@ function contrastExceeds(oklab: Float32Array, a: number, b: number, keepSq: numb
 }
 
 /**
+ * Dissolve thin, mislabeled boundary bands into the region they sit between.
+ *
+ * At an edge between two colors, anti-aliased / JPEG-ringing rim pixels are
+ * intermediate mixtures that quantization can label as a *third* color, leaving
+ * a hairline strip of the wrong color along the seam. Each such pixel is a local
+ * sliver: its own label appears in at most a couple of its 8 neighbors while one
+ * neighbor label dominates. Reassign those slivers to the dominant neighbor, so
+ * the strip splits between the two real regions instead of drawing a band.
+ *
+ * Updates are simultaneous within a round (read a snapshot, write the result),
+ * so the outcome is order-independent and deterministic; ties resolve to the
+ * smallest label id. `rounds` erodes bands a pixel at a time (≤0 is a no-op).
+ * `protect` pixels (a discretized edge hint) and -1 are never reassigned.
+ * Mutates and returns `labels`.
+ */
+export function dissolveThinBands(
+  labels: LabelMap,
+  rounds: number,
+  protect?: BinaryMask,
+): LabelMap {
+  const { width: w, height: h, data } = labels
+  const n = w * h
+  if (rounds <= 0 || n === 0) return labels
+  const prot = protect?.data ?? null
+  // Own label in at most SELF_MAX of 8 neighbors ⇒ a 1px-wide sliver (a 2×2 or
+  // thicker region has ≥3 same-label neighbors and is left alone); a competing
+  // label needs at least TOP_MIN neighbors to claim it.
+  const SELF_MAX = 2
+  const TOP_MIN = 3
+  const nb = new Int32Array(8)
+  let src = data.slice()
+  for (let round = 0; round < rounds; round++) {
+    let changed = false
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        const lab = src[i]
+        if (lab === -1 || (prot !== null && prot[i] !== 0)) continue
+        let k = 0
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy
+          if (yy < 0 || yy >= h) continue
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue
+            const xx = x + dx
+            if (xx < 0 || xx >= w) continue
+            const v = src[yy * w + xx]
+            if (v !== -1) nb[k++] = v
+          }
+        }
+        let self = 0
+        let topLab = -1
+        let topCnt = 0
+        for (let a = 0; a < k; a++) {
+          const la = nb[a]
+          if (la === lab) {
+            self++
+            continue
+          }
+          let c = 0
+          for (let b = 0; b < k; b++) if (nb[b] === la) c++
+          if (c > topCnt || (c === topCnt && (topLab === -1 || la < topLab))) {
+            topCnt = c
+            topLab = la
+          }
+        }
+        if (self <= SELF_MAX && topCnt >= TOP_MIN && topLab !== -1) {
+          data[i] = topLab
+          changed = true
+        }
+      }
+    }
+    if (!changed) break
+    if (round + 1 < rounds) src = data.slice()
+  }
+  return labels
+}
+
+/**
  * Remove only the components of `label` that are connected (4-connected) to the
  * image border, setting them to -1; interior regions of the same color survive.
  * Used for `omitBackground`, where the goal is to drop the surrounding

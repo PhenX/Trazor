@@ -74,6 +74,12 @@ export interface VectorizeSettings {
    * logo dot) instead of merging them away; low-contrast specks still go.
    */
   preserveDetails: boolean
+  /**
+   * Rounds of thin mislabeled-band cleanup (color/grayscale): dissolve a hairline
+   * strip of a wrong color between two regions — an anti-aliased/JPEG rim quantized
+   * to a third color — into the region it borders. 0 disables (byte-identical).
+   */
+  dissolveBands: number
   /** Hairline-seam compensation stroke width (px) for cutout rendering; 0 disables. */
   gapFill: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
@@ -157,6 +163,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   layering: 'stacked',
   minRegionArea: 6,
   preserveDetails: false,
+  dissolveBands: 0,
   gapFill: 0,
   omitBackground: false,
 
@@ -218,6 +225,7 @@ export function normalizeSettings(
     s.palette = valid.length > 0 ? valid : null
   }
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
+  s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.gapFill = clamp(s.gapFill, 0, 2)
   s.threshold = clampInt(s.threshold, 0, 255)
   s.adaptiveRadius = clampInt(s.adaptiveRadius, 2, 128)

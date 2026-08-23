@@ -19,7 +19,13 @@ export {
   signedAdaptiveField,
   signedThresholdField,
 } from './threshold'
-export { clearBorderLabel, extractLabelMask, maskArea, mergeSmallRegions } from './regions'
+export {
+  clearBorderLabel,
+  dissolveThinBands,
+  extractLabelMask,
+  maskArea,
+  mergeSmallRegions,
+} from './regions'
 export type { MergeOptions } from './regions'
 export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'

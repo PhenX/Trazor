@@ -86,6 +86,106 @@ export function meanDeltaE(a: RasterImage, b: RasterImage): number {
   return n > 0 ? sum / n : 0
 }
 
+export interface QualityStats {
+  /** Mean Oklab ΔE over all pixels. */
+  mean: number
+  /** Mean Oklab ΔE within a few px of a source boundary — where wrong-colored
+   *  bands live, so it tracks banding that whole-image mean ΔE dilutes away. */
+  edge: number
+  /** 95th-percentile per-pixel ΔE — the worst-tail, which localized bands raise
+   *  even when the mean looks fine. */
+  p95: number
+}
+
+/**
+ * Banding-aware fidelity of a rendered SVG against the (white-composited) source,
+ * both same-sized and opaque over white. Beyond the whole-image mean it reports
+ * the mean ΔE in a dilated band around source edges (where quantization bands
+ * appear) and the 95th-percentile ΔE (the worst tail localized errors raise) —
+ * the two things a whole-image mean hides.
+ */
+export function qualityStats(render: RasterImage, ref: RasterImage): QualityStats {
+  const W = render.width
+  const H = render.height
+  const n = W * H
+  const rd = render.data
+  const sd = ref.data
+
+  // Source boundary mask (L1 RGB gradient in the reference), dilated to a band.
+  const EDGE_T = 48
+  const edge = new Uint8Array(n)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4
+      let g = 0
+      if (x + 1 < W) {
+        const j = i + 4
+        g =
+          Math.abs(sd[i] - sd[j]) +
+          Math.abs(sd[i + 1] - sd[j + 1]) +
+          Math.abs(sd[i + 2] - sd[j + 2])
+      }
+      if (y + 1 < H) {
+        const j = i + W * 4
+        const gy =
+          Math.abs(sd[i] - sd[j]) +
+          Math.abs(sd[i + 1] - sd[j + 1]) +
+          Math.abs(sd[i + 2] - sd[j + 2])
+        if (gy > g) g = gy
+      }
+      if (g > EDGE_T) edge[y * W + x] = 1
+    }
+  }
+  const near = new Uint8Array(n)
+  const R = 2
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (edge[y * W + x] === 0) continue
+      for (let dy = -R; dy <= R; dy++) {
+        const yy = y + dy
+        if (yy < 0 || yy >= H) continue
+        const base = yy * W
+        for (let dx = -R; dx <= R; dx++) {
+          const xx = x + dx
+          if (xx >= 0 && xx < W) near[base + xx] = 1
+        }
+      }
+    }
+  }
+
+  const BINS = 1024
+  const MAXDE = 0.5
+  const hist = new Int32Array(BINS)
+  let sum = 0
+  let esum = 0
+  let ecount = 0
+  for (let p = 0, i = 0; p < n; p++, i += 4) {
+    const [l1, a1, b1] = rgbToOklab(rd[i] / 255, rd[i + 1] / 255, rd[i + 2] / 255)
+    const [l2, a2, b2] = rgbToOklab(sd[i] / 255, sd[i + 1] / 255, sd[i + 2] / 255)
+    const d = deltaEOk(l1, a1, b1, l2, a2, b2)
+    sum += d
+    if (near[p] !== 0) {
+      esum += d
+      ecount++
+    }
+    let bin = ((d / MAXDE) * BINS) | 0
+    if (bin >= BINS) bin = BINS - 1
+    else if (bin < 0) bin = 0
+    hist[bin]++
+  }
+  const target = 0.95 * n
+  let acc = 0
+  let p95 = MAXDE
+  for (let b = 0; b < BINS; b++) {
+    acc += hist[b]
+    if (acc >= target) {
+      p95 = ((b + 1) / BINS) * MAXDE
+      break
+    }
+  }
+  return { mean: n > 0 ? sum / n : 0, edge: ecount > 0 ? esum / ecount : 0, p95 }
+}
+
 /** app score: 1 − 4·ΔE, clamped to [0,1] (apps/web/src/lib/fidelity.ts). */
 export function score(dE: number): number {
   const s = 1 - dE * 4

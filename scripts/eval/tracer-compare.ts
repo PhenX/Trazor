@@ -5,8 +5,8 @@
  * through **@trazor/engine** and through the **vtracer** CLI, rasterizes both
  * SVGs with resvg over white, and reports, bucketed by image family:
  *
- *   - fidelity   — mean Oklab ΔE against the source (lower is better; same metric
- *                  as apps/web/src/lib/fidelity.ts and the pre-pass harness).
+ *   - fidelity   — mean Oklab ΔE against the source, plus a banding-aware
+ *                  edge-zone ΔE and a p95 worst-tail (lower is better).
  *   - node count — path complexity of the SVG (@trazor/svg analyzeSvg).
  *   - bytes      — serialized SVG size.
  *   - time       — wall-clock per tracer.
@@ -30,6 +30,7 @@
  *     --out <dir>      where SVGs / montage are written; default eval-artifacts/tracers
  *     --vtracer <bin>  path to the vtracer binary (else VTRACER_BIN, PATH, ~/.cargo/bin)
  *     --profile <id>   force one Trazor profile for all (else auto: Trazor's own per-image recommendation)
+ *     --set k=v        override a Trazor setting for every image (repeatable), e.g. --set dissolveBands=0
  *     --limit N        cap images
  *     --montage        also write an index.html with source | Trazor | VTracer
  *     --json <path>    also write the report as JSON
@@ -46,8 +47,8 @@ import { resizeToFit } from '@trazor/raster'
 import { analyzeSvg } from '@trazor/svg'
 import {
   flattenOverWhite,
-  meanDeltaE,
   pngDataUri,
+  qualityStats,
   rasterizeSvg,
   readRgba,
   resampleNearest,
@@ -83,7 +84,15 @@ interface Args {
   profile?: ProfileId
   limit: number
   montage: boolean
+  overrides: Record<string, unknown>
   json?: string
+}
+
+/** Coerce a --set value string to boolean / number / string. */
+function coerce(v: string): unknown {
+  if (v === 'true') return true
+  if (v === 'false') return false
+  return /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v
 }
 
 function parseArgs(argv: string[]): Args {
@@ -93,6 +102,7 @@ function parseArgs(argv: string[]): Args {
     maxDim: 1600,
     limit: 0,
     montage: false,
+    overrides: {},
   }
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i]
@@ -125,6 +135,12 @@ function parseArgs(argv: string[]): Args {
       case '--montage':
         a.montage = true
         break
+      case '--set': {
+        const eq = (val ?? '').indexOf('=')
+        if (eq > 0) a.overrides[val.slice(0, eq)] = coerce(val.slice(eq + 1))
+        i++
+        break
+      }
       case '--json':
         a.json = val
         i++
@@ -150,21 +166,26 @@ function resolveVtracer(override?: string): string | null {
 
 interface TraceResult {
   dE: number
+  edgeDE: number
+  p95: number
   nodes: number
   bytes: number
   ms: number
   svg: string
 }
 
-/** ΔE of a rendered SVG against the (white-composited) source, aligned by size. */
+/** Banding-aware fidelity of a rendered SVG vs. the source, aligned by size. */
 function fidelity(
   svg: string,
   srcWhite: RasterImage,
-): { dE: number; nodes: number; bytes: number } {
+): { dE: number; edgeDE: number; p95: number; nodes: number; bytes: number } {
   const render = rasterizeSvg(svg, srcWhite.width)
   const ref = resampleNearest(srcWhite, render.width, render.height)
+  const q = qualityStats(render, ref)
   return {
-    dE: meanDeltaE(render, ref),
+    dE: q.mean,
+    edgeDE: q.edge,
+    p95: q.p95,
     nodes: analyzeSvg(svg).nodeCount,
     bytes: Buffer.byteLength(svg, 'utf8'),
   }
@@ -178,19 +199,23 @@ function fidelity(
 function trazorSettings(
   image: RasterImage,
   forced?: ProfileId,
+  overrides?: Record<string, unknown>,
 ): { settings: VectorizeSettings; profile: ProfileId } {
+  let profile: ProfileId
+  let settings: VectorizeSettings
   if (forced) {
-    return {
-      settings: normalizeSettings(getProfile(forced).patch, DEFAULT_SETTINGS as VectorizeSettings),
-      profile: forced,
-    }
+    profile = forced
+    settings = normalizeSettings(getProfile(forced).patch, DEFAULT_SETTINGS as VectorizeSettings)
+  } else {
+    // Profile patch first, recommendation patch on top, both over defaults.
+    const rec = recommendSettings(analyzeImage(image))
+    profile = rec.profileId
+    settings = normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch })
   }
-  const rec = recommendSettings(analyzeImage(image))
-  // Profile patch first, recommendation patch on top, both over defaults.
-  return {
-    settings: normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch }),
-    profile: rec.profileId,
+  if (overrides && Object.keys(overrides).length > 0) {
+    settings = normalizeSettings(overrides as Partial<VectorizeSettings>, settings)
   }
+  return { settings, profile }
 }
 
 async function traceTrazor(
@@ -241,6 +266,8 @@ function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
   const mean = (f: (t: TraceResult) => number) => got.reduce((s, t) => s + f(t), 0) / got.length
   return {
     dE: mean((t) => t.dE),
+    edgeDE: mean((t) => t.edgeDE),
+    p95: mean((t) => t.p95),
     nodes: mean((t) => t.nodes),
     bytes: mean((t) => t.bytes),
     ms: mean((t) => t.ms),
@@ -311,12 +338,11 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
     const v = agg(fr, (r) => r.vtracer)
     if (!t) continue
     if (hasV && v) {
-      const closer = t.dE <= v.dE ? 'Trazor' : 'VTracer'
       const nodeRatio = v.nodes > 0 ? (t.nodes / v.nodes).toFixed(2) : '—'
       const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
-        `  ${fam.padEnd(12)} ΔE  T ${fmt(t.dE)}  V ${fmt(v.dE)}  → ${closer} closer` +
-          `   |  nodes T/V ${nodeRatio}×   |  KB T/V ${byteRatio}×   |  ms T ${Math.round(t.ms)} V ${Math.round(v.ms)}`,
+        `  ${fam.padEnd(12)} ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}` +
+          `   nodes T/V ${nodeRatio}×   KB T/V ${byteRatio}×`,
       )
     } else {
       console.log(
@@ -330,7 +356,7 @@ const THUMB_W = 520
 
 function metaLine(t: TraceResult | null): string {
   return t
-    ? `ΔE ${fmt(t.dE, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB · ${Math.round(t.ms)} ms`
+    ? `ΔE ${fmt(t.dE, 4)} · band ${fmt(t.edgeDE, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB · ${Math.round(t.ms)} ms`
     : '—'
 }
 
@@ -429,7 +455,7 @@ async function main(): Promise<void> {
 
     // Trazor uses its own auto-recommendation per image (what the app applies on
     // load) unless --profile forces one; vtracer gets the matching-intent flags.
-    const { settings, profile } = trazorSettings(src, args.profile)
+    const { settings, profile } = trazorSettings(src, args.profile, args.overrides)
     const family = familyMap[name] ?? profile
     const vtracerArgs = PROFILE_VTRACER[profile] ?? DEFAULT_VTRACER
 
@@ -463,8 +489,8 @@ async function main(): Promise<void> {
     const v = agg(rows, (r) => r.vtracer)
     if (t && v) {
       console.log(
-        `\n  overall  ΔE  Trazor ${fmt(t.dE)}  VTracer ${fmt(v.dE)}   ` +
-          `score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   ` +
+        `\n  overall  ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band(edge ΔE) T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
+          `p95 T ${fmt(t.p95)} V ${fmt(v.p95)}   score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   ` +
           `nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
       )
     }
@@ -484,9 +510,23 @@ async function main(): Promise<void> {
       family: r.family,
       image: r.name,
       profile: r.profile,
-      trazor: { dE: r.trazor.dE, nodes: r.trazor.nodes, bytes: r.trazor.bytes, ms: r.trazor.ms },
+      trazor: {
+        dE: r.trazor.dE,
+        edgeDE: r.trazor.edgeDE,
+        p95: r.trazor.p95,
+        nodes: r.trazor.nodes,
+        bytes: r.trazor.bytes,
+        ms: r.trazor.ms,
+      },
       vtracer: r.vtracer
-        ? { dE: r.vtracer.dE, nodes: r.vtracer.nodes, bytes: r.vtracer.bytes, ms: r.vtracer.ms }
+        ? {
+            dE: r.vtracer.dE,
+            edgeDE: r.vtracer.edgeDE,
+            p95: r.vtracer.p95,
+            nodes: r.vtracer.nodes,
+            bytes: r.vtracer.bytes,
+            ms: r.vtracer.ms,
+          }
         : null,
     }))
     mkdirSync(join(args.json, '..'), { recursive: true })

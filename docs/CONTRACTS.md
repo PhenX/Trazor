@@ -185,6 +185,12 @@ export interface MergeOptions {
 // With opts, small regions are kept instead of absorbed when high-contrast
 // (keepContrast+oklab) or on a protected edge pixel (protect).
 export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
+// Dissolve 1px mislabeled boundary bands (an anti-aliased/JPEG rim quantized to a
+// third color) into the dominant neighbor region over `rounds` simultaneous
+// passes. Ties resolve to the smallest label id; `protect` pixels and -1 are
+// never moved; rounds <= 0 is a no-op. Opt-in via the `dissolveBands` setting
+// (default 0). Mutates and returns `labels`.
+export function dissolveThinBands(labels: LabelMap, rounds: number, protect?: BinaryMask): LabelMap
 // Set to -1 the components of `label` connected (4-connected) to the image
 // border; interior same-color regions survive. Mutates labels, returns the
 // count cleared. Used by omitBackground so enclosed same-color shapes are kept.

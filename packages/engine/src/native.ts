@@ -30,6 +30,7 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
+  dissolveThinBands,
   estimateStrokeWidth,
   flattenImage,
   gaussianBlur,
@@ -217,6 +218,7 @@ function palKeyOf(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.dissolveBands,
     s.omitBackground,
   ].join('|')
 }
@@ -440,6 +442,12 @@ async function colorPipeline(
     await run.tick()
 
     run.stage('segment')
+    // Dissolve thin mislabeled rim bands (a wrong color wedged between two
+    // regions) into the region they border, before the size merge. A protected
+    // edge pixel is never moved; 0 rounds is byte-identical to the classic path.
+    if (settings.dissolveBands > 0) {
+      dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
+    }
     // `protect` (hoisted above) lets an edge hint keep small regions on a
     // predicted boundary; with no hint this is byte-identical to the plain merge.
     if (settings.preserveDetails) {
