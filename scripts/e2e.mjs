@@ -86,6 +86,30 @@ try {
     return { svg, stats }
   }
 
+  // Returning to the landing screen recreates the sample canvases; their
+  // thumbnails are painted imperatively, so this checks they repaint (a blank
+  // canvas is fully transparent — any non-zero alpha means it was drawn).
+  async function checkReturnHome() {
+    await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('.sample-card', { timeout: 20000 })
+    await page.locator('.sample-card').nth(0).click()
+    await page.waitForSelector('.layer-svg svg', { timeout: 120000 })
+    await page.locator('[title="Back to the landing screen"]').click()
+    await page.waitForSelector('.sample-card', { timeout: 20000 })
+    await page.waitForTimeout(300)
+    const painted = await page.evaluate(() => {
+      const canvas = document.querySelector('.sample-card canvas')
+      if (!(canvas instanceof HTMLCanvasElement)) return false
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return false
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return true
+      return false
+    })
+    if (!painted) fail('return-home: sample thumbnails did not repaint')
+    console.log('  return-home: sample thumbnails repaint ✓')
+  }
+
   // Verify the mobile layout: a pinned result above an independently scrolling
   // command panel, plus a toggle that hides/restores the result (see the
   // ≤768px media queries in the SFCs and the toggle in App.vue).
@@ -156,6 +180,9 @@ try {
   // Screenshot for the README while the badge result is on screen.
   await page.screenshot({ path: join(repoRoot, 'docs/screenshot.png') })
   console.log('  screenshot saved to docs/screenshot.png')
+
+  console.log('E2E: return home — sample thumbnails repaint…')
+  await checkReturnHome()
 
   console.log('E2E: sample "Sprite" (pixel art)…')
   const sprite = await loadSampleAndTrace(2, 'sprite')
