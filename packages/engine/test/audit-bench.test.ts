@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RasterImage } from '@vectorizer/core'
 import { mulberry32 } from '@vectorizer/core'
-import { mergeSmallRegions, quantize, toGrayscale } from '@vectorizer/raster'
+import { detectEdges, mergeSmallRegions, quantize, toGrayscale } from '@vectorizer/raster'
 import { traceLabelMap } from '@vectorizer/trace'
 import { analyzeSvg } from '@vectorizer/svg'
 import { describe, expect, it } from 'vitest'
@@ -122,32 +122,56 @@ describe('audit bench', () => {
     )
 
     // Palette purity: entries matching a painted color (L1 RGB ≤ 12) vs.
-    // anti-alias rim mixtures occupying palette slots.
-    for (const kk of [10, 16]) {
-      const qq = quantize(image, { k: kk, colorSpace: 'oklab', quality: 5, seed: 0x02f6e2b1 })
+    // anti-alias rim mixtures occupying palette slots. Compared plain vs. the
+    // edge-aware sampleMask the engine now uses.
+    const edges = detectEdges(image, 40)
+    const interior = {
+      width: image.width,
+      height: image.height,
+      data: new Uint8Array(image.width * image.height),
+    }
+    for (let i = 0; i < interior.data.length; i++) interior.data[i] = edges.data[i] === 0 ? 1 : 0
+    const purity = (paletteHex: string[], paletteRgb: Uint8Array): number => {
       let pure = 0
-      for (let c = 0; c < qq.paletteHex.length; c++) {
-        const r = qq.paletteRgb[c * 3]
-        const g = qq.paletteRgb[c * 3 + 1]
-        const b = qq.paletteRgb[c * 3 + 2]
+      for (let c = 0; c < paletteHex.length; c++) {
+        const r = paletteRgb[c * 3]
+        const g = paletteRgb[c * 3 + 1]
+        const b = paletteRgb[c * 3 + 2]
         if (
           TRUE_COLORS.some(
             (t) => Math.abs(t[0] - r) + Math.abs(t[1] - g) + Math.abs(t[2] - b) <= 12,
           )
-        ) {
+        )
           pure++
-        }
       }
+      return pure
+    }
+    for (const kk of [10, 16]) {
+      const plain = quantize(image, { k: kk, colorSpace: 'oklab', quality: 5, seed: 0x02f6e2b1 })
+      const edgeAware = quantize(image, {
+        k: kk,
+        colorSpace: 'oklab',
+        quality: 5,
+        seed: 0x02f6e2b1,
+        sampleMask: interior,
+      })
       rows.push(
-        `palette purity k=${kk}: ${pure}/${qq.paletteHex.length} entries match a painted color ` +
-          `(${TRUE_COLORS.length} painted)  [${qq.paletteHex.join(' ')}]`,
+        `palette purity k=${kk}: plain ${purity(plain.paletteHex, plain.paletteRgb)}/${plain.paletteHex.length}` +
+          ` → edge-aware ${purity(edgeAware.paletteHex, edgeAware.paletteRgb)}/${edgeAware.paletteHex.length}` +
+          ` (${TRUE_COLORS.length} painted)  [${edgeAware.paletteHex.join(' ')}]`,
       )
     }
 
     // Cutout diagnostics at k=10: command mix (line-dominated output signals
     // chain fragmentation) and label components vs. painted regions.
     {
-      const qq = quantize(image, { k: 10, colorSpace: 'oklab', quality: 5, seed: 0x02f6e2b1 })
+      const qq = quantize(image, {
+        k: 10,
+        colorSpace: 'oklab',
+        quality: 5,
+        seed: 0x02f6e2b1,
+        sampleMask: interior,
+      })
       mergeSmallRegions(qq.labels, 6)
       const regions = traceLabelMap(qq.labels, {
         curveMode: 'spline',
