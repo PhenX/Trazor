@@ -5,12 +5,13 @@ Offline PyTorch training for the app's on-device pre-pass models. It reads the d
 under `apps/web/public/models/` (served same-origin — see
 [`../../apps/web/public/models/README.md`](../../apps/web/public/models/README.md)).
 
-Two tasks share this scaffold, selected with `--task` (one generated dataset trains either — it carries both targets):
+Three tasks share this scaffold, selected with `--task` (one generated dataset trains any — it carries all three targets):
 
-| `--task`         | predicts               | target  | ships as            | spec                                                  |
-| ---------------- | ---------------------- | ------- | ------------------- | ----------------------------------------------------- |
-| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)       |
-| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md) |
+| `--task`         | predicts               | target  | ships as            | spec                                                            |
+| ---------------- | ---------------------- | ------- | ------------------- | --------------------------------------------------------------- |
+| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)                 |
+| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md)           |
+| `field`          | coverage field (1-ch)  | `field` | `signed-field.onnx` | [`SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md) |
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
 git; you generate them here and publish them to the `models` GitHub Release, from which the deploy workflow fetches them
@@ -131,11 +132,11 @@ For the cleanup model, pass `--task cleanup` to steps 2 and 3 (reusing the same 
 
 Start here, then adjust from what you see. Sizes are pairs (per `--count`).
 
-| Goal                       | count    | base-channels | epochs (with `--patience 10`) | batch |
-| -------------------------- | -------- | ------------- | ----------------------------- | ----- |
-| Prototype (does it learn?) | 5k–20k   | 16            | 60                            | 32    |
-| Production                 | 50k–200k | 16–24         | 80                            | 32–64 |
-| Tiny file                  | 50k+     | 8–12          | 80                            | 32    |
+| Goal                       | count    | base-channels        | epochs (with `--patience 10`) | batch |
+| -------------------------- | -------- | -------------------- | ----------------------------- | ----- |
+| Prototype (does it learn?) | 5k–20k   | 16                   | 60                            | 32    |
+| Production                 | 50k–200k | 16 edge / 32 cleanup | 80                            | 32–64 |
+| Tiny file                  | 50k+     | 8–12                 | 80                            | 32    |
 
 ### Data mix (the highest-leverage knob)
 
@@ -150,14 +151,19 @@ npm run dataset -- --source procedural --count 40000 --out data/proc
 python scripts/train/train.py --data data/proc data/real --epochs 80 --workers 8
 ```
 
+`pipeline.py` accepts the same several `--data` roots (with `--skip-data`, since it generates one set), so the last step
+can also be `python scripts/train/pipeline.py --data data/proc data/real --skip-data --epochs 80 --quantize` to train and
+export in one go.
+
 Rule of thumb: **~⅔ procedural + ~⅓ real**, adding more real as you collect it. Fonts are the easiest real source —
 export glyphs to per-file SVGs. Splits are per source family in each root, so families never leak across train/val/test.
 
 ### The knobs
 
-- **`--base-channels`** — model width, hence size and capacity. 16 is a good default. Bump to 24 if predictions look
-  blurry or miss thin edges (and you have the data); drop to 8–12 if the ONNX must be tiny. Keep it **< 5 MB** with
-  `--quantize`.
+- **`--base-channels`** — model width, hence size and capacity. Defaults per task: **16 for edge** (sparse boundaries),
+  **32 for cleanup** (image restoration wants more capacity — see [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md)).
+  Bump edge to 24 if predictions look blurry or miss thin edges (and you have the data); drop to 8–12 if the ONNX must be
+  tiny. Keep it **< 5 MB** with `--quantize` (base 32 cleanup is ≈0.5 M params, well under).
 - **`--ssim-weight`** (cleanup only) — blends the loss `(1-w)·L1 + w·(1-SSIM)`, default `0.5`. Raise toward `0.7–0.8`
   for crisper structure/contrast (can slightly shift colors); drop toward `0` for pure L1 (most color-faithful). Ignored
   for the edge task.
@@ -181,9 +187,11 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 - **`checkpoints/preview-<task>.png`** is written on every improvement — columns are **input · prediction · target** for
   a few val samples. Smeared predictions → add capacity or data; missed faint boundaries → increase contrast/degradation
   variety in the data.
-- **The real metric is the app's Oklab ΔE.** Once the ONNX is in place, use the tool it feeds (**Edge pre-pass** toggle,
-  or **Clean up (ML)** button) on a few noisy inputs and compare ΔE / node count against off — that, not the val proxy,
-  is what ships.
+- **The real metric is the app's Oklab ΔE.** Measure it automatically over a held-out split with the
+  [`../eval`](../eval/README.md) harness — `python scripts/train/predict.py …` then `npm run eval:prepass …` traces
+  baseline vs pre-pass and reports ΔE / node count for degraded and clean buckets. Select the checkpoint that wins on
+  degraded **without** regressing clean. (In the studio, the **Edge pre-pass** toggle / **Clean up (ML)** button give the
+  same read on a single image.)
 
 ### Determinism
 

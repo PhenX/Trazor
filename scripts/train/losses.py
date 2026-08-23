@@ -76,3 +76,12 @@ def cleanup_loss(
     l1 = F.l1_loss(prob, target)
     dssim = 1.0 - ssim(prob, target)
     return (1.0 - ssim_weight) * l1 + ssim_weight * dssim
+
+
+def field_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Coverage-field loss: L1 + a small (1 - SSIM) on the sigmoid'd field vs the
+    clean [0,1] coverage target. The anti-aliased boundary values are what feed the
+    tracer's sub-pixel refinement, so local structure (SSIM) matters alongside
+    absolute accuracy (L1). Single-channel; `ssim` handles the channel count."""
+    prob = torch.sigmoid(logits)
+    return F.l1_loss(prob, target) + 0.25 * (1.0 - ssim(prob, target))

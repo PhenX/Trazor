@@ -13,8 +13,9 @@ where, how to run and verify things, and the conventions that apply everywhere.
 Reference material worth opening when you need the map rather than the rules: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 (whole repo), [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md) (the tracer),
 [`docs/CONTRACTS.md`](docs/CONTRACTS.md) (exact package APIs), [`docs/REFERENCES.md`](docs/REFERENCES.md)
-(algorithm & model sources), and [`docs/ML_STRATEGY.md`](docs/ML_STRATEGY.md) (ML & dataset roadmap: where ML fits, how
-determinism is scoped for WebGPU, and how to build a training set).
+(algorithm & model sources), [`docs/ML_STRATEGY.md`](docs/ML_STRATEGY.md) (ML strategy: where ML fits, how determinism is
+scoped for WebGPU, and how to build a training set), and [`docs/ML_ROADMAP.md`](docs/ML_ROADMAP.md) (the prioritized ML &
+vectorization plan).
 
 ## Project overview
 
@@ -40,7 +41,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
                            graph (seam-free cutout), centerline extraction, Schneider fitting.
   svg/                     @trazor/svg — compact SVG serialization + output analysis.
   engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client.
-  ml/                      @trazor/ml — background removal & click-to-segment via onnxruntime-web. Browser-only.
+  ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge,
+                           cleanup & signed-field conditioning models, via onnxruntime-web. Browser-only.
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
 apps/
   web/                     @trazor/web — Vue 3 + Pinia + Vite studio UI. The deployable app.
@@ -82,7 +84,7 @@ From the repo root:
 | `npm run typecheck`         | `tsc` (packages) + `vue-tsc` (app)                                                                                                                                  |
 | `npm run lint` / `lint:fix` | oxlint                                                                                                                                                              |
 | `npm run fmt` / `fmt:check` | oxfmt                                                                                                                                                               |
-| `npm run check`             | lint + fmt:check + typecheck + test (what CI runs)                                                                                                                  |
+| `npm run check`             | lint + fmt:check + typecheck + test (the core CI gate; CI then also runs `build` + the browser checks below)                                                        |
 | `npm run e2e`               | Real-browser smoke test — **needs `npm run build` first**; drives `apps/web/dist` with system Chromium, writes `e2e-artifacts/` and refreshes `docs/screenshot.png` |
 | `npm run test:render`       | Real-browser render check — **needs `npm run build` first**; traces bundled samples and asserts optimized SVGs render identically to the un-optimized baseline      |
 

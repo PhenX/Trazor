@@ -8,6 +8,7 @@ import type { PathCommand } from '@trazor/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
+import { fitArcs } from './arc'
 import { detectPrimitive } from './primitive'
 import type { Primitive } from './primitive'
 
@@ -151,7 +152,11 @@ function shapeOut(
     const cleaned = cleanCommands(shape.commands, precision)
     const prim = detectPrimitive(cleaned, precision, roundPrimitives)
     if (prim !== null) return { kind: 'element', svg: primitiveElement(prim, shape, precision) }
-    const d = assertAttrSafe(optimizePathData(cleaned, precision), 'path data')
+    // Collapse circular-arc cubic runs to `A` (a sub-pixel geometry change, like
+    // circle/ellipse detection); off for cutout so a neighbor's Bézier boundary
+    // still matches exactly and the classical path stays byte-identical.
+    const arced = roundPrimitives ? fitArcs(cleaned, precision) : cleaned
+    const d = assertAttrSafe(optimizePathData(arced, precision), 'path data')
     if (d === '') return null
     return { kind: 'path', d, paint: paintAttrs(shape, precision, true) }
   }

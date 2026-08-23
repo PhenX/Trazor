@@ -146,6 +146,148 @@ export function fitSquare(img, side) {
   return out
 }
 
+// Projective (perspective) warp: sends the image's four corners to `corners`
+// (dest positions in [0,1] for the unit-square corners (0,0),(1,0),(1,1),(0,1)),
+// inverse-sampled bilinearly. Content mapped outside the source stays transparent,
+// so a warped shape keeps its alpha. Simulates a photo of a screen/paper at an angle.
+export function perspectiveTransform(img, corners) {
+  const { width: w, height: h, data } = img
+  const out = createImage(w, h)
+  const o = out.data
+  const hi = invert3(squareToQuad(corners))
+  if (!hi) return { width: w, height: h, data: new Uint8ClampedArray(data) }
+  const sw = w > 1 ? w - 1 : 1
+  const sh = h > 1 ? h - 1 : 1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const oi = (y * w + x) * 4
+      const den = hi[6] * (x / sw) + hi[7] * (y / sh) + hi[8]
+      const u = (hi[0] * (x / sw) + hi[1] * (y / sh) + hi[2]) / den
+      const v = (hi[3] * (x / sw) + hi[4] * (y / sh) + hi[5]) / den
+      if (u < 0 || v < 0 || u > 1 || v > 1) continue // transparent outside the source
+      const sx = u * sw
+      const sy = v * sh
+      const x0 = Math.floor(sx)
+      const y0 = Math.floor(sy)
+      const x1 = Math.min(w - 1, x0 + 1)
+      const y1 = Math.min(h - 1, y0 + 1)
+      const fx = sx - x0
+      const fy = sy - y0
+      const i00 = (y0 * w + x0) * 4
+      const i01 = (y0 * w + x1) * 4
+      const i10 = (y1 * w + x0) * 4
+      const i11 = (y1 * w + x1) * 4
+      for (let c = 0; c < 4; c++) {
+        const top = data[i00 + c] * (1 - fx) + data[i01 + c] * fx
+        const bot = data[i10 + c] * (1 - fx) + data[i11 + c] * fx
+        o[oi + c] = top * (1 - fy) + bot * fy
+      }
+    }
+  }
+  return out
+}
+
+// Radial (barrel/pincushion) lens distortion: each output pixel samples the source
+// at radius r·(1 + k·r²) about the center (r normalized so the corner is 1). k = 0
+// is an exact no-op; sign selects barrel vs. pincushion. Content mapped outside the
+// source stays transparent. Simulates a phone-camera lens on a photographed input.
+export function lensDistort(img, k) {
+  const { width: w, height: h, data } = img
+  if (k === 0) return { width: w, height: h, data: new Uint8ClampedArray(data) }
+  const out = createImage(w, h)
+  const o = out.data
+  const cx = (w - 1) / 2
+  const cy = (h - 1) / 2
+  const maxR = Math.hypot(cx, cy) || 1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const oi = (y * w + x) * 4
+      const nx = (x - cx) / maxR
+      const ny = (y - cy) / maxR
+      const f = 1 + k * (nx * nx + ny * ny)
+      const sx = cx + nx * f * maxR
+      const sy = cy + ny * f * maxR
+      if (sx < 0 || sy < 0 || sx > w - 1 || sy > h - 1) continue
+      const x0 = Math.floor(sx)
+      const y0 = Math.floor(sy)
+      const x1 = Math.min(w - 1, x0 + 1)
+      const y1 = Math.min(h - 1, y0 + 1)
+      const fx = sx - x0
+      const fy = sy - y0
+      const i00 = (y0 * w + x0) * 4
+      const i01 = (y0 * w + x1) * 4
+      const i10 = (y1 * w + x0) * 4
+      const i11 = (y1 * w + x1) * 4
+      for (let c = 0; c < 4; c++) {
+        const top = data[i00 + c] * (1 - fx) + data[i01 + c] * fx
+        const bot = data[i10 + c] * (1 - fx) + data[i11 + c] * fx
+        o[oi + c] = top * (1 - fy) + bot * fy
+      }
+    }
+  }
+  return out
+}
+
+// Copy the `cw`×`ch` region at (x0, y0) out of an RGBA image (assumes in-bounds).
+export function cropRegion(img, x0, y0, cw, ch) {
+  const { width: w, data } = img
+  const out = createImage(cw, ch)
+  const o = out.data
+  for (let y = 0; y < ch; y++) {
+    const srow = ((y0 + y) * w + x0) * 4
+    const drow = y * cw * 4
+    for (let i = 0; i < cw * 4; i++) o[drow + i] = data[srow + i]
+  }
+  return out
+}
+
+// Homography (row-major 3×3) mapping the unit square's corners to `q` (Heckbert).
+function squareToQuad(q) {
+  const [q0, q1, q2, q3] = q
+  const dx1 = q1.x - q2.x
+  const dx2 = q3.x - q2.x
+  const dx3 = q0.x - q1.x + q2.x - q3.x
+  const dy1 = q1.y - q2.y
+  const dy2 = q3.y - q2.y
+  const dy3 = q0.y - q1.y + q2.y - q3.y
+  if (Math.abs(dx3) < 1e-10 && Math.abs(dy3) < 1e-10) {
+    // Affine quad — no projective term.
+    return [q1.x - q0.x, q3.x - q0.x, q0.x, q1.y - q0.y, q3.y - q0.y, q0.y, 0, 0, 1]
+  }
+  const den = dx1 * dy2 - dx2 * dy1
+  const g = (dx3 * dy2 - dx2 * dy3) / den
+  const hh = (dx1 * dy3 - dx3 * dy1) / den
+  return [
+    q1.x - q0.x + g * q1.x,
+    q3.x - q0.x + hh * q3.x,
+    q0.x,
+    q1.y - q0.y + g * q1.y,
+    q3.y - q0.y + hh * q3.y,
+    q0.y,
+    g,
+    hh,
+    1,
+  ]
+}
+
+// Inverse of a row-major 3×3 matrix (adjugate / determinant); null if singular.
+function invert3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m
+  const A = e * i - f * h
+  const B = c * h - b * i
+  const C = b * f - c * e
+  const D = f * g - d * i
+  const E = a * i - c * g
+  const F = c * d - a * f
+  const G = d * h - e * g
+  const H = b * g - a * h
+  const I = a * e - b * d
+  const det = a * A + b * D + c * G
+  if (Math.abs(det) < 1e-12) return null
+  const s = 1 / det
+  return [A * s, B * s, C * s, D * s, E * s, F * s, G * s, H * s, I * s]
+}
+
 function clampInt(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v
 }

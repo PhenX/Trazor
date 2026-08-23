@@ -8,6 +8,7 @@
  */
 
 import type { PathCommand } from '@trazor/core'
+import { fitCircle, fitEllipse } from './fit'
 import { clampPrecision } from './pathdata'
 
 export type Primitive =
@@ -97,51 +98,79 @@ function cubicMid(p0: Pt, c: Extract<PathCommand, { type: 'C' }>): Pt {
   }
 }
 
+/**
+ * Round-primitive acceptance tolerance in pixels — how far a boundary sample may
+ * lie off the fitted circle/ellipse. A fixed sub-pixel budget, NOT radius-
+ * relative: it bounds how far the emitted `<circle>`/`<ellipse>` can render from
+ * the traced boundary at every radius, so a large, only-roughly-round shape is
+ * not accepted as an idealized element that renders visibly off (which a
+ * radius-scaled tolerance allowed, non-deterministically across platforms).
+ */
+const ROUND_TOL_PX = 0.6
+
+/**
+ * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
+ * all-cubic loop. Parameters come from least-squares fits (`fit.ts`) — a Kåsa
+ * circle fit and a direct conic ellipse fit — so uneven anchor spacing does not
+ * bias the recovered center/radii. Each candidate is accepted only if every
+ * boundary sample lies on it within tolerance, so a non-round shape is rejected.
+ */
 function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
   if (ops.length < 3 || !ops.every((o) => o.type === 'C')) return null
-  const ends = anchors(start, ops, 10 ** precision)
-  if (ends.length < 3) return null
 
-  // Dense sample set: anchors plus each arc midpoint.
-  const samples: Pt[] = [...ends]
+  // Dense boundary samples: each anchor plus three interior points per cubic.
+  const samples: Pt[] = [start]
   let prev = start
   for (const op of ops) {
-    if (op.type === 'C') samples.push(cubicMid(prev, op))
+    if (op.type !== 'C') return null
+    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
+  if (samples.length < 8) return null
 
-  const cx = ends.reduce((s, p) => s + p.x, 0) / ends.length
-  const cy = ends.reduce((s, p) => s + p.y, 0) / ends.length
-  const r = samples.reduce((s, p) => s + Math.hypot(p.x - cx, p.y - cy), 0) / samples.length
-  if (r <= 0) return null
-  const tol = Math.max(0.6, r * 0.02)
-
-  if (samples.every((p) => Math.abs(Math.hypot(p.x - cx, p.y - cy) - r) <= tol)) {
-    return round({ kind: 'circle', cx, cy, r }, precision)
+  // Circle first, so a true circle stays a circle rather than a near-round ellipse.
+  const circle = fitCircle(samples)
+  if (circle && circle.r > 0) {
+    const tol = ROUND_TOL_PX
+    const onCircle = samples.every(
+      (p) => Math.abs(Math.hypot(p.x - circle.cx, p.y - circle.cy) - circle.r) <= tol,
+    )
+    if (onCircle)
+      return round({ kind: 'circle', cx: circle.cx, cy: circle.cy, r: circle.r }, precision)
   }
 
-  // Axis-aligned ellipse from the sample bounds.
-  const minX = Math.min(...samples.map((p) => p.x))
-  const maxX = Math.max(...samples.map((p) => p.x))
-  const minY = Math.min(...samples.map((p) => p.y))
-  const maxY = Math.max(...samples.map((p) => p.y))
-  const ecx = (minX + maxX) / 2
-  const ecy = (minY + maxY) / 2
-  const rx = (maxX - minX) / 2
-  const ry = (maxY - minY) / 2
-  if (rx <= 0 || ry <= 0) return null
-  const etol = tol / Math.min(rx, ry)
-  if (
-    samples.every((p) => {
-      const nx = (p.x - ecx) / rx
-      const ny = (p.y - ecy) / ry
-      return Math.abs(Math.hypot(nx, ny) - 1) <= etol
+  // Ellipse: the direct conic fit recovers a rotation too.
+  const e = fitEllipse(samples)
+  if (e && e.rx > 0 && e.ry > 0) {
+    const tol = ROUND_TOL_PX
+    const co = Math.cos(e.angle)
+    const si = Math.sin(e.angle)
+    const onEllipse = samples.every((p) => {
+      const dx = p.x - e.cx
+      const dy = p.y - e.cy
+      const nx = (dx * co + dy * si) / e.rx
+      const ny = (-dx * si + dy * co) / e.ry
+      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
     })
-  ) {
-    return round({ kind: 'ellipse', cx: ecx, cy: ecy, rx, ry }, precision)
+    if (onEllipse) {
+      // A sub-half-degree tilt is noise — emit an axis-aligned ellipse (no transform).
+      const deg = (e.angle * 180) / Math.PI
+      const angle = Math.abs(deg) < 0.5 ? undefined : deg
+      return round(
+        {
+          kind: 'ellipse',
+          cx: e.cx,
+          cy: e.cy,
+          rx: e.rx,
+          ry: e.ry,
+          ...(angle !== undefined ? { angle } : {}),
+        },
+        precision,
+      )
+    }
   }
-
-  return detectRotatedEllipse(start, ops, precision)
+  return null
 }
 
 /** Point on a cubic at parameter t (Bernstein form). */
@@ -155,116 +184,6 @@ function cubicPoint(p0: Pt, c: Extract<PathCommand, { type: 'C' }>, t: number): 
     x: a * p0.x + b * c.x1 + cc * c.x2 + d * c.x,
     y: a * p0.y + b * c.y1 + cc * c.y2 + d * c.y,
   }
-}
-
-/** Max deviation of `samples` from an axis-aligned ellipse after de-rotating by θ about the centroid. */
-function ellipseResidual(samples: Pt[], cmx: number, cmy: number, theta: number): number {
-  const co = Math.cos(theta)
-  const si = Math.sin(theta)
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (const p of samples) {
-    const dx = p.x - cmx
-    const dy = p.y - cmy
-    const rx = dx * co + dy * si
-    const ry = -dx * si + dy * co
-    if (rx < minX) minX = rx
-    if (rx > maxX) maxX = rx
-    if (ry < minY) minY = ry
-    if (ry > maxY) maxY = ry
-  }
-  const ax = (maxX - minX) / 2
-  const ay = (maxY - minY) / 2
-  if (ax <= 0 || ay <= 0) return Infinity
-  const cx = (minX + maxX) / 2
-  const cy = (minY + maxY) / 2
-  let max = 0
-  for (const p of samples) {
-    const dx = p.x - cmx
-    const dy = p.y - cmy
-    const nx = (dx * co + dy * si - cx) / ax
-    const ny = (-dx * si + dy * co - cy) / ay
-    max = Math.max(max, Math.abs(Math.hypot(nx, ny) - 1) * Math.min(ax, ay))
-  }
-  return max
-}
-
-/**
- * A rotated (general) ellipse: orient by the sample covariance (PCA), refine the
- * angle by a small local scan, then accept only if every densely-sampled
- * boundary point lies on the axis-aligned ellipse of the de-rotated cloud within
- * tolerance. Emits `<ellipse>` + a `rotate` transform. Same discipline as the
- * axis-aligned path, so a shape that is not really an ellipse is rejected.
- */
-function detectRotatedEllipse(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
-  // Dense boundary samples: the start anchor plus three interior points per arc.
-  const samples: Pt[] = [start]
-  let prev = start
-  for (const op of ops) {
-    if (op.type !== 'C') return null
-    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
-    samples.push({ x: op.x, y: op.y })
-    prev = { x: op.x, y: op.y }
-  }
-  if (samples.length < 8) return null
-
-  const cmx = samples.reduce((s, p) => s + p.x, 0) / samples.length
-  const cmy = samples.reduce((s, p) => s + p.y, 0) / samples.length
-  let sxx = 0
-  let syy = 0
-  let sxy = 0
-  for (const p of samples) {
-    const dx = p.x - cmx
-    const dy = p.y - cmy
-    sxx += dx * dx
-    syy += dy * dy
-    sxy += dx * dy
-  }
-  const theta0 = 0.5 * Math.atan2(2 * sxy, sxx - syy)
-
-  // Local refinement: the covariance axis is close but sampling is uneven.
-  let bestTheta = theta0
-  let bestErr = Infinity
-  for (let i = -8; i <= 8; i++) {
-    const theta = theta0 + (i * Math.PI) / 180
-    const err = ellipseResidual(samples, cmx, cmy, theta)
-    if (err < bestErr) {
-      bestErr = err
-      bestTheta = theta
-    }
-  }
-
-  const co = Math.cos(bestTheta)
-  const si = Math.sin(bestTheta)
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (const p of samples) {
-    const dx = p.x - cmx
-    const dy = p.y - cmy
-    const rx = dx * co + dy * si
-    const ry = -dx * si + dy * co
-    if (rx < minX) minX = rx
-    if (rx > maxX) maxX = rx
-    if (ry < minY) minY = ry
-    if (ry > maxY) maxY = ry
-  }
-  const rx = (maxX - minX) / 2
-  const ry = (maxY - minY) / 2
-  if (rx <= 0 || ry <= 0) return null
-  const tol = Math.max(0.6, Math.min(rx, ry) * 0.02)
-  if (bestErr > tol) return null
-
-  // De-rotated center, mapped back to source coordinates.
-  const lcx = (minX + maxX) / 2
-  const lcy = (minY + maxY) / 2
-  const cx = cmx + lcx * co - lcy * si
-  const cy = cmy + lcx * si + lcy * co
-  const angle = (bestTheta * 180) / Math.PI
-  return round({ kind: 'ellipse', cx, cy, rx, ry, angle }, precision)
 }
 
 /** Signed distance from a point to an axis-aligned rounded rectangle (circular corners). */
@@ -285,8 +204,9 @@ function roundedRectSdf(
 /**
  * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
  * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
- * scan and accepts only if every densely sampled boundary point lies on that
- * rounded rect within tolerance, so a shape that is not really one is rejected.
+ * coarse scan refined with a golden-section search (sub-pixel), and accepts only
+ * if every densely sampled boundary point lies on that rounded rect within
+ * tolerance, so a shape that is not really one is rejected.
  */
 function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
   if (ops.length < 4 || !ops.every((o) => o.type === 'L' || o.type === 'C')) return null
@@ -317,28 +237,62 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
 
   const maxR = Math.min(hx, hy)
   const tol = Math.max(0.75, maxR * 0.03)
-  // Fit the corner radius by scanning for the smallest max-error.
-  let bestR = 0
-  let bestErr = Infinity
-  const steps = 64
-  for (let i = 1; i <= steps; i++) {
-    const r = (maxR * i) / steps
+  // Largest |SDF| over all samples for a candidate corner radius — minimized at
+  // the true radius (V-shaped: too small clips the corners, too large bulges).
+  const maxErr = (r: number): number => {
     let err = 0
     for (const p of samples) {
       const d = Math.abs(roundedRectSdf(p.x, p.y, cx, cy, hx, hy, r))
       if (d > err) err = d
     }
+    return err
+  }
+  // Coarse scan to bracket the minimum, then a golden-section search refines the
+  // radius to sub-pixel — the scan step (maxR/64) would otherwise cap accuracy.
+  const steps = 64
+  const step = maxR / steps
+  let bestR = step
+  let bestErr = Infinity
+  for (let i = 1; i <= steps; i++) {
+    const err = maxErr(step * i)
     if (err < bestErr) {
       bestErr = err
-      bestR = r
+      bestR = step * i
     }
   }
+  bestR = goldenMin(maxErr, Math.max(0, bestR - step), Math.min(maxR, bestR + step))
+  bestErr = maxErr(bestR)
   if (bestErr > tol) return null
   if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
   return round(
     { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
     precision,
   )
+}
+
+/** Golden-section search: the minimizer of a unimodal `f` on `[a, b]`. */
+function goldenMin(f: (x: number) => number, a: number, b: number): number {
+  const gr = (Math.sqrt(5) - 1) / 2 // 0.618…
+  let c = b - gr * (b - a)
+  let d = a + gr * (b - a)
+  let fc = f(c)
+  let fd = f(d)
+  for (let i = 0; i < 40; i++) {
+    if (fc < fd) {
+      b = d
+      d = c
+      fd = fc
+      c = b - gr * (b - a)
+      fc = f(c)
+    } else {
+      a = c
+      c = d
+      fc = fd
+      d = a + gr * (b - a)
+      fd = f(d)
+    }
+  }
+  return (a + b) / 2
 }
 
 /** Signed smallest angle a − b in (−π, π]. */

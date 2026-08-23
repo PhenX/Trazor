@@ -33,26 +33,32 @@ doc's procedural data source), which also gives exact ground truth. Point `--sou
 dataset-out/
   manifest.json           config, seed, and per-sample split assignment
   train/ val/ test/
-    input/  <id>.png       degraded raster (what the model sees)
+    input/  <id>.png       degraded raster  (what the model sees)
     clean/  <id>.png       clean scene      (cleanup / super-resolution target)
     edge/   <id>.png       soft edge map    (edge pre-pass target)
+    field/  <id>.png       coverage field   (signed-field pre-pass target)
 ```
 
 For a real `--source dir` corpus, splits are assigned **per source family** (top-level subdirectory) so no source SVG
 leaks across train/val/test — otherwise metrics inflate. Procedural samples are mutually independent, so they split per
 sample and hit the ratios directly. Each sample also records its `family` label in the manifest. Pick the target heads
-with `--targets edge,clean`.
+with `--targets edge,clean,field` (all three by default).
 
 ## Pipeline (one sample)
 
 1. **Rasterize** the SVG with [resvg](https://github.com/linebender/resvg) at `resolution × supersample`, letterbox to a
-   square, apply optional geometric augmentation (rotate/scale/translate), and area-downsample for clean anti-aliasing
-   → the **shape** (keeps alpha). — `render.mjs`
+   square, apply optional geometric augmentation (rotate/scale/translate, perspective warp, radial lens distortion, and a
+   multi-scale crop that renders larger then crops a native-size window), and area-downsample for clean anti-aliasing →
+   the **shape** (keeps alpha). — `render.mjs`
 2. **Edge target** = max Sobel gradient across the shape's R/G/B/A channels (color boundaries + silhouette). — `targets.mjs`
-3. **Background** synth (solid/gradient/checker/noise) and **composite** the shape over it → the **clean scene** (also the
-   cleanup target). — `degrade.mjs`
-4. **Degrade** a copy of the clean scene: Gaussian blur → down/up resample → Gaussian noise → optional posterize → JPEG
-   round-trip (high-order degradation, Real-ESRGAN / BSRGAN style) → the **input**. — `degrade.mjs`
+3. **Background** synth (solid/gradient/radial/checker/stripes/fractal/texture) and **composite** the shape over it → the
+   **clean scene** (also the cleanup target). The model **input** is composited separately from a copy that may carry a
+   matting-halo rim (imperfect-cutout artifact), so the clean/edge/field targets stay halo-free and aligned. — `sample.mjs`
+4. **Degrade** a copy of the clean scene, each effect applied with a seeded probability and strength: tone
+   (gamma/brightness/contrast) → blur (isotropic or anisotropic, plus optional sinc ringing) → down/up resample →
+   Gaussian and shot noise → dither or posterize → single/double JPEG (high-order degradation, Real-ESRGAN / BSRGAN style) → the
+   **input**. See the
+   [`degradation`](../../docs/demos/degradation.html) demo for a visual. — `degrade.mjs`
 
 ## Determinism
 

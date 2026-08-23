@@ -57,11 +57,12 @@ On top of that, three things most tracers don't do:
   (island detection warns about pieces that would fall out).
 - **Local ML tools** (optional, on-device via ONNX Runtime Web, WebGPU with
   WASM fallback): **background removal** (U²-Netp, ~4.6 MB), **magic
-  select** — click an object (SlimSAM, ~10 MB) and vectorize just that — and a
+  select** — click an object (SlimSAM, ~10 MB) and vectorize just that — a
   learned **edge pre-pass** (the project's own ~0.46 MB model, served
   same-origin) that guides the tracer to keep fine detail on noisy or
-  compressed input. Models download once and cache in the browser; the app is
-  fully functional without them.
+  compressed input, and a one-shot **cleanup** model that denoises/de-JPEGs the
+  working image before tracing. Models download once and cache in the browser;
+  the app is fully functional without them.
 - **Auto settings**: instant image-statistics analysis recommends a profile,
   palette size and preprocessing, with human-readable reasons — applied
   automatically as each image loads (toggleable), or on demand. Detects
@@ -69,7 +70,8 @@ On top of that, three things most tracers don't do:
   clean shapes from compression-degraded flat art (denoise + speckle cleanup).
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
-  `<rect>`/`<circle>` detection), **group-by-color** (one `<g>` layer per color
+  `<rect>`/`<circle>` detection, and circular-arc `A` fitting that collapses
+  near-circular Bézier runs to exact arcs), **group-by-color** (one `<g>` layer per color
   so cut/print tools separate sheets automatically), tiny-feature warnings below
   cuttable size.
 - **Studio UI**: drag & drop / paste / one-click sample gallery (flat logo,
@@ -122,7 +124,7 @@ cancellation (latest settings win; stale runs abort between stages).
 | `@trazor/trace`  | The tracer: crack decomposition, Potrace-chain fitting, shared boundary graph (seam-free cutout), centerline extraction, Schneider fitting                                              |
 | `@trazor/svg`    | Compact SVG serialization (px/mm, evenodd holes, gap-fill strokes) + output analysis                                                                                                    |
 | `@trazor/engine` | Mode pipelines, staging/progress/cancellation, warnings, worker protocol + client                                                                                                       |
-| `@trazor/ml`     | Background removal & click-to-segment on ONNX Runtime Web, model cache                                                                                                                  |
+| `@trazor/ml`     | Background removal, click-to-segment, learned edge pre-pass, and cleanup, on ONNX Runtime Web + model cache                                                                             |
 | `@trazor/assist` | Image statistics → recommended settings & suggested palettes                                                                                                                            |
 | `apps/web`       | Vue 3 + Pinia studio UI                                                                                                                                                                 |
 
@@ -159,7 +161,6 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 ## Roadmap
 
-- SVG elliptical-arc (`A`) fitting for near-circular arcs
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Gradient detection & mesh-free gradient fills for photo modes

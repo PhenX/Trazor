@@ -47,6 +47,8 @@ export class TrazorClient {
     onProgress?: (stage: StageId, overall: number) => void,
     // Optional boundary hint (from EdgeEnhancer), same dimensions as `image`.
     edgeHint?: GrayImage,
+    // Optional learned coverage field (from FieldEnhancer), same dimensions as `image`.
+    coverageHint?: GrayImage,
   ): Promise<VectorizeResult> {
     this.cancelPending()
     const worker = this.ensureWorker()
@@ -62,6 +64,11 @@ export class TrazorClient {
         hint = edgeHint.data.slice().buffer
         transfer.push(hint)
       }
+      let cov: ArrayBuffer | undefined
+      if (coverageHint) {
+        cov = coverageHint.data.slice().buffer
+        transfer.push(cov)
+      }
       const msg: WorkerInMessage = {
         type: 'vectorize',
         id,
@@ -70,6 +77,7 @@ export class TrazorClient {
         buffer,
         settings,
         edgeHint: hint,
+        coverageHint: cov,
         imageId: this.idFor(image),
       }
       worker.postMessage(msg, transfer)

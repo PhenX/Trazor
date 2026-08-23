@@ -47,7 +47,7 @@ import {
 } from '@trazor/raster'
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
-import { analyzeSvg, serializeSvg } from '@trazor/svg'
+import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
@@ -80,6 +80,27 @@ function edgeProtectMask(
   const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
+  return { width, height, data }
+}
+
+/**
+ * Learned coverage hint ([0,1] GrayImage, 0.5 = boundary) → a signed coverage
+ * field ([-0.5, 0.5]) at the working resolution, quantized to 1/256 steps. The
+ * quantization is the discretization boundary that keeps the (possibly WebGPU)
+ * hint from perturbing geometry below the trace's sub-pixel sensitivity.
+ */
+function coverageHintField(
+  hint: GrayImage | undefined,
+  width: number,
+  height: number,
+): GrayImage | null {
+  if (!hint) return null
+  const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
+  const data = new Float32Array(width * height)
+  for (let i = 0; i < data.length; i++) {
+    const v = g.data[i] - 0.5
+    data[i] = Math.round(v * 256) / 256
+  }
   return { width, height, data }
 }
 
@@ -284,6 +305,7 @@ export async function vectorize(
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
+      ctx?.coverageHint,
     )
   }
 
@@ -301,8 +323,10 @@ export async function vectorize(
     {
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
-      // Circle/ellipse detection is a sub-pixel change; keep it off for cutout,
-      // where the neighbor still traces the Bézier boundary and must match.
+      // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays
+      // off for cutout — an element can't be shared with a neighbor's path edge.
+      // Arc fitting for cutout happens seam-safely per shared chain instead (the
+      // `refineChain` passed to traceLabelMap below).
       roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
       // One <g> layer per color for cut/print separation — color layers only.
       groupByColor:
@@ -500,6 +524,12 @@ async function colorPipeline(
     const regions = traceLabelMap(labels, {
       ...curveOpts,
       colorField,
+      // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
+      // (fitted once, reused reversed) so cutout gets the node reduction without
+      // seam divergence. Full-shape primitives stay off for cutout (an element
+      // can't be shared with a neighbour's path), which is why `roundPrimitives`
+      // is disabled at serialization above.
+      refineChain: settings.optimizeSvg ? (cmds) => fitArcs(cmds, settings.precision) : undefined,
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
@@ -580,6 +610,7 @@ async function inkPipeline(
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
+  coverageHint: GrayImage | undefined,
 ): Promise<void> {
   run.stage('palette')
   const gray = toGrayscale(image)
@@ -609,6 +640,14 @@ async function inkPipeline(
       settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
     mask = binarize(gray, t, settings.invert, opaque)
     if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
+  }
+  // A learned coverage hint (FieldEnhancer) replaces the field derived from the
+  // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
+  // (the discretization boundary) and only when a sub-pixel field applies. No hint
+  // ⇒ the classical field, byte-identical.
+  if (coverageHint && settings.curveMode !== 'pixel') {
+    const hf = coverageHintField(coverageHint, image.width, image.height)
+    if (hf) coverage = hf
   }
   await run.tick()
 

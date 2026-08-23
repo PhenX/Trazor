@@ -60,6 +60,17 @@ export interface EngineContext {
    * byte-identical to the classical path.
    */
   edgeHint?: GrayImage
+  /**
+   * Optional learned signed-coverage field (e.g. from @trazor/ml's FieldEnhancer)
+   * at the source-image resolution: a [0,1] GrayImage where 0.5 is the boundary,
+   * >0.5 inside a region, <0.5 outside. In bw mode the pipeline quantizes it and
+   * uses it as the sub-pixel `coverage` for ring refinement — so vertices snap to
+   * the clean edge rather than the one derived from a degraded input. Absent (or in
+   * pixel curve mode), tracing is byte-identical to the classical path. This is
+   * Tier-1-touching (it moves geometry): reproducible across devices only on the
+   * WASM backend, like the roadmap's differentiable refinement pass.
+   */
+  coverageHint?: GrayImage
 }
 
 /** Thrown (and rejected with) when `shouldCancel` interrupts a run. */

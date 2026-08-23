@@ -35,6 +35,24 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   transform used to estimate stroke width for centerline output
   (`packages/raster/src/thin.ts`).
 
+## Shape fitting (packages/svg)
+
+- **I. Kåsa, “A circle fitting procedure and its error analysis”, _IEEE Trans.
+  Instrumentation and Measurement_ 25(1), 1976.** Algebraic least-squares circle
+  fit; recovers an unbiased center/radius from unevenly-spaced boundary samples
+  for `<circle>` primitive recognition (`packages/svg/src/fit.ts`) and for
+  collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`).
+- **Andrew Fitzgibbon, Maurizio Pilu & Robert Fisher, “Direct least square
+  fitting of ellipses”, _IEEE Trans. PAMI_ 21(5), 1999.** Direct conic ellipse
+  fit (smallest-eigenvector of the design scatter). Used, with the points
+  normalized for conditioning, to recover `<ellipse>` center/radii/angle
+  (`packages/svg/src/fit.ts`).
+- **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
+  implementation notes”.** Endpoint↔center parameterization of the `A` command
+  (out-of-range radii correction, center and swept-angle formulas). Implements
+  arc bounds and arc→Bézier reconstruction (`packages/core/src/path.ts`
+  `arcToCenter`, `packages/svg/src/arc.ts` `arcToCubics`).
+
 ## Color & quantization (packages/core, packages/raster)
 
 - **Björn Ottosson, “A perceptual color space for image processing” (Oklab), 2020.** <https://bottosson.github.io/posts/oklab/>

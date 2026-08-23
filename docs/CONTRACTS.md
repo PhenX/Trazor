@@ -252,8 +252,9 @@ export interface SerializeOptions {
   // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
   // merging consecutive same-paint paths (never larger, same geometry); default false
   optimizePaths?: boolean
-  // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
-  // cutout mode, where a neighbor still traces the Bézier edge; default false
+  // also emit <circle>/<ellipse> for near-round loops and collapse near-circular
+  // Bézier runs to `A` arcs (both sub-pixel); keep off for cutout mode, where a
+  // neighbor still traces the Bézier edge; default false
   roundPrimitives?: boolean
   // wrap each paint color's shapes in its own <g id="layer-N"><title>#hex</title>
   // (first-appearance order) so cut/print tools read one layer per color; default false
@@ -266,6 +267,10 @@ export function buildPathData(commands: readonly PathCommand[], precision: numbe
 export function optimizePathData(commands: readonly PathCommand[], precision: number): string
 // Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
+// Collapse every run of ≥2 consecutive cubics that lie on one circle or ellipse
+// into a single `A` arc (radii/rotation/endpoint snapped to the precision grid);
+// non-arc runs pass through. serializeSvg applies this when roundPrimitives is set.
+export function fitArcs(commands: readonly PathCommand[], precision: number): PathCommand[]
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
   | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
@@ -306,9 +311,10 @@ export interface SvgGeometry {
 // Decode SVG text back into the absolute path model for inspection overlays
 // (anchor points, Bézier handles, outlines). Regex-based, no DOM; exact on our
 // serializer output, best-effort on foreign SVGs. Paths resolve relative/H/V/S/T
-// shorthands to absolute M/L/Q/C/Z; rect/circle/ellipse/line/polyline/polygon
-// convert to equivalent commands (round primitives via the 4-Bézier kappa arc);
-// a `rotate(a [cx cy])` transform (what the serializer emits) is applied.
+// shorthands to absolute M/L/Q/C/Z (arcs `A` expand to cubics); rect/circle/
+// ellipse/line/polyline/polygon convert to equivalent commands (round primitives
+// via the 4-Bézier kappa arc); a `rotate(a [cx cy])` transform (what the
+// serializer emits) is applied.
 export function extractGeometry(svg: string): SvgGeometry
 ```
 
@@ -409,6 +415,18 @@ export class CleanupEnhancer {
   run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
+
+export class FieldEnhancer {
+  // Optional signed-coverage pre-pass (docs/SIGNED_FIELD_PREPASS.md). Tier-1-touching
+  // (feeds sub-pixel refinement); preferBackend 'wasm' pins reproducible mode.
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<FieldEnhancer>
+  // Coverage field ([0,1] GrayImage, 0.5 = boundary) at the input resolution; large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ field: GrayImage }>
+  dispose(): void
+}
 ```
 
 Implementation notes:
@@ -463,6 +481,7 @@ export type WorkerInMessage =
       buffer: ArrayBuffer
       settings: VectorizeSettings
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
+      coverageHint?: ArrayBuffer // optional learned coverage field ([0,1]), Float32 plane, transferred
       imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
     }
   | { type: 'cancel'; id: number }
@@ -484,6 +503,7 @@ export class TrazorClient {
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
     edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
+    coverageHint?: GrayImage, // optional learned coverage field (bw sub-pixel refinement), same dimensions
   ): Promise<VectorizeResult>
   dispose(): void
 }
@@ -492,7 +512,9 @@ export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
   // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
-  // bw mode; absent, tracing is byte-identical to the classical path.
+  // bw/color modes to protect detail; ctx.coverageHint (GrayImage [0,1], optional)
+  // is a learned signed-coverage field used as the bw sub-pixel `coverage`
+  // (Tier-1-touching). Absent, tracing is byte-identical to the classical path.
   ctx?: EngineContext,
   // Optional worker-side reuse of preprocess/palette intermediates across runs.
   // The worker owns a single StageCache and passes a stable imageId; reuse is

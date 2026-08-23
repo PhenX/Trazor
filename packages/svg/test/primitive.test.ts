@@ -131,6 +131,19 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
     expect(p.r).toBeCloseTo(12, 0)
   })
 
+  it('recovers the corner radius to sub-pixel accuracy', () => {
+    // maxR = min(hx, hy) = 25, so the 64-step scan grid is ~0.39 px; this radius
+    // sits between two grid points, where a scan-only fit is ~0.2 px off. The
+    // golden-section refinement must land within a tenth of a pixel.
+    const r = 7.23
+    const p = detectPrimitive(roundedRectPath(10, 10, 90, 60, r), 3, true) as Extract<
+      Primitive,
+      { kind: 'rrect' }
+    >
+    expect(p.kind).toBe('rrect')
+    expect(Math.abs(p.r - r)).toBeLessThan(0.1)
+  })
+
   it('keeps a true circle as a circle, not a pill', () => {
     expect(detectPrimitive(ellipsePath(50, 50, 30, 30), 2, true)?.kind).toBe('circle')
   })
@@ -353,5 +366,61 @@ describe('serializeSvg primitive emission', () => {
       roundPrimitives: true,
     })
     expect(round).toMatch(/<ellipse [^>]*transform="rotate\(/)
+  })
+})
+
+/**
+ * A circle built from cubic arcs at arbitrary (uneven) angles — the anchors
+ * cluster on one side, exactly what adaptive Bézier fitting produces. A
+ * centroid-of-anchors estimate would be pulled off-center; the least-squares fit
+ * is not.
+ */
+function unevenCircle(cx: number, cy: number, r: number, anglesDeg: number[]): PathCommand[] {
+  const a = anglesDeg.map((d) => (d * Math.PI) / 180)
+  const pt = (ang: number): Pt => ({ x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang) })
+  const cmds: PathCommand[] = [{ type: 'M', ...pt(a[0]) }]
+  for (let i = 0; i < a.length; i++) {
+    const a0 = a[i]
+    const a1 = i === a.length - 1 ? a[0] + 2 * Math.PI : a[i + 1]
+    const alpha = (4 / 3) * Math.tan((a1 - a0) / 4)
+    const p0 = pt(a0)
+    const p1 = pt(a1)
+    cmds.push({
+      type: 'C',
+      x1: p0.x - alpha * r * Math.sin(a0),
+      y1: p0.y + alpha * r * Math.cos(a0),
+      x2: p1.x + alpha * r * Math.sin(a1),
+      y2: p1.y - alpha * r * Math.cos(a1),
+      x: p1.x,
+      y: p1.y,
+    })
+  }
+  cmds.push({ type: 'Z' })
+  return cmds
+}
+
+interface Pt {
+  x: number
+  y: number
+}
+
+describe('detectPrimitive — least-squares fit accuracy', () => {
+  it('recovers a circle center accurately despite uneven anchor spacing', () => {
+    const cmds = unevenCircle(50, 40, 30, [0, 15, 30, 55, 90, 200, 300])
+    const p = detectPrimitive(cmds, 3, true) as Extract<Primitive, { kind: 'circle' }>
+    expect(p.kind).toBe('circle')
+    expect(p.cx).toBeCloseTo(50, 1)
+    expect(p.cy).toBeCloseTo(40, 1)
+    expect(p.r).toBeCloseTo(30, 1)
+  })
+
+  it('recovers a clean circle to sub-pixel precision', () => {
+    const p = detectPrimitive(ellipsePath(64, 48, 25, 25), 3, true) as Extract<
+      Primitive,
+      { kind: 'circle' }
+    >
+    expect(p.cx).toBeCloseTo(64, 2)
+    expect(p.cy).toBeCloseTo(48, 2)
+    expect(p.r).toBeCloseTo(25, 2)
   })
 })

@@ -1,6 +1,6 @@
 /**
  * Number formatting and SVG path-data construction. All output is absolute
- * commands (M/L/Q/C/Z) with the shortest token stream that still parses:
+ * commands (M/L/Q/C/A/Z) with the shortest token stream that still parses:
  * tokens are joined with single spaces, and the space before a token starting
  * with `-` is omitted (the sign is a valid separator in path data).
  */
@@ -59,6 +59,18 @@ export function buildPathData(commands: readonly PathCommand[], precision: numbe
         num(cmd.y1)
         num(cmd.x2)
         num(cmd.y2)
+        num(cmd.x)
+        num(cmd.y)
+        break
+      case 'A':
+        // rx ry x-axis-rotation large-arc-flag sweep-flag x y. Flags are literal
+        // 0/1 digits, not coordinates, so they bypass number formatting.
+        push('A')
+        num(cmd.rx)
+        num(cmd.ry)
+        num(cmd.rotation)
+        push(cmd.largeArc ? '1' : '0')
+        push(cmd.sweep ? '1' : '0')
         num(cmd.x)
         num(cmd.y)
         break

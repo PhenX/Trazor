@@ -46,6 +46,20 @@ export function reverseCommands(commands: readonly PathCommand[]): PathCommand[]
           y: prev.y,
         })
         break
+      case 'A':
+        // Same ellipse traversed the other way: flip the sweep flag, keep the
+        // large-arc choice, and land on the previous anchor.
+        out.push({
+          type: 'A',
+          rx: cmd.rx,
+          ry: cmd.ry,
+          rotation: cmd.rotation,
+          largeArc: cmd.largeArc,
+          sweep: !cmd.sweep,
+          x: prev.x,
+          y: prev.y,
+        })
+        break
       case 'M':
         break
       case 'Z':
