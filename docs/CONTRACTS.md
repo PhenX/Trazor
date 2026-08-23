@@ -492,7 +492,9 @@ export function vectorize(
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder (preprocessed image + labels +
 // palette, keyed internally by imageId + settings slices). Instantiate as `{}`.
-export interface StageCache { /* engine-internal fields */ }
+export interface StageCache {
+  /* engine-internal fields */
+}
 ```
 
 ## @vectorizer/assist (reference — implemented by the main agent)
