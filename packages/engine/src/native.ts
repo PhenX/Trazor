@@ -362,7 +362,6 @@ async function colorPipeline(
         : undefined
     const regions = traceLabelMap(labels, {
       ...curveOpts,
-      minArea: traceMinArea,
       colorField,
     })
     regions.sort((a, b) => b.area - a.area)

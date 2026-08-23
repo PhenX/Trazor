@@ -1,12 +1,35 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RasterImage } from '@vectorizer/core'
-import { mulberry32 } from '@vectorizer/core'
-import { detectEdges, mergeSmallRegions, quantize, toGrayscale } from '@vectorizer/raster'
+import { mulberry32, rgbToOklab } from '@vectorizer/core'
+import {
+  detectEdges,
+  mergeSmallRegions,
+  quantize,
+  toGrayscale,
+  toOklabBuffer,
+} from '@vectorizer/raster'
 import { traceLabelMap } from '@vectorizer/trace'
 import { analyzeSvg } from '@vectorizer/svg'
 import { describe, expect, it } from 'vitest'
 import { vectorize } from '../src/native'
+
+/** Per-label palette colors as an interleaved Oklab buffer. */
+function paletteOklabOf(paletteRgb: Uint8Array): Float32Array {
+  const m = (paletteRgb.length / 3) | 0
+  const out = new Float32Array(m * 3)
+  for (let i = 0; i < m; i++) {
+    const [L, a, b] = rgbToOklab(
+      paletteRgb[i * 3] / 255,
+      paletteRgb[i * 3 + 1] / 255,
+      paletteRgb[i * 3 + 2] / 255,
+    )
+    out[i * 3] = L
+    out[i * 3 + 1] = a
+    out[i * 3 + 2] = b
+  }
+  return out
+}
 
 /**
  * Opt-in pipeline profiling over a synthetic anti-aliased illustration:
@@ -179,7 +202,7 @@ describe('audit bench', () => {
         curveOptimize: true,
         optTolerance: 0.2,
         cornerThreshold: 100,
-        minArea: 1,
+        colorField: { oklab: toOklabBuffer(image), paletteOklab: paletteOklabOf(qq.paletteRgb) },
       })
       let l = 0
       let c = 0

@@ -9,7 +9,6 @@ const OPTS = {
   smoothing: 0.75,
   curveOptimize: true,
   optTolerance: 0.2,
-  minArea: 1,
 }
 
 function anchors(commands: PathCommand[]): [number, number][] {

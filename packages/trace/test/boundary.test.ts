@@ -23,7 +23,6 @@ const OPTS = {
   smoothing: 0.75,
   curveOptimize: true,
   optTolerance: 0.2,
-  minArea: 0,
 }
 
 function anchorKeys(commands: PathCommand[]): Set<string> {

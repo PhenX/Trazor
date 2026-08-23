@@ -25,7 +25,6 @@ export interface ColorField {
 }
 
 export interface TraceCutoutOptions extends TraceCurveOptions {
-  minArea: number
   colorField?: ColorField
 }
 
