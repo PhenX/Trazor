@@ -2,10 +2,10 @@
 
 How (and how much) to use machine learning to push output quality toward the best commercial vectorizers, and — the
 question that motivated this doc — **what a training dataset should look like, how big it should be, and how to produce
-it**. This is a strategy/roadmap document, not a contract; most of it is not shipped — the exception is the first
-milestone, the **learned edge pre-pass**, which is now trained and shipped ([`EDGE_PREPASS.md`](EDGE_PREPASS.md)). Shipped
-algorithms and models are tracked in [`REFERENCES.md`](REFERENCES.md); the pipeline it plugs into is in
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+it**. This is the **strategy & dataset reference** (the _why_); the **prioritized, actionable plan** (the _what and when_)
+lives in [`ML_ROADMAP.md`](ML_ROADMAP.md). The learned **edge pre-pass** and **cleanup** models are trained and shipped
+([`EDGE_PREPASS.md`](EDGE_PREPASS.md), [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md)). Shipped algorithms and models are
+tracked in [`REFERENCES.md`](REFERENCES.md); the pipeline they plug into is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## TL;DR
 
@@ -55,24 +55,14 @@ the opposite of what a tracer is for. Our tracer already beats them on fidelity 
 
 ## Where ML earns its place
 
-Keep ML as optional, fail-soft, _input-conditioning_ stages that hand the deterministic core a cleaner or richer input.
-Highest value first, each mapped to the pipeline stage it augments and the roadmap item it advances:
+The principle: keep ML as optional, fail-soft, _input-conditioning_ stages that hand the deterministic core a cleaner or
+richer input — never as the tracer itself, and never writing final geometry except through the discretization boundary of
+the [two-tier contract](#determinism-and-webgpu-a-two-tier-contract). Image→image and image→small-vector stages (edge,
+cleanup, primitive detection) are the cheapest to supervise with synthetic data and slot in cleanly ahead of the
+deterministic core.
 
-1. **Learned edge / boundary map** — a small edge CNN (PiDiNet / DexiNed / HED class) produces clean boundaries on noisy,
-   anti-aliased or JPEG-crushed input, feeding `preprocess`→crack decomposition better cracks than a raw threshold. This
-   is the single biggest robustness win on _bad_ inputs.
-2. **Cleanup / super-resolution pre-pass** — a small U-Net that de-JPEGs, de-noises and up-samples low-res input before
-   quantization. Much of the commercial tools' apparent "magic" on poor uploads is exactly this.
-3. **Primitive / shape detection** — classify a region as circle / ellipse / rounded-rect / star and recover its
-   parameters, so the serializer can emit a true `<circle>`/`<ellipse>`/arc instead of a many-node path. Directly
-   advances the roadmap's "SVG elliptical-arc (`A`) fitting" and matches the commercial shape-fitting advantage.
-4. **Layer / occlusion ordering** — infer which region sits on top, for clean editable `stacked` output. Advances
-   "Semantic layering with SAM masks (object-per-layer SVG)".
-5. **Better segmentation / quantization priors** — extend the existing SlimSAM magic-select toward automatic
-   object-per-layer proposals.
-
-Stages 1–3 are the recommended starting points: they are image→image or image→small-vector, cheap to supervise with
-synthetic data, and slot in cleanly ahead of the deterministic core.
+The **prioritized list of which stages to build, in what order**, with impact / effort / risk and acceptance criteria —
+including layer/occlusion ordering and segmentation priors — now lives in [`ML_ROADMAP.md`](ML_ROADMAP.md).
 
 ## Determinism and WebGPU: a two-tier contract
 
@@ -214,30 +204,14 @@ Then add corruptions specific to _real vectorizer inputs_, which generic super-r
   hours per image), but offline they can generate high-quality vector targets for arbitrary rasters, or score/refine
   candidate targets. Use them to _manufacture_ training data, never at request time.
 
-## A concrete first milestone
+## Building it
 
-Pick **one** sub-problem, prove the whole loop small, then scale the data. **A runnable scaffold already exists** — the
-seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md) and the model spec in
-[`EDGE_PREPASS.md`](EDGE_PREPASS.md):
-
-> **Status:** this milestone is done for the **learned edge pre-pass** — steps 1–4 below were carried through and the
-> trained `edge-prepass.onnx` now ships from the [`models` release](https://github.com/PhenX/Trazor/releases/tag/models).
-> The same recipe applies to the remaining stages (cleanup, primitive detection).
-
-1. Choose **Learned edge pre-pass** (stage 1, [`EDGE_PREPASS.md`](EDGE_PREPASS.md)) or **Cleanup pre-pass** (stage 2,
-   [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md)) — both are image→image, the easiest to supervise and the clearest win on
-   bad inputs. (Primitive detection, stage 3, is the highest _visible_ quality gain but a bigger build; do it second.)
-2. Build **~20k synthetic pairs** with the generator (`npm run dataset`): SVG source → resvg render → degradation
-   pipeline → aligned `(input, edge/clean)` pairs, split by source family. It ships with a procedural source (no corpus
-   needed) and a `--source dir` mode for real SVGs.
-3. Train the small model per [`EDGE_PREPASS.md`](EDGE_PREPASS.md), export to **ONNX**, and wire it as an optional Tier-2
-   conditioning stage in `@trazor/ml` (an `EdgeEnhancer` mirroring `BackgroundRemover`), discretizing its output
-   before the tracer (per the [two-tier contract](#determinism-and-webgpu-a-two-tier-contract)).
-4. Measure against the existing **Oklab ΔE fidelity score** the app already computes — held out by source family — and
-   only then scale to 50k–200k.
-
-Keep every stage optional and fail-soft: the app must remain fully functional, and the classical path byte-identical, with
-no model loaded.
+The learned edge pre-pass and cleanup models are trained and shipped (specs: [`EDGE_PREPASS.md`](EDGE_PREPASS.md),
+[`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md)), fed by the seeded dataset generator in
+[`../scripts/dataset`](../scripts/dataset/README.md) and trained via [`../scripts/train`](../scripts/train/README.md). The
+sequenced plan for the remaining work — and for making the shipped models better on degraded inputs — is in
+[`ML_ROADMAP.md`](ML_ROADMAP.md). Every stage stays optional and fail-soft: the app remains fully functional, and the
+classical path byte-identical, with no model loaded.
 
 ## References
 
