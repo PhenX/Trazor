@@ -15,6 +15,7 @@
  */
 
 import type { PathCommand } from '@trazor/core'
+import { arcToCubics } from './arc'
 
 /** Source element a shape came from. */
 export type SvgElementKind =
@@ -69,8 +70,8 @@ function tokenizePath(d: string): Token[] {
 
 /**
  * Parse a `d` value into absolute `M`/`L`/`Q`/`C`/`Z` commands. `H`/`V` become
- * `L`; `S`/`T` become `C`/`Q` with the reflected control point; `A` collapses to
- * a line to its endpoint (our serializer never emits arcs).
+ * `L`; `S`/`T` become `C`/`Q` with the reflected control point; `A` is expanded
+ * to the equivalent cubic Béziers so an overlay draws the true arc.
  */
 function parsePathData(d: string): PathCommand[] {
   const tokens = tokenizePath(d)
@@ -217,18 +218,33 @@ function parsePathData(d: string): PathCommand[] {
         break
       }
       case 'A': {
-        // rx ry x-axis-rotation large-arc sweep x y — endpoint only.
-        num()
-        num()
-        num()
-        num()
-        num()
+        // rx ry x-axis-rotation large-arc-flag sweep-flag x y.
+        const rx = num()
+        const ry = num()
+        const rotation = num()
+        const largeArc = num() !== 0
+        const sweep = num() !== 0
         const x = num() + bx
         const y = num() + by
-        out.push({ type: 'L', x, y })
+        const cubics = arcToCubics(curX, curY, {
+          type: 'A',
+          rx,
+          ry,
+          rotation,
+          largeArc,
+          sweep,
+          x,
+          y,
+        })
+        for (const c of cubics) out.push(c)
+        const lastC = cubics[cubics.length - 1]
+        if (lastC !== undefined && lastC.type === 'C') {
+          cCtrlX = lastC.x2
+          cCtrlY = lastC.y2
+        }
         curX = x
         curY = y
-        prev = 'A'
+        prev = 'C'
         break
       }
       default:

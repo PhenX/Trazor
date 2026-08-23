@@ -47,6 +47,38 @@ function command(letter: string, operands: readonly number[], p: number): string
   return s
 }
 
+/**
+ * Render one arc command: `A`/`a` then rx ry rotation (gridded), the two flags
+ * as literal `0`/`1` digits (a flag is not a coordinate — gridding a `1` at
+ * precision p would emit `0.0…1`), then the endpoint (gridded). Spacing follows
+ * the same sign-separator rule as {@link command}.
+ */
+function arcCommand(
+  letter: string,
+  rx: number,
+  ry: number,
+  rot: number,
+  laf: number,
+  sf: number,
+  x: number,
+  y: number,
+  p: number,
+): string {
+  let s = letter
+  const append = (token: string): void => {
+    if (token.charCodeAt(0) !== 0x2d /* '-' */) s += ' '
+    s += token
+  }
+  append(formatGrid(rx, p))
+  append(formatGrid(ry, p))
+  append(formatGrid(rot, p))
+  append(String(laf))
+  append(String(sf))
+  append(formatGrid(x, p))
+  append(formatGrid(y, p))
+  return s
+}
+
 /** Shortest string, first argument winning ties (keeps output deterministic). */
 function shorter(a: string, b: string): string {
   return b.length < a.length ? b : a
@@ -138,6 +170,24 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
           shorter(
             command('C', [x1, y1, x2, y2, tx, ty], p),
             command('c', [x1 - curX, y1 - curY, x2 - curX, y2 - curY, tx - curX, ty - curY], p),
+          ),
+        )
+        curX = tx
+        curY = ty
+        break
+      }
+      case 'A': {
+        const rx = grid(cmd.rx)
+        const ry = grid(cmd.ry)
+        const rot = grid(cmd.rotation)
+        const tx = grid(cmd.x)
+        const ty = grid(cmd.y)
+        const laf = cmd.largeArc ? 1 : 0
+        const sf = cmd.sweep ? 1 : 0
+        emit(
+          shorter(
+            arcCommand('A', rx, ry, rot, laf, sf, tx, ty, p),
+            arcCommand('a', rx, ry, rot, laf, sf, tx - curX, ty - curY, p),
           ),
         )
         curX = tx
