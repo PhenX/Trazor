@@ -138,6 +138,41 @@ describe('native engine pipeline', () => {
     expect(w).toBeLessThan(9)
   })
 
+  it('groups color output into one <g> layer per color when groupByColor is set', async () => {
+    const result = await vectorize(
+      redSquareOnWhite(),
+      settings({ mode: 'color', paletteSize: 4, layering: 'stacked', groupByColor: true }),
+    )
+    // Two colors (red + white) → two layers, balanced open/close tags.
+    const layers = result.svg.match(/<g id="layer-\d+">/g) ?? []
+    expect(layers.length).toBe(2)
+    expect((result.svg.match(/<\/g>/g) ?? []).length).toBe(2)
+    // Each used color is named by a layer <title>, and each layer is one path
+    // (stacked paints a color as one contiguous run, folded by the optimizer).
+    for (const hex of result.palette) expect(result.svg).toContain(`<title>${hex}</title>`)
+    expect((result.svg.match(/<path /g) ?? []).length).toBe(2)
+  })
+
+  it('does not group output by default', async () => {
+    const result = await vectorize(redSquareOnWhite(), settings({ mode: 'color', paletteSize: 4 }))
+    expect(result.svg).not.toContain('<g ')
+  })
+
+  it('warns when centerline is run on a largely filled image, not on line art', async () => {
+    const filled = (): RasterImage => {
+      const img = createRaster(40, 40)
+      fillRaster(img, 255, 255, 255)
+      for (let y = 4; y < 36; y++) {
+        for (let x = 4; x < 36; x++) setPixel(img, x, y, 0, 0, 0)
+      }
+      return img
+    }
+    const solid = await vectorize(filled(), settings({ mode: 'centerline', thresholdMode: 'auto' }))
+    expect(solid.warnings.some((w) => w.code === 'centerline-input')).toBe(true)
+    const lines = await vectorize(thickPlus(), settings({ mode: 'centerline', pruneLength: 6 }))
+    expect(lines.warnings.some((w) => w.code === 'centerline-input')).toBe(false)
+  })
+
   it('desaturates in grayscale mode', async () => {
     const result = await vectorize(
       redSquareOnWhite(),

@@ -221,4 +221,62 @@ describe('serializeSvg', () => {
     }
     expect(() => serializeSvg(doc, { precision: 2 })).toThrow(/unsafe fill/)
   })
+
+  it('leaves output ungrouped by default (no <g> wrapper)', () => {
+    expect(serializeSvg(goldenDoc(), { precision: 2 })).not.toContain('<g ')
+  })
+
+  it('groups each color into its own <g> layer in first-appearance order', () => {
+    const doc: SvgDocument = {
+      width: 10,
+      height: 10,
+      unit: 'px',
+      shapes: [
+        { commands: square(0, 0, 5, 5), fill: '#ff0000', fillRule: 'evenodd' },
+        { commands: square(5, 0, 10, 5), fill: '#00ff00', fillRule: 'evenodd' },
+        // A second red region, not adjacent to the first — grouping collects it.
+        { commands: square(0, 5, 5, 10), fill: '#ff0000', fillRule: 'evenodd' },
+      ],
+    }
+    const svg = serializeSvg(doc, { precision: 2, groupByColor: true })
+    // Two layers, red before green (first appearance), each titled by its color.
+    expect(svg.match(/<g id="layer-\d+"><title>[^<]*<\/title>/g)).toEqual([
+      '<g id="layer-1"><title>#ff0000</title>',
+      '<g id="layer-2"><title>#00ff00</title>',
+    ])
+    expect((svg.match(/<\/g>/g) ?? []).length).toBe(2)
+    // Both red squares live in layer 1; green's single square in layer 2.
+    const red = /<g id="layer-1">.*?<\/g>/s.exec(svg)![0]
+    const green = /<g id="layer-2">.*?<\/g>/s.exec(svg)![0]
+    expect((red.match(/<path /g) ?? []).length).toBe(2)
+    expect((green.match(/<path /g) ?? []).length).toBe(1)
+  })
+
+  it('folds a color layer to a single <path> when optimizing, and drops empty layers', () => {
+    // A curved (non-primitive) blob repeated so the two fold into one path.
+    const blob = (x: number): PathCommand[] => [
+      { type: 'M', x, y: 0 },
+      { type: 'Q', x1: x + 2, y1: 4, x: x + 4, y: 0 },
+      { type: 'L', x: x + 4, y: 6 },
+      { type: 'L', x, y: 6 },
+      { type: 'Z' },
+    ]
+    const svg = serializeSvg(
+      {
+        width: 20,
+        height: 8,
+        unit: 'px',
+        shapes: [
+          { commands: blob(0), fill: '#123456' },
+          { commands: blob(8), fill: '#123456' },
+          { commands: [], fill: '#abcdef' }, // empty ⇒ its layer is dropped
+        ],
+      },
+      { precision: 2, optimizePaths: true, groupByColor: true },
+    )
+    expect((svg.match(/<g id="layer-\d+">/g) ?? []).length).toBe(1)
+    const layer = /<g id="layer-1">.*?<\/g>/s.exec(svg)![0]
+    expect((layer.match(/<path /g) ?? []).length).toBe(1)
+    expect(svg).not.toContain('#abcdef')
+  })
 })

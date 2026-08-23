@@ -255,6 +255,9 @@ export interface SerializeOptions {
   // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
   // cutout mode, where a neighbor still traces the Bézier edge; default false
   roundPrimitives?: boolean
+  // wrap each paint color's shapes in its own <g id="layer-N"><title>#hex</title>
+  // (first-appearance order) so cut/print tools read one layer per color; default false
+  groupByColor?: boolean
 }
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
 export function buildPathData(commands: readonly PathCommand[], precision: number): string

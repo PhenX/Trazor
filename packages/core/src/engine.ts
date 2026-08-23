@@ -11,6 +11,7 @@ export type WarningCode =
   | 'empty-result'
   | 'palette-clamped'
   | 'tiny-features'
+  | 'centerline-input'
   | 'mode-note'
 
 export interface VectorizeWarning {

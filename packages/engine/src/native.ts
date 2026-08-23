@@ -304,6 +304,9 @@ export async function vectorize(
       // Circle/ellipse detection is a sub-pixel change; keep it off for cutout,
       // where the neighbor still traces the Bézier boundary and must match.
       roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
+      // One <g> layer per color for cut/print separation — color layers only.
+      groupByColor:
+        settings.groupByColor && (settings.mode === 'color' || settings.mode === 'grayscale'),
     },
   )
   run.progress(0.6)
@@ -637,6 +640,7 @@ async function inkPipeline(
     if (settings.detectIslands) warnIslands(traced, warnings)
     run.progress(1)
   } else {
+    warnCenterlineInput(mask, warnings)
     const skeleton = zhangSuenThin(mask)
     run.progress(0.4)
     await run.tick()
@@ -722,6 +726,27 @@ function warnIslands(traced: TracedShape[], warnings: VectorizeWarning[]): void 
       code: 'stencil-islands',
       severity: 'warning',
       message: `${islands} enclosed island${islands === 1 ? '' : 's'} would fall out of a physical stencil — add bridges in your editor.`,
+    })
+  }
+}
+
+/**
+ * Centerline suits thin line art: it traces the medial axis of the ink. When
+ * the ink is a large filled area the skeleton is a spidery medial graph that
+ * looks nothing like the source, so warn and point at the filled-shape modes.
+ */
+const CENTERLINE_FILL_FRACTION = 0.35
+function warnCenterlineInput(mask: BinaryMask, warnings: VectorizeWarning[]): void {
+  const { data } = mask
+  if (data.length === 0) return
+  let ink = 0
+  for (let i = 0; i < data.length; i++) ink += data[i]
+  const fraction = ink / data.length
+  if (fraction > CENTERLINE_FILL_FRACTION) {
+    warnings.push({
+      code: 'centerline-input',
+      severity: 'warning',
+      message: `Centerline traces the middle of thin lines, but ~${Math.round(fraction * 100)}% of this image is filled — expect a skeleton, not matching outlines. Use B&W or Color mode for solid shapes.`,
     })
   }
 }
