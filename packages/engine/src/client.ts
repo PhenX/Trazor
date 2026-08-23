@@ -24,8 +24,22 @@ export class VectorizerClient {
   private worker: Worker | null = null
   private nextId = 1
   private jobs = new Map<number, PendingJob>()
+  // Stable identity per working-image object, so the worker can reuse cached
+  // preprocess/palette work while the same image is tuned. The app replaces the
+  // image object whenever its pixels change, so object identity tracks content.
+  private imageIds = new WeakMap<object, number>()
+  private nextImageId = 1
 
   constructor(private createWorker: () => Worker) {}
+
+  private idFor(image: RasterImage): number {
+    let id = this.imageIds.get(image)
+    if (id === undefined) {
+      id = this.nextImageId++
+      this.imageIds.set(image, id)
+    }
+    return id
+  }
 
   vectorize(
     image: RasterImage,
@@ -56,6 +70,7 @@ export class VectorizerClient {
         buffer,
         settings,
         edgeHint: hint,
+        imageId: this.idFor(image),
       }
       worker.postMessage(msg, transfer)
     })

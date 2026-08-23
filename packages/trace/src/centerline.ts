@@ -14,12 +14,21 @@ export interface CenterlineOptions {
   simplifyTolerance: number
   /** 0..1 → light corner-preserving smoothing passes before fitting. */
   smoothing: number
+  /**
+   * Distance-to-background field at skeleton resolution (a chamfer transform,
+   * indexed y*width+x). When present, each stroke reports its own width as the
+   * median of 2×distance along its skeleton pixels, so a drawing with varying
+   * line weight keeps that variation instead of one global average.
+   */
+  distanceField?: Float32Array
 }
 
 export interface StrokePath {
   commands: PathCommand[]
   closed: boolean
   length: number
+  /** Median stroke width (px) along this chain; set only when `distanceField` is given. */
+  width?: number
 }
 
 /**
@@ -167,6 +176,10 @@ export function traceCenterline(skeleton: BinaryMask, opts: CenterlineOptions): 
   const strokes: StrokePath[] = []
   for (const chain of kept) {
     if (chain.merged) continue
+    // Per-chain width from the dense skeleton pixels (before simplification).
+    const width = opts.distanceField
+      ? medianStrokeWidth(chain.points, opts.distanceField, w, h)
+      : undefined
     // Smooth on the dense pixel chain (local, sub-pixel), THEN simplify —
     // the other order would average far-apart survivors and melt corners.
     let pts = chain.points
@@ -191,7 +204,7 @@ export function traceCenterline(skeleton: BinaryMask, opts: CenterlineOptions): 
     const commands: PathCommand[] = [{ type: 'M', x: pts[0], y: pts[1] }]
     commands.push(...fitOpenPolyline(pts, opts.fitTolerance, corners))
     if (chain.closed) commands.push({ type: 'Z' })
-    strokes.push({ commands, closed: chain.closed, length: polylineLengthFlat(pts) })
+    strokes.push({ commands, closed: chain.closed, length: polylineLengthFlat(pts), width })
   }
   strokes.sort((a, b) => b.length - a.length)
   return strokes
@@ -288,6 +301,32 @@ export function traceCenterline(skeleton: BinaryMask, opts: CenterlineOptions): 
     survivor.endKind = b.atStart ? b.chain.endKind : b.chain.startKind
     b.chain.merged = true
   }
+}
+
+/**
+ * Median of 2×distance along a chain's skeleton pixels (points at +0.5 centers).
+ * A robust per-stroke width estimate; returns undefined when nothing samples.
+ */
+function medianStrokeWidth(
+  points: number[],
+  field: Float32Array,
+  w: number,
+  h: number,
+): number | undefined {
+  const n = points.length >> 1
+  const vals = new Float64Array(n)
+  let cnt = 0
+  for (let i = 0; i < n; i++) {
+    const x = Math.floor(points[i * 2])
+    const y = Math.floor(points[i * 2 + 1])
+    if (x < 0 || y < 0 || x >= w || y >= h) continue
+    vals[cnt++] = 2 * field[y * w + x]
+  }
+  if (cnt === 0) return undefined
+  const view = vals.subarray(0, cnt)
+  view.sort()
+  const mid = cnt >> 1
+  return cnt % 2 === 1 ? view[mid] : (view[mid - 1] + view[mid]) / 2
 }
 
 /** Bit index for a neighbor offset (dx, dy ∈ {-1,0,1}). */

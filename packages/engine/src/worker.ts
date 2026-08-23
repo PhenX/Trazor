@@ -1,6 +1,7 @@
 import { CancelledError } from '@vectorizer/core'
 import type { GrayImage, RasterImage, VectorizeSettings } from '@vectorizer/core'
 import { vectorize } from './native'
+import type { StageCache } from './native'
 import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'
 
 /**
@@ -12,6 +13,9 @@ import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'
 export function installWorkerHandler(scope: WorkerScope): void {
   const cancelled = new Set<number>()
   let lastProgressAt = 0
+  // Persisted across runs: reuses preprocess/palette work while the same image
+  // is tuned. Single entry, keyed by imageId + settings slices inside vectorize.
+  const stageCache: StageCache = {}
 
   const post = (msg: WorkerOutMessage, transfer?: Transferable[]) =>
     scope.postMessage(msg, transfer)
@@ -24,12 +28,12 @@ export function installWorkerHandler(scope: WorkerScope): void {
     }
     if (msg.type !== 'vectorize') return
 
-    const { id, width, height, buffer, settings, edgeHint } = msg
+    const { id, width, height, buffer, settings, edgeHint, imageId } = msg
     const image: RasterImage = { width, height, data: new Uint8ClampedArray(buffer) }
     const hint: GrayImage | undefined = edgeHint
       ? { width, height, data: new Float32Array(edgeHint) }
       : undefined
-    void run(id, image, settings, hint)
+    void run(id, image, settings, hint, imageId)
   })
 
   async function run(
@@ -37,19 +41,25 @@ export function installWorkerHandler(scope: WorkerScope): void {
     image: RasterImage,
     settings: VectorizeSettings,
     edgeHint?: GrayImage,
+    imageId?: number,
   ) {
     try {
-      const result = await vectorize(image, settings, {
-        edgeHint,
-        shouldCancel: () => cancelled.has(id),
-        onProgress: (stage, overall) => {
-          const now = Date.now()
-          if (overall >= 1 || now - lastProgressAt > 40) {
-            lastProgressAt = now
-            post({ type: 'progress', id, stage, overall })
-          }
+      const result = await vectorize(
+        image,
+        settings,
+        {
+          edgeHint,
+          shouldCancel: () => cancelled.has(id),
+          onProgress: (stage, overall) => {
+            const now = Date.now()
+            if (overall >= 1 || now - lastProgressAt > 40) {
+              lastProgressAt = now
+              post({ type: 'progress', id, stage, overall })
+            }
+          },
         },
-      })
+        { imageId, cache: stageCache },
+      )
       if (cancelled.has(id)) {
         post({ type: 'error', id, message: 'cancelled', cancelled: true })
       } else {

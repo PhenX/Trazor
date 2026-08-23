@@ -35,8 +35,31 @@ figures; the deltas here are measured against them on the same scene):
   node load is fragmentation, not the palette/jitter A1/A2 fixed.
 
 Everything stays deterministic and byte-identical when the new paths are inactive (no `sampleMask`, no `colorField`, no
-adaptive `coverage`): the classical trace tests are unchanged. The rest of this document is the original audit; the P1/P2
-items are untouched.
+adaptive `coverage`): the classical trace tests are unchanged.
+
+## Status: P1 implemented
+
+The efficiency/interactivity tier is implemented on this branch. All items are byte-identical to the prior output
+(pure optimizations) except A9, which adds per-stroke width to centerline output:
+
+- **E2 — memoized final label assignment** ✅ `quantize` caches RGB24 → label, so the full-image pass runs one k-way
+  search per distinct color instead of per pixel. **21.5× faster** on a 1600×1600 image with 200 repeated colors
+  (915ms → 43ms); byte-identical.
+- **E3 — worker stage caching** ✅ `VectorizerClient` assigns each working-image object a stable id; the worker reuses
+  the preprocessed image and the quantized/cleaned label map when only trace settings change. **1.9× faster** on a
+  trace-only re-run (673ms → 352ms), more on quantize-heavy inputs; disabled while an edge hint is present; five
+  invalidation tests.
+- **E1 — incremental stacked layer masks** ✅ each layer's union mask is the previous minus the label that dropped out
+  (bucket once, peel per layer): O(k·n) rescan → O(n). Byte-identical (asserted against a full rescan); **layer-mask
+  build 543ms → 49ms at 2400×2400, k=48** (invisible on small images, where `traceMask` dominates).
+- **E5 — empty fit stage removed** ✅ curve fitting runs inside the trace stage; the zero-length fit stage and its
+  progress-bar jump are gone (budget folded into trace).
+- **A9 — per-stroke centerline width** ✅ `traceCenterline` takes an optional chamfer `distanceField` and reports each
+  stroke's own median width, so varying line weight is preserved instead of one global average.
+- **Deferred (risk > "low" gain):** the Zhang–Suen iteration cap (would corrupt legitimately thick strokes; capping by
+  chamfer distance doesn't bound the pathological solid-region case anyway) and the `opticurve`/`crack` scratch reuse and
+  `mergeSmallRegions` round-restriction (correctness-sensitive hot loops). **E4** (worker pool) and the structural stacked
+  rewrite remain open.
 
 ## The measured baseline
 

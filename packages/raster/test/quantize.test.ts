@@ -217,6 +217,34 @@ describe('quantize — k-means path', () => {
     expect(nearestToRim(filtered)).toBeGreaterThan(80)
   })
 
+  it('assigns every pixel of a repeated color the same label (memoized final pass)', () => {
+    // 40 distinct colors (> k) tiled so each appears in many pixels; the
+    // memoized labeling must give one color exactly one label everywhere.
+    const bases: [number, number, number][] = Array.from({ length: 40 }, (_, i) => [
+      (i * 61) % 256,
+      (i * 113) % 256,
+      (i * 179) % 256,
+    ])
+    const img = rasterOf(60, 60, (x, y) => {
+      const c = bases[(x * 7 + y * 11) % 40]
+      return [c[0], c[1], c[2], 255] as Rgba
+    })
+    const res = quantize(img, { ...baseOpts, k: 8, seed: 3 })
+    const labelOfColor = new Map<number, number>()
+    let mismatches = 0
+    for (let y = 0; y < 60; y++) {
+      for (let x = 0; x < 60; x++) {
+        const p = (y * 60 + x) * 4
+        const key = (img.data[p] << 16) | (img.data[p + 1] << 8) | img.data[p + 2]
+        const lab = res.labels.data[y * 60 + x]
+        const seen = labelOfColor.get(key)
+        if (seen === undefined) labelOfColor.set(key, lab)
+        else if (seen !== lab) mismatches++
+      }
+    }
+    expect(mismatches).toBe(0)
+  })
+
   it('autoK merges centroids closer than 0.03 in Oklab', () => {
     // Six distinct colors (> k) forming two tight groups.
     const shades = [0x10, 0x12, 0x14, 0xec, 0xee, 0xf0]

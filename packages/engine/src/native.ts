@@ -11,6 +11,7 @@ import type {
   BinaryMask,
   EngineContext,
   GrayImage,
+  LabelMap,
   RasterImage,
   StageId,
   StageTiming,
@@ -25,6 +26,7 @@ import {
   bilateralFilter,
   binarize,
   borderDominantColor,
+  chamferDistance,
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
@@ -81,16 +83,18 @@ function edgeProtectMask(
   return { width, height, data }
 }
 
-/** Cumulative progress budget per stage (sums to 1). */
+// Cumulative progress budget per stage (sums to 1). Curve fitting happens
+// inside the trace stage, so `fit` carries no separate work or budget — the
+// stage id is retained only for downstream compatibility.
 const STAGE_BUDGET: Record<StageId, number> = {
   preprocess: 0.12,
   palette: 0.2,
   segment: 0.08,
-  trace: 0.42,
-  fit: 0.06,
+  trace: 0.48,
+  fit: 0,
   svg: 0.12,
 }
-const STAGE_ORDER: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'fit', 'svg']
+const STAGE_ORDER: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'svg']
 
 class Run {
   private timings: StageTiming[] = []
@@ -143,6 +147,60 @@ class Run {
 }
 
 /**
+ * Reusable intermediates the worker keeps across runs so that tuning trace-only
+ * settings does not re-run preprocessing and quantization. A single entry keyed
+ * by the client's image id plus the settings slice each stage depends on; a new
+ * image or a changed preprocess/palette setting invalidates it. Reuse is
+ * byte-identical to recomputation (deterministic stages, complete keys).
+ */
+export interface StageCache {
+  imageId?: number
+  preKey?: string
+  workImage?: RasterImage
+  opaque?: BinaryMask | null
+  palKey?: string
+  labels?: LabelMap
+  paletteHex?: string[]
+  paletteRgb?: Uint8Array
+  counts?: Uint32Array
+  /** Palette length when autoPaletteSize clamped it, else undefined (for the warning). */
+  paletteClampedTo?: number
+}
+
+export interface VectorizeRunOptions {
+  /** Stable per-image identity (new working image ⇒ new id); enables the cache. */
+  imageId?: number
+  cache?: StageCache
+}
+
+/** Settings that change the preprocessed working image. */
+function preKeyOf(s: VectorizeSettings): string {
+  return [
+    s.maxDimension,
+    s.denoise,
+    s.blurRadius,
+    s.background,
+    s.backgroundColor,
+    s.alphaThreshold,
+    s.mode === 'grayscale' ? 'g' : 'c',
+  ].join('|')
+}
+
+/** Settings that change the quantized + cleaned label map. */
+function palKeyOf(s: VectorizeSettings): string {
+  return [
+    s.paletteSize,
+    s.autoPaletteSize,
+    s.colorSpace,
+    s.quantizeQuality,
+    s.palette ? s.palette.join(',') : '-',
+    s.minRegionArea,
+    s.preserveDetails,
+    s.omitBackground,
+  ].join('|')
+}
+
+/**
  * The native vectorization pipeline:
  * preprocess → (palette | binarize) → segment cleanup → trace/fit → SVG.
  */
@@ -150,23 +208,52 @@ export async function vectorize(
   source: RasterImage,
   settingsIn: VectorizeSettings,
   ctx?: EngineContext,
+  opts?: VectorizeRunOptions,
 ): Promise<VectorizeResult> {
   const settings = normalizeSettings(settingsIn)
   const started = nowMs()
   const run = new Run(ctx)
   const warnings: VectorizeWarning[] = []
 
-  // ---- preprocess ----
+  const cache = opts?.cache
+  const imageId = opts?.imageId
+  const cacheable = cache !== undefined && imageId !== undefined
+
+  // ---- preprocess (reused across runs when the image + preprocess key match) ----
   run.stage('preprocess')
-  let image = resizeToFit(source, settings.maxDimension)
-  run.progress(0.3)
-  if (settings.denoise === 'median') image = medianFilter(image, 1)
-  else if (settings.denoise === 'bilateral') image = bilateralFilter(image, 2, 2, 35)
-  if (settings.blurRadius > 0) image = gaussianBlur(image, settings.blurRadius)
-  run.progress(0.7)
-  const { image: flatImage, opaque } = flattenImage(image, settings)
-  image = flatImage
-  if (settings.mode === 'grayscale') desaturateInPlace(image)
+  const preKey = preKeyOf(settings)
+  let image: RasterImage
+  let opaque: BinaryMask | null
+  if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
+    image = cache.workImage
+    opaque = cache.opaque ?? null
+    run.progress(1)
+  } else {
+    let img = resizeToFit(source, settings.maxDimension)
+    run.progress(0.3)
+    if (settings.denoise === 'median') img = medianFilter(img, 1)
+    else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
+    if (settings.blurRadius > 0) img = gaussianBlur(img, settings.blurRadius)
+    run.progress(0.7)
+    const flat = flattenImage(img, settings)
+    img = flat.image
+    opaque = flat.opaque
+    if (settings.mode === 'grayscale') desaturateInPlace(img)
+    image = img
+    if (cacheable) {
+      // New image or preprocess ⇒ reset the whole entry (palette depends on it).
+      cache.imageId = imageId
+      cache.preKey = preKey
+      cache.workImage = image
+      cache.opaque = opaque
+      cache.palKey = undefined
+      cache.labels = undefined
+      cache.paletteHex = undefined
+      cache.paletteRgb = undefined
+      cache.counts = undefined
+      cache.paletteClampedTo = undefined
+    }
+  }
   const { width, height } = image
   await run.tick()
 
@@ -184,6 +271,8 @@ export async function vectorize(
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
+      cacheable ? cache : undefined,
+      imageId,
     )
   } else {
     await inkPipeline(
@@ -265,79 +354,122 @@ async function colorPipeline(
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
+  cache: StageCache | undefined,
+  imageId: number | undefined,
 ): Promise<void> {
   run.stage('palette')
-  // Keep anti-aliased boundary pixels out of the k-means training sample so
-  // rim mixtures cannot capture a palette entry (no effect on the exact and
-  // fixed-palette paths, which quantize resolves without clustering).
-  const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
-  const clusterSample: BinaryMask = {
-    width: image.width,
-    height: image.height,
-    data: new Uint8Array(image.width * image.height),
+  // The palette + cleaned label map are reused when the image and every setting
+  // that shapes them are unchanged. An edge hint feeds the merge, so caching is
+  // disabled while one is present (correctness over speed).
+  const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
+  const palKey = canCachePal ? palKeyOf(settings) : undefined
+  // Edge hint (if any) protects thin features from the size merge and from the
+  // tracer's speck filter; null when no hint (and always null when caching).
+  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+
+  let labels: LabelMap
+  let paletteHex: string[]
+  let paletteRgb: Uint8Array
+  let counts: Uint32Array
+  let paletteClampedTo: number | undefined
+
+  if (canCachePal && cache.imageId === imageId && cache.palKey === palKey && cache.labels) {
+    labels = cache.labels
+    paletteHex = cache.paletteHex as string[]
+    paletteRgb = cache.paletteRgb as Uint8Array
+    counts = cache.counts as Uint32Array
+    paletteClampedTo = cache.paletteClampedTo
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+  } else {
+    // Keep anti-aliased boundary pixels out of the k-means training sample so
+    // rim mixtures cannot capture a palette entry (no effect on the exact and
+    // fixed-palette paths, which quantize resolves without clustering).
+    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+    const clusterSample: BinaryMask = {
+      width: image.width,
+      height: image.height,
+      data: new Uint8Array(image.width * image.height),
+    }
+    for (let i = 0; i < clusterSample.data.length; i++) {
+      clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+    }
+    const q = quantize(image, {
+      k: settings.paletteSize,
+      colorSpace: settings.colorSpace,
+      quality: settings.quantizeQuality,
+      seed: QUANTIZE_SEED,
+      mask: opaque,
+      sampleMask: clusterSample,
+      autoK: settings.autoPaletteSize,
+      fixedPalette: settings.palette,
+    })
+    paletteClampedTo =
+      settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
+        ? q.paletteHex.length
+        : undefined
+    await run.tick()
+
+    run.stage('segment')
+    // `protect` (hoisted above) lets an edge hint keep small regions on a
+    // predicted boundary; with no hint this is byte-identical to the plain merge.
+    if (settings.preserveDetails) {
+      const oklab = new Float32Array(q.paletteHex.length * 3)
+      for (let i = 0; i < q.paletteHex.length; i++) {
+        const [L, a, b] = rgbToOklab(
+          q.paletteRgb[i * 3] / 255,
+          q.paletteRgb[i * 3 + 1] / 255,
+          q.paletteRgb[i * 3 + 2] / 255,
+        )
+        oklab[i * 3] = L
+        oklab[i * 3 + 1] = a
+        oklab[i * 3 + 2] = b
+      }
+      mergeSmallRegions(q.labels, settings.minRegionArea, {
+        oklab,
+        keepContrast: DETAIL_CONTRAST,
+        protect: protect ?? undefined,
+      })
+    } else if (protect) {
+      mergeSmallRegions(q.labels, settings.minRegionArea, { protect })
+    } else {
+      mergeSmallRegions(q.labels, settings.minRegionArea)
+    }
+    labels = q.labels
+    paletteHex = q.paletteHex
+    paletteRgb = q.paletteRgb
+    counts = new Uint32Array(labels.count)
+    for (let i = 0; i < labels.data.length; i++) {
+      const l = labels.data[i]
+      if (l >= 0) counts[l]++
+    }
+    const backgroundLabel = settings.omitBackground ? nearestPaletteLabel(image, paletteHex) : -1
+    if (backgroundLabel >= 0) {
+      // Drop only the border-connected background; identically-colored regions
+      // enclosed by other shapes (white text inside a banner) are kept.
+      const cleared = clearBorderLabel(labels, backgroundLabel)
+      counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
+    }
+    await run.tick()
+
+    if (canCachePal) {
+      cache.palKey = palKey
+      cache.labels = labels
+      cache.paletteHex = paletteHex
+      cache.paletteRgb = paletteRgb
+      cache.counts = counts
+      cache.paletteClampedTo = paletteClampedTo
+    }
   }
-  for (let i = 0; i < clusterSample.data.length; i++) {
-    clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
-  }
-  const q = quantize(image, {
-    k: settings.paletteSize,
-    colorSpace: settings.colorSpace,
-    quality: settings.quantizeQuality,
-    seed: QUANTIZE_SEED,
-    mask: opaque,
-    sampleMask: clusterSample,
-    autoK: settings.autoPaletteSize,
-    fixedPalette: settings.palette,
-  })
-  if (settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize) {
+
+  if (paletteClampedTo !== undefined) {
     warnings.push({
       code: 'palette-clamped',
       severity: 'info',
-      message: `Palette reduced to ${q.paletteHex.length} colors (near-duplicates merged).`,
+      message: `Palette reduced to ${paletteClampedTo} colors (near-duplicates merged).`,
     })
   }
-  await run.tick()
-
-  run.stage('segment')
-  // Edge hint (if any) protects small regions on a predicted boundary from the
-  // size-based merge; with no hint this is byte-identical to the plain merge.
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
-  if (settings.preserveDetails) {
-    const oklab = new Float32Array(q.paletteHex.length * 3)
-    for (let i = 0; i < q.paletteHex.length; i++) {
-      const [L, a, b] = rgbToOklab(
-        q.paletteRgb[i * 3] / 255,
-        q.paletteRgb[i * 3 + 1] / 255,
-        q.paletteRgb[i * 3 + 2] / 255,
-      )
-      oklab[i * 3] = L
-      oklab[i * 3 + 1] = a
-      oklab[i * 3 + 2] = b
-    }
-    mergeSmallRegions(q.labels, settings.minRegionArea, {
-      oklab,
-      keepContrast: DETAIL_CONTRAST,
-      protect: protect ?? undefined,
-    })
-  } else if (protect) {
-    mergeSmallRegions(q.labels, settings.minRegionArea, { protect })
-  } else {
-    mergeSmallRegions(q.labels, settings.minRegionArea)
-  }
-  const labels = q.labels
-  const counts = new Uint32Array(labels.count)
-  for (let i = 0; i < labels.data.length; i++) {
-    const l = labels.data[i]
-    if (l >= 0) counts[l]++
-  }
-  const backgroundLabel = settings.omitBackground ? nearestPaletteLabel(image, q.paletteHex) : -1
-  if (backgroundLabel >= 0) {
-    // Drop only the border-connected background; identically-colored regions
-    // enclosed by other shapes (white text inside a banner) are kept.
-    const cleared = clearBorderLabel(labels, backgroundLabel)
-    counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
-  }
-  await run.tick()
 
   run.stage('trace')
   const curveOpts = {
@@ -357,8 +489,8 @@ async function colorPipeline(
     // true anti-aliased edge between its two region colors. Skipped in pixel
     // mode (exact lattice) and when the palette is degenerate.
     const colorField =
-      settings.curveMode !== 'pixel' && q.paletteHex.length > 1
-        ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(q.paletteRgb) }
+      settings.curveMode !== 'pixel' && paletteHex.length > 1
+        ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(paletteRgb) }
         : undefined
     const regions = traceLabelMap(labels, {
       ...curveOpts,
@@ -366,7 +498,7 @@ async function colorPipeline(
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
-      const fill = q.paletteHex[region.label]
+      const fill = paletteHex[region.label]
       if (!usedPalette.includes(fill)) usedPalette.push(fill)
       shapes.push({
         commands: region.commands,
@@ -384,33 +516,45 @@ async function colorPipeline(
     const order: number[] = []
     for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
     order.sort((a, b) => counts[b] - counts[a])
-    const position = new Int32Array(counts.length).fill(-1)
-    order.forEach((label, i) => {
-      position[label] = i
-    })
+
+    // Pixel indices bucketed by label (one O(n) pass) so each layer is built
+    // from the previous one by removing just the label that dropped out — the
+    // union masks are the same bits as a per-layer full rescan, at O(n) total
+    // instead of O(k·n).
+    const lab = labels.data
+    const nPix = lab.length
+    const offset = new Int32Array(counts.length + 1)
+    for (let l = 0; l < counts.length; l++) offset[l + 1] = offset[l] + counts[l]
+    const bucket = new Int32Array(offset[counts.length])
+    const cursor = offset.slice(0, counts.length)
+    for (let p = 0; p < nPix; p++) {
+      const l = lab[p]
+      if (l >= 0) bucket[cursor[l]++] = p
+    }
 
     const layerMask: BinaryMask = {
       width: labels.width,
       height: labels.height,
-      data: new Uint8Array(labels.width * labels.height),
+      data: new Uint8Array(nPix),
     }
+    const data = layerMask.data
+    // Layer 0 is every labeled pixel (all layers stacked); higher layers peel off.
+    for (let p = 0; p < nPix; p++) data[p] = lab[p] >= 0 ? 1 : 0
+
     for (let i = 0; i < order.length; i++) {
-      const data = layerMask.data
-      const lab = labels.data
-      for (let p = 0; p < lab.length; p++) {
-        const l = lab[p]
-        data[p] = l >= 0 && position[l] >= i ? 1 : 0
-      }
       const traced = traceMask(layerMask, {
         ...curveOpts,
         turnPolicy: settings.turnPolicy,
         minArea: traceMinArea,
       })
-      const fill = q.paletteHex[order[i]]
+      const fill = paletteHex[order[i]]
       if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
       for (const shape of traced) {
         shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd' })
       }
+      // Remove this layer's own pixels so the next mask is the layers below it.
+      const label = order[i]
+      for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
       run.progress((i + 1) / order.length)
       // Sequential on purpose: yields the worker event loop between layers so
       // cancel messages interleave with the computation.
@@ -419,7 +563,6 @@ async function colorPipeline(
     }
   }
   setPalette(usedPalette)
-  run.stage('fit')
   run.progress(1)
 }
 
@@ -497,28 +640,31 @@ async function inkPipeline(
     const skeleton = zhangSuenThin(mask)
     run.progress(0.4)
     await run.tick()
-    const strokeWidth =
-      settings.strokeWidth > 0 ? settings.strokeWidth : estimateStrokeWidth(mask, skeleton)
+    // Distance field feeds a per-stroke width (varying line weight is kept);
+    // the global estimate is the fallback and the explicit-width path.
+    const useEstimate = settings.strokeWidth <= 0
+    const distanceField = useEstimate ? chamferDistance(mask) : undefined
+    const globalWidth = useEstimate ? estimateStrokeWidth(mask, skeleton) : settings.strokeWidth
     const strokes = traceCenterline(skeleton, {
       pruneLength: settings.pruneLength,
       cornerThreshold: settings.cornerThreshold,
       fitTolerance: settings.fitTolerance,
       simplifyTolerance: settings.simplifyTolerance,
       smoothing: settings.smoothing,
+      distanceField,
     })
     for (const stroke of strokes) {
+      const width = useEstimate ? (stroke.width ?? globalWidth) : globalWidth
       shapes.push({
         commands: stroke.commands,
         stroke: settings.fillColor,
-        strokeWidth: round2(strokeWidth),
+        strokeWidth: round2(width),
         strokeLinecap: 'round',
         strokeLinejoin: 'round',
       })
     }
     run.progress(1)
   }
-  run.stage('fit')
-  run.progress(1)
 }
 
 function desaturateInPlace(image: RasterImage): void {

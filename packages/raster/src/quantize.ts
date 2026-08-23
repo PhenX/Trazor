@@ -73,26 +73,36 @@ function assignNearest(
   rgbSums: Float64Array | null,
 ): Uint32Array {
   const counts = new Uint32Array(m)
+  // Memoize the nearest centroid per distinct RGB color: the label a color maps
+  // to is deterministic, so the full-image pass costs one k-way search per
+  // distinct color instead of per pixel (counts/sums are still accumulated per
+  // pixel). Identical output; far fewer distance evaluations when colors repeat.
+  const memo = new Map<number, number>()
   if (feat !== null) {
     for (let i = 0, o = 0, p = 0; i < n; i++, o += 3, p += 4) {
       if (mask !== null && mask[i] === 0) {
         labelData[i] = -1
         continue
       }
-      const x = feat[o]
-      const y = feat[o + 1]
-      const z = feat[o + 2]
-      let best = 0
-      let bestD = Infinity
-      for (let c = 0, cc = 0; c < m; c++, cc += 3) {
-        const dx = x - cent[cc]
-        const dy = y - cent[cc + 1]
-        const dz = z - cent[cc + 2]
-        const d2 = dx * dx + dy * dy + dz * dz
-        if (d2 < bestD) {
-          bestD = d2
-          best = c
+      const key = (data[p] << 16) | (data[p + 1] << 8) | data[p + 2]
+      let best = memo.get(key)
+      if (best === undefined) {
+        const x = feat[o]
+        const y = feat[o + 1]
+        const z = feat[o + 2]
+        best = 0
+        let bestD = Infinity
+        for (let c = 0, cc = 0; c < m; c++, cc += 3) {
+          const dx = x - cent[cc]
+          const dy = y - cent[cc + 1]
+          const dz = z - cent[cc + 2]
+          const d2 = dx * dx + dy * dy + dz * dz
+          if (d2 < bestD) {
+            bestD = d2
+            best = c
+          }
         }
+        memo.set(key, best)
       }
       labelData[i] = best
       counts[best]++
@@ -109,20 +119,25 @@ function assignNearest(
         labelData[i] = -1
         continue
       }
-      const x = data[p] / 255
-      const y = data[p + 1] / 255
-      const z = data[p + 2] / 255
-      let best = 0
-      let bestD = Infinity
-      for (let c = 0, cc = 0; c < m; c++, cc += 3) {
-        const dx = x - cent[cc]
-        const dy = y - cent[cc + 1]
-        const dz = z - cent[cc + 2]
-        const d2 = dx * dx + dy * dy + dz * dz
-        if (d2 < bestD) {
-          bestD = d2
-          best = c
+      const key = (data[p] << 16) | (data[p + 1] << 8) | data[p + 2]
+      let best = memo.get(key)
+      if (best === undefined) {
+        const x = data[p] / 255
+        const y = data[p + 1] / 255
+        const z = data[p + 2] / 255
+        best = 0
+        let bestD = Infinity
+        for (let c = 0, cc = 0; c < m; c++, cc += 3) {
+          const dx = x - cent[cc]
+          const dy = y - cent[cc + 1]
+          const dz = z - cent[cc + 2]
+          const d2 = dx * dx + dy * dy + dz * dz
+          if (d2 < bestD) {
+            bestD = d2
+            best = c
+          }
         }
+        memo.set(key, best)
       }
       labelData[i] = best
       counts[best]++
