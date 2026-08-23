@@ -67,7 +67,7 @@ SlimSAM ≈10 MB).
 - **Budget:** target **< 5 MB** quantized ONNX (int8 or fp16), so the extra download stays in line with u2netp. The
   shipped model is **~0.46 MB**, comfortably under.
 - **Resolution:** train at **256×256** tiles. At inference, **tile** large images (up to the app's 4096×4096) on a fixed
-  overlapping grid (e.g. 512 with 32 px overlap) and stitch — a fixed grid keeps the pass deterministic for a given
+  overlapping grid (256 with 32 px overlap, as `edge.ts` does) and stitch — a fixed grid keeps the pass deterministic for a given
   backend.
 - **Normalization:** document the exact input scaling and letterbox with the weights (as the repo already does for its
   ONNX models); the runtime must reproduce it byte-for-byte.
