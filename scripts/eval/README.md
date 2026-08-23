@@ -107,9 +107,11 @@ npm run eval:samples   # fetch vtracer/docs/assets/samples → scripts/eval/corp
 npm run eval:tracers -- --data scripts/eval/corpus-vtracer --montage
 ```
 
-VTracer is **optional**: with no binary found the harness reports Trazor alone and says so. Each image is traced at both
-tools' _intended_ settings for its family — Trazor's matching target profile and the vtracer flags a user would pick
-(`--preset photo`, `--colormode bw`, `--mode pixel`, …) — so it's tool-vs-tool, not one hobbled against the other.
+VTracer is **optional**: with no binary found the harness reports Trazor alone and says so. By default Trazor traces each
+image with its **own auto-recommended settings** (`@trazor/assist` — what the app applies on load, tuned to balance
+accuracy and size), and vtracer gets the flags a user would pick for the same goal (`--preset photo`, `--colormode bw`,
+`--mode pixel`, …) — tool-vs-tool, not one hobbled against the other. Pass `--profile <id>` to force one Trazor profile
+for every image instead.
 
 ### Options (`tracer-compare.ts`)
 

@@ -29,7 +29,7 @@
  *                      1600; 0 = native — VTracer has no downscale and takes minutes on a 24 MP photo)
  *     --out <dir>      where SVGs / montage are written; default eval-artifacts/tracers
  *     --vtracer <bin>  path to the vtracer binary (else VTRACER_BIN, PATH, ~/.cargo/bin)
- *     --profile <id>   force one Trazor profile for every image (else per-family)
+ *     --profile <id>   force one Trazor profile for all (else auto: Trazor's own per-image recommendation)
  *     --limit N        cap images
  *     --montage        also write an index.html with source | Trazor | VTracer
  *     --json <path>    also write the report as JSON
@@ -38,6 +38,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
+import { analyzeImage, recommendSettings } from '@trazor/assist'
 import { DEFAULT_SETTINGS, getProfile, normalizeSettings } from '@trazor/core'
 import type { ProfileId, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
@@ -54,27 +55,25 @@ import {
   writePng,
 } from './lib'
 
-interface FamilyConfig {
-  profile: ProfileId
-  /** Extra vtracer flags a user would reach for on this kind of image. */
-  vtracer: string[]
-}
-
 /**
- * How each family is traced by both tools — Trazor's matching target profile and
- * the vtracer flags a user would pick for the same goal, so the comparison is
- * tool-vs-tool at their intended settings, not one hobbled against the other.
+ * The vtracer flags a user would pick for the goal Trazor's chosen profile
+ * implies, so each image is traced tool-vs-tool at matched intent rather than one
+ * hobbled against the other. Keyed by the Trazor profile — auto-recommended per
+ * image, or forced via --profile.
  */
-const FAMILIES: Record<string, FamilyConfig> = {
-  flat: { profile: 'logo', vtracer: ['--mode', 'spline'] },
-  logo: { profile: 'logo', vtracer: ['--mode', 'spline'] },
-  illustration: { profile: 'illustration', vtracer: ['--mode', 'spline'] },
-  poster: { profile: 'poster', vtracer: ['--preset', 'poster'] },
-  photo: { profile: 'photo', vtracer: ['--preset', 'photo'] },
-  lineart: { profile: 'bw-sketch', vtracer: ['--colormode', 'bw'] },
-  pixel: { profile: 'pixel-art', vtracer: ['--mode', 'pixel'] },
+const PROFILE_VTRACER: Partial<Record<ProfileId, string[]>> = {
+  photo: ['--preset', 'photo'],
+  poster: ['--preset', 'poster'],
+  'pixel-art': ['--mode', 'pixel'],
+  'bw-sketch': ['--colormode', 'bw'],
+  'laser-engrave': ['--colormode', 'bw'],
+  'pen-plotter': ['--colormode', 'bw'],
+  stencil: ['--colormode', 'bw'],
+  logo: ['--mode', 'spline'],
+  illustration: ['--mode', 'spline'],
+  'vinyl-cut': ['--mode', 'spline'],
 }
-const DEFAULT_FAMILY = 'illustration'
+const DEFAULT_VTRACER = ['--mode', 'spline']
 
 interface Args {
   data: string
@@ -171,15 +170,34 @@ function fidelity(
   }
 }
 
+/**
+ * Trazor settings for one image: its own auto-recommendation (analyze → profile
+ * + patch, exactly what apps/web applies on load — tuned to balance accuracy and
+ * size), or a forced profile.
+ */
+function trazorSettings(
+  image: RasterImage,
+  forced?: ProfileId,
+): { settings: VectorizeSettings; profile: ProfileId } {
+  if (forced) {
+    return {
+      settings: normalizeSettings(getProfile(forced).patch, DEFAULT_SETTINGS as VectorizeSettings),
+      profile: forced,
+    }
+  }
+  const rec = recommendSettings(analyzeImage(image))
+  // Profile patch first, recommendation patch on top, both over defaults.
+  return {
+    settings: normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch }),
+    profile: rec.profileId,
+  }
+}
+
 async function traceTrazor(
   image: RasterImage,
   srcWhite: RasterImage,
-  profile: ProfileId,
+  settings: VectorizeSettings,
 ): Promise<TraceResult> {
-  const settings: VectorizeSettings = normalizeSettings(
-    getProfile(profile).patch,
-    DEFAULT_SETTINGS as VectorizeSettings,
-  )
   const t0 = performance.now()
   const result = await vectorize(image, settings)
   const ms = performance.now() - t0
@@ -295,9 +313,10 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
     if (hasV && v) {
       const closer = t.dE <= v.dE ? 'Trazor' : 'VTracer'
       const nodeRatio = v.nodes > 0 ? (t.nodes / v.nodes).toFixed(2) : '—'
+      const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
         `  ${fam.padEnd(12)} ΔE  T ${fmt(t.dE)}  V ${fmt(v.dE)}  → ${closer} closer` +
-          `   |  nodes T/V ${nodeRatio}×   |  ms T ${Math.round(t.ms)} V ${Math.round(v.ms)}`,
+          `   |  nodes T/V ${nodeRatio}×   |  KB T/V ${byteRatio}×   |  ms T ${Math.round(t.ms)} V ${Math.round(v.ms)}`,
       )
     } else {
       console.log(
@@ -390,18 +409,15 @@ async function main(): Promise<void> {
   mkdirSync(srcDir, { recursive: true })
 
   console.log(
-    `\ncorpus=${args.data}  images=${images.length}  max-dim=${args.maxDim || 'native'}  vtracer=${
-      hasV ? vbin : 'NOT FOUND (Trazor-only)'
-    }\n`,
+    `\ncorpus=${args.data}  images=${images.length}  trazor=${
+      args.profile ? `profile:${args.profile}` : 'auto'
+    }  max-dim=${args.maxDim || 'native'}  vtracer=${hasV ? vbin : 'NOT FOUND (Trazor-only)'}\n`,
   )
 
   const rows: Row[] = []
   let vfail = 0
   for (const name of images) {
     const base = basename(name, extname(name))
-    const family = familyMap[name] ?? DEFAULT_FAMILY
-    const cfg = FAMILIES[family] ?? FAMILIES[DEFAULT_FAMILY]
-    const profile = args.profile ?? cfg.profile
     // Resize large inputs to a sane working size for BOTH tracers, then trace the
     // identical PNG (vtracer has no downscale and would spend minutes on a 24 MP
     // photo). The resized PNG is also the montage's source pane.
@@ -411,8 +427,14 @@ async function main(): Promise<void> {
     writePng(srcPng, src)
     const srcWhite = flattenOverWhite(src)
 
+    // Trazor uses its own auto-recommendation per image (what the app applies on
+    // load) unless --profile forces one; vtracer gets the matching-intent flags.
+    const { settings, profile } = trazorSettings(src, args.profile)
+    const family = familyMap[name] ?? profile
+    const vtracerArgs = PROFILE_VTRACER[profile] ?? DEFAULT_VTRACER
+
     // oxlint-disable-next-line no-await-in-loop -- sequential: one engine run at a time
-    const trazor = await traceTrazor(src, srcWhite, profile)
+    const trazor = await traceTrazor(src, srcWhite, settings)
     writeFileSync(join(outTrazor, `${base}.svg`), trazor.svg)
 
     let vt: TraceResult | null = null
@@ -423,7 +445,7 @@ async function main(): Promise<void> {
           srcPng,
           join(outVtracer, `${base}.svg`),
           srcWhite,
-          cfg.vtracer,
+          vtracerArgs,
         )
       } catch (err) {
         vfail++
@@ -443,7 +465,7 @@ async function main(): Promise<void> {
       console.log(
         `\n  overall  ΔE  Trazor ${fmt(t.dE)}  VTracer ${fmt(v.dE)}   ` +
           `score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   ` +
-          `nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×`,
+          `nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
       )
     }
     if (vfail > 0) console.log(`  (${vfail} image(s) vtracer could not trace)`)
