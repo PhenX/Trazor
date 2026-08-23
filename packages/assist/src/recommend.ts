@@ -141,6 +141,22 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
     )
     return 'bw-sketch'
   }
+  // Achromatic line art / ink drawing: no real color, a bright paper background,
+  // crisp strokes and few distinct tones — unlike a mid-toned grayscale photo,
+  // which fills the tonal range with smooth micro-gradients. Threshold B&W keeps
+  // the lines crisp and compact instead of stacking tonal gray layers.
+  if (
+    a.colorfulness < ACHROMATIC_CHROMA &&
+    a.meanLightness > 0.7 &&
+    a.edgeDensity > 0.1 &&
+    a.distinctColors <= 4096
+  ) {
+    r.add(
+      'pickInkLineart',
+      'Achromatic line art with crisp edges and few tones — black & white tracing.',
+    )
+    return 'bw-sketch'
+  }
   if (a.photoScore > 0.6) {
     if (isCompressedFlat(a)) {
       r.add(
