@@ -1,4 +1,4 @@
-import type { BinaryMask, RasterImage } from '@vectorizer/core'
+import type { BinaryMask, RasterImage } from '@trazor/core'
 import type { InferenceSession, Tensor } from 'onnxruntime-web'
 import { errorMessage } from './errors'
 import {

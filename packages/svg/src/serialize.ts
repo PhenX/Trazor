@@ -4,7 +4,7 @@
  * attributes.
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
@@ -56,7 +56,7 @@ export interface SerializeOptions {
 }
 
 /** Stable marker emitted right after the opening tag. */
-const METADATA_COMMENT = '<!-- Vectorizer: traced client-side -->'
+const METADATA_COMMENT = '<!-- Trazor: traced client-side -->'
 
 const XML_ESCAPES: Record<string, string> = {
   '&': '&amp;',

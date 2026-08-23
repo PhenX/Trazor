@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { LabelMap, PathCommand } from '@vectorizer/core'
-import { traceLabelMap } from '@vectorizer/trace'
+import type { LabelMap, PathCommand } from '@trazor/core'
+import { traceLabelMap } from '@trazor/trace'
 
 function labelsOf(rows: string[]): LabelMap {
   const height = rows.length

@@ -1,4 +1,4 @@
-import type { StageId } from '@vectorizer/core'
+import type { StageId } from '@trazor/core'
 
 /** 12345 → "12.3 kB" (SI units, trimmed decimals). */
 export function formatBytes(bytes: number): string {

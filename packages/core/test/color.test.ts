@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deltaEOk, hexToRgb, oklabToRgb, rgbToHex, rgbToOklab } from '@vectorizer/core'
+import { deltaEOk, hexToRgb, oklabToRgb, rgbToHex, rgbToOklab } from '@trazor/core'
 
 describe('oklab conversions', () => {
   it('roundtrips sRGB → Oklab → sRGB within 1/255', () => {

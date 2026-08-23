@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { clamp } from '@vectorizer/core'
-import type { RasterImage } from '@vectorizer/core'
-import { extractGeometry } from '@vectorizer/svg'
-import type { SvgElementKind, SvgGeometry } from '@vectorizer/svg'
+import { clamp } from '@trazor/core'
+import type { RasterImage } from '@trazor/core'
+import { extractGeometry } from '@trazor/svg'
+import type { SvgElementKind, SvgGeometry } from '@trazor/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatCount, STAGE_LABELS } from '../lib/format'
 import { SHAPE_KIND_LABEL, SHAPE_KIND_TOKEN } from '../lib/overlay'

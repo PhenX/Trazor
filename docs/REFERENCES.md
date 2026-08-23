@@ -77,7 +77,7 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   real detail survives (`packages/ml/src/edge.ts`; spec and training in
   [`EDGE_PREPASS.md`](EDGE_PREPASS.md)). Weights: `edge-prepass.onnx` (~0.46 MB,
   int8), fetched from this repo’s [`models` GitHub
-  Release](https://github.com/PhenX/Vectorizer/releases/tag/models) at deploy
+  Release](https://github.com/PhenX/Trazor/releases/tag/models) at deploy
   time and served same-origin — not committed to git.
 - **ONNX Runtime Web** — WebGPU/WASM inference runtime, MIT.
   <https://onnxruntime.ai/>

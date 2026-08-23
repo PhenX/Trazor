@@ -1,5 +1,5 @@
-import { mulberry32 } from '@vectorizer/core'
-import type { RasterImage } from '@vectorizer/core'
+import { mulberry32 } from '@trazor/core'
+import type { RasterImage } from '@trazor/core'
 import { create2dCanvas } from './decode'
 
 export interface SampleDef {

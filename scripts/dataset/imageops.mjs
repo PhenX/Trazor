@@ -1,5 +1,5 @@
 // RGBA image helpers on flat Uint8ClampedArray buffers (length w*h*4, y-down),
-// mirroring the pixel conventions of @vectorizer/raster. Dependency-free and
+// mirroring the pixel conventions of @trazor/raster. Dependency-free and
 // allocation-conscious; an image is { width, height, data }.
 
 export function createImage(width, height) {
@@ -124,7 +124,7 @@ export function affineTransform(img, { rotateDeg = 0, scale = 1, tx = 0, ty = 0 
 
 // Fit an image into a square `side`×`side` canvas, longest edge scaled to `side`
 // and centered on transparent (letterbox) — the input convention U²-Net and
-// SlimSAM already use in @vectorizer/ml.
+// SlimSAM already use in @trazor/ml.
 export function fitSquare(img, side) {
   const s = Math.min(side / img.width, side / img.height)
   const rw = Math.max(1, Math.round(img.width * s))

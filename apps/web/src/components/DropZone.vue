@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RasterImage } from '@vectorizer/core'
+import type { RasterImage } from '@trazor/core'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { acceptAttr } from '../lib/decode'
 import { SAMPLES } from '../lib/samples'

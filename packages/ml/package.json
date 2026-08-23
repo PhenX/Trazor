@@ -1,5 +1,5 @@
 {
-  "name": "@vectorizer/ml",
+  "name": "@trazor/ml",
   "version": "0.1.0",
   "private": true,
   "description": "Local in-browser ML tools: background removal and click-to-segment (ONNX Runtime Web)",
@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vectorizer/core": "*",
+    "@trazor/core": "*",
     "onnxruntime-web": "^1.27.0"
   }
 }

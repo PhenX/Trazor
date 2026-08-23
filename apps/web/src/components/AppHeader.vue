@@ -23,7 +23,7 @@ const emit = defineEmits<{ openFile: [] }>()
         <rect x="4.8" y="21.8" width="4.4" height="4.4" rx="1" fill="var(--text-1)" />
         <rect x="22.8" y="21.8" width="4.4" height="4.4" rx="1" fill="var(--text-1)" />
       </svg>
-      <span class="wordmark">Vectorizer</span>
+      <span class="wordmark">Trazor</span>
       <span class="tagline">raster → SVG, entirely in your browser</span>
     </div>
 
@@ -105,7 +105,7 @@ const emit = defineEmits<{ openFile: [] }>()
       </button>
       <a
         class="btn btn-ghost btn-icon"
-        href="https://github.com/PhenX/Vectorizer"
+        href="https://github.com/PhenX/Trazor"
         target="_blank"
         rel="noopener noreferrer"
         title="View source on GitHub"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { PathCommand } from '@vectorizer/core'
-import type { SvgGeometry } from '@vectorizer/svg'
+import type { PathCommand } from '@trazor/core'
+import type { SvgGeometry } from '@trazor/svg'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { SHAPE_KIND_TOKEN } from '../lib/overlay'
 

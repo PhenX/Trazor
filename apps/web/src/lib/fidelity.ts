@@ -1,5 +1,5 @@
-import { clamp, deltaEOk, rgbToOklab } from '@vectorizer/core'
-import type { RasterImage, VectorizeResult } from '@vectorizer/core'
+import { clamp, deltaEOk, rgbToOklab } from '@trazor/core'
+import type { RasterImage, VectorizeResult } from '@trazor/core'
 import { create2dCanvas } from './decode'
 
 export interface FidelityReport {

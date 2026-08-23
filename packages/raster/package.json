@@ -1,5 +1,5 @@
 {
-  "name": "@vectorizer/raster",
+  "name": "@trazor/raster",
   "version": "0.1.0",
   "private": true,
   "description": "Raster preprocessing: filters, color quantization, thresholding, morphology, thinning",
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vectorizer/core": "*"
+    "@trazor/core": "*"
   }
 }

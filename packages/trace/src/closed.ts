@@ -1,4 +1,4 @@
-import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@vectorizer/core'
+import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
 import type { CrackPath } from './crack'
 import { decomposeMask, ringBounds, ringContains } from './crack'
 import { adjustVertices } from './potrace/adjust'

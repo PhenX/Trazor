@@ -12,7 +12,7 @@ import type { VectorizeSettings } from './settings'
 export const SETTINGS_EXPORT_VERSION = 1
 
 /** Format marker so an arbitrary JSON paste can be recognized (or rejected). */
-export const SETTINGS_EXPORT_APP = 'vectorizer'
+export const SETTINGS_EXPORT_APP = 'trazor'
 export const SETTINGS_EXPORT_KIND = 'settings'
 
 /** A portable, versioned snapshot of the studio settings. */

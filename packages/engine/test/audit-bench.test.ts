@@ -1,16 +1,16 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RasterImage } from '@vectorizer/core'
-import { mulberry32, rgbToOklab } from '@vectorizer/core'
+import type { RasterImage } from '@trazor/core'
+import { mulberry32, rgbToOklab } from '@trazor/core'
 import {
   detectEdges,
   mergeSmallRegions,
   quantize,
   toGrayscale,
   toOklabBuffer,
-} from '@vectorizer/raster'
-import { traceLabelMap } from '@vectorizer/trace'
-import { analyzeSvg } from '@vectorizer/svg'
+} from '@trazor/raster'
+import { traceLabelMap } from '@trazor/trace'
+import { analyzeSvg } from '@trazor/svg'
 import { describe, expect, it } from 'vitest'
 import { vectorize } from '../src/native'
 

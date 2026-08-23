@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { createRaster, fillRaster, normalizeSettings, setPixel } from '@vectorizer/core'
-import { vectorize } from '@vectorizer/engine'
+import { createRaster, fillRaster, normalizeSettings, setPixel } from '@trazor/core'
+import { vectorize } from '@trazor/engine'
 
 const OUT = '/home/user/Vectorizer/e2e-artifacts'
 

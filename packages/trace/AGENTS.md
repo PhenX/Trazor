@@ -1,6 +1,6 @@
 # Tracer — agent guide
 
-Rules for working inside `packages/trace/` (`@vectorizer/trace`) — the tracer, which is the point of this project. Read
+Rules for working inside `packages/trace/` (`@trazor/trace`) — the tracer, which is the point of this project. Read
 [`../../AGENTS.md`](../../AGENTS.md) first for repo-wide conventions, and **[`ARCHITECTURE.md`](ARCHITECTURE.md)** for the
 full map: the crack decomposition, the Potrace curve chain stage by stage, the seam-free boundary graph, and centerline
 extraction.
@@ -8,7 +8,7 @@ extraction.
 ## What this package is
 
 Labels/masks in, vector paths out. It never touches pixels' colors and never emits SVG text — it produces
-`PathCommand[]` (from `@vectorizer/core`) that the engine wraps in shapes and the `svg` package serializes. Pure
+`PathCommand[]` (from `@trazor/core`) that the engine wraps in shapes and the `svg` package serializes. Pure
 TypeScript, no DOM, deterministic, hot-loop-conscious (images reach 4096²).
 
 ## The contracts you can break

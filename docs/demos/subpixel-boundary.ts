@@ -12,8 +12,8 @@
  * Output: docs/demos/subpixel-boundary.html
  */
 import { writeFileSync } from 'node:fs'
-import type { BinaryMask, GrayImage, PathCommand } from '@vectorizer/core'
-import { traceMask } from '@vectorizer/trace'
+import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
+import { traceMask } from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,

@@ -1,4 +1,4 @@
-import { mulberry32, rgbToHex } from '@vectorizer/core'
+import { mulberry32, rgbToHex } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { quantize } from '../src/index'
 import type { QuantizeOptions } from '../src/index'

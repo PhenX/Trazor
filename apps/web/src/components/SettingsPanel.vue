@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { DEFAULT_SETTINGS, TARGET_PROFILES } from '@vectorizer/core'
-import type { VectorizeMode, VectorizeSettings } from '@vectorizer/core'
-import type { PaletteSuggestion } from '@vectorizer/assist'
+import { DEFAULT_SETTINGS, TARGET_PROFILES } from '@trazor/core'
+import type { VectorizeMode, VectorizeSettings } from '@trazor/core'
+import type { PaletteSuggestion } from '@trazor/assist'
 import { computed } from 'vue'
 import { useAppStore } from '../store/appStore'
 import ColorRow from './controls/ColorRow.vue'

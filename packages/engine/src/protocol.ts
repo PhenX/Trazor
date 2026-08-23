@@ -1,4 +1,4 @@
-import type { StageId, VectorizeResult, VectorizeSettings } from '@vectorizer/core'
+import type { StageId, VectorizeResult, VectorizeSettings } from '@trazor/core'
 
 /** Messages accepted by the vectorizer worker. */
 export type WorkerInMessage =

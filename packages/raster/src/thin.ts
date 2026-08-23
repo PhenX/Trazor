@@ -2,7 +2,7 @@
  * Skeletonization (Zhang & Suen 1984) and the 3-4 chamfer distance transform
  * (Borgefors 1986), plus stroke-width estimation over a skeleton.
  */
-import type { BinaryMask } from '@vectorizer/core'
+import type { BinaryMask } from '@trazor/core'
 
 /**
  * Classic two-subiteration Zhang-Suen thinning on a copy of the mask,

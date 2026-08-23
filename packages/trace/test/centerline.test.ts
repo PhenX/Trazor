@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { BinaryMask } from '@vectorizer/core'
-import { traceCenterline } from '@vectorizer/trace'
+import type { BinaryMask } from '@trazor/core'
+import { traceCenterline } from '@trazor/trace'
 
 function skeletonOf(rows: string[]): BinaryMask {
   const height = rows.length

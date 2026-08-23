@@ -1,5 +1,5 @@
 {
-  "name": "vectorizer-monorepo",
+  "name": "trazor-monorepo",
   "version": "0.1.0",
   "private": true,
   "description": "Client-side raster → SVG vectorization studio",

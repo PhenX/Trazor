@@ -1,5 +1,5 @@
 /** Synthetic-image builders shared by the raster tests. */
-import type { BinaryMask, GrayImage, RasterImage } from '@vectorizer/core'
+import type { BinaryMask, GrayImage, RasterImage } from '@trazor/core'
 
 export type Rgba = [number, number, number, number]
 

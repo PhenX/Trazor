@@ -1,4 +1,4 @@
-import type { GrayImage } from '@vectorizer/core'
+import type { GrayImage } from '@trazor/core'
 import type { FlatPoints } from './paths'
 
 /**

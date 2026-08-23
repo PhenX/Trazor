@@ -9,12 +9,12 @@ algorithms and models are tracked in [`REFERENCES.md`](REFERENCES.md); the pipel
 
 ## TL;DR
 
-- **Don't replace the tracer with a neural net.** The clean-room Potrace-class chain in `@vectorizer/trace` _is_ the
+- **Don't replace the tracer with a neural net.** The clean-room Potrace-class chain in `@trazor/trace` _is_ the
   hard, valuable part — the same classical core the leading commercial tools spent years on. Keep it.
 - **Don't emulate DeepSVG.** It is a generative model over _simple icons_ (its training set had to be filtered to icons
   with ≤ 8 paths); training your own gets you an icon generator, not a faithful raster→vector engine.
 - **Use ML surgically**, as optional _input-conditioning_ stages ahead of the deterministic core — exactly where
-  `@vectorizer/ml` already sits (background removal, magic-select) — and let the trace stay byte-identical.
+  `@trazor/ml` already sits (background removal, magic-select) — and let the trace stay byte-identical.
 - **You almost certainly don't need millions of examples.** For the small on-device models that fit this project,
   **50k–200k synthetic pairs** is plenty; a working prototype needs **5k–20k**.
 - **Produce data by rasterizing SVGs** (your instinct is right) — but the make-or-break step is **degrading the raster
@@ -157,7 +157,7 @@ Your instinct — SVG + a rasterizer — is exactly the standard technique: rend
 1. **Collect an SVG corpus** — see [sources](#where-to-get-svgs).
 2. **Canonicalize** — flatten transforms, resolve `<use>`, expand shorthand, normalize the `viewBox`, drop unsupported
    features. Raw SVGs are wildly inconsistent (this is why DeepSVG filtered so aggressively). Reuse our own
-   `@vectorizer/svg` path model as the canonical target representation so training targets match what the engine emits.
+   `@trazor/svg` path model as the canonical target representation so training targets match what the engine emits.
 3. **Rasterize deterministically** — [resvg](https://github.com/linebender/resvg) (Rust, fast, accurate) is the standard
    choice; render at 2×–4× and area-downsample for clean anti-aliasing, at several output resolutions.
 4. **⚠ Degrade the _inputs_ — the make-or-break step** (details below). Ground truth stays the clean vector; only the
@@ -221,7 +221,7 @@ seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md)
 [`EDGE_PREPASS.md`](EDGE_PREPASS.md):
 
 > **Status:** this milestone is done for the **learned edge pre-pass** — steps 1–4 below were carried through and the
-> trained `edge-prepass.onnx` now ships from the [`models` release](https://github.com/PhenX/Vectorizer/releases/tag/models).
+> trained `edge-prepass.onnx` now ships from the [`models` release](https://github.com/PhenX/Trazor/releases/tag/models).
 > The same recipe applies to the remaining stages (cleanup, primitive detection).
 
 1. Choose **Learned edge pre-pass** (stage 1, [`EDGE_PREPASS.md`](EDGE_PREPASS.md)) or **Cleanup pre-pass** (stage 2,
@@ -231,7 +231,7 @@ seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md)
    pipeline → aligned `(input, edge/clean)` pairs, split by source family. It ships with a procedural source (no corpus
    needed) and a `--source dir` mode for real SVGs.
 3. Train the small model per [`EDGE_PREPASS.md`](EDGE_PREPASS.md), export to **ONNX**, and wire it as an optional Tier-2
-   conditioning stage in `@vectorizer/ml` (an `EdgeEnhancer` mirroring `BackgroundRemover`), discretizing its output
+   conditioning stage in `@trazor/ml` (an `EdgeEnhancer` mirroring `BackgroundRemover`), discretizing its output
    before the tracer (per the [two-tier contract](#determinism-and-webgpu-a-two-tier-contract)).
 4. Measure against the existing **Oklab ΔE fidelity score** the app already computes — held out by source family — and
    only then scale to 50k–200k.

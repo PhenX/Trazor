@@ -1,4 +1,4 @@
-import type { GrayImage, RasterImage } from '@vectorizer/core'
+import type { GrayImage, RasterImage } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import {
   applyAlphaMatte,

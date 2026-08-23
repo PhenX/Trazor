@@ -4,8 +4,8 @@
  * image count as background, so erosion shrinks foreground touching the
  * border (scipy `binary_erosion` semantics with border_value 0).
  */
-import { createMask } from '@vectorizer/core'
-import type { BinaryMask } from '@vectorizer/core'
+import { createMask } from '@trazor/core'
+import type { BinaryMask } from '@trazor/core'
 
 /**
  * One sliding 1D pass: dst = 1 where the (2r+1)-window along the axis holds

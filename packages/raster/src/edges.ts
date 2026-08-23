@@ -6,7 +6,7 @@
  * entries on rim colors that do not exist in the artwork. Marking a band around
  * every strong transition lets the caller sample only pure interiors.
  */
-import type { BinaryMask, RasterImage } from '@vectorizer/core'
+import type { BinaryMask, RasterImage } from '@trazor/core'
 
 /**
  * 1 where the L1 RGB difference to any 4-neighbor is at least `threshold`

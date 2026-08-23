@@ -1,5 +1,5 @@
-import type { BinaryMask, PathCommand } from '@vectorizer/core'
-import { interiorAngleDeg, polylineLengthFlat } from '@vectorizer/core'
+import type { BinaryMask, PathCommand } from '@trazor/core'
+import { interiorAngleDeg, polylineLengthFlat } from '@trazor/core'
 import { fitOpenPolyline } from './fit'
 import { simplifyOpen } from './simplify'
 

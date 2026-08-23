@@ -1,5 +1,5 @@
-import type { RasterImage } from '@vectorizer/core'
-import { clamp, rgbToHex, rgbToOklab } from '@vectorizer/core'
+import type { RasterImage } from '@trazor/core'
+import { clamp, rgbToHex, rgbToOklab } from '@trazor/core'
 
 export interface ImageAnalysis {
   width: number

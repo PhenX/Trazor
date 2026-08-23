@@ -4,8 +4,8 @@
  * - medianFilter and bilateralFilter filter RGB and copy alpha unchanged.
  * Bilateral filtering follows Tomasi & Manduchi 1998.
  */
-import { cloneRaster } from '@vectorizer/core'
-import type { RasterImage } from '@vectorizer/core'
+import { cloneRaster } from '@trazor/core'
+import type { RasterImage } from '@trazor/core'
 
 /**
  * Separable Gaussian blur with `sigma = radius / 2` and kernel half-width

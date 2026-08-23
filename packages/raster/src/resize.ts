@@ -5,7 +5,7 @@
  * non-integer scale factors are handled exactly. The two separable passes
  * multiply out to the exact 2D box filter.
  */
-import type { GrayImage, RasterImage } from '@vectorizer/core'
+import type { GrayImage, RasterImage } from '@trazor/core'
 
 interface BoxTaps {
   start: Int32Array

@@ -34,7 +34,7 @@ import { SOURCES } from './sources.mjs'
 
 const DEFAULTS = { out: 'corpus', limitPerSource: 600, buckets: 12 }
 // Wikimedia asks API clients to send a descriptive User-Agent (their policy).
-const USER_AGENT = 'VectorizerCorpusBot/1.0 (https://github.com/PhenX/Vectorizer)'
+const USER_AGENT = 'TrazorCorpusBot/1.0 (https://github.com/PhenX/Trazor)'
 
 function parseArgs(argv) {
   const cfg = { ...DEFAULTS, only: null, all: false, clean: false, refresh: false }

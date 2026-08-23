@@ -3,7 +3,7 @@
  * No DOM, no ONNX — everything here runs in Node and carries the unit tests.
  */
 
-import type { BinaryMask, GrayImage, RasterImage } from '@vectorizer/core'
+import type { BinaryMask, GrayImage, RasterImage } from '@trazor/core'
 
 /** ImageNet mean/std on [0,1] channel values (u2net / rembg preprocessing). */
 export const IMAGENET_MEAN: readonly [number, number, number] = [0.485, 0.456, 0.406]

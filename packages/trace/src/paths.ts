@@ -1,4 +1,4 @@
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 
 /** Flat lattice polyline/polygon: [x0, y0, x1, y1, ...]. */
 export type FlatPoints = number[]

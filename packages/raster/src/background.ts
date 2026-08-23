@@ -1,8 +1,8 @@
 /**
  * Alpha flattening and background-color probing.
  */
-import { createMask, hexToRgb } from '@vectorizer/core'
-import type { BinaryMask, RasterImage, VectorizeSettings } from '@vectorizer/core'
+import { createMask, hexToRgb } from '@trazor/core'
+import type { BinaryMask, RasterImage, VectorizeSettings } from '@trazor/core'
 
 export interface FlattenResult {
   /** RGB composited over white (`transparent`) or `backgroundColor` (`custom`), alpha 255. */

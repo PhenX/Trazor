@@ -42,7 +42,7 @@ export function* dirSource(dir, cap) {
 }
 
 // Scaffold pass-through. A production pipeline flattens transforms, resolves
-// <use>, and expands shorthand into the @vectorizer/svg path model so targets
+// <use>, and expands shorthand into the @trazor/svg path model so targets
 // match engine output; see docs/ML_STRATEGY.md.
 function canonicalize(svg) {
   return svg

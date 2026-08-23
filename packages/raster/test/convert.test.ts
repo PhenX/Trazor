@@ -1,4 +1,4 @@
-import { rgbToOklab } from '@vectorizer/core'
+import { rgbToOklab } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { toGrayscale, toOklabBuffer } from '../src/index'
 import { rasterOf } from './helpers'

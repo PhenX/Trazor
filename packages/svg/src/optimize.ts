@@ -11,7 +11,7 @@
  * rounding drift along a path.
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { clampPrecision } from './pathdata'
 
 /**
