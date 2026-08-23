@@ -13,7 +13,14 @@ export const DEFAULTS = {
 
   targets: ['edge', 'clean', 'field'], // ground-truth heads to emit
   split: { train: 0.8, val: 0.1, test: 0.1 }, // assigned per source family
-  geometric: { enabled: true, rotateDeg: 8, scale: 0.15, translateFrac: 0.05 },
+  geometric: {
+    enabled: true,
+    rotateDeg: 8,
+    scale: 0.15,
+    translateFrac: 0.05,
+    perspective: 0.12, // max corner-jitter fraction for the projective warp (0 = off)
+    perspectiveProb: 0.4, // chance a sample gets the projective warp
+  },
   degrade: {
     background: true, // composite the shape over a procedural background
     blurSigmaMax: 2, // max gaussian blur sigma

@@ -180,12 +180,13 @@ Then add corruptions specific to _real vectorizer inputs_, which generic super-r
 - **Tone** — gamma / color-profile shifts, contrast changes.
 - **Line-art specific** — paper grain, pencil texture, scanner speckle for ink/centerline modes.
 
-**Shipped in [`../scripts/dataset/degrade.mjs`](../scripts/dataset/README.md)** (seeded, probabilistic): tone
-(gamma/brightness/contrast), isotropic **and** anisotropic blur, down/up resampling, Gaussian **and** shot (Poisson)
-noise, Floyd–Steinberg dither and posterize, single **and** double JPEG, and procedural backgrounds
-(solid/gradient/radial/checker/stripes/fractal/texture). **Still pending** (tracked in
+**Shipped** (seeded, probabilistic): tone (gamma/brightness/contrast), isotropic **and** anisotropic blur, down/up
+resampling, Gaussian **and** shot (Poisson) noise, Floyd–Steinberg dither and posterize, single **and** double JPEG, and
+procedural backgrounds (solid/gradient/radial/checker/stripes/fractal/texture) — all in
+[`../scripts/dataset/degrade.mjs`](../scripts/dataset/README.md); plus a mild projective (perspective) warp in the
+geometric augmentation (`render.mjs`), applied to the shape so targets stay aligned. **Still pending** (tracked in
 [`ML_ROADMAP.md`](ML_ROADMAP.md) item 2): true photographic-asset backgrounds, alpha/matting halos, sinc-ringing blur,
-perspective/lens warp, and multi-scale render/crop for the tiling domain gap.
+lens distortion, and multi-scale render/crop for the tiling domain gap.
 
 ### Where to get SVGs
 

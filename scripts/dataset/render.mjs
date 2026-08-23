@@ -5,8 +5,8 @@
 // true outline rather than from background texture.
 
 import { Resvg } from '@resvg/resvg-js'
-import { affineTransform, fitSquare, resizeArea } from './imageops.mjs'
-import { uniform } from './random.mjs'
+import { affineTransform, fitSquare, perspectiveTransform, resizeArea } from './imageops.mjs'
+import { chance, uniform } from './random.mjs'
 
 export function renderShape(svg, cfg, rng) {
   const side = cfg.resolution * cfg.supersample
@@ -29,6 +29,18 @@ export function renderShape(svg, cfg, rng) {
       tx: uniform(rng, -g.translateFrac, g.translateFrac),
       ty: uniform(rng, -g.translateFrac, g.translateFrac),
     })
+    // Mild projective warp (photo of a screen/paper at an angle). Applied to the
+    // shape before targets are derived, so edge/field/clean stay pixel-aligned.
+    if (g.perspective > 0 && chance(rng, g.perspectiveProb)) {
+      const p = g.perspective
+      const j = () => uniform(rng, -p, p)
+      img = perspectiveTransform(img, [
+        { x: j(), y: j() },
+        { x: 1 + j(), y: j() },
+        { x: 1 + j(), y: 1 + j() },
+        { x: j(), y: 1 + j() },
+      ])
+    }
   }
   return resizeArea(img, cfg.resolution, cfg.resolution)
 }

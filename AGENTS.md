@@ -84,7 +84,7 @@ From the repo root:
 | `npm run typecheck`         | `tsc` (packages) + `vue-tsc` (app)                                                                                                                                  |
 | `npm run lint` / `lint:fix` | oxlint                                                                                                                                                              |
 | `npm run fmt` / `fmt:check` | oxfmt                                                                                                                                                               |
-| `npm run check`             | lint + fmt:check + typecheck + test (the core CI gate; CI then also runs `build` + the browser checks below)                                                         |
+| `npm run check`             | lint + fmt:check + typecheck + test (the core CI gate; CI then also runs `build` + the browser checks below)                                                        |
 | `npm run e2e`               | Real-browser smoke test — **needs `npm run build` first**; drives `apps/web/dist` with system Chromium, writes `e2e-artifacts/` and refreshes `docs/screenshot.png` |
 | `npm run test:render`       | Real-browser render check — **needs `npm run build` first**; traces bundled samples and asserts optimized SVGs render identically to the un-optimized baseline      |
 
