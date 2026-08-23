@@ -163,3 +163,56 @@ describe('traceMask', () => {
     expect(set).toEqual(new Set(['2,3', '7,3', '7,8', '2,8']))
   })
 })
+
+describe('adaptive corners', () => {
+  const SHARP = { ...OPTS, cornerThreshold: 100 }
+  const squareCorners: [number, number][] = [
+    [4, 4],
+    [10, 4],
+    [10, 10],
+    [4, 10],
+  ]
+  // A 6 px square: at default smoothing the α metric rounds corners this small.
+  const smallSquare = (): BinaryMask => rectMask(16, 16, 4, 4, 10, 10)
+
+  function sharpCornerCount(commands: PathCommand[], corners: [number, number][]): number {
+    const pts = anchors(commands)
+    let hit = 0
+    for (const [cx, cy] of corners) {
+      if (pts.some(([x, y]) => Math.abs(x - cx) < 0.6 && Math.abs(y - cy) < 0.6)) hit++
+    }
+    return hit
+  }
+
+  it('keeps a small square’s corners sharp when cornerThreshold is set', () => {
+    const shapes = traceMask(smallSquare(), SHARP)
+    expect(shapes).toHaveLength(1)
+    expect(sharpCornerCount(shapes[0].commands, squareCorners)).toBe(4)
+  })
+
+  it('rounds the same small corners without a threshold (opt-in, legacy behavior)', () => {
+    const shapes = traceMask(smallSquare(), OPTS)
+    expect(sharpCornerCount(shapes[0].commands, squareCorners)).toBeLessThan(4)
+  })
+
+  it('keeps a circle smooth even with cornerThreshold set', () => {
+    const cmds = traceMask(circleMask(60, 22), SHARP)[0].commands
+    expect(cmds.filter((c) => c.type === 'L').length).toBeLessThanOrEqual(2)
+    for (const [x, y] of anchors(cmds)) {
+      expect(Math.abs(Math.hypot(x - 30, y - 30) - 22)).toBeLessThan(1.6)
+    }
+  })
+
+  it('does not add corners versus the legacy trace of a curved shape (scale gate)', () => {
+    const mask = circleMask(48, 18)
+    const legacy = traceMask(mask, OPTS)[0].commands.filter((c) => c.type === 'L').length
+    const adaptive = traceMask(mask, SHARP)[0].commands.filter((c) => c.type === 'L').length
+    expect(adaptive).toBeLessThanOrEqual(legacy)
+  })
+
+  it('is deterministic with adaptive corners', () => {
+    const a = JSON.stringify(traceMask(smallSquare(), SHARP))
+    const b = JSON.stringify(traceMask(smallSquare(), SHARP))
+    expect(a).toBe(b)
+  })
+})

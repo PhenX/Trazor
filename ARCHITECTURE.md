@@ -48,6 +48,7 @@ decode (app)
                       stacked:  per-layer Potrace chain           trace
                       cutout:   shared boundary graph  [trace]
   → bw:               Otsu/adaptive threshold → despeckle → trace [raster+trace]
+                      (global threshold also builds a signed coverage field → sub-pixel edge refinement)
   → centerline:       threshold → Zhang-Suen thin → graph walk → Schneider fit [raster+trace]
   → serialize → analyze → warn                  [svg+engine]     svg
 ```

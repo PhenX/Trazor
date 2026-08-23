@@ -15,7 +15,7 @@ TypeScript, no DOM, deterministic, hot-loop-conscious (images reach 4096²).
 
 1. **Public API** — everything re-exported from `src/index.ts`: `traceMask`, `traceLabelMap`, `traceCenterline` and
    their option/result types, plus the lower-level `decomposeMask`, `optimalPolyline`, `fitOpenPolyline`,
-   `simplifyOpen`, `reverseCommands`. The engine calls these; changing a signature is a cross-package change — update
+   `simplifyOpen`, `reverseCommands`, `refineRingToField`. The engine calls these; changing a signature is a cross-package change — update
    [`../../docs/CONTRACTS.md`](../../docs/CONTRACTS.md) and the engine in the same commit.
 2. **Geometry conventions** — crack/boundary coordinates are integers at pixel corners (`[0..w] × [0..h]`); centerline
    points are pixel centers (`+0.5`). Path coordinates are source-pixel space, y-down. Downstream code and every test

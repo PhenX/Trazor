@@ -9,6 +9,7 @@ read that before editing. This map describes structure and intent; `src/index.ts
 ```
 src/
   crack.ts        mask → signed closed lattice boundary paths (turn policies, hole hierarchy)
+  refine.ts       optional sub-pixel snap of ring vertices onto a signed coverage field (anti-aliased edges)
   boundary.ts     label map → seam-free region shapes (the shared boundary graph)
   closed.ts       one closed ring → PathCommand[] via the Potrace chain; also traceMask
   centerline.ts   skeleton → smooth open strokes (graph walk, junction merge, fit)
@@ -38,11 +39,18 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    policies resolve checkerboard junctions; XOR-flip the traced region so holes surface as their own rings.
 2. **Straightness + optimal polygon** (`polyfit.ts`, §2.2) — the constraint-vector walk finds each vertex's furthest
    straight reach; a two-phase DP then minimizes segment count, then chord penalty (from the O(1) prefix moments in
-   `sums.ts`).
+   `sums.ts`). This always runs on the **integer** lattice ring (unit steps are load-bearing for the straightness analysis).
+   - _optional sub-pixel_ (`refine.ts`): with a `coverage` field, the ring's vertices are snapped onto its zero contour
+     **after** the polygon indices are chosen; the refined positions feed only the moment sums and vertex adjustment, so
+     each segment's best-fit line tracks the true anti-aliased edge instead of the staircase. Hard edges and the image
+     border are left on the lattice.
 3. **Vertex adjustment** (`adjust.ts`, §2.3.1) — move each polygon vertex to the least-squares intersection of its two
-   incident edge lines, constrained to the unit square around the lattice vertex.
+   incident edge lines, constrained to the unit square around the (possibly refined) vertex.
 4. **Corner analysis + smoothing** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides
-   corner vs smooth at each vertex; smooth vertices become cubic pieces through the edge midpoints.
+   corner vs smooth at each vertex; smooth vertices become cubic pieces through the edge midpoints. When a
+   `cornerThreshold` is supplied it refines that call to be angle- and scale-aware: a vertex whose shorter incident edge is
+   sub-pixel is never a corner (staircase/aliasing jags stay smooth), a genuinely sharp interior angle is always a corner,
+   and the α metric governs only the shallow middle. Omitting it is byte-identical to the pure α behavior.
 5. **Curve optimization** (`opticurve.ts`, §2.4) — merge runs of adjacent cubics into one while it stays within
    `optTolerance`, keeping node counts low.
 

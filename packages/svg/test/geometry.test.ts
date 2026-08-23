@@ -137,6 +137,18 @@ describe('extractGeometry primitive conversion', () => {
     expect(poly.shapes[0].commands.at(-1)).toEqual({ type: 'Z' })
   })
 
+  it('applies a rotate transform to an element', () => {
+    const geo = extractGeometry(
+      '<svg viewBox="0 0 100 100"><ellipse cx="60" cy="50" rx="40" ry="18" transform="rotate(30 60 50)"/></svg>',
+    )
+    expect(geo.shapes[0].kind).toBe('ellipse')
+    const first = geo.shapes[0].commands[0] as Extract<PathCommand, { type: 'M' }>
+    // The axis-aligned start point (100, 50) rotated 30° about (60, 50).
+    expect(first.type).toBe('M')
+    expect(first.x).toBeCloseTo(60 + 40 * Math.cos(Math.PI / 6), 2)
+    expect(first.y).toBeCloseTo(50 + 40 * Math.sin(Math.PI / 6), 2)
+  })
+
   it('drops degenerate shapes and reports viewBox dimensions', () => {
     const geo = extractGeometry(
       '<svg viewBox="0 0 30 40"><rect x="0" y="0" width="0" height="5"/><path d=""/></svg>',

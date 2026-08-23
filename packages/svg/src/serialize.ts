@@ -109,8 +109,17 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
       return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}" rx="${n(prim.r)}"${paint}/>`
     case 'circle':
       return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
-    case 'ellipse':
-      return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${paint}/>`
+    case 'ellipse': {
+      const transform =
+        prim.angle !== undefined && Math.abs(prim.angle) > 0.05
+          ? ` transform="rotate(${n(prim.angle)} ${n(prim.cx)} ${n(prim.cy)})"`
+          : ''
+      return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${transform}${paint}/>`
+    }
+    case 'polygon': {
+      const points = prim.points.map((p) => `${n(p.x)},${n(p.y)}`).join(' ')
+      return `<polygon points="${points}"${paint}/>`
+    }
   }
 }
 

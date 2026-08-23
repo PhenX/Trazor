@@ -1,0 +1,77 @@
+<title>Shape Matching — Path vs Primitive</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  :root{--bg:#eceff3;--paper:#fff;--ink:#16202b;--muted:#55636f;--line:#dde3ea;--accent:#0e7f8c;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d131a;--paper:#151d26;
+    --ink:#e6ebf1;--muted:#9aa8b4;--line:#223040;--accent:#35b7c5;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;line-height:1.5;padding:2rem 1rem 4rem}
+  .wrap{max-width:60rem;margin:0 auto}
+  h1{font-size:1.6rem;margin:0 0 .3rem}
+  .sub{color:var(--muted);margin:0 0 2rem;font-size:.95rem}
+  .row{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:1.2rem;margin-bottom:1.2rem}
+  .rowhead h2{font-size:1.05rem;margin:0}
+  .rowhead p{margin:.2rem 0 1rem;color:var(--muted);font-size:.88rem}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  figure{margin:0;text-align:center}
+  figcaption{font-size:.72rem;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+  figcaption span{display:block;text-transform:none;letter-spacing:0;font-size:.78rem;margin-top:.15rem}
+  .frame{border:1px solid var(--line);border-radius:8px;padding:.5rem;background:var(--paper)}
+  .frame svg{width:100%;height:auto;max-width:220px}
+  @media(max-width:34rem){.pair{grid-template-columns:1fr}}
+</style>
+<div class="wrap">
+  <h1>Shape matching — path vs primitive</h1>
+  <p class="sub">Each shape is traced once, then serialized as an optimized path and with primitive recognition on. A shape that really is a circle, (rotated) ellipse, rectangle, regular polygon, or star collapses to one clean, editable element with far fewer nodes — a near-regular polygon or star snaps to a perfect one; anything else stays a path. Recognition is disabled in cutout mode, where a neighbor still traces the shared Bézier edge.</p>
+  <section class="row">
+      <div class="rowhead"><h2>Rotated ellipse (30°)</h2><p>Previously a many-node path; now one <ellipse> + rotate</p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 8 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 21.27 22.07 c 2.31-0.69 5.06-0.55 9.64 0.48 c 7.38 1.67 13.57 5.16 18.9 10.5 c 3.05 3.04 7.76 9.15 5.29 13.77 c-0.63 1.16-2.84 2.57-4.94 3.14 c-2.9 0.78-5.22 0.65-9.73-0.52 c-7.07-1.84-13.08-5.33-18.24-10.49 c-4.4-4.39-9.92-14.17-0.92-16.88 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;ellipse&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><ellipse cx="36.04" cy="36.04" rx="21.89" ry="10.87" transform="rotate(29.46 36.04 36.04)" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Axis-aligned ellipse</h2><p>Recognized as <ellipse> (no transform)</p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 10 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 27.5 24.91 c 1.65-0.46 6.38-0.66 10.5-0.46 c 6.37 0.32 12.62 1.44 17.29 6.11 c 3.37 3.37 3.37 7.51 0 10.88 c-1.49 1.49-4.3 3.43-6.25 4.31 c-2.45 1.11-6.46 1.6-13.04 1.6 c-6.58 0-10.59-0.49-13.04-1.6 C 19.35 44.12 14 40.52 14 36 c 0-4 4.6-7.87 8-9.24 c 1.38-0.56 3.85-1.39 5.5-1.85 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;ellipse&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><ellipse cx="35.91" cy="35.89" rx="21.91" ry="11.46" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Circle</h2><p>Recognized as <circle></p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 7 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 27.97 20.25 C 30.42 19.01 34.03 18 36 18 c 8.14 0 16.1 6.68 17.59 14.61 c 1.46 7.8-2.5 15.57-9.56 19.14 C 41.58 52.99 37.97 54 36 54 c-8.14 0-16.1-6.68-17.59-14.61 c-1.46-7.8 2.5-15.57 9.56-19.14 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;circle&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><circle cx="36" cy="36" r="17.81" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Regular pentagon (rotated)</h2><p>Regularized to a perfect <polygon></p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 13 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 28.17 19.84 L 39.5 14.19 l 4.83 4.65 c 2.66 2.56 6.69 6.87 8.97 9.56 l 4.14 4.9 l-5.88 11.29 c-5.5 10.56-6.05 11.26-8.47 10.79 C 41.67 55.11 36 54.1 30.5 53.14 l-10-1.75 l-1.17-6.94 c-0.65-3.82-1.47-9.65-1.83-12.95 l-0.66-6 l 11.33-5.66 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;polygon&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><polygon points="39.36,15.01 57.55,33.52 45.56,56.54 19.96,52.25 16.13,26.58" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Five-point star</h2><p>Regularized to a 10-point <polygon></p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 25 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 33.04 18.52 C 34.33 12.73 35.66 8 36 8 c 0.34 0 1.67 4.73 2.96 10.52 l 2.33 10.52 l 3.11-0.48 C 46.02 28.31 63 26.63 63 27.31 c 0 0.26-4.05 2.87-9 5.8 c-4.95 2.93-9 5.64-9 6.03 c 0 0.38 0.94 2.87 2.09 5.53 c 1.15 2.66 2.96 7 4.01 9.65 l 1.92 4.81 l-1.26-0.74 c-0.69-0.41-4.52-3.65-8.51-7.19 L 36 44.75 l-7.25 6.45 c-3.99 3.54-7.82 6.78-8.51 7.19 l-1.26 0.74 l 1.92-4.81 c 1.05-2.65 2.86-6.99 4.01-9.65 C 26.06 42.01 27 39.52 27 39.14 c 0-0.39-4.05-3.1-9-6.03 c-4.95-2.93-9-5.54-9-5.8 c 0-0.68 16.98 1 18.6 1.25 l 3.11 0.48 l 2.33-10.52 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;polygon&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><polygon points="36,8.55 41.33,29.65 63.05,28.2 44.63,39.79 52.72,60 36,46.06 19.28,60 27.37,39.79 8.95,28.2 30.67,29.65" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Diamond (rotated square)</h2><p>Diagonal edges, so a <polygon> not a <rect></p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 6 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 24.5 25 L 35.48 13.99 l 22 22 L 35.52 58.01 l-22-22 L 24.5 25 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;polygon&gt; · 0 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><polygon points="35.48,14.01 57.49,35.98 35.52,57.99 13.51,36.02" fill="#0e7f8c"/></svg></div></figure>
+      </div>
+    </section>
+<section class="row">
+      <div class="rowhead"><h2>Irregular blob</h2><p>Not a primitive — stays an editable path</p></div>
+      <div class="pair">
+        <figure><figcaption>optimized path <span>&lt;path&gt; · 11 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 30.63 18.03 c 3.22-3.82 7.52-3.82 10.74 0 c 2.96 3.52 3.07 7.76 4.21 11.97 c 0.23 0.82 1.71 2.37 3.31 3.44 c 4.6 3.07 8.42 9.48 3.94 14.25 c-3.34 3.55-8.8 2.3-12.81 0.7 c-3.69-1.48-4.35-1.48-8.04 0 c-4 1.6-9.17 2.72-12.67-0.56 c-4.86-4.58-0.72-11.38 3.8-14.39 c 1.6-1.07 3.08-2.62 3.31-3.44 c 1.14-4.21 1.25-8.45 4.21-11.97 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+        <figure><figcaption>shape matching <span>&lt;path&gt; · 11 nodes</span></figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72"><!-- Vectorizer: traced client-side --><path d="M 30.63 18.03 c 3.22-3.82 7.52-3.82 10.74 0 c 2.96 3.52 3.07 7.76 4.21 11.97 c 0.23 0.82 1.71 2.37 3.31 3.44 c 4.6 3.07 8.42 9.48 3.94 14.25 c-3.34 3.55-8.8 2.3-12.81 0.7 c-3.69-1.48-4.35-1.48-8.04 0 c-4 1.6-9.17 2.72-12.67-0.56 c-4.86-4.58-0.72-11.38 3.8-14.39 c 1.6-1.07 3.08-2.62 3.31-3.44 c 1.14-4.21 1.25-8.45 4.21-11.97 Z" fill="#0e7f8c" fill-rule="evenodd"/></svg></div></figure>
+      </div>
+    </section>
+</div>
