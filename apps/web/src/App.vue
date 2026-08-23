@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import DropZone from './components/DropZone.vue'
 import PreviewViewport from './components/PreviewViewport.vue'
+import ReleaseNotes from './components/ReleaseNotes.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatsBar from './components/StatsBar.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -15,6 +16,9 @@ const dropZone = ref<InstanceType<typeof DropZone> | null>(null)
 
 // Mobile only: collapse the pinned result to give the command panel more room.
 const resultHidden = ref(false)
+
+// The "What's new" release-notes overlay.
+const releaseNotesOpen = ref(false)
 
 // Reflect the theme on <html> so the token overrides in base.css apply.
 watchEffect(() => {
@@ -30,6 +34,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
+  // The release-notes overlay owns the keyboard while it is open (it handles Escape itself).
+  if (releaseNotesOpen.value) return
+
   const meta = event.metaKey || event.ctrlKey
 
   if (meta && event.key.toLowerCase() === 'o') {
@@ -103,7 +110,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app">
-    <AppHeader @open-file="dropZone?.openPicker()" />
+    <AppHeader @open-file="dropZone?.openPicker()" @open-release-notes="releaseNotesOpen = true" />
     <div class="body" :class="{ 'result-collapsed': resultHidden }">
       <SettingsPanel />
       <main class="main">
@@ -138,6 +145,7 @@ onBeforeUnmount(() => {
       </button>
       <DropZone ref="dropZone" />
     </div>
+    <ReleaseNotes v-if="releaseNotesOpen" @close="releaseNotesOpen = false" />
     <ToastHost />
   </div>
 </template>

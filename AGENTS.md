@@ -132,6 +132,10 @@ Do not put a model identifier anywhere in a commit message, PR title/body, or co
 ### Documentation
 
 - Update the affected doc **in the same commit** as the code change.
+- **User-visible change? Add a release note in the same PR.** The app shows a "What's new" changelog; prepend an entry
+  to [`apps/web/src/lib/releaseNotes.ts`](apps/web/src/lib/releaseNotes.ts) following the rules in
+  [`apps/web/AGENTS.md`](apps/web/AGENTS.md) (dated + numbered per day, plain language). Skip only changes a user would
+  never notice.
 - [`README.md`](README.md) is the landing page and feature tour.
 - [`docs/CONTRACTS.md`](docs/CONTRACTS.md) is the exact package API surface — keep it in sync with exported signatures.
 - [`docs/REFERENCES.md`](docs/REFERENCES.md) tracks every citable algorithm and ML model. **When you add or change an

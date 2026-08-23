@@ -1,9 +1,15 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
 
-const emit = defineEmits<{ openFile: [] }>()
+const emit = defineEmits<{ openFile: []; openReleaseNotes: [] }>()
+
+// Compact "since last visit" badge; caps large counts so it stays little.
+const unseenBadge = computed(() =>
+  store.unseenReleaseCount > 9 ? '9+' : String(store.unseenReleaseCount),
+)
 </script>
 
 <template>
@@ -72,6 +78,48 @@ const emit = defineEmits<{ openFile: [] }>()
         </button>
         <span class="hdr-sep" aria-hidden="true" />
       </template>
+      <button
+        class="btn btn-ghost btn-icon whatsnew"
+        :title="
+          store.unseenReleaseCount > 0
+            ? `What's new — ${store.unseenReleaseCount} since your last visit`
+            : `What's new`
+        "
+        :aria-label="
+          store.unseenReleaseCount > 0
+            ? `What's new, ${store.unseenReleaseCount} new since your last visit`
+            : `What's new`
+        "
+        @click="emit('openReleaseNotes')"
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <path
+            d="M3 6.4v3.2h2l5.2 2.6V3.8L5 6.4H3Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M5.4 9.6l.9 2.7 1.5-.5-.8-2.2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M12.4 6.2a3 3 0 0 1 0 3.6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+        </svg>
+        <span v-if="store.unseenReleaseCount > 0" class="whatsnew-badge" aria-hidden="true">
+          {{ unseenBadge }}
+        </span>
+      </button>
       <button
         class="btn btn-ghost btn-icon"
         :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
@@ -181,6 +229,33 @@ const emit = defineEmits<{ openFile: [] }>()
   height: 20px;
   margin: 0 3px;
   background: var(--border);
+}
+
+/* "What's new" trigger + its since-last-visit badge. */
+.whatsnew {
+  position: relative;
+  overflow: visible;
+}
+
+.whatsnew-badge {
+  position: absolute;
+  top: -1px;
+  right: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1.5px solid var(--bg-1);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 /* Collapse the action labels to icons on narrow screens. */

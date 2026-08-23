@@ -167,8 +167,56 @@ try {
     }
   }
 
+  // Verify the "What's new" release-notes panel: the header badge counts unseen
+  // notes, the panel lists them (newest first, dated + numbered per day), and
+  // opening it clears the badge for the next visit. Isolated context so it does
+  // not touch the main page's storage or the README screenshot.
+  async function checkReleaseNotes() {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+    try {
+      const rp = await ctx.newPage()
+      await rp.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' })
+      await rp.waitForSelector('.whatsnew', { timeout: 20000 })
+
+      const badgeBefore = (await rp.locator('.whatsnew-badge').textContent())?.trim() ?? ''
+      if (!badgeBefore) fail('release notes: a first visit should show the unseen badge')
+
+      await rp.locator('.whatsnew').click()
+      await rp.waitForSelector('.rn-modal', { timeout: 5000 })
+      const notes = await rp.locator('.rn-note').count()
+      const newMarks = await rp.locator('.rn-new').count()
+      const firstVer = (await rp.locator('.rn-ver').first().textContent())?.trim() ?? ''
+      if (notes < 1) fail('release notes: panel listed no notes')
+      if (newMarks < 1) fail('release notes: unseen notes should be flagged "New"')
+      if (!/^\d{4}-\d{2}-\d{2}\.\d+$/.test(firstVer)) {
+        fail(`release notes: version tag should read YYYY-MM-DD.n, got "${firstVer}"`)
+      }
+      const expected = notes > 9 ? '9+' : String(notes)
+      if (badgeBefore !== expected) {
+        fail(`release notes: badge "${badgeBefore}" should match ${expected} unseen notes`)
+      }
+
+      // Opening acknowledges the notes; the badge is gone on the next visit.
+      await rp.keyboard.press('Escape')
+      await rp.waitForSelector('.rn-modal', { state: 'detached', timeout: 5000 })
+      await rp.reload({ waitUntil: 'domcontentloaded' })
+      await rp.waitForSelector('.whatsnew', { timeout: 20000 })
+      if ((await rp.locator('.whatsnew-badge').count()) !== 0) {
+        fail('release notes: badge should clear after the panel is opened')
+      }
+      console.log(
+        `  release notes: badge ${badgeBefore} ✓  ${notes} notes ✓  New flags ✓  clears ✓`,
+      )
+    } finally {
+      await ctx.close()
+    }
+  }
+
   console.log('E2E: mobile layout — pinned result + toggle (390×844)…')
   await checkMobileLayout()
+
+  console.log("E2E: release notes — What's new panel + unseen badge…")
+  await checkReleaseNotes()
 
   console.log('E2E: sample "Badge" (color, stacked)…')
   const badge = await loadSampleAndTrace(0, 'badge')

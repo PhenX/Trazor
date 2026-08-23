@@ -25,6 +25,7 @@ import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
+import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
 import { getSample } from '../lib/samples'
 
 const STORAGE_KEY = 'trazor:v1'
@@ -61,6 +62,8 @@ interface PersistedState {
   theme?: Theme
   edgePrepass?: boolean
   autoOnLoad?: boolean
+  /** Id of the newest release note the visitor has seen (see lib/releaseNotes). */
+  lastSeenRelease?: string
 }
 
 function loadPersisted(): PersistedState {
@@ -151,6 +154,8 @@ export const useAppStore = defineStore('app', () => {
   const edgePrepass = ref(persisted.edgePrepass === true)
   /** Analyze each newly loaded image and apply recommended settings. On by default. */
   const autoOnLoad = ref(persisted.autoOnLoad !== false)
+  /** Id of the newest release note the visitor has acknowledged (What's new panel). */
+  const lastSeenRelease = ref<string | null>(persisted.lastSeenRelease ?? null)
 
   // Non-reactive machinery
   let client: TrazorClient | null = null
@@ -655,6 +660,15 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // --------------------------- Release notes -----------------------------
+  /** Notes newer than the one the visitor last saw — drives the header badge. */
+  const unseenReleaseCount = computed(() => countUnseen(lastSeenRelease.value))
+
+  /** Acknowledge every note up to the newest, clearing the "new" badge. */
+  function markReleasesSeen(): void {
+    lastSeenRelease.value = latestReleaseId()
+  }
+
   // ------------------------------- Theme ---------------------------------
   function toggleTheme(): void {
     theme.value = theme.value === 'dark' ? 'light' : 'dark'
@@ -662,7 +676,7 @@ export const useAppStore = defineStore('app', () => {
 
   // ---------------------------- Persistence ------------------------------
   watch(
-    [settings, activeProfileId, profileModified, theme, edgePrepass, autoOnLoad],
+    [settings, activeProfileId, profileModified, theme, edgePrepass, autoOnLoad, lastSeenRelease],
     () => {
       try {
         const state: PersistedState = {
@@ -672,6 +686,7 @@ export const useAppStore = defineStore('app', () => {
           theme: theme.value,
           edgePrepass: edgePrepass.value,
           autoOnLoad: autoOnLoad.value,
+          lastSeenRelease: lastSeenRelease.value ?? undefined,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -704,11 +719,13 @@ export const useAppStore = defineStore('app', () => {
     magicPoints,
     edgePrepass,
     autoOnLoad,
+    lastSeenRelease,
     // derived
     hasImage,
     activeProfile,
     isWorkingModified,
     exportName,
+    unseenReleaseCount,
     // actions
     notify,
     dismissToast,
@@ -740,6 +757,7 @@ export const useAppStore = defineStore('app', () => {
     addMagicPoint,
     undoMagicPoint,
     applyMagicSelect,
+    markReleasesSeen,
     toggleTheme,
   }
 })

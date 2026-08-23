@@ -19,8 +19,9 @@ src/
   store/appStore.ts       the single source of truth (Pinia setup store)
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
   lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
-                          overlay (per-element-kind colors/labels for the complexity overlay)
-  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, StatsBar, ExportBar, ToastHost
+                          overlay (per-element-kind colors/labels for the complexity overlay),
+                          releaseNotes (the user-facing changelog + its date/iteration helpers)
+  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, StatsBar, ExportBar, ReleaseNotes, ToastHost
   components/controls/    ControlRow / SliderRow / SelectRow / SwitchRow / ColorRow / TextRow
   styles/base.css         design tokens (dark + light), shared component classes
 ```
@@ -44,6 +45,26 @@ src/
   weights via `@trazor/ml`, and the app must stay fully functional when they fail.
 - **ML is lazy and fail-soft.** Import `@trazor/ml` dynamically so `onnxruntime-web` stays out of the main bundle;
   surface every failure as a toast and continue without it.
+
+## Release notes
+
+The app ships a user-facing changelog: the **"What's new"** button in `AppHeader` opens `ReleaseNotes.vue`, which
+renders the entries from [`src/lib/releaseNotes.ts`](src/lib/releaseNotes.ts). A badge on that button counts the notes
+published since the visitor's last visit (persisted as `lastSeenRelease`; the count is the store's
+`unseenReleaseCount`), and clears when they open the panel.
+
+**On every pull request that changes something a user would notice, add a release note — in the same PR.** This is
+part of "done", like updating docs. Skip it only for changes with no user-visible effect (pure refactors, tests, CI,
+internal-doc edits).
+
+- **Prepend** one `ReleaseNote` object to the **top** of the `RELEASE_NOTES` array — newest first. The array order is
+  the source of truth for the "new since last visit" badge, so never reorder or rewrite already-published entries.
+- **Identify it by date, not a version** (there is no versioning yet): set `date` to the merge day (ISO `YYYY-MM-DD`)
+  and `iteration` to a per-day counter. If an entry for that date already exists, use the next `iteration` (…`.2`,
+  `.3`); otherwise start at `1`. Together they read as `2026-08-23.2` (`releaseId`).
+- **Write for users, not contributors.** A short `title` and one plain-language line per change in `items` — say what
+  someone can now do or what got better, not which module changed. Pick the `kind` (`feature` / `improvement` / `fix`)
+  that best fits. Keep emoji out of the notes.
 
 ## Workflow
 
