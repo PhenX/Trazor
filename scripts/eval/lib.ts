@@ -4,15 +4,21 @@
  * with resvg over white, and score fidelity as mean Oklab ΔE — the same metric
  * the app shows (apps/web/src/lib/fidelity.ts).
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { Resvg } from '@resvg/resvg-js'
+import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
 import { deltaEOk, rgbToOklab } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
 
-/** Read an RGBA PNG as a RasterImage (fresh Uint8ClampedArray, length w*h*4). */
+/** Read a PNG or JPEG as a RasterImage (fresh Uint8ClampedArray, length w*h*4). */
 export function readRgba(path: string): RasterImage {
-  const png = PNG.sync.read(readFileSync(path))
+  const buf = readFileSync(path)
+  if (/\.jpe?g$/i.test(path)) {
+    const img = jpeg.decode(buf, { useTArray: true, formatAsRGBA: true })
+    return { width: img.width, height: img.height, data: new Uint8ClampedArray(img.data) }
+  }
+  const png = PNG.sync.read(buf)
   return { width: png.width, height: png.height, data: new Uint8ClampedArray(png.data) }
 }
 
@@ -84,4 +90,18 @@ export function meanDeltaE(a: RasterImage, b: RasterImage): number {
 export function score(dE: number): number {
   const s = 1 - dE * 4
   return s < 0 ? 0 : s > 1 ? 1 : s
+}
+
+/** Encode a RasterImage to a PNG file (RGBA, non-premultiplied). */
+export function writePng(path: string, img: RasterImage): void {
+  const png = new PNG({ width: img.width, height: img.height })
+  png.data = Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength)
+  writeFileSync(path, PNG.sync.write(png))
+}
+
+/** Encode a RasterImage as a base64 PNG data URI (for inlining a thumbnail). */
+export function pngDataUri(img: RasterImage): string {
+  const png = new PNG({ width: img.width, height: img.height })
+  png.data = Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength)
+  return `data:image/png;base64,${PNG.sync.write(png).toString('base64')}`
 }

@@ -24,7 +24,9 @@
  *   npm run eval:corpus                 # write the default corpus first
  *   npm run eval:tracers                # compare over scripts/eval/corpus
  *   npm run eval:tracers -- --data <dir> --montage --json report.json
- *     --data <dir>     folder of PNGs (+ optional families.json); default scripts/eval/corpus
+ *     --data <dir>     folder of PNG/JPEG images (+ optional families.json); default scripts/eval/corpus
+ *     --max-dim N      resize inputs so the longest side ≤ N before tracing both (default
+ *                      1600; 0 = native — VTracer has no downscale and takes minutes on a 24 MP photo)
  *     --out <dir>      where SVGs / montage are written; default eval-artifacts/tracers
  *     --vtracer <bin>  path to the vtracer binary (else VTRACER_BIN, PATH, ~/.cargo/bin)
  *     --profile <id>   force one Trazor profile for every image (else per-family)
@@ -35,12 +37,22 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { DEFAULT_SETTINGS, getProfile, normalizeSettings } from '@trazor/core'
 import type { ProfileId, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
+import { resizeToFit } from '@trazor/raster'
 import { analyzeSvg } from '@trazor/svg'
-import { flattenOverWhite, meanDeltaE, rasterizeSvg, readRgba, resampleNearest, score } from './lib'
+import {
+  flattenOverWhite,
+  meanDeltaE,
+  pngDataUri,
+  rasterizeSvg,
+  readRgba,
+  resampleNearest,
+  score,
+  writePng,
+} from './lib'
 
 interface FamilyConfig {
   profile: ProfileId
@@ -67,6 +79,7 @@ const DEFAULT_FAMILY = 'illustration'
 interface Args {
   data: string
   out: string
+  maxDim: number
   vtracer?: string
   profile?: ProfileId
   limit: number
@@ -78,6 +91,7 @@ function parseArgs(argv: string[]): Args {
   const a: Args = {
     data: 'scripts/eval/corpus',
     out: 'eval-artifacts/tracers',
+    maxDim: 1600,
     limit: 0,
     montage: false,
   }
@@ -91,6 +105,10 @@ function parseArgs(argv: string[]): Args {
         break
       case '--out':
         a.out = val
+        i++
+        break
+      case '--max-dim':
+        a.maxDim = Number(val)
         i++
         break
       case '--vtracer':
@@ -289,33 +307,60 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
   }
 }
 
-function writeMontage(rows: Row[], dataDir: string, outDir: string): void {
+const THUMB_W = 520
+
+function metaLine(t: TraceResult | null): string {
+  return t
+    ? `ΔE ${fmt(t.dE, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB · ${Math.round(t.ms)} ms`
+    : '—'
+}
+
+function paneHtml(title: string, uri: string | null, meta: string): string {
+  return `<figure><figcaption>${title}</figcaption>${
+    uri ? `<img src="${uri}" alt="${title}">` : '<div class="miss">failed</div>'
+  }<small>${meta}</small></figure>`
+}
+
+function writeMontage(rows: Row[], outDir: string): void {
+  // Panes are small PNG thumbnails rendered from each asset (the source PNG and
+  // both SVGs, via the same resvg used for scoring) — fast to open and uncropped,
+  // where a 300k-node SVG embedded live would not be. The full-resolution inputs
+  // and SVG outputs stay on disk under source/, trazor/, vtracer/.
+  const thumb = (img: RasterImage): string =>
+    pngDataUri(
+      resampleNearest(img, THUMB_W, Math.max(1, Math.round((THUMB_W * img.height) / img.width))),
+    )
   const cell = (r: Row) => {
-    const srcB64 = readFileSync(join(dataDir, r.name)).toString('base64')
-    const num = (t: TraceResult | null, label: string) =>
-      t
-        ? `${label} ΔE ${fmt(t.dE, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB · ${Math.round(t.ms)} ms`
-        : `${label} —`
-    return `<tr>
-      <td class="lbl"><b>${r.name}</b><br><span>${r.family} · ${r.profile}</span></td>
-      <td><img src="data:image/png;base64,${srcB64}" alt="source"><div>source</div></td>
-      <td><div class="svg">${r.trazor.svg}</div><div>${num(r.trazor, 'Trazor')}</div></td>
-      <td><div class="svg">${r.vtracer ? r.vtracer.svg : ''}</div><div>${num(r.vtracer, 'VTracer')}</div></td>
-    </tr>`
+    const base = basename(r.name, extname(r.name))
+    const srcUri = thumb(readRgba(join(outDir, 'source', `${base}.png`)))
+    const trazorUri = pngDataUri(rasterizeSvg(r.trazor.svg, THUMB_W))
+    const vtUri = r.vtracer ? pngDataUri(rasterizeSvg(r.vtracer.svg, THUMB_W)) : null
+    return `<section>
+    <h2>${r.name} <span>${r.family} · ${r.profile}</span></h2>
+    <div class="row">
+      ${paneHtml('source', srcUri, '')}
+      ${paneHtml('Trazor', trazorUri, metaLine(r.trazor))}
+      ${paneHtml('VTracer', vtUri, metaLine(r.vtracer))}
+    </div>
+  </section>`
   }
+
   const html = `<!doctype html><meta charset="utf8"><title>Trazor vs VTracer</title>
 <style>
-  body{font:14px system-ui,sans-serif;margin:24px;background:#fff;color:#111}
-  table{border-collapse:collapse;width:100%}
-  td{border:1px solid #ddd;padding:8px;vertical-align:top;text-align:center}
-  td.lbl{text-align:left;white-space:nowrap} td.lbl span{color:#888;font-size:12px}
-  img,.svg svg{width:220px;height:220px;object-fit:contain;background:#fff}
-  td div{margin-top:6px;color:#555;font-size:12px}
-  th{padding:8px;text-align:center;color:#666;font-weight:600}
+  :root{color-scheme:light dark}
+  body{font:14px/1.5 system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:24px}
+  h1{font-size:20px}
+  section{margin:28px 0;border-top:1px solid #8884;padding-top:16px}
+  h2{font-size:15px;margin:0 0 12px} h2 span{color:#8a8a8a;font-weight:400}
+  .row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+  figure{margin:0;text-align:center}
+  figcaption{color:#8a8a8a;font-size:12px;margin-bottom:6px}
+  img,.miss{width:100%;aspect-ratio:1;object-fit:contain;background:#fff;border:1px solid #8883;border-radius:6px}
+  .miss{display:grid;place-items:center;color:#b00;font-size:12px;min-height:120px}
+  small{display:block;color:#8a8a8a;margin-top:6px;font-size:12px}
 </style>
 <h1>Trazor vs VTracer</h1>
-<table><thead><tr><th>image</th><th>source</th><th>Trazor</th><th>VTracer</th></tr></thead>
-<tbody>${rows.map(cell).join('\n')}</tbody></table>`
+${rows.map(cell).join('\n')}`
   writeFileSync(join(outDir, 'index.html'), html)
 }
 
@@ -330,9 +375,9 @@ async function main(): Promise<void> {
     ? JSON.parse(readFileSync(join(args.data, 'families.json'), 'utf8'))
     : {}
   let images = readdirSync(args.data)
-    .filter((f) => f.toLowerCase().endsWith('.png'))
+    .filter((f) => /\.(png|jpe?g)$/i.test(f))
     .toSorted()
-  if (images.length === 0) throw new Error(`no PNGs in ${args.data}`)
+  if (images.length === 0) throw new Error(`no images in ${args.data}`)
   if (args.limit > 0) images = images.slice(0, args.limit)
 
   const vbin = resolveVtracer(args.vtracer)
@@ -341,19 +386,29 @@ async function main(): Promise<void> {
   const outVtracer = join(args.out, 'vtracer')
   mkdirSync(outTrazor, { recursive: true })
   if (hasV) mkdirSync(outVtracer, { recursive: true })
+  const srcDir = join(args.out, 'source')
+  mkdirSync(srcDir, { recursive: true })
 
   console.log(
-    `\ncorpus=${args.data}  images=${images.length}  vtracer=${hasV ? vbin : 'NOT FOUND (Trazor-only)'}\n`,
+    `\ncorpus=${args.data}  images=${images.length}  max-dim=${args.maxDim || 'native'}  vtracer=${
+      hasV ? vbin : 'NOT FOUND (Trazor-only)'
+    }\n`,
   )
 
   const rows: Row[] = []
   let vfail = 0
   for (const name of images) {
-    const base = basename(name, '.png')
+    const base = basename(name, extname(name))
     const family = familyMap[name] ?? DEFAULT_FAMILY
     const cfg = FAMILIES[family] ?? FAMILIES[DEFAULT_FAMILY]
     const profile = args.profile ?? cfg.profile
-    const src = readRgba(join(args.data, name))
+    // Resize large inputs to a sane working size for BOTH tracers, then trace the
+    // identical PNG (vtracer has no downscale and would spend minutes on a 24 MP
+    // photo). The resized PNG is also the montage's source pane.
+    const original = readRgba(join(args.data, name))
+    const src = args.maxDim > 0 ? resizeToFit(original, args.maxDim) : original
+    const srcPng = join(srcDir, `${base}.png`)
+    writePng(srcPng, src)
     const srcWhite = flattenOverWhite(src)
 
     // oxlint-disable-next-line no-await-in-loop -- sequential: one engine run at a time
@@ -365,7 +420,7 @@ async function main(): Promise<void> {
       try {
         vt = traceVtracer(
           vbin as string,
-          join(args.data, name),
+          srcPng,
           join(outVtracer, `${base}.svg`),
           srcWhite,
           cfg.vtracer,
@@ -399,7 +454,7 @@ async function main(): Promise<void> {
   }
 
   if (args.montage) {
-    writeMontage(rows, args.data, args.out)
+    writeMontage(rows, args.out)
     console.log(`\n  montage → ${join(args.out, 'index.html')}`)
   }
   if (args.json) {

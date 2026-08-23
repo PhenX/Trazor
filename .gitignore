@@ -155,6 +155,7 @@ e2e-artifacts/
 # `npm run eval:corpus`, so never committed. Anchored so scripts/eval source stays tracked.
 /eval-artifacts/
 scripts/eval/corpus/
+scripts/eval/corpus-vtracer/
 
 # Generated ML training datasets (scripts/dataset) and the fetched real corpus
 # (scripts/corpus). Both are reproducible from scripts — never committed. Anchored

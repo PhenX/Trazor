@@ -100,21 +100,29 @@ npm run eval:corpus            # write the built-in corpus → scripts/eval/corp
 npm run eval:tracers -- --montage --json eval-artifacts/tracers/report.json
 ```
 
+Or run it on VTracer's **own** showcase images — the fairest test, on its home turf:
+
+```sh
+npm run eval:samples   # fetch vtracer/docs/assets/samples → scripts/eval/corpus-vtracer
+npm run eval:tracers -- --data scripts/eval/corpus-vtracer --montage
+```
+
 VTracer is **optional**: with no binary found the harness reports Trazor alone and says so. Each image is traced at both
 tools' _intended_ settings for its family — Trazor's matching target profile and the vtracer flags a user would pick
 (`--preset photo`, `--colormode bw`, `--mode pixel`, …) — so it's tool-vs-tool, not one hobbled against the other.
 
 ### Options (`tracer-compare.ts`)
 
-| flag        | default                  | meaning                                                       |
-| ----------- | ------------------------ | ------------------------------------------------------------- |
-| `--data`    | `scripts/eval/corpus`    | folder of PNGs (+ optional `families.json` tagging each file) |
-| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written             |
-| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                    |
-| `--profile` | per-family               | force one Trazor profile for every image                      |
-| `--limit`   | `0` (all)                | cap images                                                    |
-| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer          |
-| `--json`    | —                        | also write the report as JSON                                 |
+| flag        | default                  | meaning                                                             |
+| ----------- | ------------------------ | ------------------------------------------------------------------- |
+| `--data`    | `scripts/eval/corpus`    | folder of PNG/JPEG images (+ optional `families.json` tags)         |
+| `--max-dim` | `1600`                   | resize inputs to this longest side before tracing both (0 = native) |
+| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written                   |
+| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                          |
+| `--profile` | per-family               | force one Trazor profile for every image                            |
+| `--limit`   | `0` (all)                | cap images                                                          |
+| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer                |
+| `--json`    | —                        | also write the report as JSON                                       |
 
 ## The corpus
 
@@ -127,3 +135,16 @@ photo/gradient) plus a `families.json` tag map. It's git-ignored and reproducibl
 > fixed-palette quantization bands. For a trustworthy verdict, point `--data` at a folder of **real photos** (any PNGs;
 > add a `families.json` to tag them). Read ΔE next to node count and bytes, not alone — higher fidelity bought with far
 > more nodes is a different trade than a genuine win.
+
+## VTracer's own samples
+
+`npm run eval:samples` (`fetch-vtracer-samples.mjs`) downloads VTracer's showcase images (its `docs/assets/samples`, via
+the jsDelivr CDN — the GitHub API and tarball are commonly gated) into a git-ignored `scripts/eval/corpus-vtracer/` with
+best-effort family tags, so the comparison runs on the very inputs VTracer is demoed on. They are third-party images
+(some are stock art), fetched on demand for local benchmarking only and never committed.
+
+Large inputs are resized to `--max-dim` (default 1600) before tracing **both** tools — VTracer has no downscale of its
+own and takes minutes on a 24 MP photo, so this keeps the comparison fair and completable. The montage (`--montage`)
+writes `index.html` next to the assets it references: `source/` (the resized input both tracers saw), `trazor/` and
+`vtracer/` (each tracer's SVG). The page itself shows fast, uncropped PNG thumbnails; open the on-disk SVGs to inspect
+the real vector output.
