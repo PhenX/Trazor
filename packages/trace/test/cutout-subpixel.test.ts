@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { LabelMap, PathCommand } from '@vectorizer/core'
-import { rgbToOklab } from '@vectorizer/core'
-import { traceLabelMap } from '@vectorizer/trace'
-import type { ColorField } from '@vectorizer/trace'
+import type { LabelMap, PathCommand } from '@trazor/core'
+import { rgbToOklab } from '@trazor/core'
+import { traceLabelMap } from '@trazor/trace'
+import type { ColorField } from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,

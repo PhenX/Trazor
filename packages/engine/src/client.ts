@@ -1,11 +1,11 @@
-import { CancelledError } from '@vectorizer/core'
+import { CancelledError } from '@trazor/core'
 import type {
   GrayImage,
   RasterImage,
   StageId,
   VectorizeResult,
   VectorizeSettings,
-} from '@vectorizer/core'
+} from '@trazor/core'
 import type { WorkerInMessage, WorkerOutMessage } from './protocol'
 
 interface PendingJob {
@@ -20,7 +20,7 @@ interface PendingJob {
  * a new run cancels the pending one (its promise rejects with CancelledError).
  * The worker is spawned lazily and respawned after a crash.
  */
-export class VectorizerClient {
+export class TrazorClient {
   private worker: Worker | null = null
   private nextId = 1
   private jobs = new Map<number, PendingJob>()

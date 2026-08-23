@@ -1,4 +1,4 @@
-import { mulberry32 } from '@vectorizer/core'
+import { mulberry32 } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { bilateralFilter, gaussianBlur, medianFilter } from '../src/index'
 import { rasterOf } from './helpers'

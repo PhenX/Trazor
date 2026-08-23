@@ -1,5 +1,5 @@
 // Seeded pseudo-randomness for reproducible dataset generation. Every draw comes
-// from mulberry32 (Tommy Ettinger, public domain), matching @vectorizer/core, so
+// from mulberry32 (Tommy Ettinger, public domain), matching @trazor/core, so
 // a (seed, index) pair fully determines a sample and the same config regenerates
 // the same dataset.
 

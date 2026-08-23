@@ -1,10 +1,10 @@
-# Vectorizer — architecture map
+# Trazor — architecture map
 
 Whole-repo reference: what exists and where. The **rules** for changing it live in [`AGENTS.md`](AGENTS.md) — read that
 before editing. Exact exported signatures live in [`docs/CONTRACTS.md`](docs/CONTRACTS.md); this map describes structure
 and intent, not every file.
 
-![How Vectorizer works — the runtime pipeline, the optional on-device edge pre-pass, and the offline training loop that produces its model](docs/how-it-works.svg)
+![How Trazor works — the runtime pipeline, the optional on-device edge pre-pass, and the offline training loop that produces its model](docs/how-it-works.svg)
 
 _Raster → clean SVG through the deterministic core; the optional edge pre-pass (Tier 2) is discretized before the tracer,
 so output stays byte-identical without it. Animated SVG — open it in a browser to see the flow._
@@ -63,7 +63,7 @@ decode (app)
 
 - **`core`** — `RasterImage`/`GrayImage`/`BinaryMask`/`LabelMap`, the `PathCommand` model, `VectorizeSettings` (schema +
   `normalizeSettings` clamping) and `TARGET_PROFILES`, Oklab color math, geometry helpers, `mulberry32`, and the
-  `VectorizerEngine`/`VectorizeResult`/progress/warning types every layer speaks.
+  `TrazorEngine`/`VectorizeResult`/progress/warning types every layer speaks.
 - **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
@@ -74,7 +74,7 @@ decode (app)
   plus a regex-based `analyzeSvg` for path/node/color/byte stats.
 - **`engine`** — the four mode pipelines, stage timing + progress + cooperative cancellation, result warnings (stencil
   islands, tiny mm features, node counts), and the worker protocol: `installWorkerHandler` (worker side) +
-  `VectorizerClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+  `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp)
   and `MagicSegmenter` (SlimSAM). Browser-only; fails soft so the app works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +

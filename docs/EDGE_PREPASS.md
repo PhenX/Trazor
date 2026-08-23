@@ -5,9 +5,9 @@ region **boundaries** from a degraded raster, so the tracer decomposes cleaner c
 JPEG-crushed input. Its training data is produced by [`../scripts/dataset`](../scripts/dataset/README.md) (the `edge/`
 target).
 
-**Status — shipped.** The integration is implemented end to end (`@vectorizer/ml`'s `EdgeEnhancer`, the engine consumers,
+**Status — shipped.** The integration is implemented end to end (`@trazor/ml`'s `EdgeEnhancer`, the engine consumers,
 and the studio's **Edge pre-pass (ML)** toggle), and the trained weights are published: `edge-prepass.onnx` (~0.46 MB,
-MIT) is attached to the [`models` release](https://github.com/PhenX/Vectorizer/releases/tag/models). The deploy workflow
+MIT) is attached to the [`models` release](https://github.com/PhenX/Trazor/releases/tag/models). The deploy workflow
 fetches it into `apps/web/public/models/` at build time, so the deployed site serves it same-origin (see
 [Export & verification](#export--verification)). Weights are not committed, so a plain `npm run dev` still runs
 weightless and fails soft until you drop the `.onnx` in locally. Below is both the design record and the shipped model's
@@ -21,7 +21,7 @@ A lower-integration-risk sibling — a **cleanup pre-pass** (image→image resto
 A **Tier-2 conditioning stage** under the two-tier determinism contract in [`ML_STRATEGY.md`](ML_STRATEGY.md): optional,
 fail-soft, and never writing final geometry. It improves the _input_ to the deterministic classical core; its continuous
 output is **discretized before the tracer**, so cross-GPU float noise is absorbed and byte-identical output is preserved
-on the WASM backend. It lives in `@vectorizer/ml` beside `BackgroundRemover` and `MagicSegmenter`.
+on the WASM backend. It lives in `@trazor/ml` beside `BackgroundRemover` and `MagicSegmenter`.
 
 ```
 decode → resize → denoise → flatten          [raster]  preprocess
@@ -98,7 +98,7 @@ Offline, in PyTorch (not part of the repo's Node/TS build):
   it against its deploy base at startup with `overrideModelUrl` and `import.meta.env.BASE_URL`. See
   [`apps/web/public/models/README.md`](../apps/web/public/models/README.md) for the publish steps.
 
-## Integration (`@vectorizer/ml`)
+## Integration (`@trazor/ml`)
 
 Mirror the existing `BackgroundRemover` surface, plus a reproducible-mode backend option (this is the shipped API):
 
@@ -118,7 +118,7 @@ export class EdgeEnhancer {
 
 - **Backend & cache:** reuse `detectBackend()` (WebGPU → WASM), `ModelStore` (Cache Storage), and the `MlProgress`
   reporting already in the package. Same lazy `import('onnxruntime-web')` inside the factory so the main bundle stays lean.
-- **Consumers of the boundary map** (`@vectorizer/engine`): the hint crosses the worker boundary as an optional Float32
+- **Consumers of the boundary map** (`@trazor/engine`): the hint crosses the worker boundary as an optional Float32
   plane (`WorkerInMessage.edgeHint` → `EngineContext.edgeHint`), is resized to the working resolution and thresholded once
   (the shared `edgeProtectMask` — the discretization boundary), then feeds every mode:
   - **bw / centerline (implemented):** drives `despeckleMaskGuided` so thin real features survive the size filter. In bw
@@ -129,7 +129,7 @@ export class EdgeEnhancer {
     region. With no hint the merge is byte-identical to today's.
 - **App wiring (implemented):** the studio's ML tools panel has an **Edge pre-pass (ML)** toggle. When on (in every mode),
   the store runs `EdgeEnhancer` on the working image, caches the result per image, and passes it as the fourth argument to
-  `VectorizerClient.vectorize`. It is fail-soft: with no weights at
+  `TrazorClient.vectorize`. It is fail-soft: with no weights at
   `apps/web/public/models/edge-prepass.onnx` it toasts and switches itself back off, and tracing proceeds classically.
 - **Determinism:** the boundary map is **discretized** (threshold / snap) before it reaches `crack.ts`, so the trace stays
   byte-identical across devices except at knife-edge pixels; a **reproducible mode** pins `EdgeEnhancer` to the WASM

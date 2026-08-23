@@ -1,4 +1,4 @@
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { cubicAt } from '../paths'
 import type { Cubic } from '../fit'
 import { distanceToCubic, fitCubicSegment } from '../fit'

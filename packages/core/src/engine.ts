@@ -50,7 +50,7 @@ export interface EngineContext {
   /** Polled between work chunks; return true to abort with CancelledError. */
   shouldCancel?: () => boolean
   /**
-   * Optional boundary probability map (e.g. from @vectorizer/ml's EdgeEnhancer)
+   * Optional boundary probability map (e.g. from @trazor/ml's EdgeEnhancer)
    * at the source-image resolution. When present, the pipeline discretizes it and
    * uses it as a Tier-2 hint to protect thin features; absent, tracing is
    * byte-identical to the classical path.
@@ -66,7 +66,7 @@ export class CancelledError extends Error {
   }
 }
 
-export interface VectorizerEngine {
+export interface TrazorEngine {
   readonly id: string
   readonly label: string
   readonly modes: readonly VectorizeMode[]

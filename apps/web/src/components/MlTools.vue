@@ -6,7 +6,7 @@ import { useAppStore } from '../store/appStore'
 const store = useAppStore()
 
 const usage = ref<{ models: number; bytes: number } | null>(null)
-let modelStore: import('@vectorizer/ml').ModelStore | null = null
+let modelStore: import('@trazor/ml').ModelStore | null = null
 
 const backendBadge = computed(() => {
   if (store.mlState.probing || (!store.mlState.availability && store.hasImage)) {
@@ -31,7 +31,7 @@ const cleanupBusy = computed(() => store.mlState.cleanup.busy)
 
 async function refreshUsage(): Promise<void> {
   try {
-    const ml = await import('@vectorizer/ml')
+    const ml = await import('@trazor/ml')
     modelStore ??= new ml.ModelStore()
     usage.value = await modelStore.usage()
   } catch {
@@ -41,7 +41,7 @@ async function refreshUsage(): Promise<void> {
 
 async function clearCache(): Promise<void> {
   try {
-    const ml = await import('@vectorizer/ml')
+    const ml = await import('@trazor/ml')
     modelStore ??= new ml.ModelStore()
     await modelStore.clear()
     await refreshUsage()

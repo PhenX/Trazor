@@ -1,4 +1,4 @@
-import type { GrayImage, RasterImage } from '@vectorizer/core'
+import type { GrayImage, RasterImage } from '@trazor/core'
 import type { InferenceSession } from 'onnxruntime-web'
 import { errorMessage } from './errors'
 import {

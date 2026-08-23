@@ -6,7 +6,7 @@ import {
   normalizeSettings,
   nowMs,
   rgbToOklab,
-} from '@vectorizer/core'
+} from '@trazor/core'
 import type {
   BinaryMask,
   EngineContext,
@@ -19,8 +19,8 @@ import type {
   VectorizeResult,
   VectorizeSettings,
   VectorizeWarning,
-  VectorizerEngine,
-} from '@vectorizer/core'
+  TrazorEngine,
+} from '@trazor/core'
 import {
   adaptiveBinarize,
   bilateralFilter,
@@ -44,11 +44,11 @@ import {
   toGrayscale,
   toOklabBuffer,
   zhangSuenThin,
-} from '@vectorizer/raster'
-import { traceCenterline, traceLabelMap, traceMask } from '@vectorizer/trace'
-import type { TracedShape } from '@vectorizer/trace'
-import { analyzeSvg, serializeSvg } from '@vectorizer/svg'
-import type { SvgShape } from '@vectorizer/svg'
+} from '@trazor/raster'
+import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
+import type { TracedShape } from '@trazor/trace'
+import { analyzeSvg, serializeSvg } from '@trazor/svg'
+import type { SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -764,10 +764,10 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
 
-export function createNativeEngine(): VectorizerEngine {
+export function createNativeEngine(): TrazorEngine {
   return {
     id: 'native',
-    label: 'Vectorizer native',
+    label: 'Trazor native',
     modes: ['color', 'grayscale', 'bw', 'centerline'] satisfies VectorizeMode[],
     vectorize: (image, settings, ctx) => vectorize(image, settings, ctx),
   }

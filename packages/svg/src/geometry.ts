@@ -14,7 +14,7 @@
  * traced paths.
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 
 /** Source element a shape came from. */
 export type SvgElementKind =

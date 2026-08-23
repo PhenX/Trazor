@@ -1,4 +1,4 @@
-import type { LabelMap, PathCommand } from '@vectorizer/core'
+import type { LabelMap, PathCommand } from '@trazor/core'
 import type { TraceCurveOptions } from './closed'
 import { closedPathToCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'

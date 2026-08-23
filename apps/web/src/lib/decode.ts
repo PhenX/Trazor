@@ -1,4 +1,4 @@
-import type { RasterImage } from '@vectorizer/core'
+import type { RasterImage } from '@trazor/core'
 
 /** Formats we advertise. Anything `image/*` is attempted anyway. */
 export const acceptTypes = [

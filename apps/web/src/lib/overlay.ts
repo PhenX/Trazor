@@ -1,4 +1,4 @@
-import type { SvgElementKind } from '@vectorizer/svg'
+import type { SvgElementKind } from '@trazor/svg'
 
 /**
  * Color the complexity overlay tints each SVG element kind with, as a design

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { BinaryMask } from '@vectorizer/core'
-import { decomposeMask } from '@vectorizer/trace'
+import type { BinaryMask } from '@trazor/core'
+import { decomposeMask } from '@trazor/trace'
 
 function maskOf(rows: string[]): BinaryMask {
   const height = rows.length

@@ -45,7 +45,7 @@ The efficiency/interactivity tier is implemented on this branch. All items are b
 - **E2 — memoized final label assignment** ✅ `quantize` caches RGB24 → label, so the full-image pass runs one k-way
   search per distinct color instead of per pixel. **21.5× faster** on a 1600×1600 image with 200 repeated colors
   (915ms → 43ms); byte-identical.
-- **E3 — worker stage caching** ✅ `VectorizerClient` assigns each working-image object a stable id; the worker reuses
+- **E3 — worker stage caching** ✅ `TrazorClient` assigns each working-image object a stable id; the worker reuses
   the preprocessed image and the quantized/cleaned label map when only trace settings change. **1.9× faster** on a
   trace-only re-run (673ms → 352ms), more on quantize-heavy inputs; disabled while an edge hint is present; five
   invalidation tests.

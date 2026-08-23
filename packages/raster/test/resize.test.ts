@@ -1,4 +1,4 @@
-import { mulberry32 } from '@vectorizer/core'
+import { mulberry32 } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { resizeGray, resizeToFit } from '../src/index'
 import { channelMeans, grayOf, rasterOf } from './helpers'

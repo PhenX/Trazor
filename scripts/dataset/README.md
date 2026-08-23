@@ -56,7 +56,7 @@ with `--targets edge,clean`.
 
 ## Determinism
 
-Every random draw comes from `mulberry32` (same PRNG as `@vectorizer/core`), seeded from `--seed` and the sample index,
+Every random draw comes from `mulberry32` (same PRNG as `@trazor/core`), seeded from `--seed` and the sample index,
 so a given config regenerates the same dataset. The manifest records the config and seed and contains **no wall-clock**.
 Note that PNG/JPEG encoders can vary across library or platform versions — pin `node_modules` (the repo lockfile) if you
 need byte-identical regeneration across machines.
@@ -80,9 +80,9 @@ need byte-identical regeneration across machines.
 ## Extending
 
 - **Canonicalization** (`sources.mjs`) is a pass-through stub. A production corpus pipeline should flatten transforms,
-  resolve `<use>`, and expand shorthand into the `@vectorizer/svg` path model so targets match engine output.
+  resolve `<use>`, and expand shorthand into the `@trazor/svg` path model so targets match engine output.
 - **New target heads** (e.g. region label maps for layer ordering, or primitive parameter lists for shape fitting): add a
   deriver beside `targets.mjs` and a `--targets` key.
 - **Real backgrounds / more degradations** (chromatic aberration, halftone, scanner warps) plug into `degrade.mjs`.
-- **`@vectorizer/trace` as a target source:** trace clean renders with the engine to produce near-perfect vector targets
+- **`@trazor/trace` as a target source:** trace clean renders with the engine to produce near-perfect vector targets
   (see the strategy doc's "your own tracer is a supervision signal").

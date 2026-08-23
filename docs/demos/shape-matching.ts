@@ -8,10 +8,10 @@
  * Output: docs/demos/shape-matching.html
  */
 import { writeFileSync } from 'node:fs'
-import type { BinaryMask } from '@vectorizer/core'
-import { traceMask } from '@vectorizer/trace'
-import { analyzeSvg, serializeSvg } from '@vectorizer/svg'
-import type { SvgDocument } from '@vectorizer/svg'
+import type { BinaryMask } from '@trazor/core'
+import { traceMask } from '@trazor/trace'
+import { analyzeSvg, serializeSvg } from '@trazor/svg'
+import type { SvgDocument } from '@trazor/svg'
 
 const OPTS = {
   curveMode: 'spline' as const,

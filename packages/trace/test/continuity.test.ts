@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { BinaryMask, PathCommand } from '@vectorizer/core'
-import { traceMask } from '@vectorizer/trace'
+import type { BinaryMask, PathCommand } from '@trazor/core'
+import { traceMask } from '@trazor/trace'
 
 function circleMask(size: number, r: number): BinaryMask {
   const data = new Uint8Array(size * size)

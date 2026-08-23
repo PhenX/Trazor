@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { createRaster, fillRaster, setPixel } from '@vectorizer/core'
-import { analyzeImage, recommendSettings, suggestPalettes } from '@vectorizer/assist'
-import { mulberry32 } from '@vectorizer/core'
+import { createRaster, fillRaster, setPixel } from '@trazor/core'
+import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
+import { mulberry32 } from '@trazor/core'
 
 function flatLogo() {
   const img = createRaster(200, 200)

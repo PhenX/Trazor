@@ -5,7 +5,7 @@
  * with `-` is omitted (the sign is a valid separator in path data).
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 
 /**
  * Format a coordinate at `precision` decimals (0..4): `toFixed`, then strip

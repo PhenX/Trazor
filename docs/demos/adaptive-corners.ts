@@ -7,8 +7,8 @@
  * Output: docs/demos/adaptive-corners.html
  */
 import { writeFileSync } from 'node:fs'
-import type { BinaryMask, PathCommand } from '@vectorizer/core'
-import { traceMask } from '@vectorizer/trace'
+import type { BinaryMask, PathCommand } from '@trazor/core'
+import { traceMask } from '@trazor/trace'
 
 const BASE = {
   curveMode: 'spline' as const,

@@ -163,7 +163,7 @@ bilevel crack contours, for sub-pixel-accurate anti-aliased edges.
   the hard part. Keep exact-pixel decomposition for `pixel` mode and cutout.
 - **Acceptance:** anti-aliased circle contour within ~0.25 px; pixel-art and cutout byte-
   identical to today (proves gating); determinism holds.
-- Add `@vectorizer/raster` soft-mask output; gate behind a `subpixel` setting (default off).
+- Add `@trazor/raster` soft-mask output; gate behind a `subpixel` setting (default off).
 
 ### E — fidelity-driven refinement / auto-tuning · NOT STARTED (gated)
 

@@ -187,7 +187,7 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 
 ### Determinism
 
-`dataset.py` uses the same ImageNet mean/std as `packNchw` in `@vectorizer/ml`, input size is fixed at 256 (the app
+`dataset.py` uses the same ImageNet mean/std as `packNchw` in `@trazor/ml`, input size is fixed at 256 (the app
 tiles larger images at run time), and the export bakes in the sigmoid — so the browser sees exactly what you trained.
 `export_onnx.py` asserts torch/onnxruntime parity before you ship.
 

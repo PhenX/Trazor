@@ -1,4 +1,4 @@
-import { interiorAngleDeg } from '@vectorizer/core'
+import { interiorAngleDeg } from '@trazor/core'
 import type { FlatPoints } from '../paths'
 
 /**
