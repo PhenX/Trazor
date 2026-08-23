@@ -116,6 +116,10 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
           : ''
       return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${transform}${paint}/>`
     }
+    case 'polygon': {
+      const points = prim.points.map((p) => `${n(p.x)},${n(p.y)}`).join(' ')
+      return `<polygon points="${points}"${paint}/>`
+    }
   }
 }
 

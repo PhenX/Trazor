@@ -248,8 +248,9 @@ export type Primitive =
   | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; angle?: number } // angle (deg) ⇒ rotated, emitted as <ellipse> + rotate transform
+  | { kind: 'polygon'; points: { x: number; y: number }[] } // regularized regular polygon / star → <polygon>
 // The primitive a single closed subpath represents, or null. `allowRound` gates
-// the sub-pixel circle/ellipse matches (including rotated ellipses); rectangles are always exact.
+// the sub-pixel circle/ellipse and regular-polygon/star matches; rectangles are always exact.
 export function detectPrimitive(
   commands: readonly PathCommand[],
   precision: number,

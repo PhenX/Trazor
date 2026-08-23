@@ -43,29 +43,73 @@ function rotatedEllipse(cx: number, cy: number, rx: number, ry: number, deg: num
   }
 }
 
-const S = 56
+function pointInPoly(px: number, py: number, v: [number, number][]): boolean {
+  let inside = false
+  for (let i = 0, j = v.length - 1; i < v.length; j = i++) {
+    const [xi, yi] = v[i]
+    const [xj, yj] = v[j]
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+function regularPolygon(cx: number, cy: number, r: number, n: number, rotDeg: number) {
+  const verts: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const a = (rotDeg * Math.PI) / 180 + (i * 2 * Math.PI) / n
+    verts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)])
+  }
+  return (x: number, y: number): boolean => pointInPoly(x, y, verts)
+}
+
+function regularStar(cx: number, cy: number, rOut: number, rIn: number, n: number, rotDeg: number) {
+  const verts: [number, number][] = []
+  for (let i = 0; i < 2 * n; i++) {
+    const a = (rotDeg * Math.PI) / 180 + (i * Math.PI) / n
+    const r = i % 2 === 0 ? rOut : rIn
+    verts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)])
+  }
+  return (x: number, y: number): boolean => pointInPoly(x, y, verts)
+}
+
+const S = 72
 const shapes: { name: string; note: string; m: BinaryMask }[] = [
   {
     name: 'Rotated ellipse (30°)',
     note: 'Previously a many-node path; now one <ellipse> + rotate',
-    m: mask(S, S, rotatedEllipse(28, 28, 22, 11, 30)),
+    m: mask(S, S, rotatedEllipse(36, 36, 22, 11, 30)),
   },
   {
     name: 'Axis-aligned ellipse',
     note: 'Recognized as <ellipse> (no transform)',
-    m: mask(S, S, rotatedEllipse(28, 28, 22, 12, 0)),
+    m: mask(S, S, rotatedEllipse(36, 36, 22, 12, 0)),
   },
   {
     name: 'Circle',
     note: 'Recognized as <circle>',
-    m: mask(S, S, (x, y) => Math.hypot(x - 28, y - 28) <= 18),
+    m: mask(S, S, (x, y) => Math.hypot(x - 36, y - 36) <= 18),
+  },
+  {
+    name: 'Regular pentagon (rotated)',
+    note: 'Regularized to a perfect <polygon>',
+    m: mask(S, S, regularPolygon(36, 36, 22, 5, -80)),
+  },
+  {
+    name: 'Five-point star',
+    note: 'Regularized to a 10-point <polygon>',
+    m: mask(S, S, regularStar(36, 36, 30, 9, 5, -90)),
+  },
+  {
+    name: 'Diamond (rotated square)',
+    note: 'Diagonal edges, so a <polygon> not a <rect>',
+    m: mask(S, S, regularPolygon(36, 36, 22, 4, 0)),
   },
   {
     name: 'Irregular blob',
     note: 'Not a primitive — stays an editable path',
     m: mask(S, S, (x, y) => {
-      const dx = x - 28
-      const dy = y - 28
+      const dx = x - 36
+      const dy = y - 36
       const r = 16 + 5 * Math.sin(3 * Math.atan2(dy, dx))
       return Math.hypot(dx, dy) <= r
     }),
@@ -87,7 +131,7 @@ function render(
   roundPrimitives: boolean,
 ): { svg: string; nodes: number; kind: string } {
   const svg = serializeSvg(d, { precision: 2, optimizePaths: true, roundPrimitives })
-  const el = /<(path|ellipse|circle|rect)\b/.exec(svg)
+  const el = /<(path|ellipse|circle|rect|polygon)\b/.exec(svg)
   return { svg, nodes: analyzeSvg(svg).nodeCount, kind: el ? el[1] : 'path' }
 }
 
@@ -132,7 +176,7 @@ const html = `<title>Shape Matching — Path vs Primitive</title>
 </style>
 <div class="wrap">
   <h1>Shape matching — path vs primitive</h1>
-  <p class="sub">Each shape is traced once, then serialized as an optimized path and with primitive recognition on. A shape that really is a circle, (rotated) ellipse, or rectangle collapses to one clean, editable element with far fewer nodes; anything else stays a path. Recognition is disabled in cutout mode, where a neighbor still traces the shared Bézier edge.</p>
+  <p class="sub">Each shape is traced once, then serialized as an optimized path and with primitive recognition on. A shape that really is a circle, (rotated) ellipse, rectangle, regular polygon, or star collapses to one clean, editable element with far fewer nodes — a near-regular polygon or star snaps to a perfect one; anything else stays a path. Recognition is disabled in cutout mode, where a neighbor still traces the shared Bézier edge.</p>
   ${rows}
 </div>`
 

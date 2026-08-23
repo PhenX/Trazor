@@ -216,6 +216,94 @@ describe('detectPrimitive — rotated ellipse (gated)', () => {
   })
 })
 
+/** Closed all-line path of a regular polygon (n vertices) at radius r, rotated `rot` deg. */
+function regularPolygonPath(cx: number, cy: number, r: number, n: number, rot = 0): PathCommand[] {
+  const out: PathCommand[] = []
+  for (let i = 0; i < n; i++) {
+    const a = (rot * Math.PI) / 180 + (i * 2 * Math.PI) / n
+    out.push({ type: i === 0 ? 'M' : 'L', x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+  }
+  out.push({ type: 'Z' })
+  return out
+}
+
+/** Closed all-line path of a regular star (n points, alternating radii). */
+function regularStarPath(
+  cx: number,
+  cy: number,
+  rOuter: number,
+  rInner: number,
+  n: number,
+  rot = 0,
+): PathCommand[] {
+  const out: PathCommand[] = []
+  for (let i = 0; i < 2 * n; i++) {
+    const a = (rot * Math.PI) / 180 + (i * Math.PI) / n
+    const r = i % 2 === 0 ? rOuter : rInner
+    out.push({ type: i === 0 ? 'M' : 'L', x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) })
+  }
+  out.push({ type: 'Z' })
+  return out
+}
+
+describe('detectPrimitive — regular polygons and stars (gated)', () => {
+  it('detects a rotated regular pentagon as a polygon', () => {
+    const cmds = regularPolygonPath(50, 50, 30, 5, 12)
+    expect(detectPrimitive(cmds, 2, false)).toBeNull() // gated
+    const p = detectPrimitive(cmds, 2, true) as Extract<Primitive, { kind: 'polygon' }>
+    expect(p.kind).toBe('polygon')
+    expect(p.points).toHaveLength(5)
+  })
+
+  it('detects a diamond (square rotated 45°, diagonal edges) as a polygon', () => {
+    const p = detectPrimitive(regularPolygonPath(50, 50, 30, 4, 0), 2, true)
+    expect(p?.kind).toBe('polygon')
+  })
+
+  it('detects a five-point star as a 10-point polygon', () => {
+    const p = detectPrimitive(regularStarPath(50, 50, 34, 15, 5, -18), 2, true) as Extract<
+      Primitive,
+      { kind: 'polygon' }
+    >
+    expect(p?.kind).toBe('polygon')
+    expect(p.points).toHaveLength(10)
+  })
+
+  it('regularizes a slightly irregular pentagon within tolerance', () => {
+    const cmds = regularPolygonPath(50, 50, 30, 5, 0)
+    const v = cmds[2] as Extract<PathCommand, { type: 'L' }>
+    const nudged: PathCommand[] = cmds.map((c) => (c === v ? { ...v, x: v.x + 0.4 } : c))
+    expect(detectPrimitive(nudged, 2, true)?.kind).toBe('polygon')
+  })
+
+  it('does not regularize a genuinely irregular quadrilateral', () => {
+    const quad: PathCommand[] = [
+      { type: 'M', x: 0, y: 0 },
+      { type: 'L', x: 40, y: 5 },
+      { type: 'L', x: 55, y: 45 },
+      { type: 'L', x: 5, y: 30 },
+      { type: 'Z' },
+    ]
+    expect(detectPrimitive(quad, 2, true)?.kind === 'polygon').toBe(false)
+  })
+
+  it('emits <polygon> and is deterministic', () => {
+    const cmds = regularPolygonPath(50, 50, 30, 6, 10)
+    const a = serializeSvg(primitiveDoc(cmds), {
+      precision: 2,
+      optimizePaths: true,
+      roundPrimitives: true,
+    })
+    const b = serializeSvg(primitiveDoc(cmds), {
+      precision: 2,
+      optimizePaths: true,
+      roundPrimitives: true,
+    })
+    expect(a).toContain('<polygon points="')
+    expect(a).toBe(b)
+  })
+})
+
 const primitiveDoc = (commands: PathCommand[]): SvgDocument => ({
   width: 100,
   height: 100,
