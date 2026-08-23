@@ -51,7 +51,8 @@ with `--targets edge,clean,field` (all three by default).
    for clean anti-aliasing → the **shape** (keeps alpha). — `render.mjs`
 2. **Edge target** = max Sobel gradient across the shape's R/G/B/A channels (color boundaries + silhouette). — `targets.mjs`
 3. **Background** synth (solid/gradient/radial/checker/stripes/fractal/texture) and **composite** the shape over it → the
-   **clean scene** (also the cleanup target). — `degrade.mjs`
+   **clean scene** (also the cleanup target). The model **input** is composited separately from a copy that may carry a
+   matting-halo rim (imperfect-cutout artifact), so the clean/edge/field targets stay halo-free and aligned. — `sample.mjs`
 4. **Degrade** a copy of the clean scene, each effect applied with a seeded probability and strength: tone
    (gamma/brightness/contrast) → blur (isotropic or anisotropic) → down/up resample → Gaussian + shot noise → dither or
    posterize → single/double JPEG (high-order degradation, Real-ESRGAN / BSRGAN style) → the **input**. See the

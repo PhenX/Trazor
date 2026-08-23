@@ -67,6 +67,45 @@ export function makeBackground(width, height, rng, enabled) {
   return bg
 }
 
+// Matting error: a thin colored rim just outside the shape's silhouette — the
+// halo an imperfect cutout (e.g. the app's own background removal) leaves behind.
+// Applied to a copy of the shape used only for the INPUT composite, so the clean
+// target and the edge/field targets stay halo-free and pixel-aligned. Two seeded
+// draws (rim color + alpha) drive it, so it stays deterministic.
+export function matteHalo(shape, rng, strengthMax) {
+  const { width: w, height: h, data } = shape
+  const out = { width: w, height: h, data: new Uint8ClampedArray(data) }
+  const o = out.data
+  const [fr, fg, fb] = randColor(rng)
+  const rim = Math.round(255 * uniform(rng, 0.35, strengthMax))
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4
+      if (data[i + 3] >= 40) continue // keep the shape and its anti-aliased edge
+      // Fill a transparent pixel that abuts the (near-)opaque silhouette.
+      let nearShape = false
+      for (let dy = -1; dy <= 1 && !nearShape; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          if (data[(ny * w + nx) * 4 + 3] > 100) {
+            nearShape = true
+            break
+          }
+        }
+      }
+      if (nearShape) {
+        o[i] = fr
+        o[i + 1] = fg
+        o[i + 2] = fb
+        o[i + 3] = rim
+      }
+    }
+  }
+  return out
+}
+
 // Source-over composite of an RGBA shape onto an opaque background → opaque scene.
 export function compositeOver(shape, bg) {
   const out = createImage(bg.width, bg.height)

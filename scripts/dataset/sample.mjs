@@ -4,9 +4,9 @@
 // produce byte-identical files. Shared by generate.mjs (inline) and the worker.
 
 import { join } from 'node:path'
-import { compositeOver, degrade, makeBackground } from './degrade.mjs'
+import { compositeOver, degrade, makeBackground, matteHalo } from './degrade.mjs'
 import { writeGrayPng, writeRgbaPng } from './io.mjs'
-import { mulberry32 } from './random.mjs'
+import { chance, mulberry32 } from './random.mjs'
 import { renderShape } from './render.mjs'
 import { edgeMap, fieldMap } from './targets.mjs'
 
@@ -31,7 +31,14 @@ export function processItem(item, cfg) {
   }
   const bg = makeBackground(cfg.resolution, cfg.resolution, rng, cfg.degrade.background)
   const clean = compositeOver(shape, bg)
-  const input = degrade(clean, cfg, rng)
+  // Input-side matting halo: composite a halo'd copy of the shape over the same
+  // background for the model input, leaving clean/edge/field (from `shape`) aligned.
+  const p = cfg.degrade
+  const inputScene =
+    p.matteProb > 0 && chance(rng, p.matteProb)
+      ? compositeOver(matteHalo(shape, rng, p.matteStrengthMax), bg)
+      : clean
+  const input = degrade(inputScene, cfg, rng)
 
   writeRgbaPng(join(cfg.out, split, 'input', `${base}.png`), input)
   const record = { id, family, split, index, input: `${split}/input/${base}.png` }

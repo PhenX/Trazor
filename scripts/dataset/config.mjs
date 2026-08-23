@@ -23,6 +23,8 @@ export const DEFAULTS = {
   },
   degrade: {
     background: true, // composite the shape over a procedural background
+    matteProb: 0.3, // chance of a matting-halo rim on the input (imperfect-cutout artifact)
+    matteStrengthMax: 0.8, // max rim alpha fraction
     blurSigmaMax: 2, // max gaussian blur sigma
     blurAnisoProb: 0.5, // chance a blur uses a different vertical sigma (directional)
     resampleMinScale: 0.5, // down-then-up resampling floor (1 = disabled)
@@ -107,6 +109,9 @@ export function parseArgs(argv) {
       case 'no-poisson':
         cfg.degrade.poissonProb = 0
         break
+      case 'no-matte':
+        cfg.degrade.matteProb = 0
+        break
       case 'no-double-jpeg':
         cfg.degrade.doubleJpegProb = 0
         break
@@ -143,5 +148,6 @@ Usage: npm run dataset -- [options]
   --no-dither                disable Floyd–Steinberg palette reduction
   --no-poisson               disable intensity-dependent shot noise
   --no-double-jpeg           never re-encode JPEG a second time
+  --no-matte                 disable the matting-halo rim on inputs
   --help                     show this message
 `
