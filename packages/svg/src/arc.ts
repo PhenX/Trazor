@@ -1,22 +1,23 @@
 /**
- * Circular-arc fitting: collapse a run of consecutive cubic Béziers that all
- * lie on one circle into a single elliptical-arc `A` command. The tracer and
+ * Arc fitting: collapse a run of consecutive cubic Béziers that all lie on one
+ * circle or ellipse into a single elliptical-arc `A` command. The tracer and
  * Schneider fitter emit only cubics, so a rounded-rect corner, a pill end, a pie
- * slice, or any partial ring becomes several cubics; a true `A` reproduces the
- * same boundary with one node and — because it is an exact arc rather than a
- * Bézier approximation of one — tracks the original circular edge more closely.
+ * slice, an oval frame, or any partial ring becomes several cubics; a true `A`
+ * reproduces the same boundary with one node and — because it is an exact arc
+ * rather than a Bézier approximation of one — tracks the original edge more
+ * closely.
  *
- * A collapse is emitted only when a least-squares circle fits every boundary
- * sample within tolerance, the run is a simple (non-reversing) sub-360° arc, and
- * the reconstructed arc's center and swept angle match the samples — so a
- * non-arc run is always left as cubics. Only circular arcs are fitted (the
- * common case); genuine elliptical-arc runs stay cubic. `A` radii and endpoint
- * are snapped to the output precision grid, matching primitive detection, so the
- * result stays on the serializer grid.
+ * A collapse is emitted only when a least-squares conic (a Kåsa circle first, an
+ * ellipse fit as a fallback) fits every boundary sample within tolerance, the
+ * run is a simple (non-reversing) sub-360° arc, and a reconstructed arc whose
+ * center and mid-arc point match the samples exists — so a non-arc run is always
+ * left as cubics. `A` radii, rotation and endpoint are snapped to the output
+ * precision grid, matching primitive detection, so the result stays on the
+ * serializer grid.
  */
 
-import { arcToCenter, type PathCommand } from '@trazor/core'
-import { fitCircle, type Pt } from './fit'
+import { arcToCenter, type ArcCenter, type PathCommand } from '@trazor/core'
+import { fitCircle, fitEllipse, type Pt } from './fit'
 import { clampPrecision } from './pathdata'
 
 /** Point on a cubic at parameter t (Bernstein form). */
@@ -40,9 +41,48 @@ function angleDiff(a: number, b: number): number {
   return d
 }
 
+/** A conic the run's samples lie on: a circle (rx = ry, angle 0) or an ellipse. */
+interface Conic {
+  cx: number
+  cy: number
+  rx: number
+  ry: number
+  angle: number // radians
+  tol: number
+}
+
+/** Fit the run's samples to a circle first, then an ellipse; null if neither fits. */
+function fitConic(samples: Pt[]): Conic | null {
+  const circle = fitCircle(samples)
+  if (circle !== null && circle.r > 0) {
+    const tol = Math.max(0.6, circle.r * 0.02)
+    const onCircle = samples.every(
+      (p) => Math.abs(Math.hypot(p.x - circle.cx, p.y - circle.cy) - circle.r) <= tol,
+    )
+    if (onCircle) {
+      return { cx: circle.cx, cy: circle.cy, rx: circle.r, ry: circle.r, angle: 0, tol }
+    }
+  }
+  const e = fitEllipse(samples)
+  if (e !== null && e.rx > 0 && e.ry > 0) {
+    const tol = Math.max(0.6, Math.min(e.rx, e.ry) * 0.02)
+    const co = Math.cos(e.angle)
+    const si = Math.sin(e.angle)
+    const onEllipse = samples.every((p) => {
+      const dx = p.x - e.cx
+      const dy = p.y - e.cy
+      const nx = (dx * co + dy * si) / e.rx
+      const ny = (-dx * si + dy * co) / e.ry
+      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
+    })
+    if (onEllipse) return { cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, angle: e.angle, tol }
+  }
+  return null
+}
+
 /**
  * Try to collapse a run of ≥2 consecutive cubics (starting at `start`) into one
- * circular `A`, or null when the run is not a clean circular arc.
+ * `A`, or null when the run is not a clean circular/elliptical arc.
  */
 function collapseToArc(
   start: Pt,
@@ -61,17 +101,15 @@ function collapseToArc(
   }
   const end = prev
 
-  const fit = fitCircle(samples)
-  if (fit === null || fit.r <= 0) return null
-  const { cx, cy, r } = fit
-  const tol = Math.max(0.6, r * 0.02)
-  for (const p of samples) {
-    if (Math.abs(Math.hypot(p.x - cx, p.y - cy) - r) > tol) return null
-  }
+  const conic = fitConic(samples)
+  if (conic === null) return null
+  const { cx, cy, tol } = conic
 
-  // Total signed sweep, rejecting any direction reversal (an S-shaped run that
-  // merely happens to sample near a circle is not a single arc).
-  const ang = samples.map((p) => Math.atan2(p.y - cy, p.x - cx))
+  // Reject a direction reversal (an S-shaped run that merely samples near a
+  // conic is not one arc) and a near-full turn (a whole circle/ellipse belongs
+  // to primitive detection). Polar angle about the center is monotonic along a
+  // simple arc of a convex conic.
+  const ang = samples.map((s) => Math.atan2(s.y - cy, s.x - cx))
   let sweep = 0
   let dir = 0
   for (let i = 1; i < ang.length; i++) {
@@ -84,26 +122,33 @@ function collapseToArc(
     sweep += d
   }
   const absSweep = Math.abs(sweep)
-  // Too flat to be an arc, or so near a full turn it belongs to circle detection.
   if (absSweep < 0.5 || absSweep > 2 * Math.PI - 0.2) return null
 
-  // Snap radius and endpoint to the output grid (the discretization boundary).
+  // Snap the arc parameters and endpoint to the output grid (the discretization
+  // boundary), matching primitive detection.
   const p = clampPrecision(precision)
   const grid = (v: number): number => Number(v.toFixed(p))
-  const rr = grid(r)
+  const rx = grid(conic.rx)
+  const ry = grid(conic.ry)
+  const rot = grid((conic.angle * 180) / Math.PI)
   const ex = grid(end.x)
   const ey = grid(end.y)
-  if (rr <= 0) return null
+  if (rx <= 0 || ry <= 0) return null
 
-  // Pick (large-arc, sweep) flags by reconstruction: the correct pair reproduces
-  // the fitted circle's center and the measured sweep (magnitude and direction).
+  // The middle boundary sample disambiguates the arc: of the ≤2 arcs on the
+  // fitted conic that share these endpoints, keep the one whose reconstructed
+  // mid-arc point is nearest the run's actual middle (fixing minor/major and
+  // direction at once, for circles and ellipses alike).
+  const mid = samples[samples.length >> 1]
+  let best: PathCommand | null = null
+  let bestErr = Infinity
   for (const largeArc of [false, true]) {
     for (const sweepFlag of [false, true]) {
       const arc = {
         type: 'A' as const,
-        rx: rr,
-        ry: rr,
-        rotation: 0,
+        rx,
+        ry,
+        rotation: rot,
         largeArc,
         sweep: sweepFlag,
         x: ex,
@@ -111,21 +156,33 @@ function collapseToArc(
       }
       const c = arcToCenter(start.x, start.y, arc)
       if (c === null) continue
-      if (Math.hypot(c.cx - cx, c.cy - cy) > tol) continue // wrong circle of the two
-      if (Math.sign(c.dTheta) !== dir) continue // wrong direction
-      if (Math.abs(Math.abs(c.dTheta) - absSweep) > 0.2) continue // wrong minor/major
-      return arc
+      if (Math.hypot(c.cx - cx, c.cy - cy) > tol) continue // wrong conic of the two
+      const m = arcPointAt(c, c.theta1 + c.dTheta / 2)
+      const err = Math.hypot(m.x - mid.x, m.y - mid.y)
+      if (err < bestErr) {
+        bestErr = err
+        best = arc
+      }
     }
   }
-  return null
+  return bestErr <= tol ? best : null
+}
+
+/** Point on an arc's ellipse at parameter angle `t` (center parameterization). */
+function arcPointAt(c: ArcCenter, t: number): Pt {
+  const cos = Math.cos(c.phi)
+  const sin = Math.sin(c.phi)
+  const px = c.rx * Math.cos(t)
+  const py = c.ry * Math.sin(t)
+  return { x: c.cx + px * cos - py * sin, y: c.cy + px * sin + py * cos }
 }
 
 /**
  * Replace every maximal run of ≥2 consecutive cubics that forms a single
- * circular arc with one `A` command. Non-cubic commands (and short/soft runs)
- * pass through untouched, so the command list is semantically unchanged except
- * that arc runs become exact arcs. Runs never cross an `M`/`Z`/`L`/`Q`/`A`
- * boundary, so subpaths stay intact.
+ * circular or elliptical arc with one `A` command. Non-cubic commands (and
+ * short/soft runs) pass through untouched, so the command list is semantically
+ * unchanged except that arc runs become exact arcs. Runs never cross an
+ * `M`/`Z`/`L`/`Q`/`A` boundary, so subpaths stay intact.
  */
 export function fitArcs(commands: readonly PathCommand[], precision: number): PathCommand[] {
   const out: PathCommand[] = []

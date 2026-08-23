@@ -267,9 +267,9 @@ export function buildPathData(commands: readonly PathCommand[], precision: numbe
 export function optimizePathData(commands: readonly PathCommand[], precision: number): string
 // Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
-// Collapse every run of ≥2 consecutive cubics that lie on one circle into a
-// single `A` arc (radii/endpoint snapped to the precision grid); non-arc runs
-// pass through. serializeSvg applies this when roundPrimitives is set.
+// Collapse every run of ≥2 consecutive cubics that lie on one circle or ellipse
+// into a single `A` arc (radii/rotation/endpoint snapped to the precision grid);
+// non-arc runs pass through. serializeSvg applies this when roundPrimitives is set.
 export function fitArcs(commands: readonly PathCommand[], precision: number): PathCommand[]
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }

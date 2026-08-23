@@ -43,6 +43,54 @@ function arcCubics(
   return { start: { type: 'M', x: p0.x, y: p0.y }, cubics }
 }
 
+/** A rotated-ellipse arc sampled as `segs` cubics from parametric angle `t0` to `t1`. */
+function ellipseArcCubics(
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  angleDeg: number,
+  t0: number,
+  t1: number,
+  segs: number,
+): { start: PathCommand; cubics: PathCommand[] } {
+  const phi = (angleDeg * Math.PI) / 180
+  const cs = Math.cos(phi)
+  const sn = Math.sin(phi)
+  const P = (t: number) => ({
+    x: cx + rx * Math.cos(t) * cs - ry * Math.sin(t) * sn,
+    y: cy + rx * Math.cos(t) * sn + ry * Math.sin(t) * cs,
+  })
+  const D = (t: number) => ({
+    x: -rx * Math.sin(t) * cs - ry * Math.cos(t) * sn,
+    y: -rx * Math.sin(t) * sn + ry * Math.cos(t) * cs,
+  })
+  const dt = (t1 - t0) / segs
+  const k = (4 / 3) * Math.tan(dt / 4)
+  const p0 = P(t0)
+  const cubics: PathCommand[] = []
+  let a = t0
+  let prev = p0
+  for (let i = 0; i < segs; i++) {
+    const an = a + dt
+    const pn = P(an)
+    const d0 = D(a)
+    const d1 = D(an)
+    cubics.push({
+      type: 'C',
+      x1: prev.x + k * d0.x,
+      y1: prev.y + k * d0.y,
+      x2: pn.x - k * d1.x,
+      y2: pn.y - k * d1.y,
+      x: pn.x,
+      y: pn.y,
+    })
+    a = an
+    prev = pn
+  }
+  return { start: { type: 'M', x: p0.x, y: p0.y }, cubics }
+}
+
 /** Max distance between an A arc (from `from`) sampled as cubics and a circle. */
 function maxCircleError(
   from: { x: number; y: number },
@@ -128,6 +176,34 @@ describe('fitArcs', () => {
 
   it('does not collapse a full-circle run (left to circle detection)', () => {
     const { start, cubics } = arcCubics(0, 0, 20, 0, 2 * Math.PI, 4)
+    const out = fitArcs([start, ...cubics], 2)
+    expect(out.some((c) => c.type === 'A')).toBe(false)
+  })
+
+  it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
+    const { start, cubics } = ellipseArcCubics(100, 100, 60, 30, 0, 0, 2, 2)
+    const out = fitArcs([start, ...cubics], 2)
+    const a = out.find((c) => c.type === 'A')
+    if (a?.type !== 'A') throw new Error('expected an A')
+    expect(a.rx).toBeCloseTo(60, 0)
+    expect(a.ry).toBeCloseTo(30, 0)
+    expect(a.rotation).toBeCloseTo(0, 1)
+  })
+
+  it('collapses a rotated elliptical arc, preserving the rotation', () => {
+    const { start, cubics } = ellipseArcCubics(100, 100, 60, 30, 30, 0, 2.4, 3)
+    const out = fitArcs([start, ...cubics], 2)
+    const a = out.find((c) => c.type === 'A')
+    if (a?.type !== 'A') throw new Error('expected an A')
+    // Distinct radii recovered (orientation-independent), and a non-zero tilt.
+    const radii = [a.rx, a.ry].sort((m, n) => m - n)
+    expect(radii[0]).toBeCloseTo(30, 0)
+    expect(radii[1]).toBeCloseTo(60, 0)
+    expect(Math.abs(a.rotation)).toBeGreaterThan(1)
+  })
+
+  it('does not collapse a full-ellipse run', () => {
+    const { start, cubics } = ellipseArcCubics(0, 0, 40, 20, 15, 0, 2 * Math.PI, 4)
     const out = fitArcs([start, ...cubics], 2)
     expect(out.some((c) => c.type === 'A')).toBe(false)
   })

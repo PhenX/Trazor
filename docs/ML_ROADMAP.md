@@ -149,17 +149,19 @@ conditioning), integrated into `primitive.ts` behind the same accept/reject tole
 rejection) and two `primitive.test.ts` accuracy tests.
 
 The **elliptical-arc `A` command** also shipped: a new `PathCommand` variant threaded through `core`/`trace`/`svg`. Any run
-of ≥2 consecutive cubics that lie on one circle collapses to a single `A` in `packages/svg/src/arc.ts` (`fitArcs`) — a
-least-squares circle fit, a simple-arc / sub-360° check, and a reconstruct-and-verify accept test, with radii and endpoint
-snapped to the precision grid. It runs before `optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout
-and the no-round classical path stay byte-identical). `core` computes exact arc bounds via `arcToCenter` (SVG F.6.5);
-`geometry.ts` expands `A` back to cubics for the overlay; `reverseCommands` flips the sweep flag. Covered by
-`packages/svg/test/arc.test.ts`, `packages/core/test/path.test.ts`, `packages/trace/test/paths.test.ts`, and verified
-pixel-lossless through resvg. `REFERENCES.md`, `CONTRACTS.md`, and the README roadmap line updated.
+of ≥2 consecutive cubics that lie on one circle **or ellipse** collapses to a single `A` in `packages/svg/src/arc.ts`
+(`fitArcs`) — a least-squares conic fit (Kåsa circle first, then a direct-conic ellipse fit), a simple-arc / sub-360°
+check, and a reconstruct-and-verify accept test (center match + nearest reconstructed mid-arc point, disambiguating
+minor/major and direction for both conics), with radii/rotation/endpoint snapped to the precision grid. It runs before
+`optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout and the no-round classical path stay
+byte-identical). `core` computes exact arc bounds via `arcToCenter` (SVG F.6.5), handling rotation; `geometry.ts` expands
+`A` back to cubics for the overlay; `reverseCommands` flips the sweep flag. Covered by `packages/svg/test/arc.test.ts`
+(circular and rotated-elliptical runs), `packages/core/test/path.test.ts`, `packages/trace/test/paths.test.ts`, and
+verified pixel-lossless through resvg (circular and rotated-ellipse wedges). `REFERENCES.md`, `CONTRACTS.md`, and the
+README roadmap line updated.
 
-**Pending:** only **circular** arcs are fitted (genuine elliptical-arc runs stay cubic — a follow-up); and **cutout-arc
-consistency** (fit a shared boundary chain once, reused by both neighbors) so `roundPrimitives` — hence `A` — can turn on
-for cutout without seam divergence. RANSAC robustification is optional.
+**Pending:** **cutout-arc consistency** (fit a shared boundary chain once, reused by both neighbors) so `roundPrimitives` —
+hence `A` — can turn on for cutout without seam divergence. RANSAC robustification is optional.
 
 **Why.** The biggest _visible_ quality gap and the commercial shape-fitting advantage. A circle or partial ring became many
 cubic pieces; a true `<circle>` / `<ellipse>` / elliptical-arc `A` matches the ideal shape exactly with far fewer nodes —
@@ -168,10 +170,10 @@ and with the least-squares fits, the recovered primitive/arc tracks the original
 **Files (done).** `packages/svg/src/fit.ts`, `packages/svg/src/arc.ts` (new), `packages/svg/src/primitive.ts`,
 `packages/core/src/path.ts` (`A` + `arcToCenter`), `packages/svg/src/{pathdata,optimize,serialize,geometry}.ts`,
 `packages/trace/src/paths.ts`, tests, `REFERENCES.md`.
-**Files (pending).** `packages/svg` (elliptical-arc fit, cutout-arc sharing), `packages/engine` (allow round for cutout).
+**Files (pending).** `packages/svg` + `packages/engine` (cutout-arc sharing so round can turn on for cutout).
 
-**Acceptance.** Circle/ellipse inputs emit true primitives with sub-pixel parameter error (done); circular-arc runs
-collapse to `A` with a node-count drop and no visible render change (done); elliptical arcs and cutout-anchor consistency
+**Acceptance.** Circle/ellipse inputs emit true primitives with sub-pixel parameter error (done); circular- and
+elliptical-arc runs collapse to `A` with a node-count drop and no visible render change (done); cutout-anchor consistency
 pending.
 
 **Docs.** `packages/trace/ARCHITECTURE.md`, `CONTRACTS.md`, `REFERENCES.md` (Kåsa, Fitzgibbon, SVG F.6.5), README roadmap
