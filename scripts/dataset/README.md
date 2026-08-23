@@ -49,10 +49,12 @@ with `--targets edge,clean`.
    square, apply optional geometric augmentation (rotate/scale/translate), and area-downsample for clean anti-aliasing
    → the **shape** (keeps alpha). — `render.mjs`
 2. **Edge target** = max Sobel gradient across the shape's R/G/B/A channels (color boundaries + silhouette). — `targets.mjs`
-3. **Background** synth (solid/gradient/checker/noise) and **composite** the shape over it → the **clean scene** (also the
-   cleanup target). — `degrade.mjs`
-4. **Degrade** a copy of the clean scene: Gaussian blur → down/up resample → Gaussian noise → optional posterize → JPEG
-   round-trip (high-order degradation, Real-ESRGAN / BSRGAN style) → the **input**. — `degrade.mjs`
+3. **Background** synth (solid/gradient/radial/checker/stripes/fractal/texture) and **composite** the shape over it → the
+   **clean scene** (also the cleanup target). — `degrade.mjs`
+4. **Degrade** a copy of the clean scene, each effect applied with a seeded probability and strength: tone
+   (gamma/brightness/contrast) → blur (isotropic or anisotropic) → down/up resample → Gaussian + shot noise → dither or
+   posterize → single/double JPEG (high-order degradation, Real-ESRGAN / BSRGAN style) → the **input**. See the
+   [`degradation`](../../docs/demos/degradation.html) demo for a visual. — `degrade.mjs`
 
 ## Determinism
 

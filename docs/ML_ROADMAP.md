@@ -32,7 +32,7 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 | #     | Item                                | Fixes                              | Impact                     | Effort | Risk                          |
 | ----- | ----------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
 | **1** | ΔE-through-tracer eval harness ✅   | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
-| **2** | Degradation & data realism          | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
+| **2** | Degradation & data realism ◐        | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
 | **3** | Learned signed-field head           | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
 | **4** | Primitive / arc fitting (classical) | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
 | **5** | Cleanup model capacity              | under-capacity vs its own spec     | Med                        | S      | Low                           |
@@ -69,7 +69,14 @@ that regresses clean inputs beyond tolerance is flagged.
 **Docs.** `scripts/train/README.md` "Reading the run"; the "Selection" bullet in both pre-pass specs → point at the tool
 (replace the current aspiration-as-fact wording); new `scripts/eval/README.md`.
 
-## 2. Degradation & data realism
+## 2. Degradation & data realism — **partially implemented**
+
+**Shipped** (`degrade.mjs`, seeded/deterministic): tone (gamma/brightness/contrast), anisotropic blur, Gaussian + shot
+(Poisson) noise, single/double JPEG, Floyd–Steinberg dither, and richer procedural backgrounds
+(radial/stripes/fractal/texture); mild defaults raised (`blurSigmaMax` 2, `noiseStdMax` 18, `jpegQuality.min` 20). Visual:
+the [`degradation`](demos/degradation.html) demo. **Still pending:** true photographic-asset backgrounds, alpha/matting
+halos, sinc-ringing blur, perspective/lens warp, multi-scale render/crop (tiling domain gap), and `canonicalize()`. Next:
+retrain edge + cleanup on the richer data and record the item-1 numbers as the new baseline.
 
 **Why.** `scripts/dataset/degrade.mjs` + `config.mjs` ship a mild subset of the high-order degradation model
 [`ML_STRATEGY.md`](ML_STRATEGY.md#the-degradation-pipeline-why-clean-renders-fail) calls for, so the models under-cover
