@@ -33,15 +33,16 @@ doc's procedural data source), which also gives exact ground truth. Point `--sou
 dataset-out/
   manifest.json           config, seed, and per-sample split assignment
   train/ val/ test/
-    input/  <id>.png       degraded raster (what the model sees)
+    input/  <id>.png       degraded raster  (what the model sees)
     clean/  <id>.png       clean scene      (cleanup / super-resolution target)
     edge/   <id>.png       soft edge map    (edge pre-pass target)
+    field/  <id>.png       coverage field   (signed-field pre-pass target)
 ```
 
 For a real `--source dir` corpus, splits are assigned **per source family** (top-level subdirectory) so no source SVG
 leaks across train/val/test — otherwise metrics inflate. Procedural samples are mutually independent, so they split per
 sample and hit the ratios directly. Each sample also records its `family` label in the manifest. Pick the target heads
-with `--targets edge,clean`.
+with `--targets edge,clean,field` (all three by default).
 
 ## Pipeline (one sample)
 

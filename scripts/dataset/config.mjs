@@ -11,7 +11,7 @@ export const DEFAULTS = {
   seed: 1,
   jobs: 0, // parallel worker threads; 0 = auto (CPU count), 1 = single-thread
 
-  targets: ['edge', 'clean'], // ground-truth heads to emit
+  targets: ['edge', 'clean', 'field'], // ground-truth heads to emit
   split: { train: 0.8, val: 0.1, test: 0.1 }, // assigned per source family
   geometric: { enabled: true, rotateDeg: 8, scale: 0.15, translateFrac: 0.05 },
   degrade: {
@@ -128,7 +128,7 @@ Usage: npm run dataset -- [options]
   --supersample <n>          anti-aliasing render scale (default 2)
   --seed <n>                 base seed (default 1)
   --jobs <n>                 parallel worker threads (default: CPU count; 1 = single-thread)
-  --targets <a,b>            ground-truth heads: edge,clean (default edge,clean)
+  --targets <a,b,c>          ground-truth heads: edge,clean,field (default all three)
   --no-geometric             disable rotate/scale/translate augmentation
   --no-jpeg                  disable JPEG degradation
   --no-background            render on white instead of a procedural background

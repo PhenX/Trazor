@@ -57,6 +57,7 @@ def require_deps() -> None:
 DEFAULT_OUT = {
     "edge": "apps/web/public/models/edge-prepass.onnx",
     "cleanup": "apps/web/public/models/cleanup.onnx",
+    "field": "apps/web/public/models/signed-field.onnx",
 }
 
 # Fast throwaway config for --smoke: enough to run every step, small enough to
@@ -65,13 +66,13 @@ SMOKE = {"count": 50, "epochs": 1, "batch": 8, "base_channels": 8}
 SMOKE_DIR = "scripts/train/checkpoints/smoke"  # gitignored; isolated from real checkpoints
 
 # Checkpoint filename per task (mirrors train.py TASKS / export_onnx.DEFAULT_CHECKPOINT).
-CHECKPOINT_NAME = {"edge": "edge-prepass.pt", "cleanup": "cleanup.pt"}
+CHECKPOINT_NAME = {"edge": "edge-prepass.pt", "cleanup": "cleanup.pt", "field": "signed-field.pt"}
 
 
 def main() -> None:
     require_deps()
     p = argparse.ArgumentParser(description="Generate data, train, and export a pre-pass model.")
-    p.add_argument("--task", choices=sorted(DEFAULT_OUT), default="edge", help="edge or cleanup")
+    p.add_argument("--task", choices=sorted(DEFAULT_OUT), default="edge", help="edge, cleanup, or field")
     p.add_argument("--count", type=int, default=20000, help="samples to generate")
     p.add_argument(
         "--data",

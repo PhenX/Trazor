@@ -25,8 +25,9 @@ from torch.utils.data import Dataset
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-# Manifest field carrying each task's ground-truth image.
-TARGET_FIELD = {"edge": "edge", "cleanup": "clean"}
+# Manifest field carrying each task's ground-truth image. `field` is the signed
+# coverage field (1-channel [0,1], like edge); cleanup is the 3-channel clean RGB.
+TARGET_FIELD = {"edge": "edge", "cleanup": "clean", "field": "field"}
 
 
 class PrepassDataset(Dataset):

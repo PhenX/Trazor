@@ -41,8 +41,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
                            graph (seam-free cutout), centerline extraction, Schneider fitting.
   svg/                     @trazor/svg — compact SVG serialization + output analysis.
   engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client.
-  ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge
-                           pre-pass & cleanup conditioning models, via onnxruntime-web. Browser-only.
+  ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge,
+                           cleanup & signed-field conditioning models, via onnxruntime-web. Browser-only.
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
 apps/
   web/                     @trazor/web — Vue 3 + Pinia + Vite studio UI. The deployable app.

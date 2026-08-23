@@ -406,6 +406,18 @@ export class CleanupEnhancer {
   run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
+
+export class FieldEnhancer {
+  // Optional signed-coverage pre-pass (docs/SIGNED_FIELD_PREPASS.md). Tier-1-touching
+  // (feeds sub-pixel refinement); preferBackend 'wasm' pins reproducible mode.
+  static create(opts?: {
+    preferBackend?: MlBackend
+    onProgress?: MlProgressFn
+  }): Promise<FieldEnhancer>
+  // Coverage field ([0,1] GrayImage, 0.5 = boundary) at the input resolution; large images are tiled.
+  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ field: GrayImage }>
+  dispose(): void
+}
 ```
 
 Implementation notes:
@@ -456,6 +468,7 @@ export type WorkerInMessage =
       buffer: ArrayBuffer
       settings: VectorizeSettings
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
+      coverageHint?: ArrayBuffer // optional learned coverage field ([0,1]), Float32 plane, transferred
       imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
     }
   | { type: 'cancel'; id: number }
@@ -477,6 +490,7 @@ export class TrazorClient {
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
     edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
+    coverageHint?: GrayImage, // optional learned coverage field (bw sub-pixel refinement), same dimensions
   ): Promise<VectorizeResult>
   dispose(): void
 }
@@ -485,7 +499,9 @@ export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
   // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
-  // bw mode; absent, tracing is byte-identical to the classical path.
+  // bw/color modes to protect detail; ctx.coverageHint (GrayImage [0,1], optional)
+  // is a learned signed-coverage field used as the bw sub-pixel `coverage`
+  // (Tier-1-touching). Absent, tracing is byte-identical to the classical path.
   ctx?: EngineContext,
   // Optional worker-side reuse of preprocess/palette intermediates across runs.
   // The worker owns a single StageCache and passes a stable imageId; reuse is

@@ -15,13 +15,14 @@
  *
  * Predictions come from scripts/train/predict.py, laid out as
  *   <pred>/<bucket>/<field>/<base>.png   bucket ∈ {degraded, clean}
- * where <field> is `edge` (a [0,1] boundary hint) or `clean` (a cleaned RGB
- * image), matching --task. A perfect stand-in (the dataset's own `edge/` target)
- * exercises the whole harness with no trained model — see scripts/eval/README.md.
+ * where <field> is `edge` (a [0,1] boundary hint), `clean` (a cleaned RGB image),
+ * or `field` (a [0,1] coverage field, used as a bw coverage hint), matching --task.
+ * A perfect stand-in (the dataset's own `edge/` or `field/` target) exercises the
+ * whole harness with no trained model — see scripts/eval/README.md.
  *
  * Usage:
  *   npm run eval:prepass -- --data <dataset-root> --pred <pred-dir> [options]
- *     --task    edge | cleanup        (default edge)
+ *     --task    edge | cleanup | field  (default edge; field defaults to bw mode)
  *     --split   train | val | test    (default test)
  *     --mode    color | grayscale | bw | centerline   (default: settings default)
  *     --limit   N                      cap samples (0 = all)
@@ -33,13 +34,21 @@ import { basename, dirname, join } from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 import { PNG } from 'pngjs'
 import { DEFAULT_SETTINGS, deltaEOk, rgbToOklab } from '@trazor/core'
-import type { GrayImage, RasterImage, VectorizeMode, VectorizeSettings } from '@trazor/core'
+import type {
+  EngineContext,
+  GrayImage,
+  RasterImage,
+  VectorizeMode,
+  VectorizeSettings,
+} from '@trazor/core'
 import { vectorize } from '@trazor/engine'
+
+type Task = 'edge' | 'cleanup' | 'field'
 
 interface Args {
   data: string
   pred: string
-  task: 'edge' | 'cleanup'
+  task: Task
   split: string
   mode?: VectorizeMode
   limit: number
@@ -61,7 +70,7 @@ function parseArgs(argv: string[]): Args {
         i++
         break
       case '--task':
-        a.task = val === 'cleanup' ? 'cleanup' : 'edge'
+        a.task = val === 'cleanup' ? 'cleanup' : val === 'field' ? 'field' : 'edge'
         i++
         break
       case '--split':
@@ -146,11 +155,28 @@ async function trace(
   image: RasterImage,
   clean: RasterImage,
   settings: VectorizeSettings,
-  edgeHint?: GrayImage,
+  ctx?: EngineContext,
 ): Promise<Trace> {
-  const result = await vectorize(image, settings, edgeHint ? { edgeHint } : undefined)
+  const result = await vectorize(image, settings, ctx)
   const raster = rasterizeSvg(result.svg, clean.width)
   return { dE: meanDeltaE(raster, clean), nodes: result.stats.nodeCount }
+}
+
+/**
+ * The pre-pass variant for one sample, per task: edge feeds the prediction as an
+ * `edgeHint`, field as a `coverageHint` (both trace the same base image), and
+ * cleanup traces the predicted cleaned image directly.
+ */
+function tracePrepass(
+  task: Task,
+  predPath: string,
+  base: RasterImage,
+  clean: RasterImage,
+  settings: VectorizeSettings,
+): Promise<Trace> {
+  if (task === 'cleanup') return trace(readRgba(predPath), clean, settings)
+  if (task === 'field') return trace(base, clean, settings, { coverageHint: readHint(predPath) })
+  return trace(base, clean, settings, { edgeHint: readHint(predPath) })
 }
 
 interface Acc {
@@ -249,11 +275,10 @@ function printReport(rows: BucketReport[], task: string, mode: string): void {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
-  const field = args.task === 'cleanup' ? 'clean' : 'edge'
-  const settings: VectorizeSettings = {
-    ...DEFAULT_SETTINGS,
-    ...(args.mode ? { mode: args.mode } : {}),
-  }
+  const field = args.task === 'cleanup' ? 'clean' : args.task === 'field' ? 'field' : 'edge'
+  // The coverage hint only applies in bw mode, so the field task defaults there.
+  const mode = args.mode ?? (args.task === 'field' ? 'bw' : DEFAULT_SETTINGS.mode)
+  const settings: VectorizeSettings = { ...DEFAULT_SETTINGS, mode }
 
   const manifest = JSON.parse(readFileSync(join(args.data, 'manifest.json'), 'utf8'))
   let samples = manifest.samples.filter((s: { split: string }) => s.split === args.split)
@@ -278,20 +303,14 @@ async function main(): Promise<void> {
     }
     // oxlint-disable no-await-in-loop -- sequential: one engine run at a time, bounded memory
     const baseDeg = await trace(inputImg, cleanImg, settings)
-    const onDeg =
-      args.task === 'edge'
-        ? await trace(inputImg, cleanImg, settings, readHint(predDeg))
-        : await trace(readRgba(predDeg), cleanImg, settings)
+    const onDeg = await tracePrepass(args.task, predDeg, inputImg, cleanImg, settings)
     add(degraded, baseDeg, onDeg)
 
     // clean bucket (do-no-harm): only when clean predictions exist.
     const predClean = join(args.pred, 'clean', field, `${base}.png`)
     if (existsSync(predClean)) {
       const baseClean = await trace(cleanImg, cleanImg, settings)
-      const onClean =
-        args.task === 'edge'
-          ? await trace(cleanImg, cleanImg, settings, readHint(predClean))
-          : await trace(readRgba(predClean), cleanImg, settings)
+      const onClean = await tracePrepass(args.task, predClean, cleanImg, cleanImg, settings)
       add(clean, baseClean, onClean)
     }
     // oxlint-enable no-await-in-loop

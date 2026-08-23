@@ -1,5 +1,5 @@
 export interface ModelSpec {
-  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass' | 'cleanup'
+  id: 'u2netp' | 'slimsam-encoder' | 'slimsam-decoder' | 'edge-prepass' | 'cleanup' | 'signed-field'
   url: string
   approxBytes: number
   license: string
@@ -55,6 +55,19 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // includes them, create() fails soft and the app leaves the image untouched.
     url: 'models/cleanup.onnx',
     approxBytes: 3_000_000,
+    license: 'MIT',
+  },
+  'signed-field': {
+    id: 'signed-field',
+    // The project's own model (see edge-prepass above for the same-origin
+    // rationale): shipped as a static app asset, resolved against the deploy base
+    // at startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/signed-field.onnx`).
+    // Weights are not committed: the deploy workflow fetches them from a GitHub
+    // Release into apps/web/public/models/ at build time (train per
+    // docs/SIGNED_FIELD_PREPASS.md, scripts/train --task field). Until a build
+    // includes them, create() fails soft and the tracer uses the classical field.
+    url: 'models/signed-field.onnx',
+    approxBytes: 475_000,
     license: 'MIT',
   },
 }

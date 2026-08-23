@@ -5,12 +5,13 @@ Offline PyTorch training for the app's on-device pre-pass models. It reads the d
 under `apps/web/public/models/` (served same-origin — see
 [`../../apps/web/public/models/README.md`](../../apps/web/public/models/README.md)).
 
-Two tasks share this scaffold, selected with `--task` (one generated dataset trains either — it carries both targets):
+Three tasks share this scaffold, selected with `--task` (one generated dataset trains any — it carries all three targets):
 
-| `--task`         | predicts               | target  | ships as            | spec                                                  |
-| ---------------- | ---------------------- | ------- | ------------------- | ----------------------------------------------------- |
-| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)       |
-| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md) |
+| `--task`         | predicts               | target  | ships as            | spec                                                            |
+| ---------------- | ---------------------- | ------- | ------------------- | --------------------------------------------------------------- |
+| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)                 |
+| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md)           |
+| `field`          | coverage field (1-ch)  | `field` | `signed-field.onnx` | [`SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md) |
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
 git; you generate them here and publish them to the `models` GitHub Release, from which the deploy workflow fetches them

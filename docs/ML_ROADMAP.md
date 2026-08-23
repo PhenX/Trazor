@@ -33,7 +33,7 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 | ----- | ----------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
 | **1** | ΔE-through-tracer eval harness ✅   | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
 | **2** | Degradation & data realism ◐        | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
-| **3** | Learned signed-field head           | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
+| **3** | Learned signed-field head ◐         | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
 | **4** | Primitive / arc fitting (classical) | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
 | **5** | Cleanup model capacity ✅           | under-capacity vs its own spec     | Med                        | S      | Low                           |
 | **6** | Bounded differentiable refinement   | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
@@ -109,26 +109,29 @@ list.
 
 ## 3. Learned signed-field head — geometry, not just gating
 
+## 3. Learned signed-field head — geometry, not just gating — **mechanism implemented**
+
+**Shipped & tested.** The bw `coverageHint` path (`EngineContext.coverageHint` → quantized signed field → `traceMask`
+`coverage`), worker/client wiring, `FieldEnhancer` (`@trazor/ml`), the `field/` dataset target
+(`coverage = 1 − Oklab L` of the clean scene), and the `field` train/predict/eval tasks. Covered by
+`packages/engine/test/coverage-hint.test.ts`: no hint is byte-identical; a clean field snaps the traced edge toward the
+true position on a hard/degraded input; `pixel` mode ignores it. Spec: [`SIGNED_FIELD_PREPASS.md`](SIGNED_FIELD_PREPASS.md).
+**Pending:** silhouette training data (the procedural source is multi-color, not a silhouette — so the ΔE eval isn't
+meaningful for it yet), a bw-appropriate eval reference, trained weights, the color `pairwiseField` extension, and the
+studio UI toggle.
+
 **Why.** Point-position fidelity comes from the classical sub-pixel refinement (`packages/trace/src/refine.ts`), which
-snaps ring vertices onto the zero-contour of a signed field. Today that field is built from the **degraded** working
-image (`signedThresholdField`), so on noisy input it tracks a corrupted edge — and the edge model can't help (it only
-gates which regions survive). A learned, denoised field makes ML improve **point positions**, the shape-fitting concern.
+snaps ring vertices onto the zero-contour of a signed field. That field is built from the **degraded** working image
+(`signedThresholdField`), so on noisy input it tracks a corrupted edge — and the edge model can't help (it only gates
+which regions survive). A learned, denoised field makes ML improve **point positions**, the shape-fitting concern.
 
-**How.** Add a generator target: the centered signed coverage field ∈ [−0.5, 0.5], derived from the **clean** shape alpha
-(same construction as `signedThresholdField`) — free, sub-pixel, well-localized. Train `TinyUNet` with a `tanh` head
-(task `field`). Feed the denoised prediction into `traceMask` / `refineRingToField` as `coverage`. This **writes
-geometry**, so it must snap refined coordinates to the serializer precision grid and pin WASM for reproducible mode (the
-two-tier contract's differentiable-refinement guidance). Start with the b/w threshold field (single, well-defined
-crossing); the color `pairwiseField` is a follow-up.
+**How (as built).** The `field/` target is the clean scene's coverage (`1 − Oklab L`, [0,1]); `TinyUNet` sigmoid head
+(task `field`) predicts it; the engine quantizes it (the discretization boundary) and uses it as the bw `coverage`,
+so refinement snaps to the clean edge. Tier-1-touching: byte-identical classical path, WASM reproducible mode. Color
+`pairwiseField` is a follow-up.
 
-**Files.** `scripts/dataset/targets.mjs`, `scripts/train/{dataset,model,train}.py`, `packages/ml/src` (field enhancer),
-`packages/engine/src/native.ts` (pass as `coverage`), `packages/trace` refinement wiring.
-
-**Acceptance.** On degraded b/w inputs, boundary-position error vs. clean ground truth and ΔE improve over the classical
-field; clean inputs unregressed; classical path byte-identical and WASM parity holds (tests).
-
-**Docs.** New `docs/SIGNED_FIELD_PREPASS.md`; a "geometry via a discretization-safe field" note in `ML_STRATEGY.md`;
-`REFERENCES.md`.
+**Acceptance.** On degraded b/w silhouettes, boundary-position error vs. clean ground truth and ΔE improve over the
+classical field; clean inputs unregressed; classical path byte-identical and WASM parity holds.
 
 ## 4. Primitive / arc fitting (classical, no training)
 

@@ -76,8 +76,8 @@ decode (app)
   islands, tiny mm features, node counts), and the worker protocol: `installWorkerHandler` (worker side) +
   `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
-  `MagicSegmenter` (SlimSAM), and the two Tier-2 conditioning pre-passes `EdgeEnhancer` (boundary hint) and
-  `CleanupEnhancer` (denoise/de-JPEG). Browser-only; fails soft so the app works without it.
+  `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
+  (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so the app works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
 - **`apps/web`** — see [`apps/web/AGENTS.md`](apps/web/AGENTS.md).

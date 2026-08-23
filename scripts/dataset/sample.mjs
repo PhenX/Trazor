@@ -8,7 +8,7 @@ import { compositeOver, degrade, makeBackground } from './degrade.mjs'
 import { writeGrayPng, writeRgbaPng } from './io.mjs'
 import { mulberry32 } from './random.mjs'
 import { renderShape } from './render.mjs'
-import { edgeMap } from './targets.mjs'
+import { edgeMap, fieldMap } from './targets.mjs'
 
 /**
  * @param item {{ index, id, family, split, base, svg, pipeSeed }}
@@ -47,6 +47,17 @@ export function processItem(item, cfg) {
       cfg.resolution,
     )
     record.edge = `${split}/edge/${base}.png`
+  }
+  if (cfg.targets.includes('field')) {
+    // Derived from the clean composite (what the bw tracer would see), not the
+    // pre-composite shape — the coverage the model must reproduce from `input`.
+    writeGrayPng(
+      join(cfg.out, split, 'field', `${base}.png`),
+      fieldMap(clean),
+      cfg.resolution,
+      cfg.resolution,
+    )
+    record.field = `${split}/field/${base}.png`
   }
   return record
 }

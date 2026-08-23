@@ -33,7 +33,7 @@ from dataset import IMAGENET_MEAN, IMAGENET_STD
 from model import TinyUNet
 
 # Per-task output field (the prediction subdir + how many channels the head has).
-FIELD = {"edge": "edge", "cleanup": "clean"}
+FIELD = {"edge": "edge", "cleanup": "clean", "field": "field"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,7 +83,8 @@ def save_prediction(prob: np.ndarray, path: Path) -> None:
 def main() -> None:
     args = parse_args()
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
-    checkpoint = args.checkpoint or f"scripts/train/checkpoints/{'edge-prepass' if args.task == 'edge' else 'cleanup'}.pt"
+    ckpt_name = {"edge": "edge-prepass", "cleanup": "cleanup", "field": "signed-field"}[args.task]
+    checkpoint = args.checkpoint or f"scripts/train/checkpoints/{ckpt_name}.pt"
     if not Path(checkpoint).exists():
         raise SystemExit(f"checkpoint not found: {checkpoint} — train first (scripts/train/pipeline.py)")
 

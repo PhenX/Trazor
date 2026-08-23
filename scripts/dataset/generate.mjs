@@ -7,6 +7,7 @@
 //   input/  the degraded raster the model sees
 //   clean/  the clean scene    (cleanup / super-resolution target)
 //   edge/   the soft edge map  (edge pre-pass target)
+//   field/  the coverage field (signed-field pre-pass target)
 // plus a manifest.json with the config and per-sample split assignment.
 //
 // Work is spread across worker threads (--jobs, default: CPU count). Because
@@ -34,6 +35,7 @@ for (const s of SPLITS) {
   ensureDir(join(cfg.out, s, 'input'))
   if (cfg.targets.includes('clean')) ensureDir(join(cfg.out, s, 'clean'))
   if (cfg.targets.includes('edge')) ensureDir(join(cfg.out, s, 'edge'))
+  if (cfg.targets.includes('field')) ensureDir(join(cfg.out, s, 'field'))
 }
 
 // Assign a split from a stable hash of the split key (mulberry32 avalanches it).

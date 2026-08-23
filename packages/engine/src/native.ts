@@ -83,6 +83,27 @@ function edgeProtectMask(
   return { width, height, data }
 }
 
+/**
+ * Learned coverage hint ([0,1] GrayImage, 0.5 = boundary) → a signed coverage
+ * field ([-0.5, 0.5]) at the working resolution, quantized to 1/256 steps. The
+ * quantization is the discretization boundary that keeps the (possibly WebGPU)
+ * hint from perturbing geometry below the trace's sub-pixel sensitivity.
+ */
+function coverageHintField(
+  hint: GrayImage | undefined,
+  width: number,
+  height: number,
+): GrayImage | null {
+  if (!hint) return null
+  const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
+  const data = new Float32Array(width * height)
+  for (let i = 0; i < data.length; i++) {
+    const v = g.data[i] - 0.5
+    data[i] = Math.round(v * 256) / 256
+  }
+  return { width, height, data }
+}
+
 // Cumulative progress budget per stage (sums to 1). Curve fitting happens
 // inside the trace stage, so `fit` carries no separate work or budget — the
 // stage id is retained only for downstream compatibility.
@@ -284,6 +305,7 @@ export async function vectorize(
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
+      ctx?.coverageHint,
     )
   }
 
@@ -578,6 +600,7 @@ async function inkPipeline(
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
+  coverageHint: GrayImage | undefined,
 ): Promise<void> {
   run.stage('palette')
   const gray = toGrayscale(image)
@@ -607,6 +630,14 @@ async function inkPipeline(
       settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
     mask = binarize(gray, t, settings.invert, opaque)
     if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
+  }
+  // A learned coverage hint (FieldEnhancer) replaces the field derived from the
+  // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
+  // (the discretization boundary) and only when a sub-pixel field applies. No hint
+  // ⇒ the classical field, byte-identical.
+  if (coverageHint && settings.curveMode !== 'pixel') {
+    const hf = coverageHintField(coverageHint, image.width, image.height)
+    if (hf) coverage = hf
   }
   await run.tick()
 
