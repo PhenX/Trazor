@@ -99,4 +99,31 @@ describe('traceCenterline', () => {
     expect(strokes).toHaveLength(1)
     expect(strokes[0].closed).toBe(true)
   })
+
+  it('reports per-stroke width from the distance field', () => {
+    // Two straight skeletons: a thin one (field 1.5 ⇒ width 3) and a thick one
+    // (field 4 ⇒ width 8). A single global average would blur the two.
+    const w = 30
+    const h = 16
+    const data = new Uint8Array(w * h)
+    const field = new Float32Array(w * h)
+    for (let x = 2; x <= 27; x++) {
+      data[3 * w + x] = 1
+      field[3 * w + x] = 1.5
+      data[12 * w + x] = 1
+      field[12 * w + x] = 4
+    }
+    const strokes = traceCenterline(
+      { width: w, height: h, data },
+      { ...OPTS, distanceField: field },
+    )
+    expect(strokes).toHaveLength(2)
+    const widths = strokes.map((s) => s.width ?? -1).sort((a, b) => a - b)
+    expect(widths[0]).toBeCloseTo(3, 5)
+    expect(widths[1]).toBeCloseTo(8, 5)
+
+    // Without a field, width is left unset.
+    const plain = traceCenterline({ width: w, height: h, data }, OPTS)
+    expect(plain.every((s) => s.width === undefined)).toBe(true)
+  })
 })

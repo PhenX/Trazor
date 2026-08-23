@@ -26,6 +26,7 @@ import {
   bilateralFilter,
   binarize,
   borderDominantColor,
+  chamferDistance,
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
@@ -626,20 +627,25 @@ async function inkPipeline(
     const skeleton = zhangSuenThin(mask)
     run.progress(0.4)
     await run.tick()
-    const strokeWidth =
-      settings.strokeWidth > 0 ? settings.strokeWidth : estimateStrokeWidth(mask, skeleton)
+    // Distance field feeds a per-stroke width (varying line weight is kept);
+    // the global estimate is the fallback and the explicit-width path.
+    const useEstimate = settings.strokeWidth <= 0
+    const distanceField = useEstimate ? chamferDistance(mask) : undefined
+    const globalWidth = useEstimate ? estimateStrokeWidth(mask, skeleton) : settings.strokeWidth
     const strokes = traceCenterline(skeleton, {
       pruneLength: settings.pruneLength,
       cornerThreshold: settings.cornerThreshold,
       fitTolerance: settings.fitTolerance,
       simplifyTolerance: settings.simplifyTolerance,
       smoothing: settings.smoothing,
+      distanceField,
     })
     for (const stroke of strokes) {
+      const width = useEstimate ? (stroke.width ?? globalWidth) : globalWidth
       shapes.push({
         commands: stroke.commands,
         stroke: settings.fillColor,
-        strokeWidth: round2(strokeWidth),
+        strokeWidth: round2(width),
         strokeLinecap: 'round',
         strokeLinejoin: 'round',
       })

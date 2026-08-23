@@ -82,6 +82,10 @@ Skeleton (from `raster`'s Zhang-Suen thinning) → condensed 8-neighbor pixel gr
 walk chains between nodes → prune short spurs → **merge the straightest continuations through junctions** (so a crossing
 stays two continuous strokes, not four arms) → Douglas-Peucker simplify → corner-aware Schneider fit (`fit.ts`).
 
+With an optional `distanceField` (a chamfer transform of the ink mask), each stroke also reports its own `width` — the
+median of 2×distance along that chain's skeleton pixels — so a drawing with varying line weight keeps the variation
+instead of collapsing to one global average. Omitted ⇒ `width` is unset and the engine falls back to the global estimate.
+
 ## Tests
 
 `crack.test.ts` (decomposition signs/areas/turn policy), `closed.test.ts` (optimal polygon + `traceMask` corners,
