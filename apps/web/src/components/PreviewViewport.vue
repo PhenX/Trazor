@@ -72,6 +72,14 @@ const svgLayerStyle = computed(() =>
   view.value === 'split' ? { clipPath: `inset(0 0 0 ${splitFrac.value * 100}%)` } : {},
 )
 
+// In split view the original only occupies the left of the divider. Without this
+// complementary clip it also fills the right, showing through the SVG's
+// transparent areas and making the trace look like it reproduced detail it did
+// not. The two halves meet exactly at the divider.
+const origLayerStyle = computed(() =>
+  view.value === 'split' ? { clipPath: `inset(0 ${(1 - splitFrac.value) * 100}% 0 0)` } : {},
+)
+
 const dividerX = computed(() => tx.value + splitFrac.value * docW.value * scale.value)
 
 // --------------------------- Complexity overlay --------------------------
@@ -471,6 +479,7 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           ref="origCanvas"
           class="layer layer-original"
           :class="{ pixelated, dimmed: view === 'diff' }"
+          :style="origLayerStyle"
         />
         <div
           v-show="showSvg"
