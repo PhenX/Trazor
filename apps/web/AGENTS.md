@@ -20,8 +20,9 @@ src/
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
   lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
                           overlay (per-element-kind colors/labels for the complexity overlay),
+                          layers (group traced SVG geometry into color layers + contours for the layer panel),
                           releaseNotes (the user-facing changelog + its date/iteration helpers)
-  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, StatsBar, ExportBar, ReleaseNotes, ToastHost
+  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, LayerPanel, LayerThumb, StatsBar, ExportBar, ReleaseNotes, ToastHost
   components/controls/    ControlRow / SliderRow / SelectRow / SwitchRow / ColorRow / TextRow
   styles/base.css         design tokens (dark + light), shared component classes
 ```

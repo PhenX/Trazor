@@ -413,6 +413,25 @@ export const en = {
     sourceSizeTitle: '{name} — {size}px',
   },
 
+  layers: {
+    title: 'Layers',
+    show: 'Show layers',
+    hide: 'Hide layers',
+    summary: '{layers} layer | {layers} layers',
+    summaryShapes: '{count} shape | {count} shapes',
+    summaryNodes: '{count} nodes',
+    empty: 'Layers appear here once the image is traced.',
+    toggleContours: 'Show contours',
+    rowTitle: 'Hover to highlight · click to pin',
+    shapeCount: '{count} shape | {count} shapes',
+    nodeCount: '{count} nodes',
+    copyColor: 'Copy {hex}',
+    pinned: 'Pinned',
+    contour: 'Contour {index}',
+    shapesNodes: '{shapes} shapes · {nodes} nodes',
+    contourNodes: 'Contour {index} · {nodes} nodes',
+  },
+
   exportBar: {
     copySvg: 'Copy SVG',
     copySvgTitle: 'Copy the SVG markup',

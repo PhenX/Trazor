@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { clamp } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
-import { extractGeometry } from '@trazor/svg'
 import type { SvgElementKind, SvgGeometry } from '@trazor/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -87,8 +86,28 @@ const dividerX = computed(() => tx.value + splitFrac.value * docW.value * scale.
 // their density shows the geometric complexity. Parsed only while the toggle is
 // on (and only when the SVG layer is visible).
 const geometry = computed<SvgGeometry | null>(() =>
-  showNodes.value && showSvg.value && store.result ? extractGeometry(store.result.svg) : null,
+  showNodes.value && showSvg.value ? store.geometry : null,
 )
+
+// --------------------------- Layer highlight -----------------------------
+// The layer panel points at a color layer (or one contour); isolate it in the
+// preview by dimming everything else and outlining the focus. Faithful: the
+// scrim is punched through a mask so the real traced pixels of the focus show,
+// never a redraw. Stroke (centerline) layers have no fill area to reveal, so
+// they are marked by the accent outline alone.
+const focus = computed<{ d: string; stroke: boolean } | null>(() => {
+  const f = store.layerFocus
+  const model = store.layerModel
+  if (!f || !model) return null
+  const layer = model.layers[f.layer]
+  if (!layer) return null
+  const d = f.shape !== null ? (layer.shapes[f.shape]?.d ?? null) : layer.d
+  if (d === null || d === '') return null
+  return { d, stroke: layer.stroke }
+})
+
+// Keep the outline ~1.6px on screen regardless of zoom (viewBox px == screen px / scale).
+const focusOutlineWidth = computed(() => 1.6 / scale.value)
 
 // Clip the overlay to the SVG side of the split so it does not bleed over the
 // original image; unclipped in the full result view.
@@ -487,6 +506,44 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           :style="svgLayerStyle"
           v-html="store.result?.svg ?? ''"
         />
+        <svg
+          v-if="showSvg && focus"
+          class="layer layer-highlight"
+          :viewBox="`0 0 ${docW} ${docH}`"
+          preserveAspectRatio="none"
+          :style="svgLayerStyle"
+          aria-hidden="true"
+        >
+          <defs>
+            <mask
+              id="trz-focus-mask"
+              maskUnits="userSpaceOnUse"
+              x="0"
+              y="0"
+              :width="docW"
+              :height="docH"
+            >
+              <rect x="0" y="0" :width="docW" :height="docH" fill="#fff" />
+              <path v-if="!focus.stroke" :d="focus.d" fill="#000" fill-rule="evenodd" />
+            </mask>
+          </defs>
+          <rect
+            x="0"
+            y="0"
+            :width="docW"
+            :height="docH"
+            class="scrim"
+            mask="url(#trz-focus-mask)"
+          />
+          <path
+            :d="focus.d"
+            fill="none"
+            class="focus-outline"
+            :stroke-width="focusOutlineWidth"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+        </svg>
         <canvas v-show="showDiff" ref="diffCanvas" class="layer layer-diff pixelated" />
 
         <!-- Magic-select markers -->
@@ -749,6 +806,22 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* Layer isolation overlay: dim the rest, outline the focused layer/contour. */
+.layer-highlight {
+  pointer-events: none;
+  z-index: 1;
+}
+
+.layer-highlight .scrim {
+  fill: var(--bg-0);
+  fill-opacity: 0.62;
+}
+
+.layer-highlight .focus-outline {
+  stroke: var(--accent);
+  opacity: 0.95;
 }
 
 .marker {

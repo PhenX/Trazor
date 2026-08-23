@@ -30,6 +30,12 @@ export interface SvgGeometryShape {
   kind: SvgElementKind
   /** Absolute path commands for this element. */
   commands: PathCommand[]
+  /** `fill` value as authored (`'#rrggbb'`, `'none'`, …); null when the attribute is absent. */
+  fill: string | null
+  /** `stroke` value as authored; null when the attribute is absent. */
+  stroke: string | null
+  /** `id` attribute value; null when absent. */
+  id: string | null
 }
 
 export interface SvgGeometry {
@@ -408,8 +414,17 @@ export function extractGeometry(svg: string): SvgGeometry {
   const shapes: SvgGeometryShape[] = []
   for (const m of svg.matchAll(/<(path|rect|circle|ellipse|line|polyline|polygon)\b([^>]*)>/g)) {
     const kind = m[1] as SvgElementKind
-    const commands = applyTransform(elementCommands(kind, m[2]), m[2])
-    if (commands.length > 0) shapes.push({ kind, commands })
+    const attrs = m[2]
+    const commands = applyTransform(elementCommands(kind, attrs), attrs)
+    if (commands.length > 0) {
+      shapes.push({
+        kind,
+        commands,
+        fill: attr(attrs, 'fill'),
+        stroke: attr(attrs, 'stroke'),
+        id: attr(attrs, 'id'),
+      })
+    }
   }
   return { width, height, shapes }
 }

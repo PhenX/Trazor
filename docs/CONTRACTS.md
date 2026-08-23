@@ -294,6 +294,9 @@ export type SvgElementKind =
 export interface SvgGeometryShape {
   kind: SvgElementKind // source element, so an overlay can tint primitives apart
   commands: PathCommand[] // absolute M/L/Q/C/Z for this element
+  fill: string | null // authored fill ('#rrggbb' | 'none' | …); null if absent
+  stroke: string | null // authored stroke; null if absent
+  id: string | null // id attribute; null if absent
 }
 export interface SvgGeometry {
   width: number | null // viewBox size (overlay coordinate space)
