@@ -20,6 +20,11 @@ export const DEFAULTS = {
     translateFrac: 0.05,
     perspective: 0.12, // max corner-jitter fraction for the projective warp (0 = off)
     perspectiveProb: 0.4, // chance a sample gets the projective warp
+    lens: 0.12, // max |k| radial (barrel/pincushion) lens distortion (0 = off)
+    lensProb: 0.35, // chance a sample gets lens distortion
+    crop: true, // multi-scale: render larger and crop a native-size window
+    cropProb: 0.3, // chance a sample is a multi-scale crop
+    cropZoom: { min: 1.5, max: 3 }, // how much larger to render before cropping
   },
   degrade: {
     background: true, // composite the shape over a procedural background

@@ -187,6 +187,60 @@ export function perspectiveTransform(img, corners) {
   return out
 }
 
+// Radial (barrel/pincushion) lens distortion: each output pixel samples the source
+// at radius r·(1 + k·r²) about the center (r normalized so the corner is 1). k = 0
+// is an exact no-op; sign selects barrel vs. pincushion. Content mapped outside the
+// source stays transparent. Simulates a phone-camera lens on a photographed input.
+export function lensDistort(img, k) {
+  const { width: w, height: h, data } = img
+  if (k === 0) return { width: w, height: h, data: new Uint8ClampedArray(data) }
+  const out = createImage(w, h)
+  const o = out.data
+  const cx = (w - 1) / 2
+  const cy = (h - 1) / 2
+  const maxR = Math.hypot(cx, cy) || 1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const oi = (y * w + x) * 4
+      const nx = (x - cx) / maxR
+      const ny = (y - cy) / maxR
+      const f = 1 + k * (nx * nx + ny * ny)
+      const sx = cx + nx * f * maxR
+      const sy = cy + ny * f * maxR
+      if (sx < 0 || sy < 0 || sx > w - 1 || sy > h - 1) continue
+      const x0 = Math.floor(sx)
+      const y0 = Math.floor(sy)
+      const x1 = Math.min(w - 1, x0 + 1)
+      const y1 = Math.min(h - 1, y0 + 1)
+      const fx = sx - x0
+      const fy = sy - y0
+      const i00 = (y0 * w + x0) * 4
+      const i01 = (y0 * w + x1) * 4
+      const i10 = (y1 * w + x0) * 4
+      const i11 = (y1 * w + x1) * 4
+      for (let c = 0; c < 4; c++) {
+        const top = data[i00 + c] * (1 - fx) + data[i01 + c] * fx
+        const bot = data[i10 + c] * (1 - fx) + data[i11 + c] * fx
+        o[oi + c] = top * (1 - fy) + bot * fy
+      }
+    }
+  }
+  return out
+}
+
+// Copy the `cw`×`ch` region at (x0, y0) out of an RGBA image (assumes in-bounds).
+export function cropRegion(img, x0, y0, cw, ch) {
+  const { width: w, data } = img
+  const out = createImage(cw, ch)
+  const o = out.data
+  for (let y = 0; y < ch; y++) {
+    const srow = ((y0 + y) * w + x0) * 4
+    const drow = y * cw * 4
+    for (let i = 0; i < cw * 4; i++) o[drow + i] = data[srow + i]
+  }
+  return out
+}
+
 // Homography (row-major 3×3) mapping the unit square's corners to `q` (Heckbert).
 function squareToQuad(q) {
   const [q0, q1, q2, q3] = q

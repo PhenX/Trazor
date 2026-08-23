@@ -47,8 +47,9 @@ with `--targets edge,clean,field` (all three by default).
 ## Pipeline (one sample)
 
 1. **Rasterize** the SVG with [resvg](https://github.com/linebender/resvg) at `resolution × supersample`, letterbox to a
-   square, apply optional geometric augmentation (rotate/scale/translate + a mild perspective warp), and area-downsample
-   for clean anti-aliasing → the **shape** (keeps alpha). — `render.mjs`
+   square, apply optional geometric augmentation (rotate/scale/translate, perspective warp, radial lens distortion, and a
+   multi-scale crop that renders larger then crops a native-size window), and area-downsample for clean anti-aliasing →
+   the **shape** (keeps alpha). — `render.mjs`
 2. **Edge target** = max Sobel gradient across the shape's R/G/B/A channels (color boundaries + silhouette). — `targets.mjs`
 3. **Background** synth (solid/gradient/radial/checker/stripes/fractal/texture) and **composite** the shape over it → the
    **clean scene** (also the cleanup target). The model **input** is composited separately from a copy that may carry a
