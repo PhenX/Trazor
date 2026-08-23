@@ -37,6 +37,18 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-23',
+    iteration: 5,
+    kind: 'feature',
+    title: 'Layer visualizer',
+    items: [
+      'A new Layers panel lists every color in the traced result — the sheets you would cut and stack — so you can see at a glance whether a file has too many layers or shapes before importing it into your cutter.',
+      'Expand a layer to inspect its individual contours, with a bigger preview on hover and a running count of shapes and nodes.',
+      'Hover or click a layer to highlight just that color in the preview; click a swatch to copy its hex.',
+      'The panel sits on the right on desktop and slides in as a drawer on phones.',
+    ],
+  },
+  {
+    date: '2026-08-23',
     iteration: 4,
     kind: 'fix',
     title: 'Truer split view and smoother inspection',

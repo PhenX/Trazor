@@ -19,6 +19,8 @@ import type {
 import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
 import type { ImageAnalysis, PaletteSuggestion, RationaleKey } from '@trazor/assist'
 import { TrazorClient } from '@trazor/engine'
+import { extractGeometry } from '@trazor/svg'
+import type { SvgGeometry } from '@trazor/svg'
 import type { MlAvailability, MlProgress } from '@trazor/ml'
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
@@ -27,6 +29,8 @@ import type { LocaleCode } from '../i18n'
 import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
+import { buildLayers } from '../lib/layers'
+import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
 import { getSample } from '../lib/samples'
 
@@ -68,6 +72,16 @@ interface PersistedState {
   lastSeenRelease?: string
   /** UI language; unset until the visitor picks one (auto-detected meanwhile). */
   locale?: LocaleCode
+  /** Whether the layer visualizer panel is open (desktop preference). */
+  layersOpen?: boolean
+}
+
+/** A layer (and optional contour) singled out for preview highlighting. */
+export interface LayerFocus {
+  /** Index into `layerModel.layers`. */
+  layer: number
+  /** Index into that layer's `shapes`, or null for the whole layer. */
+  shape: number | null
 }
 
 function loadPersisted(): PersistedState {
@@ -164,6 +178,17 @@ export const useAppStore = defineStore('app', () => {
   /** Active UI language. Persisted once chosen; auto-detected on the first visit. */
   const locale = ref<LocaleCode>(persisted.locale ?? pickInitialLocale())
 
+  // ---------------------------- Layer panel ------------------------------
+  // The panel opens on the right on desktop and starts closed on mobile (a
+  // full-height drawer would otherwise cover the result on load).
+  const startMobile =
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  const layersOpen = ref(startMobile ? false : persisted.layersOpen !== false)
+  /** Layer/contour under the pointer in the panel (transient highlight). */
+  const layerHover = ref<LayerFocus | null>(null)
+  /** Pinned layer (click) — highlighted and expanded until cleared. */
+  const selectedLayer = ref<number | null>(null)
+
   // Non-reactive machinery
   let client: TrazorClient | null = null
   let runCounter = 0
@@ -203,6 +228,45 @@ export const useAppStore = defineStore('app', () => {
   const exportName = computed(() => {
     const base = sourceName.value.replace(/\.[a-z0-9]+$/i, '').trim()
     return `${base || 'vectorized'}.svg`
+  })
+
+  // Decoded result geometry, parsed once per result and shared by the layer
+  // panel and the preview's complexity/highlight overlays.
+  const geometry = computed<SvgGeometry | null>(() =>
+    result.value ? extractGeometry(result.value.svg) : null,
+  )
+  /** Color layers (and their contours) derived from the result. */
+  const layerModel = computed<LayerModel | null>(() =>
+    geometry.value ? buildLayers(geometry.value) : null,
+  )
+  /** The layer/contour the preview should highlight: hover wins over selection. */
+  const layerFocus = computed<LayerFocus | null>(() => {
+    if (layerHover.value) return layerHover.value
+    if (selectedLayer.value !== null) return { layer: selectedLayer.value, shape: null }
+    return null
+  })
+
+  function setLayerHover(focus: LayerFocus | null): void {
+    layerHover.value = focus
+  }
+
+  /** Toggle a pinned layer; clicking the pinned layer again clears it. */
+  function toggleSelectedLayer(index: number): void {
+    selectedLayer.value = selectedLayer.value === index ? null : index
+  }
+
+  function setLayersOpen(open: boolean): void {
+    layersOpen.value = open
+  }
+
+  function toggleLayersOpen(): void {
+    layersOpen.value = !layersOpen.value
+  }
+
+  // A new trace invalidates layer indices — drop any hover/selection.
+  watch(result, () => {
+    layerHover.value = null
+    selectedLayer.value = null
   })
 
   // ------------------------------- Toasts --------------------------------
@@ -702,6 +766,7 @@ export const useAppStore = defineStore('app', () => {
       autoOnLoad,
       lastSeenRelease,
       locale,
+      layersOpen,
     ],
     () => {
       try {
@@ -714,6 +779,7 @@ export const useAppStore = defineStore('app', () => {
           autoOnLoad: autoOnLoad.value,
           lastSeenRelease: lastSeenRelease.value ?? undefined,
           locale: locale.value,
+          layersOpen: layersOpen.value,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -748,12 +814,18 @@ export const useAppStore = defineStore('app', () => {
     autoOnLoad,
     lastSeenRelease,
     locale,
+    layersOpen,
+    layerHover,
+    selectedLayer,
     // derived
     hasImage,
     activeProfile,
     isWorkingModified,
     exportName,
     unseenReleaseCount,
+    geometry,
+    layerModel,
+    layerFocus,
     // actions
     notify,
     dismissToast,
@@ -788,5 +860,9 @@ export const useAppStore = defineStore('app', () => {
     markReleasesSeen,
     toggleTheme,
     setLocale,
+    setLayerHover,
+    toggleSelectedLayer,
+    setLayersOpen,
+    toggleLayersOpen,
   }
 })

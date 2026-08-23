@@ -427,6 +427,25 @@ export const fr: MessageSchema = {
     sourceSizeTitle: '{name} — {size}px',
   },
 
+  layers: {
+    title: 'Calques',
+    show: 'Afficher les calques',
+    hide: 'Masquer les calques',
+    summary: '{layers} calque | {layers} calques',
+    summaryShapes: '{count} forme | {count} formes',
+    summaryNodes: '{count} nœuds',
+    empty: 'Les calques apparaissent ici une fois l’image vectorisée.',
+    toggleContours: 'Afficher les contours',
+    rowTitle: 'Survoler pour mettre en évidence · cliquer pour épingler',
+    shapeCount: '{count} forme | {count} formes',
+    nodeCount: '{count} nœuds',
+    copyColor: 'Copier {hex}',
+    pinned: 'Épinglé',
+    contour: 'Contour {index}',
+    shapesNodes: '{shapes} formes · {nodes} nœuds',
+    contourNodes: 'Contour {index} · {nodes} nœuds',
+  },
+
   exportBar: {
     copySvg: 'Copier le SVG',
     copySvgTitle: 'Copier le balisage SVG',

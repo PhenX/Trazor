@@ -73,6 +73,16 @@ describe('extractGeometry on serializer output', () => {
     expect(geo.shapes[0].commands[0]).toEqual({ type: 'M', x: 1, y: 2 })
     expect(geo.shapes[1].commands[0]).toEqual({ type: 'M', x: 5, y: 5 })
   })
+
+  it('captures per-element paint and id so layers can be grouped by color', () => {
+    const svg =
+      '<svg viewBox="0 0 20 20">' +
+      '<g id="layer-1"><path id="a" d="M0 0 L1 0 L1 1 Z" fill="#ff0000"/></g>' +
+      '<path d="M2 2 L3 2" fill="none" stroke="#00ff00"/></svg>'
+    const geo = extractGeometry(svg)
+    expect(geo.shapes[0]).toMatchObject({ fill: '#ff0000', stroke: null, id: 'a' })
+    expect(geo.shapes[1]).toMatchObject({ fill: 'none', stroke: '#00ff00', id: null })
+  })
 })
 
 describe('extractGeometry path-data parsing', () => {
