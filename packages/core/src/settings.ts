@@ -80,6 +80,13 @@ export interface VectorizeSettings {
    * to a third color — into the region it borders. 0 disables (byte-identical).
    */
   dissolveBands: number
+  /**
+   * Spatial color coherence (0-1, color/grayscale): re-assign each pixel by
+   * balancing palette-color distance against agreement with its neighbors, so a
+   * rim mixture joins a real neighboring region instead of inventing a
+   * wrong-colored band. 0 disables (byte-identical).
+   */
+  colorCoherence: number
   /** Hairline-seam compensation stroke width (px) for cutout rendering; 0 disables. */
   gapFill: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
@@ -164,6 +171,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   minRegionArea: 6,
   preserveDetails: false,
   dissolveBands: 0,
+  colorCoherence: 0,
   gapFill: 0,
   omitBackground: false,
 
@@ -226,6 +234,7 @@ export function normalizeSettings(
   }
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
+  s.colorCoherence = clamp(s.colorCoherence, 0, 1)
   s.gapFill = clamp(s.gapFill, 0, 2)
   s.threshold = clampInt(s.threshold, 0, 255)
   s.adaptiveRadius = clampInt(s.adaptiveRadius, 2, 128)

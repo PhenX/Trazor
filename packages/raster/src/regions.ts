@@ -220,6 +220,101 @@ export function dissolveThinBands(
 }
 
 /**
+ * Spatially-coherent label relaxation (an ICM pass over a Potts MRF; Besag 1986).
+ *
+ * Global color quantization assigns each pixel to the nearest palette color with
+ * no regard for its neighbors, so an anti-aliased/JPEG rim — a genuine mixture —
+ * can land on a *third* color and draw a wrong-colored band. This re-assigns each
+ * pixel to the label minimizing `colorCost + lambda * (8-neighbors that disagree)`,
+ * where `colorCost` is the squared Oklab distance from the pixel to the palette
+ * color. Candidates are the pixel's own label plus its neighbors' labels, so the
+ * palette is untouched and a coherent region stays put, while a rim sliver joins
+ * whichever real region dominates around it — cutting invented seam hues.
+ *
+ * `imageOklab` is the working image in Oklab (length `n*3`); `paletteOklab` the
+ * palette in Oklab (length `count*3`). Updates are simultaneous within a round
+ * (read a snapshot), so the result is order-independent and deterministic; ties
+ * keep the current label. `protect` pixels and -1 are never moved; `rounds<=0` or
+ * `lambda<=0` is a no-op. Mutates and returns `labels`.
+ */
+export function smoothLabelsSpatial(
+  labels: LabelMap,
+  imageOklab: Float32Array,
+  paletteOklab: Float32Array,
+  lambda: number,
+  rounds: number,
+  protect?: BinaryMask,
+): LabelMap {
+  const { width: w, height: h, data } = labels
+  const n = w * h
+  if (rounds <= 0 || lambda <= 0 || n === 0) return labels
+  const prot = protect?.data ?? null
+  const nb = new Int32Array(8) // labeled neighbors
+  const cand = new Int32Array(9) // candidate labels (self + distinct neighbors)
+  let src = data.slice()
+  for (let round = 0; round < rounds; round++) {
+    let changed = false
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x
+        const cur = src[p]
+        if (cur === -1 || (prot !== null && prot[p] !== 0)) continue
+        // Gather labeled neighbors and the distinct candidate labels (self first).
+        let k8 = 0
+        let nc = 1
+        cand[0] = cur
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy
+          if (yy < 0 || yy >= h) continue
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue
+            const xx = x + dx
+            if (xx < 0 || xx >= w) continue
+            const v = src[yy * w + xx]
+            if (v === -1) continue
+            nb[k8++] = v
+            let seen = false
+            for (let c = 0; c < nc; c++)
+              if (cand[c] === v) {
+                seen = true
+                break
+              }
+            if (!seen) cand[nc++] = v
+          }
+        }
+        const io = p * 3
+        const L = imageOklab[io]
+        const A = imageOklab[io + 1]
+        const B = imageOklab[io + 2]
+        let bestLab = cur
+        let bestCost = Infinity
+        for (let c = 0; c < nc; c++) {
+          const k = cand[c]
+          const ko = k * 3
+          const dL = L - paletteOklab[ko]
+          const dA = A - paletteOklab[ko + 1]
+          const dB = B - paletteOklab[ko + 2]
+          let agree = 0
+          for (let j = 0; j < k8; j++) if (nb[j] === k) agree++
+          const cost = dL * dL + dA * dA + dB * dB + lambda * (k8 - agree)
+          if (cost < bestCost) {
+            bestCost = cost
+            bestLab = k
+          }
+        }
+        if (bestLab !== cur) {
+          data[p] = bestLab
+          changed = true
+        }
+      }
+    }
+    if (!changed) break
+    if (round + 1 < rounds) src = data.slice()
+  }
+  return labels
+}
+
+/**
  * Remove only the components of `label` that are connected (4-connected) to the
  * image border, setting them to -1; interior regions of the same color survive.
  * Used for `omitBackground`, where the goal is to drop the surrounding

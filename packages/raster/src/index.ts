@@ -25,6 +25,7 @@ export {
   extractLabelMask,
   maskArea,
   mergeSmallRegions,
+  smoothLabelsSpatial,
 } from './regions'
 export type { MergeOptions } from './regions'
 export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
