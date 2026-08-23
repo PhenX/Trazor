@@ -109,6 +109,11 @@ export interface QuantizeOptions {
   quality: number // 1..10
   seed: number
   mask?: BinaryMask | null // null ⇒ all pixels participate
+  // Restricts which in-mask pixels train the centroids (1 = eligible); every
+  // in-mask pixel is still labeled. Filters anti-aliased boundary pixels out of
+  // clustering. Ignored on the exact/fixed paths; dropped when too few pixels
+  // remain eligible. Absent ⇒ byte-identical to sampling all in-mask pixels.
+  sampleMask?: BinaryMask | null
   autoK?: boolean // merge near-duplicate centroids afterwards
   /**
    * Non-empty ⇒ skip clustering: palette is exactly these '#rrggbb' colors in
@@ -161,6 +166,12 @@ export function signedThresholdField(
   threshold01: number,
   invert: boolean,
 ): GrayImage // centered coverage in [-0.5, 0.5]: +inside/−outside, 0 at the crossing; feeds trace `coverage`
+export function signedAdaptiveField(
+  gray: GrayImage,
+  radius: number,
+  bias01: number,
+  invert: boolean,
+): GrayImage // signedThresholdField with the per-pixel adaptive level (local mean − bias); feeds trace `coverage` in adaptive bw mode
 
 // regions.ts
 // 4-connected components of equal label; components smaller than minArea are
@@ -174,8 +185,17 @@ export interface MergeOptions {
 // With opts, small regions are kept instead of absorbed when high-contrast
 // (keepContrast+oklab) or on a protected edge pixel (protect).
 export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
+// Set to -1 the components of `label` connected (4-connected) to the image
+// border; interior same-color regions survive. Mutates labels, returns the
+// count cleared. Used by omitBackground so enclosed same-color shapes are kept.
+export function clearBorderLabel(labels: LabelMap, label: number): number
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask
 export function maskArea(mask: BinaryMask): number
+
+// edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
+// (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
+// sampleMask so rim mixtures stay out of the palette. Deterministic.
+export function detectEdges(image: RasterImage, threshold: number): BinaryMask
 
 // morphology.ts — square structuring element, radius in px.
 export function dilate(mask: BinaryMask, radius: number): BinaryMask

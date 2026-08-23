@@ -161,6 +161,62 @@ describe('quantize — k-means path', () => {
     }
   })
 
+  it('an all-eligible sampleMask reproduces the unfiltered result byte-for-byte', () => {
+    const { image } = noisyClusters(9)
+    const plain = quantize(image, { ...baseOpts, k: 5, quality: 4 })
+    const all = maskOf(40, 40, () => true)
+    const same = quantize(image, { ...baseOpts, k: 5, quality: 4, sampleMask: all })
+    expect(same.paletteHex).toEqual(plain.paletteHex)
+    expect([...same.counts]).toEqual([...plain.counts])
+    expect([...same.labels.data]).toEqual([...plain.labels.data])
+  })
+
+  it('falls back to full sampling when the sampleMask leaves too few pixels', () => {
+    const { image } = noisyClusters(13)
+    const plain = quantize(image, { ...baseOpts, k: 5, quality: 4 })
+    // Only a handful of eligible pixels (< max(k, 256)) ⇒ filter is dropped.
+    const sparse = maskOf(40, 40, (x, y) => x < 2 && y < 2)
+    const res = quantize(image, { ...baseOpts, k: 5, quality: 4, sampleMask: sparse })
+    expect([...res.labels.data]).toEqual([...plain.labels.data])
+  })
+
+  it('keeps an anti-alias rim color out of the palette when the sampleMask excludes it', () => {
+    // Two jittered regions (so distinct colors ≫ k ⇒ the k-means path runs)
+    // split by a two-column gray "anti-aliased" seam at x = 20..21.
+    const A: [number, number, number] = [30, 30, 200]
+    const B: [number, number, number] = [200, 200, 30]
+    const rim: [number, number, number] = [115, 115, 115]
+    const rng = mulberry32(99)
+    const j = (): number => ((rng() * 13) | 0) - 6
+    const img = rasterOf(40, 40, (x) => {
+      const base = x >= 20 && x <= 21 ? rim : x < 20 ? A : B
+      return [
+        clampByte(base[0] + j()),
+        clampByte(base[1] + j()),
+        clampByte(base[2] + j()),
+        255,
+      ] as Rgba
+    })
+    const nearestToRim = (res: ReturnType<typeof quantize>): number => {
+      let best = Infinity
+      for (let c = 0; c < res.paletteHex.length; c++) {
+        const d =
+          Math.abs(res.paletteRgb[c * 3] - rim[0]) +
+          Math.abs(res.paletteRgb[c * 3 + 1] - rim[1]) +
+          Math.abs(res.paletteRgb[c * 3 + 2] - rim[2])
+        best = Math.min(best, d)
+      }
+      return best
+    }
+    // k=3 normally spends a whole entry on the rim cluster.
+    const plain = quantize(img, { ...baseOpts, k: 3, seed: 1 })
+    // Excluding the rim band from clustering frees that entry for a real color.
+    const sampleMask = maskOf(40, 40, (x) => x < 20 || x > 21)
+    const filtered = quantize(img, { ...baseOpts, k: 3, seed: 1, sampleMask })
+    expect(nearestToRim(plain)).toBeLessThan(40)
+    expect(nearestToRim(filtered)).toBeGreaterThan(80)
+  })
+
   it('autoK merges centroids closer than 0.03 in Oklab', () => {
     // Six distinct colors (> k) forming two tight groups.
     const shades = [0x10, 0x12, 0x14, 0xec, 0xee, 0xf0]

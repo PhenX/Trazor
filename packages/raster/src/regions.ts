@@ -140,6 +140,48 @@ function contrastExceeds(oklab: Float32Array, a: number, b: number, keepSq: numb
   )
 }
 
+/**
+ * Remove only the components of `label` that are connected (4-connected) to the
+ * image border, setting them to -1; interior regions of the same color survive.
+ * Used for `omitBackground`, where the goal is to drop the surrounding
+ * background — not identically-colored shapes enclosed by other regions (e.g.
+ * white lettering inside a colored banner on a white page). Mutates `labels`
+ * and returns the number of pixels cleared.
+ */
+export function clearBorderLabel(labels: LabelMap, label: number): number {
+  if (label < 0) return 0
+  const { width: w, height: h, data } = labels
+  const n = w * h
+  const stack = new Int32Array(n)
+  let sp = 0
+  const push = (i: number): void => {
+    if (data[i] === label) {
+      data[i] = -1
+      stack[sp++] = i
+    }
+  }
+  // Seed from every border pixel that carries the label.
+  for (let x = 0; x < w; x++) {
+    push(x)
+    push((h - 1) * w + x)
+  }
+  for (let y = 0; y < h; y++) {
+    push(y * w)
+    push(y * w + (w - 1))
+  }
+  let cleared = 0
+  while (sp > 0) {
+    const p = stack[--sp]
+    cleared++
+    const x = p - ((p / w) | 0) * w
+    if (x > 0) push(p - 1)
+    if (x < w - 1) push(p + 1)
+    if (p >= w) push(p - w)
+    if (p < n - w) push(p + w)
+  }
+  return cleared
+}
+
 /** 1 where `labels.data[i] === label`, else 0. */
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask {
   const { width, height, data } = labels

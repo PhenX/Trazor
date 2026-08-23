@@ -69,6 +69,13 @@ regions meet. Instead:
    regions on either side of a boundary emit the _same_ curve. No gaps, no overlaps — asserted anchor-for-anchor in
    `boundary.test.ts`.
 
+_Optional sub-pixel color refinement_ (`ColorField`): given the working image's per-pixel Oklab buffer and the per-label
+palette Oklab, each shared chain is snapped onto the true anti-aliased edge between its two region colors before fitting —
+the pairwise signed field (`refine.ts` `pairwiseField`) is zero where a pixel is the perceptual 50% mix of the two sides.
+The chain is refined **once** and reused by both neighbors, and junction endpoints stay pinned to the lattice, so the
+seam-free guarantee holds. Straight junction-to-junction edges (no interior polygon vertex) are unaffected; loops and
+curved chains carry the refinement. Omitting the field is byte-identical to the classical lattice trace.
+
 ## Centerline (`centerline.ts`)
 
 Skeleton (from `raster`'s Zhang-Suen thinning) → condensed 8-neighbor pixel graph (redundant diagonals suppressed) →

@@ -25,6 +25,8 @@ import {
   bilateralFilter,
   binarize,
   borderDominantColor,
+  clearBorderLabel,
+  detectEdges,
   despeckleMaskGuided,
   estimateStrokeWidth,
   flattenImage,
@@ -35,8 +37,10 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  signedAdaptiveField,
   signedThresholdField,
   toGrayscale,
+  toOklabBuffer,
   zhangSuenThin,
 } from '@vectorizer/raster'
 import { traceCenterline, traceLabelMap, traceMask } from '@vectorizer/trace'
@@ -51,6 +55,13 @@ const DETAIL_CONTRAST = 0.1
 
 /** Boundary-map probability above which a pixel counts as a protected edge. */
 const EDGE_PROTECT_THRESHOLD = 0.5
+
+/**
+ * L1 RGB gradient (0..765) at or above which a pixel is treated as an
+ * anti-aliased boundary and kept out of the color-clustering training sample,
+ * so rim mixtures cannot claim a palette entry.
+ */
+const CLUSTER_EDGE_THRESHOLD = 40
 
 /**
  * Discretize an edge hint into a protect mask at the working resolution: resize
@@ -256,12 +267,25 @@ async function colorPipeline(
   edgeHint: GrayImage | undefined,
 ): Promise<void> {
   run.stage('palette')
+  // Keep anti-aliased boundary pixels out of the k-means training sample so
+  // rim mixtures cannot capture a palette entry (no effect on the exact and
+  // fixed-palette paths, which quantize resolves without clustering).
+  const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+  const clusterSample: BinaryMask = {
+    width: image.width,
+    height: image.height,
+    data: new Uint8Array(image.width * image.height),
+  }
+  for (let i = 0; i < clusterSample.data.length; i++) {
+    clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+  }
   const q = quantize(image, {
     k: settings.paletteSize,
     colorSpace: settings.colorSpace,
     quality: settings.quantizeQuality,
     seed: QUANTIZE_SEED,
     mask: opaque,
+    sampleMask: clusterSample,
     autoK: settings.autoPaletteSize,
     fixedPalette: settings.palette,
   })
@@ -308,11 +332,10 @@ async function colorPipeline(
   }
   const backgroundLabel = settings.omitBackground ? nearestPaletteLabel(image, q.paletteHex) : -1
   if (backgroundLabel >= 0) {
-    // Excluded everywhere: background pixels behave like transparency.
-    for (let i = 0; i < labels.data.length; i++) {
-      if (labels.data[i] === backgroundLabel) labels.data[i] = -1
-    }
-    counts[backgroundLabel] = 0
+    // Drop only the border-connected background; identically-colored regions
+    // enclosed by other shapes (white text inside a banner) are kept.
+    const cleared = clearBorderLabel(labels, backgroundLabel)
+    counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
   }
   await run.tick()
 
@@ -330,9 +353,16 @@ async function colorPipeline(
   const usedPalette: string[] = []
 
   if (settings.layering === 'cutout') {
+    // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
+    // true anti-aliased edge between its two region colors. Skipped in pixel
+    // mode (exact lattice) and when the palette is degenerate.
+    const colorField =
+      settings.curveMode !== 'pixel' && q.paletteHex.length > 1
+        ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(q.paletteRgb) }
+        : undefined
     const regions = traceLabelMap(labels, {
       ...curveOpts,
-      minArea: traceMinArea,
+      colorField,
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
@@ -418,6 +448,14 @@ async function inkPipeline(
       settings.invert,
       opaque,
     )
+    if (settings.curveMode !== 'pixel') {
+      coverage = signedAdaptiveField(
+        gray,
+        settings.adaptiveRadius,
+        settings.adaptiveBias / 255,
+        settings.invert,
+      )
+    }
   } else {
     const t =
       settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
@@ -492,6 +530,23 @@ function desaturateInPlace(image: RasterImage): void {
     data[i + 1] = v
     data[i + 2] = v
   }
+}
+
+/** Per-label palette colors as an interleaved Oklab buffer (length count*3). */
+function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
+  const m = (paletteRgb.length / 3) | 0
+  const out = new Float32Array(m * 3)
+  for (let i = 0; i < m; i++) {
+    const [L, a, b] = rgbToOklab(
+      paletteRgb[i * 3] / 255,
+      paletteRgb[i * 3 + 1] / 255,
+      paletteRgb[i * 3 + 2] / 255,
+    )
+    out[i * 3] = L
+    out[i * 3 + 1] = a
+    out[i * 3 + 2] = b
+  }
+  return out
 }
 
 /** Nearest palette entry to the dominant border color (for omitBackground). */
