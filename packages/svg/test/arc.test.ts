@@ -114,6 +114,38 @@ function maxCircleError(
   return worst
 }
 
+/** Sample a path (M/L/C/A) into points, expanding arcs via arcToCubics. */
+function reconstruct(startCmd: PathCommand, cmds: PathCommand[]): { x: number; y: number }[] {
+  let prev = {
+    x: startCmd.type === 'M' ? startCmd.x : 0,
+    y: startCmd.type === 'M' ? startCmd.y : 0,
+  }
+  const pts: { x: number; y: number }[] = [prev]
+  const sampleCubic = (c: Extract<PathCommand, { type: 'C' }>) => {
+    for (let t = 0.25; t <= 1.0001; t += 0.25) {
+      const u = 1 - t
+      pts.push({
+        x: u * u * u * prev.x + 3 * u * u * t * c.x1 + 3 * u * t * t * c.x2 + t * t * t * c.x,
+        y: u * u * u * prev.y + 3 * u * u * t * c.y1 + 3 * u * t * t * c.y2 + t * t * t * c.y,
+      })
+    }
+    prev = { x: c.x, y: c.y }
+  }
+  for (const c of cmds) {
+    if (c.type === 'C') {
+      sampleCubic(c)
+    } else if (c.type === 'A') {
+      for (const cub of arcToCubics(prev.x, prev.y, c)) {
+        if (cub.type === 'C') sampleCubic(cub)
+      }
+    } else if (c.type === 'L' || c.type === 'M') {
+      prev = { x: c.x, y: c.y }
+      pts.push(prev)
+    }
+  }
+  return pts
+}
+
 describe('fitArcs', () => {
   it('collapses a two-cubic semicircle run into one A', () => {
     const { start, cubics } = arcCubics(100, 100, 40, 0, Math.PI, 2)
@@ -174,10 +206,15 @@ describe('fitArcs', () => {
     expect(fitArcs(cmds, 2)).toEqual(cmds)
   })
 
-  it('does not collapse a full-circle run (left to circle detection)', () => {
+  it('preserves circle geometry when a near-full run is only partly collapsed', () => {
     const { start, cubics } = arcCubics(0, 0, 20, 0, 2 * Math.PI, 4)
     const out = fitArcs([start, ...cubics], 2)
-    expect(out.some((c) => c.type === 'A')).toBe(false)
+    // A lone `A` cannot represent a whole turn, so the run never becomes one arc.
+    expect(out.filter((c) => c.type === 'A' || c.type === 'C').length).toBeGreaterThan(1)
+    // Whatever the arc/cubic mix, every reconstructed point stays on the circle.
+    for (const p of reconstruct(start, out)) {
+      expect(Math.abs(Math.hypot(p.x, p.y) - 20)).toBeLessThan(0.6)
+    }
   })
 
   it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
@@ -202,10 +239,49 @@ describe('fitArcs', () => {
     expect(Math.abs(a.rotation)).toBeGreaterThan(1)
   })
 
-  it('does not collapse a full-ellipse run', () => {
-    const { start, cubics } = ellipseArcCubics(0, 0, 40, 20, 15, 0, 2 * Math.PI, 4)
+  it('preserves ellipse geometry when a near-full run is only partly collapsed', () => {
+    const cx = 0
+    const cy = 0
+    const rx = 40
+    const ry = 20
+    const phi = (15 * Math.PI) / 180
+    const { start, cubics } = ellipseArcCubics(cx, cy, rx, ry, 15, 0, 2 * Math.PI, 4)
     const out = fitArcs([start, ...cubics], 2)
-    expect(out.some((c) => c.type === 'A')).toBe(false)
+    expect(out.filter((c) => c.type === 'A' || c.type === 'C').length).toBeGreaterThan(1)
+    const co = Math.cos(phi)
+    const si = Math.sin(phi)
+    for (const p of reconstruct(start, out)) {
+      const nx = ((p.x - cx) * co + (p.y - cy) * si) / rx
+      const ny = (-(p.x - cx) * si + (p.y - cy) * co) / ry
+      expect(Math.abs(Math.hypot(nx, ny) - 1) * Math.min(rx, ry)).toBeLessThan(0.7)
+    }
+  })
+
+  it('segments an arc embedded inside a longer all-cubic run', () => {
+    // A straight span (as a cubic), then a semicircle (2 cubics), then another
+    // straight span — all cubics, no L between them, as a spline trace produces.
+    const lineCubic = (x0: number, y0: number, x1: number, y1: number): PathCommand => ({
+      type: 'C',
+      x1: x0 + (x1 - x0) / 3,
+      y1: y0 + (y1 - y0) / 3,
+      x2: x0 + (2 * (x1 - x0)) / 3,
+      y2: y0 + (2 * (y1 - y0)) / 3,
+      x: x1,
+      y: y1,
+    })
+    const arc = arcCubics(100, 100, 40, Math.PI, 2 * Math.PI, 2) // (60,100)→(140,100) via (100,60)
+    const cmds: PathCommand[] = [
+      { type: 'M', x: 20, y: 100 },
+      lineCubic(20, 100, 60, 100),
+      ...arc.cubics,
+      lineCubic(140, 100, 180, 100),
+    ]
+    const out = fitArcs(cmds, 2)
+    expect(out.filter((c) => c.type === 'A').length).toBe(1)
+    expect(out.map((c) => c.type).join(' ')).toBe('M C A C')
+    const a = out.find((c) => c.type === 'A')
+    if (a?.type !== 'A') throw new Error('expected an A')
+    expect(a.rx).toBeCloseTo(40, 0)
   })
 
   it('handles multiple arc runs separated by lines in one path', () => {

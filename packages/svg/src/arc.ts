@@ -9,14 +9,16 @@
  *
  * A collapse is emitted only when a least-squares conic (a Kåsa circle first, an
  * ellipse fit as a fallback) fits every boundary sample within tolerance, the
- * run is a simple (non-reversing) sub-360° arc, and a reconstructed arc whose
- * center and mid-arc point match the samples exists — so a non-arc run is always
- * left as cubics. `A` radii, rotation and endpoint are snapped to the output
+ * run is a simple (non-reversing) sub-360° arc, and a reconstructed arc that
+ * actually sweeps through every sample exists — so a non-arc run is always left
+ * as cubics. Because spline-traced boundaries are one long cubic run (straight
+ * edges and corners included), the fitter also segments an embedded arc out of a
+ * longer run. `A` radii, rotation and endpoint are snapped to the output
  * precision grid, matching primitive detection, so the result stays on the
  * serializer grid.
  */
 
-import { arcToCenter, type ArcCenter, type PathCommand } from '@trazor/core'
+import { arcToCenter, type PathCommand } from '@trazor/core'
 import { fitCircle, fitEllipse, type Pt } from './fit'
 import { clampPrecision } from './pathdata'
 
@@ -39,6 +41,51 @@ function angleDiff(a: number, b: number): number {
   while (d > Math.PI) d -= 2 * Math.PI
   while (d <= -Math.PI) d += 2 * Math.PI
   return d
+}
+
+/** Distance from p to segment a–b. */
+function pointSegDist(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  let t = len2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0
+  t = t < 0 ? 0 : t > 1 ? 1 : t
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+
+/**
+ * True when every sample lies within `tol` of the reconstructed arc — the test
+ * that selects the correct (large-arc, sweep) pair. Both arcs sharing the
+ * endpoints lie on the same conic, so a sample-on-conic check cannot tell them
+ * apart; only the one that actually sweeps through the samples fits. Works for
+ * circles and ellipses alike (no reliance on parametric-vs-polar angle).
+ */
+function arcFitsSamples(
+  start: Pt,
+  arc: Extract<PathCommand, { type: 'A' }>,
+  samples: Pt[],
+  tol: number,
+): boolean {
+  const poly: Pt[] = [start]
+  let prev = start
+  for (const c of arcToCubics(start.x, start.y, arc)) {
+    if (c.type === 'C') {
+      for (let t = 0.2; t <= 1.0001; t += 0.2) poly.push(cubicPoint(prev, c, t))
+      prev = { x: c.x, y: c.y }
+    } else if (c.type === 'L') {
+      poly.push({ x: c.x, y: c.y })
+      prev = { x: c.x, y: c.y }
+    }
+  }
+  for (const s of samples) {
+    let nearest = Infinity
+    for (let i = 0; i + 1 < poly.length && nearest > tol; i++) {
+      const d = pointSegDist(s, poly[i], poly[i + 1])
+      if (d < nearest) nearest = d
+    }
+    if (nearest > tol) return false
+  }
+  return true
 }
 
 /** A conic the run's samples lie on: a circle (rx = ry, angle 0) or an ellipse. */
@@ -135,13 +182,10 @@ function collapseToArc(
   const ey = grid(end.y)
   if (rx <= 0 || ry <= 0) return null
 
-  // The middle boundary sample disambiguates the arc: of the ≤2 arcs on the
-  // fitted conic that share these endpoints, keep the one whose reconstructed
-  // mid-arc point is nearest the run's actual middle (fixing minor/major and
-  // direction at once, for circles and ellipses alike).
-  const mid = samples[samples.length >> 1]
-  let best: PathCommand | null = null
-  let bestErr = Infinity
+  // Of the ≤2 arcs on the fitted conic that share these endpoints, keep the one
+  // whose reconstruction actually sweeps through the samples (a center match is
+  // a cheap pre-filter; the polyline test settles minor/major and direction for
+  // circles and ellipses alike).
   for (const largeArc of [false, true]) {
     for (const sweepFlag of [false, true]) {
       const arc = {
@@ -157,32 +201,59 @@ function collapseToArc(
       const c = arcToCenter(start.x, start.y, arc)
       if (c === null) continue
       if (Math.hypot(c.cx - cx, c.cy - cy) > tol) continue // wrong conic of the two
-      const m = arcPointAt(c, c.theta1 + c.dTheta / 2)
-      const err = Math.hypot(m.x - mid.x, m.y - mid.y)
-      if (err < bestErr) {
-        bestErr = err
-        best = arc
-      }
+      if (arcFitsSamples(start, arc, samples, tol)) return arc
     }
   }
-  return bestErr <= tol ? best : null
-}
-
-/** Point on an arc's ellipse at parameter angle `t` (center parameterization). */
-function arcPointAt(c: ArcCenter, t: number): Pt {
-  const cos = Math.cos(c.phi)
-  const sin = Math.sin(c.phi)
-  const px = c.rx * Math.cos(t)
-  const py = c.ry * Math.sin(t)
-  return { x: c.cx + px * cos - py * sin, y: c.cy + px * sin + py * cos }
+  return null
 }
 
 /**
- * Replace every maximal run of ≥2 consecutive cubics that forms a single
- * circular or elliptical arc with one `A` command. Non-cubic commands (and
- * short/soft runs) pass through untouched, so the command list is semantically
- * unchanged except that arc runs become exact arcs. Runs never cross an
- * `M`/`Z`/`L`/`Q`/`A` boundary, so subpaths stay intact.
+ * Segment a contiguous cubic run into arcs and leftover cubics. Real traced
+ * boundaries are all-cubic (spline smoothing turns even straight edges and
+ * corners into cubics), so an arc is usually embedded inside a longer run rather
+ * than bounded by lines. Greedily grow the longest arc from each position: a
+ * near-straight or non-circular stretch fails the fit (tiny/│full sweep, or
+ * samples off the conic) and passes through as its own cubics; a circular or
+ * elliptical stretch of ≥2 cubics collapses to one `A`.
+ */
+function segmentArcs(
+  start: Pt,
+  cubics: Extract<PathCommand, { type: 'C' }>[],
+  precision: number,
+): PathCommand[] {
+  const out: PathCommand[] = []
+  let cur = start
+  let i = 0
+  while (i < cubics.length) {
+    let best: PathCommand | null = null
+    let bestLen = 0
+    for (let len = 2; i + len <= cubics.length; len++) {
+      const arc = collapseToArc(cur, cubics.slice(i, i + len), precision)
+      if (arc === null) break // growth stops at the first non-arc extension
+      best = arc
+      bestLen = len
+    }
+    if (best !== null) {
+      out.push(best)
+      const last = cubics[i + bestLen - 1]
+      cur = { x: last.x, y: last.y }
+      i += bestLen
+    } else {
+      out.push(cubics[i])
+      cur = { x: cubics[i].x, y: cubics[i].y }
+      i++
+    }
+  }
+  return out
+}
+
+/**
+ * Replace every run of ≥2 consecutive cubics that forms a single circular or
+ * elliptical arc with one `A` command, including arc spans embedded inside a
+ * longer all-cubic run. Non-cubic commands (and non-arc cubics) pass through
+ * untouched, so the command list is semantically unchanged except that arc runs
+ * become exact arcs. Runs never cross an `M`/`Z`/`L`/`Q`/`A` boundary, so
+ * subpaths stay intact.
  */
 export function fitArcs(commands: readonly PathCommand[], precision: number): PathCommand[] {
   const out: PathCommand[] = []
@@ -195,14 +266,10 @@ export function fitArcs(commands: readonly PathCommand[], precision: number): Pa
   const flush = (): void => {
     if (run === null) return
     if (run.cubics.length >= 2) {
-      const arc = collapseToArc(run.start, run.cubics, precision)
-      if (arc !== null) {
-        out.push(arc)
-        run = null
-        return
-      }
+      for (const c of segmentArcs(run.start, run.cubics, precision)) out.push(c)
+    } else {
+      for (const c of run.cubics) out.push(c)
     }
-    for (const c of run.cubics) out.push(c)
     run = null
   }
 

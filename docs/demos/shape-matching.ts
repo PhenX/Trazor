@@ -1,8 +1,9 @@
 /**
  * Visual demo: region shape matching. Traces filled shapes, then serializes each
  * twice — as an optimized path, and with primitive recognition on — to show
- * where a many-node curve collapses to one clean element (including the new
- * rotated `<ellipse transform="rotate(...)">`).
+ * where a many-node curve collapses to one clean element (a rotated
+ * `<ellipse transform="rotate(...)">`) or, for a partial arc, to a single `A`
+ * command (a pie wedge, a half-disc, an elliptical wedge).
  *
  * Run:  npx tsx docs/demos/shape-matching.ts
  * Output: docs/demos/shape-matching.html
@@ -72,6 +73,43 @@ function regularStar(cx: number, cy: number, rOut: number, rIn: number, n: numbe
   return (x: number, y: number): boolean => pointInPoly(x, y, verts)
 }
 
+/** Angle (screen polar, [0, 2π)) of (x, y) about a center. */
+function polar(x: number, y: number, cx: number, cy: number): number {
+  const a = Math.atan2(y - cy, x - cx)
+  return a < 0 ? a + 2 * Math.PI : a
+}
+
+/** Circular pie wedge: inside the disc and between two radii — an arc + two edges. */
+function pieWedge(cx: number, cy: number, r: number, a0Deg: number, a1Deg: number) {
+  const a0 = (a0Deg * Math.PI) / 180
+  const a1 = (a1Deg * Math.PI) / 180
+  return (x: number, y: number): boolean => {
+    if (Math.hypot(x - cx, y - cy) > r) return false
+    const a = polar(x, y, cx, cy)
+    return a >= a0 && a <= a1
+  }
+}
+
+/** Rotated-ellipse wedge: inside the ellipse and between two radii — an elliptical arc + two edges. */
+function ellipseWedge(
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  deg: number,
+  a0Deg: number,
+  a1Deg: number,
+) {
+  const inEllipse = rotatedEllipse(cx, cy, rx, ry, deg)
+  const a0 = (a0Deg * Math.PI) / 180
+  const a1 = (a1Deg * Math.PI) / 180
+  return (x: number, y: number): boolean => {
+    if (!inEllipse(x, y)) return false
+    const a = polar(x, y, cx, cy)
+    return a >= a0 && a <= a1
+  }
+}
+
 const S = 72
 const shapes: { name: string; note: string; m: BinaryMask }[] = [
   {
@@ -88,6 +126,21 @@ const shapes: { name: string; note: string; m: BinaryMask }[] = [
     name: 'Circle',
     note: 'Recognized as <circle>',
     m: mask(S, S, (x, y) => Math.hypot(x - 36, y - 36) <= 18),
+  },
+  {
+    name: 'Pie wedge (270°)',
+    note: 'The circular arc collapses to one A command',
+    m: mask(S, S, pieWedge(36, 36, 26, 20, 290)),
+  },
+  {
+    name: 'Half-disc',
+    note: 'Diameter + semicircle: the arc becomes one A',
+    m: mask(S, S, (x, y) => Math.hypot(x - 36, y - 40) <= 24 && y <= 40),
+  },
+  {
+    name: 'Elliptical wedge (rotated)',
+    note: 'A rotated elliptical arc → one A with distinct radii',
+    m: mask(S, S, ellipseWedge(36, 36, 28, 15, 25, 10, 250)),
   },
   {
     name: 'Regular pentagon (rotated)',
@@ -129,10 +182,12 @@ function doc(m: BinaryMask): SvgDocument {
 function render(
   d: SvgDocument,
   roundPrimitives: boolean,
-): { svg: string; nodes: number; kind: string } {
+): { svg: string; nodes: number; kind: string; arc: boolean } {
   const svg = serializeSvg(d, { precision: 2, optimizePaths: true, roundPrimitives })
   const el = /<(path|ellipse|circle|rect|polygon)\b/.exec(svg)
-  return { svg, nodes: analyzeSvg(svg).nodeCount, kind: el ? el[1] : 'path' }
+  // Path data uses only command letters + numbers, so any A/a is an arc command.
+  const arc = [...svg.matchAll(/ d="([^"]*)"/g)].some((m) => /[Aa]/.test(m[1]))
+  return { svg, nodes: analyzeSvg(svg).nodeCount, kind: el ? el[1] : 'path', arc }
 }
 
 const rows = shapes
@@ -144,7 +199,7 @@ const rows = shapes
       <div class="rowhead"><h2>${s.name}</h2><p>${s.note}</p></div>
       <div class="pair">
         <figure><figcaption>optimized path <span>&lt;${path.kind}&gt; · ${path.nodes} nodes</span></figcaption><div class="frame">${path.svg}</div></figure>
-        <figure><figcaption>shape matching <span>&lt;${prim.kind}&gt; · ${prim.nodes} nodes</span></figcaption><div class="frame">${prim.svg}</div></figure>
+        <figure><figcaption>shape matching <span>&lt;${prim.kind}&gt;${prim.arc ? ' + A arc' : ''} · ${prim.nodes} nodes</span></figcaption><div class="frame">${prim.svg}</div></figure>
       </div>
     </section>`
   })
@@ -176,7 +231,7 @@ const html = `<title>Shape Matching — Path vs Primitive</title>
 </style>
 <div class="wrap">
   <h1>Shape matching — path vs primitive</h1>
-  <p class="sub">Each shape is traced once, then serialized as an optimized path and with primitive recognition on. A shape that really is a circle, (rotated) ellipse, rectangle, regular polygon, or star collapses to one clean, editable element with far fewer nodes — a near-regular polygon or star snaps to a perfect one; anything else stays a path. Recognition is disabled in cutout mode, where a neighbor still traces the shared Bézier edge.</p>
+  <p class="sub">Each shape is traced once, then serialized as an optimized path and with primitive recognition on. A shape that really is a circle, (rotated) ellipse, rectangle, regular polygon, or star collapses to one clean, editable element with far fewer nodes — a near-regular polygon or star snaps to a perfect one. A <em>partial</em> arc (a pie wedge, a half-disc, an elliptical wedge) keeps its straight edges but replaces the many-cubic curved side with a single exact <code>A</code> arc command. Anything else stays a path. Recognition is disabled in cutout mode, where a neighbor still traces the shared Bézier edge.</p>
   ${rows}
 </div>`
 

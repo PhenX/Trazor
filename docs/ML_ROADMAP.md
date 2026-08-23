@@ -148,17 +148,20 @@ conditioning), integrated into `primitive.ts` behind the same accept/reject tole
 `packages/svg/test/fit.test.ts` (exact recovery from uneven sampling, rotated-ellipse angle, noise robustness, non-ellipse
 rejection) and two `primitive.test.ts` accuracy tests.
 
-The **elliptical-arc `A` command** also shipped: a new `PathCommand` variant threaded through `core`/`trace`/`svg`. Any run
-of ≥2 consecutive cubics that lie on one circle **or ellipse** collapses to a single `A` in `packages/svg/src/arc.ts`
+The **elliptical-arc `A` command** also shipped: a new `PathCommand` variant threaded through `core`/`trace`/`svg`. A run
+of consecutive cubics that lie on one circle **or ellipse** collapses to a single `A` in `packages/svg/src/arc.ts`
 (`fitArcs`) — a least-squares conic fit (Kåsa circle first, then a direct-conic ellipse fit), a simple-arc / sub-360°
-check, and a reconstruct-and-verify accept test (center match + nearest reconstructed mid-arc point, disambiguating
-minor/major and direction for both conics), with radii/rotation/endpoint snapped to the precision grid. It runs before
-`optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout and the no-round classical path stay
-byte-identical). `core` computes exact arc bounds via `arcToCenter` (SVG F.6.5), handling rotation; `geometry.ts` expands
-`A` back to cubics for the overlay; `reverseCommands` flips the sweep flag. Covered by `packages/svg/test/arc.test.ts`
-(circular and rotated-elliptical runs), `packages/core/test/path.test.ts`, `packages/trace/test/paths.test.ts`, and
-verified pixel-lossless through resvg (circular and rotated-ellipse wedges). `REFERENCES.md`, `CONTRACTS.md`, and the
-README roadmap line updated.
+check, and an accept test that reconstructs each candidate arc and keeps the one that actually sweeps through every sample
+(a polyline distance test, so minor/major and direction are settled the same way for both conics), with
+radii/rotation/endpoint snapped to the precision grid. Because a spline-traced boundary is one long cubic run (straight
+edges and corners smoothed into cubics, not separated by `L`s), `fitArcs` **segments** an embedded arc out of a longer
+run rather than only collapsing line-bounded runs — so a pie wedge, half-disc or oval frame from the real tracer loses its
+many-cubic curved side. It runs before `optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout and
+the no-round classical path stay byte-identical). `core` computes exact arc bounds via `arcToCenter` (SVG F.6.5), handling
+rotation; `geometry.ts` expands `A` back to cubics for the overlay; `reverseCommands` flips the sweep flag. Covered by
+`packages/svg/test/arc.test.ts` (circular and rotated-elliptical runs, embedded-arc segmentation), the
+[`shape-matching`](demos/shape-matching.html) demo (traced pie wedge / half-disc / elliptical wedge), and verified
+pixel-lossless through resvg. `REFERENCES.md`, `CONTRACTS.md`, and the README roadmap line updated.
 
 **Pending:** **cutout-arc consistency** (fit a shared boundary chain once, reused by both neighbors) so `roundPrimitives` —
 hence `A` — can turn on for cutout without seam divergence. RANSAC robustification is optional.
