@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
 defineProps<{
   label: string
   hint?: string
@@ -7,6 +9,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{ reset: [] }>()
+const { t } = useI18n()
 </script>
 
 <template>
@@ -16,8 +19,8 @@ const emit = defineEmits<{ reset: [] }>()
       <button
         v-if="modified"
         class="reset-dot"
-        title="Modified — click to reset to default"
-        aria-label="Reset to default"
+        :title="t('controls.resetTitle')"
+        :aria-label="t('controls.resetAria')"
         @click="emit('reset')"
       />
     </div>

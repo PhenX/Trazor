@@ -107,6 +107,10 @@ Run typecheck, lint and tests **once at the end** before the final commit — no
   level, so it still imports cleanly in Node.
 - **Cross-package boundaries are the contract.** [`docs/CONTRACTS.md`](docs/CONTRACTS.md) is the authoritative API
   surface; when you change an exported signature, update the contract and every caller in the same commit.
+- **Packages don't localize.** The Vue app is bilingual (English/French; see [`apps/web/AGENTS.md`](apps/web/AGENTS.md)).
+  A `@trazor/*` package that emits user-facing text returns English plus a stable identifier the app translates by —
+  a `code`/`id`, and structured `params` for any interpolated values (see `VectorizeWarning.params`,
+  `Recommendation.rationaleKeys`) — never presentation-only translated prose.
 
 ### Comments
 

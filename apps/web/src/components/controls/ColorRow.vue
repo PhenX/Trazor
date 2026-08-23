@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ControlRow from './ControlRow.vue'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -39,7 +42,7 @@ function reset(): void {
       type="color"
       :value="modelValue"
       :disabled="disabled"
-      :aria-label="`${label} color picker`"
+      :aria-label="t('controls.colorPicker', { label })"
       @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
     />
     <input
@@ -48,7 +51,7 @@ function reset(): void {
       :value="modelValue"
       :disabled="disabled"
       spellcheck="false"
-      :aria-label="`${label} hex value`"
+      :aria-label="t('controls.hexValue', { label })"
       @change="commitText(($event.target as HTMLInputElement).value)"
     />
   </ControlRow>
