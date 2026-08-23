@@ -294,6 +294,9 @@ export type SvgElementKind =
 export interface SvgGeometryShape {
   kind: SvgElementKind // source element, so an overlay can tint primitives apart
   commands: PathCommand[] // absolute M/L/Q/C/Z for this element
+  fill: string | null // authored fill ('#rrggbb' | 'none' | …); null if absent
+  stroke: string | null // authored stroke; null if absent
+  id: string | null // id attribute; null if absent
 }
 export interface SvgGeometry {
   width: number | null // viewBox size (overlay coordinate space)
@@ -456,6 +459,10 @@ Implementation notes:
 
 ## @trazor/engine (for reference — implemented by the main agent)
 
+Each `VectorizeResult.warning` (`@trazor/core`) carries a stable `code`, an English `message`, and an
+optional `params: Record<string, string | number>` — the values interpolated into `message`, so a UI can
+localize it from `code` + `params` (the studio does; `message` stays the fallback).
+
 Worker protocol used by the app:
 
 ```ts
@@ -523,13 +530,20 @@ export interface ImageAnalysis {
   /* see packages/assist/src */
 }
 export function analyzeImage(image: RasterImage): ImageAnalysis
+// A machine-readable reason: a stable `code` plus any numeric values it
+// interpolates, so a UI can localize it (the app translates `code` + `params`).
+export interface RationaleKey {
+  code: string
+  params?: Record<string, number>
+}
 export function recommendSettings(
   a: ImageAnalysis,
   goal?: ProfileId | 'auto',
 ): {
   profileId: ProfileId
   patch: Partial<VectorizeSettings>
-  rationale: string[]
+  rationale: string[] // English sentences (non-UI callers, tests)
+  rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
 export interface PaletteSuggestion {
   id: string

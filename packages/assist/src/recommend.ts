@@ -2,10 +2,32 @@ import type { ProfileId, VectorizeSettings } from '@trazor/core'
 import { clamp, clampInt, getProfile } from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
+/**
+ * A machine-readable reason for a recommendation: a stable `code` plus any
+ * numeric values it interpolates. Lets a UI localize the rationale (the app
+ * translates `code` + `params`) while `Recommendation.rationale` keeps the
+ * English sentences for non-UI callers and tests.
+ */
+export interface RationaleKey {
+  code: string
+  params?: Record<string, number>
+}
+
 export interface Recommendation {
   profileId: ProfileId
   patch: Partial<VectorizeSettings>
   rationale: string[]
+  rationaleKeys: RationaleKey[]
+}
+
+/** Collects rationale in both forms so they never drift apart. */
+class Rationale {
+  readonly text: string[] = []
+  readonly keys: RationaleKey[] = []
+  add(code: string, english: string, params?: Record<string, number>): void {
+    this.text.push(english)
+    this.keys.push(params ? { code, params } : { code })
+  }
 }
 
 /** Mean Oklab chroma below this reads as effectively grayscale. */
@@ -30,26 +52,28 @@ export function recommendSettings(
   a: ImageAnalysis,
   goal: ProfileId | 'auto' = 'auto',
 ): Recommendation {
-  const rationale: string[] = []
+  const r = new Rationale()
 
-  const profileId = goal === 'auto' ? pickProfile(a, rationale) : goal
+  const profileId = goal === 'auto' ? pickProfile(a, r) : goal
   const patch: Partial<VectorizeSettings> = { ...getProfile(profileId).patch }
 
   if (a.hasAlpha) {
     patch.background = 'transparent'
-    rationale.push('Transparent pixels found — they will produce no shapes.')
+    r.add('alpha', 'Transparent pixels found — they will produce no shapes.')
   }
 
   if (profileId === 'pixel-art') {
     patch.paletteSize = clampInt(Math.max(2, a.distinctColors), 2, 64)
-    rationale.push(`Kept the ${a.distinctColors} original colors exactly.`)
-    return { profileId, patch, rationale }
+    r.add('pixelExact', `Kept the ${a.distinctColors} original colors exactly.`, {
+      count: a.distinctColors,
+    })
+    return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
   // A near-grayscale photo traces as tonal gray layers, not a color palette.
   if (profileId === 'photo' && a.colorfulness < ACHROMATIC_CHROMA) {
     patch.mode = 'grayscale'
-    rationale.push('Nearly grayscale — tracing as tonal grayscale layers.')
+    r.add('grayscale', 'Nearly grayscale — tracing as tonal grayscale layers.')
   }
 
   // Respect an explicit photo goal; otherwise treat compressed-flat art specially.
@@ -58,14 +82,20 @@ export function recommendSettings(
   if (patch.mode === 'color' || patch.mode === 'grayscale' || patch.mode === undefined) {
     const suggested = suggestPaletteSize(a)
     patch.paletteSize = suggested
-    rationale.push(
-      a.distinctColors >= 65536
-        ? `Rich color content — using ${suggested} palette entries.`
-        : `≈${a.distinctColors} distinct colors measured — ${suggested} palette entries cover it.`,
-    )
+    if (a.distinctColors >= 65536) {
+      r.add('richColor', `Rich color content — using ${suggested} palette entries.`, {
+        count: suggested,
+      })
+    } else {
+      r.add(
+        'distinctColors',
+        `≈${a.distinctColors} distinct colors measured — ${suggested} palette entries cover it.`,
+        { count: a.distinctColors, size: suggested },
+      )
+    }
     if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat) {
       patch.denoise = 'bilateral'
-      rationale.push('Photographic texture detected — bilateral denoise keeps edges clean.')
+      r.add('photoTexture', 'Photographic texture detected — bilateral denoise keeps edges clean.')
     }
   }
 
@@ -78,48 +108,55 @@ export function recommendSettings(
     patch.autoPaletteSize = true
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 24)
     patch.smoothing = Math.max(patch.smoothing ?? 0, 0.9)
-    rationale.push(
+    r.add(
+      'compressed',
       'Compression artifacts — denoise, light blur and speckle merge recover clean shapes.',
     )
   }
 
   if (a.pixels > 4_000_000) {
     patch.maxDimension = 1600
-    rationale.push('Large source — tracing at 1600 px for speed with no visible loss.')
+    r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
   }
 
   if (a.edgeDensity > 0.2 && (patch.mode === 'bw' || patch.mode === 'centerline')) {
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 8)
-    rationale.push('Busy edges — filtering specks below 8 px².')
+    r.add('busyEdges', 'Busy edges — filtering specks below 8 px².')
   }
 
-  return { profileId, patch, rationale }
+  return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
 }
 
-function pickProfile(a: ImageAnalysis, rationale: string[]): ProfileId {
+function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   if (a.pixelArtScore >= 0.7) {
-    rationale.push('Small canvas with few flat colors — treating as pixel art.')
+    r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
     return 'pixel-art'
   }
   // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
   // two-color mark (navy on white, say) keeps its color through a flat profile.
   if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && a.colorfulness < ACHROMATIC_CHROMA) {
-    rationale.push('Essentially two-tone with high contrast — black & white tracing fits best.')
+    r.add(
+      'pickBwSketch',
+      'Essentially two-tone with high contrast — black & white tracing fits best.',
+    )
     return 'bw-sketch'
   }
   if (a.photoScore > 0.6) {
     if (isCompressedFlat(a)) {
-      rationale.push('Compression noise over a few flat colors — cleaning up as flat art.')
+      r.add(
+        'pickCompressedFlat',
+        'Compression noise over a few flat colors — cleaning up as flat art.',
+      )
       return 'illustration'
     }
-    rationale.push('Photographic content — posterized profile.')
+    r.add('pickPhoto', 'Photographic content — posterized profile.')
     return 'photo'
   }
   if (a.distinctColors <= 24 && a.microGradientDensity < 0.08) {
-    rationale.push('Flat shapes with few colors — logo profile with seam-free cutout layers.')
+    r.add('pickLogo', 'Flat shapes with few colors — logo profile with seam-free cutout layers.')
     return 'logo'
   }
-  rationale.push('Mixed flat artwork — illustration profile.')
+  r.add('pickIllustration', 'Mixed flat artwork — illustration profile.')
   return 'illustration'
 }
 

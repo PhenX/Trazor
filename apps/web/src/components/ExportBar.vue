@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { copyText, downloadSvg, svgToDataUri } from '../lib/download'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 const disabled = computed(() => store.result === null)
 
 function onDownload(): void {
@@ -14,33 +16,41 @@ function onDownload(): void {
 async function onCopySvg(): Promise<void> {
   if (!store.result) return
   const ok = await copyText(store.result.svg)
-  store.notify(ok ? 'SVG markup copied' : 'Clipboard unavailable', ok ? 'success' : 'error')
+  store.notify(t(ok ? 'toasts.svgCopied' : 'toasts.clipboardUnavailable'), ok ? 'success' : 'error')
 }
 
 async function onCopyDataUri(): Promise<void> {
   if (!store.result) return
   const ok = await copyText(svgToDataUri(store.result.svg))
-  store.notify(ok ? 'Data URI copied' : 'Clipboard unavailable', ok ? 'success' : 'error')
+  store.notify(
+    t(ok ? 'toasts.dataUriCopied' : 'toasts.clipboardUnavailable'),
+    ok ? 'success' : 'error',
+  )
 }
 </script>
 
 <template>
   <div class="export">
-    <button class="btn btn-sm" :disabled="disabled" title="Copy the SVG markup" @click="onCopySvg">
-      Copy SVG
+    <button
+      class="btn btn-sm"
+      :disabled="disabled"
+      :title="t('exportBar.copySvgTitle')"
+      @click="onCopySvg"
+    >
+      {{ t('exportBar.copySvg') }}
     </button>
     <button
       class="btn btn-sm"
       :disabled="disabled"
-      title="Copy as data: URI for img/src or CSS"
+      :title="t('exportBar.copyDataUriTitle')"
       @click="onCopyDataUri"
     >
-      Copy data-URI
+      {{ t('exportBar.copyDataUri') }}
     </button>
     <button
       class="btn btn-primary btn-sm"
       :disabled="disabled"
-      :title="`Download ${store.exportName} (Ctrl+S)`"
+      :title="t('exportBar.downloadTitle', { name: store.exportName })"
       @click="onDownload"
     >
       <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
@@ -53,7 +63,7 @@ async function onCopyDataUri(): Promise<void> {
           stroke-linejoin="round"
         />
       </svg>
-      Download SVG
+      {{ t('exportBar.download') }}
     </button>
   </div>
 </template>

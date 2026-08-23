@@ -17,14 +17,20 @@ import type {
   VectorizeSettings,
 } from '@trazor/core'
 import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
-import type { ImageAnalysis, PaletteSuggestion } from '@trazor/assist'
+import type { ImageAnalysis, PaletteSuggestion, RationaleKey } from '@trazor/assist'
 import { TrazorClient } from '@trazor/engine'
+import { extractGeometry } from '@trazor/svg'
+import type { SvgGeometry } from '@trazor/svg'
 import type { MlAvailability, MlProgress } from '@trazor/ml'
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { applyLocale, pickInitialLocale, translate as t } from '../i18n'
+import type { LocaleCode } from '../i18n'
 import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
+import { buildLayers } from '../lib/layers'
+import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
 import { getSample } from '../lib/samples'
 
@@ -64,6 +70,18 @@ interface PersistedState {
   autoOnLoad?: boolean
   /** Id of the newest release note the visitor has seen (see lib/releaseNotes). */
   lastSeenRelease?: string
+  /** UI language; unset until the visitor picks one (auto-detected meanwhile). */
+  locale?: LocaleCode
+  /** Whether the layer visualizer panel is open (desktop preference). */
+  layersOpen?: boolean
+}
+
+/** A layer (and optional contour) singled out for preview highlighting. */
+export interface LayerFocus {
+  /** Index into `layerModel.layers`. */
+  layer: number
+  /** Index into that layer's `shapes`, or null for the whole layer. */
+  shape: number | null
 }
 
 function loadPersisted(): PersistedState {
@@ -103,10 +121,10 @@ function mlPhaseInfo(p: MlProgress): { progress: number | null; phase: string } 
   if (p.phase === 'download') {
     const frac = p.total > 0 ? (p.loaded / p.total) * 0.85 : null
     const mb = (p.loaded / 1_000_000).toFixed(1)
-    return { progress: frac, phase: `Downloading model · ${mb} MB` }
+    return { progress: frac, phase: t('ml.phaseDownloading', { mb }) }
   }
-  if (p.phase === 'compile') return { progress: 0.9, phase: 'Compiling model' }
-  return { progress: null, phase: 'Running' }
+  if (p.phase === 'compile') return { progress: 0.9, phase: t('ml.phaseCompiling') }
+  return { progress: null, phase: t('ml.phaseRunning') }
 }
 
 export const useAppStore = defineStore('app', () => {
@@ -134,7 +152,8 @@ export const useAppStore = defineStore('app', () => {
   const theme = ref<Theme>(
     persisted.theme === 'light' || persisted.theme === 'dark' ? persisted.theme : systemTheme(),
   )
-  const assistRationale = ref<string[] | null>(null)
+  /** Structured reasons behind the last auto-recommendation (localized in the UI). */
+  const assistRationale = ref<RationaleKey[] | null>(null)
   const toasts = ref<Toast[]>([])
   const paletteSuggestions = ref<PaletteSuggestion[]>([])
   /** True while suggestions are being recomputed for a changed image. */
@@ -156,6 +175,19 @@ export const useAppStore = defineStore('app', () => {
   const autoOnLoad = ref(persisted.autoOnLoad !== false)
   /** Id of the newest release note the visitor has acknowledged (What's new panel). */
   const lastSeenRelease = ref<string | null>(persisted.lastSeenRelease ?? null)
+  /** Active UI language. Persisted once chosen; auto-detected on the first visit. */
+  const locale = ref<LocaleCode>(persisted.locale ?? pickInitialLocale())
+
+  // ---------------------------- Layer panel ------------------------------
+  // The panel opens on the right on desktop and starts closed on mobile (a
+  // full-height drawer would otherwise cover the result on load).
+  const startMobile =
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  const layersOpen = ref(startMobile ? false : persisted.layersOpen !== false)
+  /** Layer/contour under the pointer in the panel (transient highlight). */
+  const layerHover = ref<LayerFocus | null>(null)
+  /** Pinned layer (click) — highlighted and expanded until cleared. */
+  const selectedLayer = ref<number | null>(null)
 
   // Non-reactive machinery
   let client: TrazorClient | null = null
@@ -198,6 +230,45 @@ export const useAppStore = defineStore('app', () => {
     return `${base || 'vectorized'}.svg`
   })
 
+  // Decoded result geometry, parsed once per result and shared by the layer
+  // panel and the preview's complexity/highlight overlays.
+  const geometry = computed<SvgGeometry | null>(() =>
+    result.value ? extractGeometry(result.value.svg) : null,
+  )
+  /** Color layers (and their contours) derived from the result. */
+  const layerModel = computed<LayerModel | null>(() =>
+    geometry.value ? buildLayers(geometry.value) : null,
+  )
+  /** The layer/contour the preview should highlight: hover wins over selection. */
+  const layerFocus = computed<LayerFocus | null>(() => {
+    if (layerHover.value) return layerHover.value
+    if (selectedLayer.value !== null) return { layer: selectedLayer.value, shape: null }
+    return null
+  })
+
+  function setLayerHover(focus: LayerFocus | null): void {
+    layerHover.value = focus
+  }
+
+  /** Toggle a pinned layer; clicking the pinned layer again clears it. */
+  function toggleSelectedLayer(index: number): void {
+    selectedLayer.value = selectedLayer.value === index ? null : index
+  }
+
+  function setLayersOpen(open: boolean): void {
+    layersOpen.value = open
+  }
+
+  function toggleLayersOpen(): void {
+    layersOpen.value = !layersOpen.value
+  }
+
+  // A new trace invalidates layer indices — drop any hover/selection.
+  watch(result, () => {
+    layerHover.value = null
+    selectedLayer.value = null
+  })
+
   // ------------------------------- Toasts --------------------------------
   function notify(message: string, kind: ToastKind = 'info'): void {
     const id = ++toastCounter
@@ -206,7 +277,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function dismissToast(id: number): void {
-    toasts.value = toasts.value.filter((t) => t.id !== id)
+    toasts.value = toasts.value.filter((toast) => toast.id !== id)
   }
 
   // ------------------------------ Loading --------------------------------
@@ -232,7 +303,7 @@ export const useAppStore = defineStore('app', () => {
       const image = await decodeBlob(blob, name)
       await installImage(image, name || 'image')
     } catch (e) {
-      notify(`Could not load image: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.couldNotLoad', { error: errorMessage(e) }), 'error')
     }
   }
 
@@ -241,9 +312,9 @@ export const useAppStore = defineStore('app', () => {
     if (!sample) return
     try {
       const image = await sample.make()
-      await installImage(image, sample.label.toLowerCase())
+      await installImage(image, t(`samples.${sample.id}.label`).toLowerCase())
     } catch (e) {
-      notify(`Could not build sample: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.couldNotBuildSample', { error: errorMessage(e) }), 'error')
     }
   }
 
@@ -303,10 +374,10 @@ export const useAppStore = defineStore('app', () => {
       activeProfileId.value = imported.activeProfileId
       profileModified.value = imported.profileModified
       assistRationale.value = null
-      notify('Settings imported', 'success')
+      notify(t('toasts.settingsImported'), 'success')
       return true
     } catch (e) {
-      notify(`Import failed: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.importFailed', { error: errorMessage(e) }), 'error')
       return false
     }
   }
@@ -321,9 +392,9 @@ export const useAppStore = defineStore('app', () => {
       settings.value = normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch })
       activeProfileId.value = rec.profileId
       profileModified.value = false
-      assistRationale.value = rec.rationale
+      assistRationale.value = rec.rationaleKeys
     } catch (e) {
-      notify(`Auto settings failed: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.autoFailed', { error: errorMessage(e) }), 'error')
     }
   }
 
@@ -491,7 +562,7 @@ export const useAppStore = defineStore('app', () => {
   async function ensureEdgeHint(image: RasterImage): Promise<GrayImage | null> {
     if (!edgePrepass.value) return null
     if (edgeHintImage === image && edgeHint) return edgeHint
-    mlState.edge = { busy: true, progress: null, phase: 'Preparing' }
+    mlState.edge = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
       const info = mlPhaseInfo(p)
       mlState.edge = { busy: true, progress: info.progress, phase: info.phase }
@@ -509,7 +580,7 @@ export const useAppStore = defineStore('app', () => {
       edgeHint = edges
       return edges
     } catch (e) {
-      notify(`Edge pre-pass unavailable: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.edgeUnavailable', { error: errorMessage(e) }), 'error')
       edgePrepass.value = false // don't retry every run until the model exists
       return null
     } finally {
@@ -528,7 +599,7 @@ export const useAppStore = defineStore('app', () => {
   async function removeBackground(): Promise<void> {
     const image = workingImage.value
     if (!image || mlState.removeBg.busy) return
-    mlState.removeBg = { busy: true, progress: null, phase: 'Preparing' }
+    mlState.removeBg = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
       const info = mlPhaseInfo(p)
       mlState.removeBg = { busy: true, progress: info.progress, phase: info.phase }
@@ -540,10 +611,10 @@ export const useAppStore = defineStore('app', () => {
       // Only apply if the user hasn't swapped images mid-run.
       if (workingImage.value === image) {
         workingImage.value = out.image
-        notify('Background removed — tracing the cutout', 'success')
+        notify(t('toasts.bgRemoved'), 'success')
       }
     } catch (e) {
-      notify(`Background removal failed: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.bgRemovedFailed', { error: errorMessage(e) }), 'error')
     } finally {
       mlState.removeBg = { busy: false, progress: null, phase: '' }
     }
@@ -559,7 +630,7 @@ export const useAppStore = defineStore('app', () => {
   async function cleanUp(): Promise<void> {
     const image = workingImage.value
     if (!image || mlState.cleanup.busy) return
-    mlState.cleanup = { busy: true, progress: null, phase: 'Preparing' }
+    mlState.cleanup = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
       const info = mlPhaseInfo(p)
       mlState.cleanup = { busy: true, progress: info.progress, phase: info.phase }
@@ -575,10 +646,10 @@ export const useAppStore = defineStore('app', () => {
       // Only apply if the user hasn't swapped images mid-run.
       if (workingImage.value === image) {
         workingImage.value = out.image
-        notify('Cleaned up — tracing the denoised image', 'success')
+        notify(t('toasts.cleanedUp'), 'success')
       }
     } catch (e) {
-      notify(`Cleanup unavailable: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.cleanupFailed', { error: errorMessage(e) }), 'error')
     } finally {
       mlState.cleanup = { busy: false, progress: null, phase: '' }
     }
@@ -588,7 +659,7 @@ export const useAppStore = defineStore('app', () => {
     if (!sourceImage.value) return
     cancelMagicSelect()
     workingImage.value = sourceImage.value
-    notify('Restored the original image', 'info')
+    notify(t('toasts.restoredOriginal'), 'info')
   }
 
   // ---------------------------- Magic select -----------------------------
@@ -626,7 +697,7 @@ export const useAppStore = defineStore('app', () => {
       cancelMagicSelect()
       return
     }
-    mlState.magic = { busy: true, progress: null, phase: 'Preparing' }
+    mlState.magic = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
       const info = mlPhaseInfo(p)
       mlState.magic = { busy: true, progress: info.progress, phase: info.phase }
@@ -650,11 +721,11 @@ export const useAppStore = defineStore('app', () => {
       }
       if (workingImage.value === image) {
         workingImage.value = next
-        notify('Selection applied — tracing the cutout', 'success')
+        notify(t('toasts.selectionApplied'), 'success')
       }
       cancelMagicSelect()
     } catch (e) {
-      notify(`Magic select failed: ${errorMessage(e)}`, 'error')
+      notify(t('toasts.magicFailed', { error: errorMessage(e) }), 'error')
     } finally {
       mlState.magic = { busy: false, progress: null, phase: '' }
     }
@@ -674,9 +745,29 @@ export const useAppStore = defineStore('app', () => {
     theme.value = theme.value === 'dark' ? 'light' : 'dark'
   }
 
+  // ------------------------------ Language -------------------------------
+  /** Switch the UI language and keep the shared i18n instance in sync. */
+  function setLocale(next: LocaleCode): void {
+    locale.value = next
+  }
+
+  // Drive the vue-i18n instance from store state so every consumer (components
+  // and the store's own toasts) reads one active locale.
+  watch(locale, (next) => applyLocale(next), { immediate: true })
+
   // ---------------------------- Persistence ------------------------------
   watch(
-    [settings, activeProfileId, profileModified, theme, edgePrepass, autoOnLoad, lastSeenRelease],
+    [
+      settings,
+      activeProfileId,
+      profileModified,
+      theme,
+      edgePrepass,
+      autoOnLoad,
+      lastSeenRelease,
+      locale,
+      layersOpen,
+    ],
     () => {
       try {
         const state: PersistedState = {
@@ -687,6 +778,8 @@ export const useAppStore = defineStore('app', () => {
           edgePrepass: edgePrepass.value,
           autoOnLoad: autoOnLoad.value,
           lastSeenRelease: lastSeenRelease.value ?? undefined,
+          locale: locale.value,
+          layersOpen: layersOpen.value,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -720,12 +813,19 @@ export const useAppStore = defineStore('app', () => {
     edgePrepass,
     autoOnLoad,
     lastSeenRelease,
+    locale,
+    layersOpen,
+    layerHover,
+    selectedLayer,
     // derived
     hasImage,
     activeProfile,
     isWorkingModified,
     exportName,
     unseenReleaseCount,
+    geometry,
+    layerModel,
+    layerFocus,
     // actions
     notify,
     dismissToast,
@@ -759,5 +859,10 @@ export const useAppStore = defineStore('app', () => {
     applyMagicSelect,
     markReleasesSeen,
     toggleTheme,
+    setLocale,
+    setLayerHover,
+    toggleSelectedLayer,
+    setLayersOpen,
+    toggleLayersOpen,
   }
 })

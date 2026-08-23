@@ -86,6 +86,8 @@ On top of that, three things most tracers don't do:
 - **Portable settings**: export the full configuration as versioned JSON to the
   clipboard or a `.json` file, and import it back by paste or file — share a
   recipe or move it between machines. Everything stays local.
+- **Localized**: English and French, auto-detected from the browser with a
+  header language switcher; the choice is remembered.
 - **Deterministic**: same image + same settings ⇒ byte-identical SVG.
 
 ## Quick start
@@ -164,7 +166,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 - Gradient detection & mesh-free gradient fills for photo modes
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
-- i18n (FR first)
+- More UI languages (English and French ship today)
 
 The ML approach behind several of these — shape/primitive fitting, semantic layering, the differentiable refinement pass —
 and how a training dataset would be produced (and how determinism is scoped so WebGPU stays allowed) is written up in

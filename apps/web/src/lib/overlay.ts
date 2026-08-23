@@ -15,14 +15,3 @@ export const SHAPE_KIND_TOKEN: Record<SvgElementKind, string> = {
   circle: '--warn',
   ellipse: '--danger',
 }
-
-/** Singular display label per element kind (pluralized with a trailing `s`). */
-export const SHAPE_KIND_LABEL: Record<SvgElementKind, string> = {
-  path: 'path',
-  rect: 'rect',
-  circle: 'circle',
-  ellipse: 'ellipse',
-  line: 'line',
-  polyline: 'polyline',
-  polygon: 'polygon',
-}

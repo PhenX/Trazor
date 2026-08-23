@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { RasterImage } from '@trazor/core'
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { acceptAttr } from '../lib/decode'
 import { SAMPLES } from '../lib/samples'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
@@ -102,7 +104,7 @@ function onDrop(event: DragEvent): void {
   if (file) {
     void store.loadBlob(file, file.name)
   } else {
-    store.notify('Drop an image file (PNG, JPEG, WebP, GIF, BMP, AVIF or SVG)', 'error')
+    store.notify(t('toasts.dropImage'), 'error')
   }
 }
 
@@ -193,16 +195,16 @@ defineExpose({ openPicker })
               stroke-linecap="round"
             />
           </svg>
-          <span class="target-title">Drop an image, paste, or browse</span>
+          <span class="target-title">{{ t('dropzone.title') }}</span>
           <span class="target-sub">
-            PNG · JPEG · WebP · GIF · BMP · AVIF · SVG — processed locally, nothing is uploaded
+            {{ t('dropzone.formats') }}
           </span>
-          <span class="btn btn-primary browse">Browse files</span>
-          <span class="target-kbd"><kbd>Ctrl</kbd>+<kbd>V</kbd> to paste</span>
+          <span class="btn btn-primary browse">{{ t('dropzone.browse') }}</span>
+          <span class="target-kbd"><kbd>Ctrl</kbd>+<kbd>V</kbd> {{ t('dropzone.toPaste') }}</span>
         </button>
 
         <div class="samples">
-          <span class="samples-title">or try a sample</span>
+          <span class="samples-title">{{ t('dropzone.orSample') }}</span>
           <div class="sample-grid">
             <button
               v-for="sample in SAMPLES"
@@ -218,8 +220,8 @@ defineExpose({ openPicker })
                   :ref="(el) => setThumbRef(sample.id, el as HTMLCanvasElement | null)"
                 />
               </span>
-              <span class="sample-label">{{ sample.label }}</span>
-              <span class="sample-tagline">{{ sample.tagline }}</span>
+              <span class="sample-label">{{ t(`samples.${sample.id}.label`) }}</span>
+              <span class="sample-tagline">{{ t(`samples.${sample.id}.tagline`) }}</span>
             </button>
           </div>
         </div>
@@ -229,8 +231,10 @@ defineExpose({ openPicker })
     <!-- Replace veil while dragging with an image loaded -->
     <div v-if="dragging" class="veil">
       <div class="veil-card">
-        <span class="veil-title">{{ store.hasImage ? 'Drop to replace' : 'Drop it' }}</span>
-        <span class="veil-sub">the image is decoded and traced locally</span>
+        <span class="veil-title">{{
+          store.hasImage ? t('dropzone.dropReplace') : t('dropzone.dropIt')
+        }}</span>
+        <span class="veil-sub">{{ t('dropzone.veilSub') }}</span>
       </div>
     </div>
   </div>

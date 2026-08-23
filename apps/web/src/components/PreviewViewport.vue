@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { clamp } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
-import { extractGeometry } from '@trazor/svg'
 import type { SvgElementKind, SvgGeometry } from '@trazor/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { formatCount, STAGE_LABELS } from '../lib/format'
-import { SHAPE_KIND_LABEL, SHAPE_KIND_TOKEN } from '../lib/overlay'
+import { useI18n } from 'vue-i18n'
+import { formatCount } from '../lib/format'
+import { SHAPE_KIND_TOKEN } from '../lib/overlay'
 import { useAppStore } from '../store/appStore'
 import PreviewOverlay from './PreviewOverlay.vue'
 
 type ViewMode = 'split' | 'result' | 'original' | 'diff'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 const paneEl = ref<HTMLDivElement | null>(null)
 const origCanvas = ref<HTMLCanvasElement | null>(null)
@@ -70,6 +71,14 @@ const svgLayerStyle = computed(() =>
   view.value === 'split' ? { clipPath: `inset(0 0 0 ${splitFrac.value * 100}%)` } : {},
 )
 
+// In split view the original only occupies the left of the divider. Without this
+// complementary clip it also fills the right, showing through the SVG's
+// transparent areas and making the trace look like it reproduced detail it did
+// not. The two halves meet exactly at the divider.
+const origLayerStyle = computed(() =>
+  view.value === 'split' ? { clipPath: `inset(0 ${(1 - splitFrac.value) * 100}% 0 0)` } : {},
+)
+
 const dividerX = computed(() => tx.value + splitFrac.value * docW.value * scale.value)
 
 // --------------------------- Complexity overlay --------------------------
@@ -77,8 +86,28 @@ const dividerX = computed(() => tx.value + splitFrac.value * docW.value * scale.
 // their density shows the geometric complexity. Parsed only while the toggle is
 // on (and only when the SVG layer is visible).
 const geometry = computed<SvgGeometry | null>(() =>
-  showNodes.value && showSvg.value && store.result ? extractGeometry(store.result.svg) : null,
+  showNodes.value && showSvg.value ? store.geometry : null,
 )
+
+// --------------------------- Layer highlight -----------------------------
+// The layer panel points at a color layer (or one contour); isolate it in the
+// preview by dimming everything else and outlining the focus. Faithful: the
+// scrim is punched through a mask so the real traced pixels of the focus show,
+// never a redraw. Stroke (centerline) layers have no fill area to reveal, so
+// they are marked by the accent outline alone.
+const focus = computed<{ d: string; stroke: boolean } | null>(() => {
+  const f = store.layerFocus
+  const model = store.layerModel
+  if (!f || !model) return null
+  const layer = model.layers[f.layer]
+  if (!layer) return null
+  const d = f.shape !== null ? (layer.shapes[f.shape]?.d ?? null) : layer.d
+  if (d === null || d === '') return null
+  return { d, stroke: layer.stroke }
+})
+
+// Keep the outline ~1.6px on screen regardless of zoom (viewBox px == screen px / scale).
+const focusOutlineWidth = computed(() => 1.6 / scale.value)
 
 // Clip the overlay to the SVG side of the split so it does not bleed over the
 // original image; unclipped in the full result view.
@@ -94,7 +123,6 @@ interface LegendItem {
   kind: SvgElementKind
   count: number
   token: string
-  label: string
 }
 const overlayLegend = computed<LegendItem[]>(() => {
   const geo = geometry.value
@@ -108,16 +136,15 @@ const overlayLegend = computed<LegendItem[]>(() => {
       kind,
       count,
       token: SHAPE_KIND_TOKEN[kind],
-      label: SHAPE_KIND_LABEL[kind],
     }))
     .toSorted((a, b) => b.count - a.count)
 })
 
-const VIEWS: ReadonlyArray<{ id: ViewMode; label: string; key: string }> = [
-  { id: 'split', label: 'Split', key: '1' },
-  { id: 'result', label: 'Result', key: '2' },
-  { id: 'original', label: 'Original', key: '3' },
-  { id: 'diff', label: 'Diff', key: '4' },
+const VIEWS: ReadonlyArray<{ id: ViewMode; key: string }> = [
+  { id: 'split', key: '1' },
+  { id: 'result', key: '2' },
+  { id: 'original', key: '3' },
+  { id: 'diff', key: '4' },
 ]
 
 function viewDisabled(id: ViewMode): boolean {
@@ -347,7 +374,10 @@ onBeforeUnmount(() => {
 const progressLabel = computed(() => {
   const p = store.progress
   if (!p) return ''
-  return `${STAGE_LABELS[p.stage]} · ${Math.round(p.overall * 100)}%`
+  return t('preview.progress', {
+    stage: t(`stages.${p.stage}`),
+    percent: Math.round(p.overall * 100),
+  })
 })
 
 const zoomReadout = computed(() => `${Math.round(scale.value * 100)}%`)
@@ -359,7 +389,7 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   <div class="viewport">
     <!-- Toolbar -->
     <div class="toolbar">
-      <div class="tabs" role="tablist" aria-label="Preview mode">
+      <div class="tabs" role="tablist" :aria-label="t('preview.modeAria')">
         <button
           v-for="v in VIEWS"
           :key="v.id"
@@ -368,18 +398,18 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           :class="{ 'is-active': view === v.id }"
           :aria-selected="view === v.id"
           :disabled="viewDisabled(v.id)"
-          :title="`${v.label} (${v.key})`"
+          :title="t('preview.viewTitle', { label: t(`preview.${v.id}`), key: v.key })"
           @click="setView(v.id)"
         >
-          {{ v.label }}
+          {{ t(`preview.${v.id}`) }}
         </button>
       </div>
 
       <div class="zoom">
         <button
           class="btn btn-ghost btn-icon btn-sm"
-          title="Zoom out"
-          aria-label="Zoom out"
+          :title="t('preview.zoomOut')"
+          :aria-label="t('preview.zoomOut')"
           @click="zoomOut"
         >
           −
@@ -387,19 +417,23 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
         <span class="zoom-readout mono">{{ zoomReadout }}</span>
         <button
           class="btn btn-ghost btn-icon btn-sm"
-          title="Zoom in"
-          aria-label="Zoom in"
+          :title="t('preview.zoomIn')"
+          :aria-label="t('preview.zoomIn')"
           @click="zoomIn"
         >
           +
         </button>
-        <button class="btn btn-ghost btn-sm" title="Fit image to view (F)" @click="fit">Fit</button>
-        <button class="btn btn-ghost btn-sm" title="Zoom to 100% (0)" @click="zoom100">100%</button>
+        <button class="btn btn-ghost btn-sm" :title="t('preview.fitTitle')" @click="fit">
+          {{ t('preview.fit') }}
+        </button>
+        <button class="btn btn-ghost btn-sm" :title="t('preview.zoom100Title')" @click="zoom100">
+          100%
+        </button>
         <button
           class="btn btn-ghost btn-icon btn-sm"
           :class="{ 'is-on': checker }"
-          title="Toggle transparency checkerboard"
-          aria-label="Toggle transparency checkerboard"
+          :title="t('preview.toggleChecker')"
+          :aria-label="t('preview.toggleChecker')"
           :aria-pressed="checker"
           @click="checker = !checker"
         >
@@ -412,8 +446,8 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           class="btn btn-ghost btn-icon btn-sm"
           :class="{ 'is-on': showNodes }"
           :disabled="!hasResult"
-          title="Show path nodes & outlines (N)"
-          aria-label="Show path nodes and outlines"
+          :title="t('preview.showNodes')"
+          :aria-label="t('preview.showNodesAria')"
           :aria-pressed="showNodes"
           @click="toggleNodes"
         >
@@ -464,6 +498,7 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           ref="origCanvas"
           class="layer layer-original"
           :class="{ pixelated, dimmed: view === 'diff' }"
+          :style="origLayerStyle"
         />
         <div
           v-show="showSvg"
@@ -471,6 +506,44 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           :style="svgLayerStyle"
           v-html="store.result?.svg ?? ''"
         />
+        <svg
+          v-if="showSvg && focus"
+          class="layer layer-highlight"
+          :viewBox="`0 0 ${docW} ${docH}`"
+          preserveAspectRatio="none"
+          :style="svgLayerStyle"
+          aria-hidden="true"
+        >
+          <defs>
+            <mask
+              id="trz-focus-mask"
+              maskUnits="userSpaceOnUse"
+              x="0"
+              y="0"
+              :width="docW"
+              :height="docH"
+            >
+              <rect x="0" y="0" :width="docW" :height="docH" fill="#fff" />
+              <path v-if="!focus.stroke" :d="focus.d" fill="#000" fill-rule="evenodd" />
+            </mask>
+          </defs>
+          <rect
+            x="0"
+            y="0"
+            :width="docW"
+            :height="docH"
+            class="scrim"
+            mask="url(#trz-focus-mask)"
+          />
+          <path
+            :d="focus.d"
+            fill="none"
+            class="focus-outline"
+            :stroke-width="focusOutlineWidth"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+        </svg>
         <canvas v-show="showDiff" ref="diffCanvas" class="layer layer-diff pixelated" />
 
         <!-- Magic-select markers -->
@@ -526,23 +599,25 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
 
       <!-- Magic-select pending points helper -->
       <span v-if="store.magicActive" class="magic-chip chip chip--accent">
-        {{ store.magicPoints.length }} point{{ store.magicPoints.length === 1 ? '' : 's' }} ·
-        <kbd>Enter</kbd> apply · <kbd>Esc</kbd> cancel
+        {{ t('preview.points', { count: store.magicPoints.length }, store.magicPoints.length) }} ·
+        <kbd>Enter</kbd> {{ t('common.apply') }} · <kbd>Esc</kbd> {{ t('common.cancel') }}
       </span>
 
       <!-- Complexity readout: a per-element-kind legend, colored to match the overlay -->
       <div v-if="showNodes && overlayLegend.length" class="nodes-chip chip">
         <span v-for="item in overlayLegend" :key="item.kind" class="legend-item">
           <span class="legend-dot" :style="{ background: `var(${item.token})` }" />
-          {{ formatCount(item.count) }} {{ item.label }}{{ item.count === 1 ? '' : 's' }}
+          {{ formatCount(item.count) }} {{ t(`shapes.${item.kind}`, item.count) }}
         </span>
       </div>
 
       <!-- Worker error card -->
       <div v-if="store.error && !store.busy" class="error-card card">
-        <span class="error-title">Vectorization failed</span>
+        <span class="error-title">{{ t('preview.errorTitle') }}</span>
         <p class="error-msg">{{ store.error }}</p>
-        <button class="btn btn-primary btn-sm" @click="store.run(true)">Retry</button>
+        <button class="btn btn-primary btn-sm" @click="store.run(true)">
+          {{ t('preview.retry') }}
+        </button>
       </div>
     </div>
   </div>
@@ -731,6 +806,22 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* Layer isolation overlay: dim the rest, outline the focused layer/contour. */
+.layer-highlight {
+  pointer-events: none;
+  z-index: 1;
+}
+
+.layer-highlight .scrim {
+  fill: var(--bg-0);
+  fill-opacity: 0.62;
+}
+
+.layer-highlight .focus-outline {
+  stroke: var(--accent);
+  opacity: 0.95;
 }
 
 .marker {

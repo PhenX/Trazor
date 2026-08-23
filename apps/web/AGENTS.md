@@ -20,8 +20,9 @@ src/
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
   lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
                           overlay (per-element-kind colors/labels for the complexity overlay),
+                          layers (group traced SVG geometry into color layers + contours for the layer panel),
                           releaseNotes (the user-facing changelog + its date/iteration helpers)
-  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, StatsBar, ExportBar, ReleaseNotes, ToastHost
+  components/             AppHeader, DropZone, SettingsPanel, MlTools, PreviewViewport, PreviewOverlay, LayerPanel, LayerThumb, StatsBar, ExportBar, ReleaseNotes, ToastHost
   components/controls/    ControlRow / SliderRow / SelectRow / SwitchRow / ColorRow / TextRow
   styles/base.css         design tokens (dark + light), shared component classes
 ```
@@ -65,6 +66,32 @@ internal-doc edits).
 - **Write for users, not contributors.** A short `title` and one plain-language line per change in `items` — say what
   someone can now do or what got better, not which module changed. Pick the `kind` (`feature` / `improvement` / `fix`)
   that best fits. Keep emoji out of the notes.
+
+## Internationalization (i18n)
+
+The UI ships in **English and French** via `vue-i18n` (Composition API, `legacy: false`). The catalogs
+live in [`src/i18n/locales/`](src/i18n/locales/): `en.ts` is the source-of-truth schema (`MessageSchema`),
+and `fr.ts` is typed as that schema so a missing or extra key is a **type error**. A parity test
+([`test/i18n.test.ts`](test/i18n.test.ts)) additionally asserts the two catalogs share the same keys,
+the same `{named}` placeholders, and the same plural-branch counts.
+
+- **Every user-visible string goes through the catalogs.** Add the key to **both** `en.ts` and `fr.ts`
+  (same path), then read it in a component with `const { t } = useI18n()` and `t('group.key')`. From the
+  store and other non-component modules use `translate` (re-exported as `t`) from `src/i18n`. Never
+  hardcode display text, `title`/`aria-label`/`placeholder` attributes, or toast messages.
+- **Locale is auto-detected** from `navigator.languages` (French → `fr`, otherwise English), overridable
+  from the header language menu, and persisted in the store's localStorage state (`locale`). The store
+  owns the `locale` ref and drives the shared instance; `App.vue` reflects it onto `<html lang>`.
+- **Package strings are localized by stable id/code, not by translating in the package.** Keep
+  `@trazor/*` packages emitting English text plus a stable identifier, and translate app-side:
+  `profiles.<id>`, `modes.<id>`, `stages.<id>`, `samples.<id>`, `palettes.<id>`, `warnings.<code>` (with
+  the warning's `params`), and auto-recommend `rationale.<code>` (with `RationaleKey.params` from
+  `@trazor/assist`). When a package produces interpolated user-facing text, expose the values as
+  structured `params`/codes (as `VectorizeWarning.params` and `Recommendation.rationaleKeys` do) rather
+  than baking presentation-only translated prose into the package.
+- **Release-note copy** (`title`/`items` in `lib/releaseNotes.ts`) stays English; only the panel chrome
+  and the date (`Intl`, active locale) are localized. Number grouping (`formatCount`) also follows the
+  active locale.
 
 ## Workflow
 

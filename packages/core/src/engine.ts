@@ -17,7 +17,10 @@ export type WarningCode =
 export interface VectorizeWarning {
   code: WarningCode
   severity: 'info' | 'warning'
+  /** Human-readable English text; also the fallback when a UI does not localize `code`. */
   message: string
+  /** Values interpolated into `message`, so a UI can localize it from `code` + these. */
+  params?: Record<string, string | number>
 }
 
 export interface StageTiming {

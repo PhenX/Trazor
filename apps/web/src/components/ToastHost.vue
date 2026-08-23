@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 </script>
 
 <template>
@@ -18,7 +20,7 @@ const store = useAppStore()
         <span class="toast-msg">{{ toast.message }}</span>
         <button
           class="toast-close"
-          aria-label="Dismiss notification"
+          :aria-label="t('common.dismiss')"
           @click="store.dismissToast(toast.id)"
         >
           ×

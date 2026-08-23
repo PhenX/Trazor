@@ -1,13 +1,30 @@
 <script setup lang="ts">
+import type { VectorizeWarning } from '@trazor/core'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { copyText } from '../lib/download'
-import { formatBytes, formatCount, formatMs, STAGE_LABELS } from '../lib/format'
+import { formatBytes, formatCount, formatMs } from '../lib/format'
+import { warningKeyBase } from '../lib/warnings'
 import { useAppStore } from '../store/appStore'
 import ExportBar from './ExportBar.vue'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 const MAX_SWATCHES = 18
+
+/** Short chip label for a warning (localized by its stable code). */
+function warningLabel(w: VectorizeWarning): string {
+  return t(`${warningKeyBase(w.code)}.label`)
+}
+
+/** Full warning text, interpolated from the engine's params (count drives plural). */
+function warningMessage(w: VectorizeWarning): string {
+  const key = `${warningKeyBase(w.code)}.message`
+  const params = w.params ?? {}
+  const count = typeof params.count === 'number' ? params.count : undefined
+  return count === undefined ? t(key, params) : t(key, params, count)
+}
 
 const sourceInfo = computed(() => {
   const img = store.sourceImage
@@ -41,7 +58,10 @@ const maxStageMs = computed(() =>
 
 async function copySwatch(hex: string): Promise<void> {
   const ok = await copyText(hex)
-  store.notify(ok ? `${hex} copied` : 'Clipboard unavailable', ok ? 'success' : 'error')
+  store.notify(
+    ok ? t('toasts.hexCopied', { hex }) : t('toasts.clipboardUnavailable'),
+    ok ? 'success' : 'error',
+  )
 }
 </script>
 
@@ -49,46 +69,56 @@ async function copySwatch(hex: string): Promise<void> {
   <footer class="stats">
     <div
       class="cluster source"
-      :title="sourceInfo ? `${sourceInfo.name} — ${sourceInfo.size}px` : ''"
+      :title="
+        sourceInfo
+          ? t('stats.sourceSizeTitle', { name: sourceInfo.name, size: sourceInfo.size })
+          : ''
+      "
     >
       <template v-if="sourceInfo">
         <span class="src-name">{{ sourceInfo.name }}</span>
         <span class="src-size mono">{{ sourceInfo.size }}</span>
-        <span v-if="tracedSize" class="src-size mono traced" title="Traced size after downscale">
+        <span v-if="tracedSize" class="src-size mono traced" :title="t('stats.tracedSize')">
           → {{ tracedSize }}
         </span>
       </template>
-      <span v-else class="muted">No image</span>
+      <span v-else class="muted">{{ t('stats.noImage') }}</span>
     </div>
 
-    <div v-if="store.result" class="cluster palette" aria-label="Result palette">
+    <div v-if="store.result" class="cluster palette" :aria-label="t('stats.resultPalette')">
       <button
         v-for="(hex, i) in swatches"
         :key="`${hex}-${i}`"
         class="swatch"
         :style="{ background: hex }"
-        :title="`${hex} — click to copy`"
+        :title="t('stats.swatchCopy', { hex })"
         @click="copySwatch(hex)"
       />
       <span v-if="extraSwatches > 0" class="muted more">+{{ extraSwatches }}</span>
     </div>
 
     <div v-if="store.result" class="cluster numbers mono">
-      <span title="Paths">{{ formatCount(store.result.stats.pathCount) }} paths</span>
+      <span :title="t('stats.pathsTitle')">{{
+        t('stats.paths', { count: formatCount(store.result.stats.pathCount) })
+      }}</span>
       <span class="sep" />
-      <span title="Path nodes">{{ formatCount(store.result.stats.nodeCount) }} nodes</span>
+      <span :title="t('stats.nodesTitle')">{{
+        t('stats.nodes', { count: formatCount(store.result.stats.nodeCount) })
+      }}</span>
       <span class="sep" />
-      <span title="Colors">{{ store.result.stats.colorCount }} colors</span>
+      <span :title="t('stats.colorsTitle')">{{
+        t('stats.colors', { count: store.result.stats.colorCount })
+      }}</span>
       <span class="sep" />
-      <span title="SVG size">{{ formatBytes(store.result.stats.byteLength) }}</span>
+      <span :title="t('stats.svgSizeTitle')">{{ formatBytes(store.result.stats.byteLength) }}</span>
       <span class="sep" />
       <details class="timing">
-        <summary :title="'Total tracing time — open for per-stage timings'">
+        <summary :title="t('stats.totalTimeTitle')">
           {{ formatMs(store.result.stats.durationMs) }}
         </summary>
         <div class="timing-pop card">
           <div v-for="stage in store.result.stats.stages" :key="stage.stage" class="timing-row">
-            <span class="timing-label">{{ STAGE_LABELS[stage.stage] }}</span>
+            <span class="timing-label">{{ t(`stages.${stage.stage}`) }}</span>
             <span class="timing-bar">
               <span class="timing-fill" :style="{ width: `${(stage.ms / maxStageMs) * 100}%` }" />
             </span>
@@ -98,14 +128,10 @@ async function copySwatch(hex: string): Promise<void> {
       </details>
     </div>
 
-    <div
-      v-if="fidelityInfo"
-      class="cluster fidelity"
-      title="Perceptual fidelity (mean ΔE in Oklab)"
-    >
+    <div v-if="fidelityInfo" class="cluster fidelity" :title="t('stats.fidelityTitle')">
       <span class="dot" :class="fidelityInfo.cls" />
       <span class="mono">{{ fidelityInfo.label }}</span>
-      <span class="muted">match</span>
+      <span class="muted">{{ t('stats.match') }}</span>
     </div>
 
     <div v-if="store.result && store.result.warnings.length" class="cluster warnings">
@@ -114,9 +140,9 @@ async function copySwatch(hex: string): Promise<void> {
         :key="i"
         class="chip"
         :class="warning.severity === 'warning' ? 'chip--warn' : 'chip--accent'"
-        :title="warning.message"
+        :title="warningMessage(warning)"
       >
-        {{ warning.code }}
+        {{ warningLabel(warning) }}
       </span>
     </div>
 
