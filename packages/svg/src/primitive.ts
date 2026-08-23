@@ -194,8 +194,9 @@ function roundedRectSdf(
 /**
  * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
  * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
- * scan and accepts only if every densely sampled boundary point lies on that
- * rounded rect within tolerance, so a shape that is not really one is rejected.
+ * coarse scan refined with a golden-section search (sub-pixel), and accepts only
+ * if every densely sampled boundary point lies on that rounded rect within
+ * tolerance, so a shape that is not really one is rejected.
  */
 function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
   if (ops.length < 4 || !ops.every((o) => o.type === 'L' || o.type === 'C')) return null
@@ -226,28 +227,62 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
 
   const maxR = Math.min(hx, hy)
   const tol = Math.max(0.75, maxR * 0.03)
-  // Fit the corner radius by scanning for the smallest max-error.
-  let bestR = 0
-  let bestErr = Infinity
-  const steps = 64
-  for (let i = 1; i <= steps; i++) {
-    const r = (maxR * i) / steps
+  // Largest |SDF| over all samples for a candidate corner radius — minimized at
+  // the true radius (V-shaped: too small clips the corners, too large bulges).
+  const maxErr = (r: number): number => {
     let err = 0
     for (const p of samples) {
       const d = Math.abs(roundedRectSdf(p.x, p.y, cx, cy, hx, hy, r))
       if (d > err) err = d
     }
+    return err
+  }
+  // Coarse scan to bracket the minimum, then a golden-section search refines the
+  // radius to sub-pixel — the scan step (maxR/64) would otherwise cap accuracy.
+  const steps = 64
+  const step = maxR / steps
+  let bestR = step
+  let bestErr = Infinity
+  for (let i = 1; i <= steps; i++) {
+    const err = maxErr(step * i)
     if (err < bestErr) {
       bestErr = err
-      bestR = r
+      bestR = step * i
     }
   }
+  bestR = goldenMin(maxErr, Math.max(0, bestR - step), Math.min(maxR, bestR + step))
+  bestErr = maxErr(bestR)
   if (bestErr > tol) return null
   if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
   return round(
     { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
     precision,
   )
+}
+
+/** Golden-section search: the minimizer of a unimodal `f` on `[a, b]`. */
+function goldenMin(f: (x: number) => number, a: number, b: number): number {
+  const gr = (Math.sqrt(5) - 1) / 2 // 0.618…
+  let c = b - gr * (b - a)
+  let d = a + gr * (b - a)
+  let fc = f(c)
+  let fd = f(d)
+  for (let i = 0; i < 40; i++) {
+    if (fc < fd) {
+      b = d
+      d = c
+      fd = fc
+      c = b - gr * (b - a)
+      fc = f(c)
+    } else {
+      a = c
+      c = d
+      fc = fd
+      d = a + gr * (b - a)
+      fd = f(d)
+    }
+  }
+  return (a + b) / 2
 }
 
 /** Signed smallest angle a − b in (−π, π]. */

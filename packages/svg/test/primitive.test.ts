@@ -131,6 +131,19 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
     expect(p.r).toBeCloseTo(12, 0)
   })
 
+  it('recovers the corner radius to sub-pixel accuracy', () => {
+    // maxR = min(hx, hy) = 25, so the 64-step scan grid is ~0.39 px; this radius
+    // sits between two grid points, where a scan-only fit is ~0.2 px off. The
+    // golden-section refinement must land within a tenth of a pixel.
+    const r = 7.23
+    const p = detectPrimitive(roundedRectPath(10, 10, 90, 60, r), 3, true) as Extract<
+      Primitive,
+      { kind: 'rrect' }
+    >
+    expect(p.kind).toBe('rrect')
+    expect(Math.abs(p.r - r)).toBeLessThan(0.1)
+  })
+
   it('keeps a true circle as a circle, not a pill', () => {
     expect(detectPrimitive(ellipsePath(50, 50, 30, 30), 2, true)?.kind).toBe('circle')
   })
