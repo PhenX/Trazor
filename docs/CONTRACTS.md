@@ -453,6 +453,7 @@ export type WorkerInMessage =
       buffer: ArrayBuffer
       settings: VectorizeSettings
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
+      imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
     }
   | { type: 'cancel'; id: number }
 export type WorkerOutMessage =
@@ -483,7 +484,15 @@ export function vectorize(
   // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
   // bw mode; absent, tracing is byte-identical to the classical path.
   ctx?: EngineContext,
+  // Optional worker-side reuse of preprocess/palette intermediates across runs.
+  // The worker owns a single StageCache and passes a stable imageId; reuse is
+  // byte-identical to recomputation (deterministic stages, complete keys) and is
+  // disabled while an edge hint is present. Omit for a stateless run.
+  opts?: { imageId?: number; cache?: StageCache },
 ): Promise<VectorizeResult>
+// StageCache is an opaque worker-owned holder (preprocessed image + labels +
+// palette, keyed internally by imageId + settings slices). Instantiate as `{}`.
+export interface StageCache { /* engine-internal fields */ }
 ```
 
 ## @vectorizer/assist (reference — implemented by the main agent)

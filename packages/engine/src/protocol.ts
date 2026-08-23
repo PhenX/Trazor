@@ -12,6 +12,12 @@ export type WorkerInMessage =
       settings: VectorizeSettings
       /** Optional edge-hint plane: Float32, `width`×`height`, transferred. */
       edgeHint?: ArrayBuffer
+      /**
+       * Stable per-image identity: the same working image keeps the same id
+       * across setting tweaks, a new image gets a new one. Lets the worker reuse
+       * cached preprocess/palette intermediates; absent disables that reuse.
+       */
+      imageId?: number
     }
   | { type: 'cancel'; id: number }
 

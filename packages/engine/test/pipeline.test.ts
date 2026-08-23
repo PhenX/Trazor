@@ -9,6 +9,7 @@ import {
 } from '@vectorizer/core'
 import type { RasterImage, VectorizeSettings } from '@vectorizer/core'
 import { vectorize } from '@vectorizer/engine'
+import type { StageCache } from '@vectorizer/engine'
 
 function redSquareOnWhite(): RasterImage {
   const img = createRaster(60, 60)
@@ -349,5 +350,80 @@ describe('worker protocol', () => {
     await new Promise((resolve) => setTimeout(resolve, 500))
     const result = outbox.find((m) => (m as { type: string }).type === 'result')
     expect(result).toBeDefined()
+  })
+})
+
+describe('stage cache (E3)', () => {
+  // A colorful scene so the palette/segment stages do real work worth caching.
+  function scene(): RasterImage {
+    const img = createRaster(48, 48)
+    fillRaster(img, 250, 248, 240)
+    for (let y = 0; y < 48; y++) {
+      for (let x = 0; x < 48; x++) {
+        const d = Math.hypot(x + 0.5 - 20, y + 0.5 - 22)
+        if (d < 12) setPixel(img, x, y, 210, 60, 50)
+        else if (x > 30 && y > 28) setPixel(img, x, y, 40, 110, 190)
+        else if (x < 12 && y < 12) setPixel(img, x, y, 240, 200, 60)
+      }
+    }
+    return img
+  }
+
+  const run = (img: RasterImage, s: Partial<VectorizeSettings>, cache?: StageCache, imageId = 1) =>
+    vectorize(img, settings(s), undefined, cache ? { imageId, cache } : undefined)
+
+  it('a trace-only change reuses the cache and stays byte-identical to a fresh run', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    const base = { mode: 'color' as const, paletteSize: 6, layering: 'cutout' as const }
+
+    await run(img, { ...base, smoothing: 0.5 }, cache) // warms preprocess + palette
+    const cached = await run(img, { ...base, smoothing: 0.9, optTolerance: 0.4 }, cache)
+    const fresh = await run(img, { ...base, smoothing: 0.9, optTolerance: 0.4 })
+    expect(cached.svg).toBe(fresh.svg)
+    // The cache is populated and its labels were reused (not recomputed).
+    expect(cache.imageId).toBe(1)
+    expect(cache.labels).toBeDefined()
+  })
+
+  it('a palette change invalidates the label cache (matches a fresh run)', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    await run(img, { mode: 'color', paletteSize: 4 }, cache)
+    const cached = await run(img, { mode: 'color', paletteSize: 8 }, cache)
+    const fresh = await run(img, { mode: 'color', paletteSize: 8 })
+    expect(cached.svg).toBe(fresh.svg)
+  })
+
+  it('a preprocess change invalidates preprocess + palette (matches a fresh run)', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    await run(img, { mode: 'color', paletteSize: 6, blurRadius: 0 }, cache)
+    const cached = await run(img, { mode: 'color', paletteSize: 6, blurRadius: 2 }, cache)
+    const fresh = await run(img, { mode: 'color', paletteSize: 6, blurRadius: 2 })
+    expect(cached.svg).toBe(fresh.svg)
+  })
+
+  it('a new image id invalidates the cache (matches a fresh run)', async () => {
+    const cache: StageCache = {}
+    const a = scene()
+    const b = redSquareOnWhite()
+    await run(a, { mode: 'color', paletteSize: 6 }, cache, 1)
+    const cached = await vectorize(b, settings({ mode: 'color', paletteSize: 6 }), undefined, {
+      imageId: 2,
+      cache,
+    })
+    const fresh = await run(b, { mode: 'color', paletteSize: 6 })
+    expect(cached.svg).toBe(fresh.svg)
+  })
+
+  it('switching mode reuses preprocess only when compatible, staying correct', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    await run(img, { mode: 'color', paletteSize: 6 }, cache)
+    // grayscale changes the preKey (desaturation) → recompute, still correct.
+    const cachedGray = await run(img, { mode: 'grayscale', paletteSize: 6 }, cache)
+    const freshGray = await run(img, { mode: 'grayscale', paletteSize: 6 })
+    expect(cachedGray.svg).toBe(freshGray.svg)
   })
 })
