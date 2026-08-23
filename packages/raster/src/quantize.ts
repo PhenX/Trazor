@@ -23,6 +23,16 @@ export interface QuantizeOptions {
   seed: number
   /** `null`/absent ⇒ all pixels participate; 0-mask pixels get label -1. */
   mask?: BinaryMask | null
+  /**
+   * Restricts which in-mask pixels seed and refine the k-means centroids
+   * (1 = eligible). Every in-mask pixel is still labeled; only the training
+   * sample is filtered, so anti-aliased boundary pixels can be excluded from
+   * clustering without dropping them from the output. Ignored on the exact and
+   * fixed-palette paths. When too few pixels remain eligible the filter is
+   * dropped (falls back to sampling all in-mask pixels). Absent ⇒ no effect
+   * (byte-identical to sampling all in-mask pixels).
+   */
+  sampleMask?: BinaryMask | null
   /** Merge near-duplicate centroids (Oklab distance < 0.03) after k-means. */
   autoK?: boolean
   /**
@@ -270,10 +280,39 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   const feat = useOklab ? toOklabBuffer(image) : null
   const rng = mulberry32(opts.seed)
 
+  // Optional edge-aware pool: pixels eligible to train the centroids. Built
+  // only when a sampleMask is supplied and it leaves enough pixels; otherwise
+  // the classical all-in-mask sampling runs unchanged (byte-identical).
+  const smask = opts.sampleMask ? opts.sampleMask.data : null
+  let poolIdx: Int32Array | null = null
+  let poolCount = inMask
+  if (smask !== null) {
+    let count = 0
+    for (let i = 0; i < n; i++) {
+      if ((mask === null || mask[i] !== 0) && smask[i] !== 0) count++
+    }
+    // Keep the filter only when it leaves a representative sample.
+    if (count >= Math.max(k, 256)) {
+      const pool = new Int32Array(count)
+      let j = 0
+      for (let i = 0; i < n; i++) {
+        if ((mask === null || mask[i] !== 0) && smask[i] !== 0) pool[j++] = i
+      }
+      poolIdx = pool
+      poolCount = count
+    }
+  }
+
   // Deterministic pixel sample.
-  const sampleN = Math.min(inMask, 20000 + quality * 20000)
+  const sampleN = Math.min(poolCount, 20000 + quality * 20000)
   const samplePix = new Int32Array(sampleN)
-  if (inMask <= sampleN) {
+  if (poolIdx !== null) {
+    if (poolCount <= sampleN) {
+      for (let s = 0; s < poolCount; s++) samplePix[s] = poolIdx[s]
+    } else {
+      for (let s = 0; s < sampleN; s++) samplePix[s] = poolIdx[(rng() * poolCount) | 0]
+    }
+  } else if (inMask <= sampleN) {
     let s = 0
     for (let i = 0; i < n; i++) {
       if (mask === null || mask[i] !== 0) samplePix[s++] = i

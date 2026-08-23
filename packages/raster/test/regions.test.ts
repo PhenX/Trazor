@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LabelMap } from '@vectorizer/core'
-import { extractLabelMask, maskArea, mergeSmallRegions } from '../src/index'
+import { clearBorderLabel, extractLabelMask, maskArea, mergeSmallRegions } from '../src/index'
 import { maskOf } from './helpers'
 
 function labelMap(width: number, height: number, rows: number[][], count: number): LabelMap {
@@ -129,6 +129,40 @@ describe('mergeSmallRegions', () => {
     mergeSmallRegions(labels, 4)
     expect(labels.data[1 * 4 + 1]).toBe(1)
     expect(labels.data[2 * 4 + 2]).toBe(1)
+  })
+})
+
+describe('clearBorderLabel', () => {
+  it('clears the border-connected background but keeps enclosed same-color regions', () => {
+    // Label 0 is the surrounding background AND the center pixel; label 1 is a
+    // ring enclosing that center 0 (like white text inside a colored banner).
+    const rows = [
+      [0, 0, 0, 0, 0],
+      [0, 1, 1, 1, 0],
+      [0, 1, 0, 1, 0],
+      [0, 1, 1, 1, 0],
+      [0, 0, 0, 0, 0],
+    ]
+    const labels = labelMap(5, 5, rows, 2)
+    const cleared = clearBorderLabel(labels, 0)
+    expect(cleared).toBe(16) // the border frame, not the enclosed pixel
+    expect(labels.data[2 * 5 + 2]).toBe(0) // enclosed region survives
+    // Every border-frame pixel became -1.
+    expect(labels.data[0]).toBe(-1)
+    expect(labels.data[5 * 5 - 1]).toBe(-1)
+    // The ring is untouched.
+    expect(labels.data[1 * 5 + 1]).toBe(1)
+  })
+
+  it('is a no-op for a label not on the border', () => {
+    const rows = [
+      [1, 1, 1],
+      [1, 0, 1],
+      [1, 1, 1],
+    ]
+    const labels = labelMap(3, 3, rows, 2)
+    expect(clearBorderLabel(labels, 0)).toBe(0)
+    expect(labels.data[1 * 3 + 1]).toBe(0)
   })
 })
 
