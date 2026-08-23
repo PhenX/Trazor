@@ -353,6 +353,54 @@ describe('worker protocol', () => {
   })
 })
 
+describe('stacked layer masks (E1)', () => {
+  it('incremental peel builds the same union masks as a per-layer full rescan', () => {
+    // Synthetic label map with an uneven color distribution.
+    const w = 40
+    const h = 30
+    const lab = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let l = 0
+        if ((x - 20) ** 2 + (y - 15) ** 2 < 90) l = 1
+        else if (x > 30) l = 2
+        else if (y < 5) l = 3
+        if (x === 0 && y === 0) l = -1 // a masked pixel
+        lab[y * w + x] = l
+      }
+    }
+    const count = 4
+    const counts = new Int32Array(count)
+    for (const l of lab) if (l >= 0) counts[l]++
+    const order: number[] = []
+    for (let l = 0; l < count; l++) if (counts[l] > 0) order.push(l)
+    order.sort((a, b) => counts[b] - counts[a])
+    const position = new Int32Array(count).fill(-1)
+    order.forEach((label, i) => (position[label] = i))
+
+    // Reference: full rescan per layer (the pre-E1 construction).
+    const reference = order.map((_, i) => {
+      const m = new Uint8Array(w * h)
+      for (let p = 0; p < lab.length; p++) m[p] = lab[p] >= 0 && position[lab[p]] >= i ? 1 : 0
+      return m
+    })
+
+    // Incremental peel (the E1 construction).
+    const offset = new Int32Array(count + 1)
+    for (let l = 0; l < count; l++) offset[l + 1] = offset[l] + counts[l]
+    const bucket = new Int32Array(offset[count])
+    const cursor = offset.slice(0, count)
+    for (let p = 0; p < lab.length; p++) if (lab[p] >= 0) bucket[cursor[lab[p]]++] = p
+    const data = new Uint8Array(w * h)
+    for (let p = 0; p < lab.length; p++) data[p] = lab[p] >= 0 ? 1 : 0
+    for (let i = 0; i < order.length; i++) {
+      expect([...data]).toEqual([...reference[i]]) // identical bits, every layer
+      const label = order[i]
+      for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
+    }
+  })
+})
+
 describe('stage cache (E3)', () => {
   // A colorful scene so the palette/segment stages do real work worth caching.
   function scene(): RasterImage {

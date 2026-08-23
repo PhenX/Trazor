@@ -516,23 +516,32 @@ async function colorPipeline(
     const order: number[] = []
     for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
     order.sort((a, b) => counts[b] - counts[a])
-    const position = new Int32Array(counts.length).fill(-1)
-    order.forEach((label, i) => {
-      position[label] = i
-    })
+
+    // Pixel indices bucketed by label (one O(n) pass) so each layer is built
+    // from the previous one by removing just the label that dropped out — the
+    // union masks are the same bits as a per-layer full rescan, at O(n) total
+    // instead of O(k·n).
+    const lab = labels.data
+    const nPix = lab.length
+    const offset = new Int32Array(counts.length + 1)
+    for (let l = 0; l < counts.length; l++) offset[l + 1] = offset[l] + counts[l]
+    const bucket = new Int32Array(offset[counts.length])
+    const cursor = offset.slice(0, counts.length)
+    for (let p = 0; p < nPix; p++) {
+      const l = lab[p]
+      if (l >= 0) bucket[cursor[l]++] = p
+    }
 
     const layerMask: BinaryMask = {
       width: labels.width,
       height: labels.height,
-      data: new Uint8Array(labels.width * labels.height),
+      data: new Uint8Array(nPix),
     }
+    const data = layerMask.data
+    // Layer 0 is every labeled pixel (all layers stacked); higher layers peel off.
+    for (let p = 0; p < nPix; p++) data[p] = lab[p] >= 0 ? 1 : 0
+
     for (let i = 0; i < order.length; i++) {
-      const data = layerMask.data
-      const lab = labels.data
-      for (let p = 0; p < lab.length; p++) {
-        const l = lab[p]
-        data[p] = l >= 0 && position[l] >= i ? 1 : 0
-      }
       const traced = traceMask(layerMask, {
         ...curveOpts,
         turnPolicy: settings.turnPolicy,
@@ -543,6 +552,9 @@ async function colorPipeline(
       for (const shape of traced) {
         shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd' })
       }
+      // Remove this layer's own pixels so the next mask is the layers below it.
+      const label = order[i]
+      for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
       run.progress((i + 1) / order.length)
       // Sequential on purpose: yields the worker event loop between layers so
       // cancel messages interleave with the computation.
