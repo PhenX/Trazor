@@ -78,3 +78,80 @@ npm run eval:prepass -- --data /tmp/ds --pred /tmp/pred --split train --limit 8
 
 A perfect (clean) hint over a noisy input protects real detail but also preserves noise-driven regions, so it is a
 useful sanity check, not a target — a trained model predicts a sparser, denoised hint.
+
+---
+
+# Trazor vs. VTracer (tracer comparison)
+
+`tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
+tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
+each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
+reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, and a **spurious-hue**
+score — each traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam
+(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus node
+count, byte size, and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
+global k-means on color content.
+
+It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
+segmentation. Re-run it after either and watch the photo/gradient gap close **without** regressing the flat / line-art
+buckets.
+
+## Run it
+
+```sh
+cargo install vtracer          # once — or set VTRACER_BIN / pass --vtracer <bin>
+npm run eval:corpus            # write the built-in corpus → scripts/eval/corpus
+npm run eval:tracers -- --montage --json eval-artifacts/tracers/report.json
+```
+
+Or run it on VTracer's **own** showcase images — the fairest test, on its home turf:
+
+```sh
+npm run eval:samples   # fetch vtracer/docs/assets/samples → scripts/eval/corpus-vtracer
+npm run eval:tracers -- --data scripts/eval/corpus-vtracer --montage
+```
+
+VTracer is **optional**: with no binary found the harness reports Trazor alone and says so. By default Trazor traces each
+image with its **own auto-recommended settings** (`@trazor/assist` — what the app applies on load, tuned to balance
+accuracy and size), and vtracer gets the flags a user would pick for the same goal (`--preset photo`, `--colormode bw`,
+`--mode pixel`, …) — tool-vs-tool, not one hobbled against the other. Pass `--profile <id>` to force one Trazor profile
+for every image instead.
+
+### Options (`tracer-compare.ts`)
+
+| flag        | default                  | meaning                                                              |
+| ----------- | ------------------------ | -------------------------------------------------------------------- |
+| `--data`    | `scripts/eval/corpus`    | folder of PNG/JPEG images (+ optional `families.json` tags)          |
+| `--max-dim` | `1600`                   | resize inputs to this longest side before tracing both (0 = native)  |
+| `--out`     | `eval-artifacts/tracers` | where per-tracer SVGs and the montage are written                    |
+| `--vtracer` | `VTRACER_BIN` / PATH     | path to the vtracer binary                                           |
+| `--profile` | auto                     | force one Trazor profile for all (else each image's auto settings)   |
+| `--set k=v` | —                        | override a Trazor setting for every image (repeatable) for ablations |
+| `--limit`   | `0` (all)                | cap images                                                           |
+| `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer                 |
+| `--json`    | —                        | also write the report as JSON                                        |
+
+## The corpus
+
+`make-corpus.mjs` (`npm run eval:corpus`) writes a small, deterministic, **browser-free** image set spanning the families
+where the two tracers trade places (`badge`/`peaks` flat, `bloom` illustration, `ink` line-art, `sprite` pixel, `sunset`
+photo/gradient) plus a `families.json` tag map. It's git-ignored and reproducible — never committed.
+
+> **It is a signal generator, not a benchmark of record.** The built-in images are _synthetic and clean_, so they
+> under-represent VTracer's real strength: actual photographs with fine texture and hundreds of colors, where Trazor's
+> fixed-palette quantization bands. For a trustworthy verdict, point `--data` at a folder of **real photos** (any PNGs;
+> add a `families.json` to tag them). Read ΔE next to node count and bytes, not alone — higher fidelity bought with far
+> more nodes is a different trade than a genuine win.
+
+## VTracer's own samples
+
+`npm run eval:samples` (`fetch-vtracer-samples.mjs`) downloads VTracer's showcase images (its `docs/assets/samples`, via
+the jsDelivr CDN — the GitHub API and tarball are commonly gated) into a git-ignored `scripts/eval/corpus-vtracer/` with
+best-effort family tags, so the comparison runs on the very inputs VTracer is demoed on. They are third-party images
+(some are stock art), fetched on demand for local benchmarking only and never committed.
+
+Large inputs are resized to `--max-dim` (default 1600) before tracing **both** tools — VTracer has no downscale of its
+own and takes minutes on a 24 MP photo, so this keeps the comparison fair and completable. The montage (`--montage`)
+writes `index.html` next to the assets it references: `source/` (the resized input both tracers saw), `trazor/` and
+`vtracer/` (each tracer's SVG). The page itself shows fast, uncropped PNG thumbnails; open the on-disk SVGs to inspect
+the real vector output.

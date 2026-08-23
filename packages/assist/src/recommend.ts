@@ -80,17 +80,27 @@ export function recommendSettings(
   const compressedFlat = profileId !== 'photo' && isCompressedFlat(a)
 
   if (patch.mode === 'color' || patch.mode === 'grayscale' || patch.mode === undefined) {
+    // Rich color content keeps at least the profile's palette budget, with autoK
+    // (autoPaletteSize) trimming the surplus. Too few colors forces distinct
+    // regions — a subject and a similar-colored background, say — to share one
+    // centroid, which paints a blended color across both (the classic "the dog
+    // went green against the grass", and the invented seam bands between shapes).
+    // autoK still collapses genuine near-duplicate centroids, so already-clean art
+    // keeps a small palette and file; simple low-color images are untouched.
     const suggested = suggestPaletteSize(a)
-    patch.paletteSize = suggested
+    const rich = a.distinctColors > 32
+    const chosen = rich
+      ? Math.max(getProfile(profileId).patch.paletteSize ?? suggested, suggested)
+      : suggested
+    patch.paletteSize = chosen
+    if (rich) patch.autoPaletteSize = true
     if (a.distinctColors >= 65536) {
-      r.add('richColor', `Rich color content — using ${suggested} palette entries.`, {
-        count: suggested,
-      })
+      r.add('richColor', `Rich color content — up to ${chosen} palette entries.`, { count: chosen })
     } else {
       r.add(
         'distinctColors',
-        `≈${a.distinctColors} distinct colors measured — ${suggested} palette entries cover it.`,
-        { count: a.distinctColors, size: suggested },
+        `≈${a.distinctColors} distinct colors measured — ${chosen} palette entries cover it.`,
+        { count: a.distinctColors, size: chosen },
       )
     }
     if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat) {
@@ -138,6 +148,22 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
     r.add(
       'pickBwSketch',
       'Essentially two-tone with high contrast — black & white tracing fits best.',
+    )
+    return 'bw-sketch'
+  }
+  // Achromatic line art / ink drawing: no real color, a bright paper background,
+  // crisp strokes and few distinct tones — unlike a mid-toned grayscale photo,
+  // which fills the tonal range with smooth micro-gradients. Threshold B&W keeps
+  // the lines crisp and compact instead of stacking tonal gray layers.
+  if (
+    a.colorfulness < ACHROMATIC_CHROMA &&
+    a.meanLightness > 0.7 &&
+    a.edgeDensity > 0.1 &&
+    a.distinctColors <= 4096
+  ) {
+    r.add(
+      'pickInkLineart',
+      'Achromatic line art with crisp edges and few tones — black & white tracing.',
     )
     return 'bw-sketch'
   }

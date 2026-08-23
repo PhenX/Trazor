@@ -113,11 +113,17 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Peter Selinger, Potrace (software), GPL-2.0.** Reference implementation of
   the paper above; not used as code because its license is incompatible with
   this repository’s MIT license.
-- **Vision Cortex, “VTracer”, MIT/Apache-2.0.**
-  <https://www.visioncortex.org/vtracer-docs> — the O(n) color-tracing
-  framework (clustering → hierarchical layering → spline fit). Informed the
-  stacked/cutout layering vocabulary; superseded here by the shared
-  boundary-graph approach for seam-free cutouts.
+- **Vision Cortex, “VTracer”, MIT © 2024 TSANG, Hao Fung.**
+  <https://github.com/visioncortex/vtracer> — the O(n) color-tracing framework
+  (connected-cluster segmentation → hierarchical layering → spline fit). Used as
+  the measured benchmark oracle (`scripts/eval/tracer-compare.ts`); its clustering
+  was also ported and evaluated as a color segmentation front-end. The finding
+  ([`VTRACER_COMPARISON.md`](VTRACER_COMPARISON.md)): VTracer's low invented-hue
+  count comes from keeping many clusters, not from the clustering method, so a
+  region-mean port regresses in Trazor's small-palette pipeline — the color-fidelity
+  win came from palette budgeting instead (`packages/assist/src/recommend.ts`).
+  Informed the stacked/cutout layering vocabulary; cutouts use the shared
+  boundary-graph approach for seam-freedom.
 - **T. Xia, B. Liao & Y. Yu, “Patch-based Image Vectorization with Automatic
   Curvilinear Feature Alignment”, _SIGGRAPH Asia_ 2009**, and
   **J. Kopf & D. Lischinski, “Depixelizing Pixel Art”, _SIGGRAPH_ 2011** —

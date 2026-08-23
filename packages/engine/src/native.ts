@@ -30,6 +30,7 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
+  dissolveThinBands,
   estimateStrokeWidth,
   flattenImage,
   gaussianBlur,
@@ -41,6 +42,7 @@ import {
   resizeToFit,
   signedAdaptiveField,
   signedThresholdField,
+  smoothLabelsSpatial,
   toGrayscale,
   toOklabBuffer,
   zhangSuenThin,
@@ -54,6 +56,11 @@ const QUANTIZE_SEED = 0x02f6e2b1
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
+
+/** Coherence relaxation strength (squared-Oklab per disagreeing neighbor) at colorCoherence 1. */
+const COHERENCE_LAMBDA = 0.03
+/** Coherence relaxation passes. */
+const COHERENCE_ROUNDS = 4
 
 /** Boundary-map probability above which a pixel counts as a protected edge. */
 const EDGE_PROTECT_THRESHOLD = 0.5
@@ -217,6 +224,8 @@ function palKeyOf(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.dissolveBands,
+    s.colorCoherence,
     s.omitBackground,
   ].join('|')
 }
@@ -423,7 +432,7 @@ async function colorPipeline(
     for (let i = 0; i < clusterSample.data.length; i++) {
       clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
     }
-    const q = quantize(image, {
+    const quantOpts = {
       k: settings.paletteSize,
       colorSpace: settings.colorSpace,
       quality: settings.quantizeQuality,
@@ -432,7 +441,8 @@ async function colorPipeline(
       sampleMask: clusterSample,
       autoK: settings.autoPaletteSize,
       fixedPalette: settings.palette,
-    })
+    }
+    const q = quantize(image, quantOpts)
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
         ? q.paletteHex.length
@@ -440,6 +450,26 @@ async function colorPipeline(
     await run.tick()
 
     run.stage('segment')
+    // Spatial color coherence: re-assign each pixel by balancing palette-color
+    // distance against neighbor agreement, so a rim mixture joins a real
+    // neighboring region instead of a globally-nearest third color (fewer
+    // invented seam hues). A protected edge pixel is never moved; 0 is byte-identical.
+    if (settings.colorCoherence > 0) {
+      smoothLabelsSpatial(
+        q.labels,
+        toOklabBuffer(image),
+        paletteToOklab(q.paletteRgb),
+        settings.colorCoherence * COHERENCE_LAMBDA,
+        COHERENCE_ROUNDS,
+        protect ?? undefined,
+      )
+    }
+    // Dissolve thin mislabeled rim bands (a wrong color wedged between two
+    // regions) into the region they border, before the size merge. A protected
+    // edge pixel is never moved; 0 rounds is byte-identical to the classic path.
+    if (settings.dissolveBands > 0) {
+      dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
+    }
     // `protect` (hoisted above) lets an edge hint keep small regions on a
     // predicted boundary; with no hint this is byte-identical to the plain merge.
     if (settings.preserveDetails) {

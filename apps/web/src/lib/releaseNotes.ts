@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-23',
+    iteration: 6,
+    kind: 'improvement',
+    title: 'Cleaner color tracing and smarter auto settings',
+    items: [
+      'Color and illustration tracing keeps region colors more consistent along edges — fewer stray wrong-colored slivers between shapes — and produces smaller files with fewer nodes.',
+      'Auto settings now recognize black-and-white line drawings and trace them as crisp black & white instead of tonal gray tones.',
+    ],
+  },
+  {
+    date: '2026-08-23',
     iteration: 5,
     kind: 'feature',
     title: 'Layer visualizer',

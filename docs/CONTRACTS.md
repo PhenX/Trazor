@@ -185,6 +185,27 @@ export interface MergeOptions {
 // With opts, small regions are kept instead of absorbed when high-contrast
 // (keepContrast+oklab) or on a protected edge pixel (protect).
 export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
+// Dissolve 1px mislabeled boundary bands (an anti-aliased/JPEG rim quantized to a
+// third color) into the dominant neighbor region over `rounds` simultaneous
+// passes. Ties resolve to the smallest label id; `protect` pixels and -1 are
+// never moved; rounds <= 0 is a no-op. Opt-in via the `dissolveBands` setting
+// (default 0). Mutates and returns `labels`.
+export function dissolveThinBands(labels: LabelMap, rounds: number, protect?: BinaryMask): LabelMap
+// Spatially-coherent label relaxation (ICM over a Potts MRF): re-assign each pixel
+// to the label minimizing squared-Oklab color cost + `lambda` * disagreeing
+// 8-neighbors, over `rounds` simultaneous passes. Candidates are the pixel's own
+// label plus its neighbors', so the palette is untouched and rim mixtures join a
+// real neighboring region instead of a third color. `imageOklab` is n*3,
+// `paletteOklab` count*3; `protect` pixels and -1 never move; `lambda`<=0 or
+// `rounds`<=0 is a no-op. Opt-in via the `colorCoherence` setting. Mutates `labels`.
+export function smoothLabelsSpatial(
+  labels: LabelMap,
+  imageOklab: Float32Array,
+  paletteOklab: Float32Array,
+  lambda: number,
+  rounds: number,
+  protect?: BinaryMask,
+): LabelMap
 // Set to -1 the components of `label` connected (4-connected) to the image
 // border; interior same-color regions survive. Mutates labels, returns the
 // count cleared. Used by omitBackground so enclosed same-color shapes are kept.

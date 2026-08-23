@@ -25,6 +25,9 @@
     "dataset": "node scripts/dataset/generate.mjs",
     "corpus": "node scripts/corpus/fetch.mjs",
     "eval:prepass": "tsx scripts/eval/trace-eval.ts",
+    "eval:corpus": "node scripts/eval/make-corpus.mjs",
+    "eval:samples": "node scripts/eval/fetch-vtracer-samples.mjs",
+    "eval:tracers": "tsx scripts/eval/tracer-compare.ts",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

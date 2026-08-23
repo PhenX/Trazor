@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { LabelMap } from '@trazor/core'
-import { clearBorderLabel, extractLabelMask, maskArea, mergeSmallRegions } from '../src/index'
+import {
+  clearBorderLabel,
+  dissolveThinBands,
+  extractLabelMask,
+  maskArea,
+  mergeSmallRegions,
+  smoothLabelsSpatial,
+} from '../src/index'
 import { maskOf } from './helpers'
 
 function labelMap(width: number, height: number, rows: number[][], count: number): LabelMap {
@@ -129,6 +136,140 @@ describe('mergeSmallRegions', () => {
     mergeSmallRegions(labels, 4)
     expect(labels.data[1 * 4 + 1]).toBe(1)
     expect(labels.data[2 * 4 + 2]).toBe(1)
+  })
+})
+
+describe('dissolveThinBands', () => {
+  it('dissolves a 1px mislabeled band into the regions it borders', () => {
+    // Label 2 is a hairline column wedged between region 0 (left) and 1 (right).
+    const rows = [
+      [0, 0, 2, 1, 1, 1],
+      [0, 0, 2, 1, 1, 1],
+      [0, 0, 2, 1, 1, 1],
+    ]
+    const labels = labelMap(6, 3, rows, 3)
+    dissolveThinBands(labels, 2)
+    expect([...labels.data].some((v) => v === 2)).toBe(false) // the band is gone
+    expect(labels.data[1 * 6 + 0]).toBe(0) // the two real regions survive
+    expect(labels.data[1 * 6 + 5]).toBe(1)
+  })
+
+  it('leaves a coherent 2×2 region intact', () => {
+    const rows = [
+      [0, 0, 0, 0],
+      [0, 2, 2, 0],
+      [0, 2, 2, 0],
+      [0, 0, 0, 0],
+    ]
+    const labels = labelMap(4, 4, rows, 2)
+    dissolveThinBands(labels, 2)
+    expect(labels.data[1 * 4 + 1]).toBe(2)
+    expect(labels.data[2 * 4 + 2]).toBe(2)
+  })
+
+  it('is a no-op for rounds <= 0', () => {
+    const rows = [
+      [0, 2, 1],
+      [0, 2, 1],
+      [0, 2, 1],
+    ]
+    const labels = labelMap(3, 3, rows, 3)
+    dissolveThinBands(labels, 0)
+    expect([...labels.data]).toEqual([0, 2, 1, 0, 2, 1, 0, 2, 1])
+  })
+
+  it('never reassigns a protected pixel', () => {
+    const rows = [
+      [0, 0, 2, 1, 1],
+      [0, 0, 2, 1, 1],
+      [0, 0, 2, 1, 1],
+    ]
+    const labels = labelMap(5, 3, rows, 3)
+    const protect = { width: 5, height: 3, data: new Uint8Array(15) }
+    protect.data[1 * 5 + 2] = 1
+    dissolveThinBands(labels, 2, protect)
+    expect(labels.data[1 * 5 + 2]).toBe(2)
+  })
+
+  it('keeps a band with no labeled neighbors, and -1 stays -1', () => {
+    const rows = [
+      [-1, 2, -1],
+      [-1, 2, -1],
+      [-1, 2, -1],
+    ]
+    const labels = labelMap(3, 3, rows, 3)
+    dissolveThinBands(labels, 2)
+    expect([...labels.data]).toEqual([-1, 2, -1, -1, 2, -1, -1, 2, -1])
+  })
+})
+
+describe('smoothLabelsSpatial', () => {
+  // An Oklab image where every pixel takes its label's palette color.
+  function oklabOf(data: Int32Array, palette: number[][]): Float32Array {
+    const out = new Float32Array(data.length * 3)
+    for (let i = 0; i < data.length; i++) {
+      const c = palette[data[i]]
+      out[i * 3] = c[0]
+      out[i * 3 + 1] = c[1]
+      out[i * 3 + 2] = c[2]
+    }
+    return out
+  }
+
+  it('re-assigns a rim-mixture band to the region it borders', () => {
+    const rows = [
+      [0, 0, 2, 1, 1, 1],
+      [0, 0, 2, 1, 1, 1],
+      [0, 0, 2, 1, 1, 1],
+    ]
+    const labels = labelMap(6, 3, rows, 3)
+    const pal = [
+      [0.5, 0.2, 0], // 0 red
+      [0.5, -0.2, 0], // 1 blue
+      [0.5, 0, 0], // 2 the rim mixture between them
+    ]
+    smoothLabelsSpatial(labels, oklabOf(labels.data, pal), new Float32Array(pal.flat()), 0.05, 3)
+    expect([...labels.data].some((v) => v === 2)).toBe(false) // the invented band is gone
+    expect(labels.data[1 * 6 + 0]).toBe(0)
+    expect(labels.data[1 * 6 + 5]).toBe(1)
+  })
+
+  it('keeps a high-contrast 2×2 region against the coherence pull', () => {
+    const rows = [
+      [0, 0, 0, 0],
+      [0, 2, 2, 0],
+      [0, 2, 2, 0],
+      [0, 0, 0, 0],
+    ]
+    const labels = labelMap(4, 4, rows, 3)
+    const pal = [
+      [0.5, 0.2, 0], // 0
+      [0, 0, 0], // 1 (unused)
+      [0.5, 0, 0.3], // 2 — far from 0
+    ]
+    smoothLabelsSpatial(labels, oklabOf(labels.data, pal), new Float32Array(pal.flat()), 0.05, 3)
+    expect(labels.data[1 * 4 + 1]).toBe(2)
+    expect(labels.data[2 * 4 + 2]).toBe(2)
+  })
+
+  it('is a no-op for lambda or rounds <= 0', () => {
+    const rows = [
+      [0, 2, 1],
+      [0, 2, 1],
+      [0, 2, 1],
+    ]
+    const pal = [
+      [0.5, 0.2, 0],
+      [0.5, -0.2, 0],
+      [0.5, 0, 0],
+    ]
+    const flat = [0, 2, 1, 0, 2, 1, 0, 2, 1]
+    const a = labelMap(3, 3, rows, 3)
+    smoothLabelsSpatial(a, oklabOf(a.data, pal), new Float32Array(pal.flat()), 0, 3)
+    expect([...a.data]).toEqual(flat)
+    const b = labelMap(3, 3, rows, 3)
+    smoothLabelsSpatial(b, oklabOf(b.data, pal), new Float32Array(pal.flat()), 0.05, 0)
+    expect([...b.data]).toEqual(flat)
   })
 })
 

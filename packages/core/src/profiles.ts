@@ -41,6 +41,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       layering: 'stacked',
       smoothing: 0.8,
       minRegionArea: 4,
+      colorCoherence: 0.5,
     },
   },
   {
@@ -59,6 +60,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       layering: 'stacked',
       smoothing: 0.85,
       minRegionArea: 10,
+      colorCoherence: 0.5,
       maxDimension: 1200,
     },
   },

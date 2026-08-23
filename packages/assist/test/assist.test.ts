@@ -51,6 +51,26 @@ function grayPhoto() {
   return img
 }
 
+/** A shaded ink drawing on bright paper — achromatic, many gray tones (not
+ *  two-tone), crisp strokes: line art a grayscale-photo rule must not catch. */
+function inkDrawing() {
+  const img = createRaster(200, 200)
+  fillRaster(img, 245, 245, 245)
+  for (let y = 40; y < 160; y++) {
+    for (let x = 20; x < 180; x++) {
+      const hatch = (x + y) % 6 < 2
+      const g = hatch ? 60 + ((x * 7 + y * 3) % 120) : 245 - ((x + y) % 40)
+      setPixel(img, x, y, g, g, g)
+    }
+  }
+  for (let x = 10; x < 190; x++) {
+    const y = 100 + Math.round(20 * Math.sin(x / 12))
+    setPixel(img, x, y, 20, 20, 20)
+    setPixel(img, x, y + 1, 20, 20, 20)
+  }
+  return img
+}
+
 /** Half black, half white — an achromatic high-contrast sketch. */
 function inkOnWhite() {
   const img = createRaster(200, 200)
@@ -148,6 +168,13 @@ describe('recommendSettings', () => {
   it('routes an achromatic high-contrast sketch to B&W', () => {
     const rec = recommendSettings(analyzeImage(inkOnWhite()))
     expect(rec.profileId).toBe('bw-sketch')
+  })
+
+  it('routes a shaded achromatic line drawing (not two-tone) to B&W', () => {
+    const a = analyzeImage(inkDrawing())
+    expect(a.twoToneCoverage).toBeLessThan(0.92)
+    expect(a.colorfulness).toBeLessThan(0.03)
+    expect(recommendSettings(a).profileId).toBe('bw-sketch')
   })
 
   it('keeps a saturated two-tone mark in color rather than B&W', () => {
