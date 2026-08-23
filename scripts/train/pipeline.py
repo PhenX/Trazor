@@ -83,7 +83,12 @@ def main() -> None:
     )
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
-    p.add_argument("--base-channels", type=int, default=16, help="model width / size")
+    p.add_argument(
+        "--base-channels",
+        type=int,
+        default=None,
+        help="model width / size (default: 16 for edge, 32 for cleanup — restoration wants more capacity)",
+    )
     p.add_argument("--ssim-weight", type=float, default=0.5, help="cleanup: (1-SSIM) vs L1 weight, [0,1]")
     p.add_argument("--patience", type=int, default=10, help="early-stop after N stale epochs (0 = off)")
     p.add_argument("--workers", type=int, default=0, help="dataloader workers (raise for speed)")
@@ -106,6 +111,9 @@ def main() -> None:
             SMOKE["batch"],
             SMOKE["base_channels"],
         )
+    elif args.base_channels is None:
+        # Restoration (cleanup) benefits from more width than the sparse edge task.
+        args.base_channels = 32 if args.task == "cleanup" else 16
 
     # Resolve paths: smoke stays fully isolated under SMOKE_DIR (gitignored) — its
     # own dataset dir, checkpoint dir, and ONNX, none of them the real dataset or

@@ -35,7 +35,7 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 | **2** | Degradation & data realism ◐        | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
 | **3** | Learned signed-field head           | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
 | **4** | Primitive / arc fitting (classical) | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
-| **5** | Cleanup model capacity              | under-capacity vs its own spec     | Med                        | S      | Low                           |
+| **5** | Cleanup model capacity ✅           | under-capacity vs its own spec     | Med                        | S      | Low                           |
 | **6** | Bounded differentiable refinement   | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
 
 **Sequencing:** Sprint 1 = **1 → 2** (then retrain edge + cleanup, record the new baseline). Sprint 2 = **5** (quick) +
@@ -151,17 +151,19 @@ equal-or-better ΔE; determinism and cutout-anchor tests pass.
 **Docs.** `packages/trace/ARCHITECTURE.md`, `CONTRACTS.md`, `REFERENCES.md` (Fitzgibbon), flip the README roadmap line to
 shipped.
 
-## 5. Cleanup model capacity
+## 5. Cleanup model capacity — **implemented** (residual pending)
 
-**Why.** `pipeline.py` trains cleanup at `base=16`; [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md) says restoration wants
+**Shipped.** `pipeline.py` / `train.py` now default `--base-channels` per task — **16 for edge, 32 for cleanup** (base-32
+cleanup is ≈0.5 M params, well under the 5 MB budget); still overridable. **Pending:** the optional **residual**
+formulation (`clean = input + Δ`), which needs the export graph to de-normalize and add the input while keeping the
+browser contract (normalized in → [0,1] out) — worth it but validate at export parity before shipping.
+
+**Why.** `pipeline.py` trained cleanup at `base=16`; [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md) says restoration wants
 **32–48** ("image restoration benefits from capacity more than the sparse boundary task does").
 
-**How.** Give the tasks separate default `--base-channels` (edge 16, cleanup 32); consider a **residual** formulation
-(`clean = input + Δ`) for restoration stability. Retrain, measure via item 1, keep int8 < 5 MB.
+**Files.** `scripts/train/pipeline.py`, `scripts/train/train.py` (per-task default), `scripts/train/README.md` recipes.
 
-**Files.** `scripts/train/pipeline.py` (per-task default), `scripts/train/README.md` recipes.
-
-**Acceptance.** PSNR and downstream ΔE improve over base-16 at an acceptable quantized size.
+**Acceptance.** PSNR and downstream ΔE (item 1) improve over base-16 at an acceptable quantized size.
 
 ## 6. Bounded differentiable vector refinement (DiffVG / LIVE)
 

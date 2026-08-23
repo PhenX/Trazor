@@ -131,11 +131,11 @@ For the cleanup model, pass `--task cleanup` to steps 2 and 3 (reusing the same 
 
 Start here, then adjust from what you see. Sizes are pairs (per `--count`).
 
-| Goal                       | count    | base-channels | epochs (with `--patience 10`) | batch |
-| -------------------------- | -------- | ------------- | ----------------------------- | ----- |
-| Prototype (does it learn?) | 5k–20k   | 16            | 60                            | 32    |
-| Production                 | 50k–200k | 16–24         | 80                            | 32–64 |
-| Tiny file                  | 50k+     | 8–12          | 80                            | 32    |
+| Goal                       | count    | base-channels        | epochs (with `--patience 10`) | batch |
+| -------------------------- | -------- | -------------------- | ----------------------------- | ----- |
+| Prototype (does it learn?) | 5k–20k   | 16                   | 60                            | 32    |
+| Production                 | 50k–200k | 16 edge / 32 cleanup | 80                            | 32–64 |
+| Tiny file                  | 50k+     | 8–12                 | 80                            | 32    |
 
 ### Data mix (the highest-leverage knob)
 
@@ -159,9 +159,10 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 
 ### The knobs
 
-- **`--base-channels`** — model width, hence size and capacity. 16 is a good default. Bump to 24 if predictions look
-  blurry or miss thin edges (and you have the data); drop to 8–12 if the ONNX must be tiny. Keep it **< 5 MB** with
-  `--quantize`.
+- **`--base-channels`** — model width, hence size and capacity. Defaults per task: **16 for edge** (sparse boundaries),
+  **32 for cleanup** (image restoration wants more capacity — see [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md)).
+  Bump edge to 24 if predictions look blurry or miss thin edges (and you have the data); drop to 8–12 if the ONNX must be
+  tiny. Keep it **< 5 MB** with `--quantize` (base 32 cleanup is ≈0.5 M params, well under).
 - **`--ssim-weight`** (cleanup only) — blends the loss `(1-w)·L1 + w·(1-SSIM)`, default `0.5`. Raise toward `0.7–0.8`
   for crisper structure/contrast (can slightly shift colors); drop toward `0` for pure L1 (most color-faithful). Ignored
   for the edge task.

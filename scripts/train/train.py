@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--size", type=int, default=256)
-    p.add_argument("--base-channels", type=int, default=16)
+    p.add_argument("--base-channels", type=int, default=None, help="model width (default: 16 edge, 32 cleanup)")
     p.add_argument(
         "--ssim-weight",
         type=float,
@@ -98,6 +98,9 @@ def save_preview(model: torch.nn.Module, ds: PrepassDataset, path: Path, device:
 def main() -> None:
     args = parse_args()
     cfg = TASKS[args.task]
+    if args.base_channels is None:
+        # Restoration (cleanup) benefits from more width than the sparse edge task.
+        args.base_channels = 32 if args.task == "cleanup" else 16
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
