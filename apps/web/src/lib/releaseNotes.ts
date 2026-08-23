@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-23',
+    iteration: 4,
+    kind: 'fix',
+    title: 'Truer split view and smoother inspection',
+    items: [
+      'The side-by-side split view no longer lets the original image show through the traced result, so each side shows only its own picture.',
+      'Panning and zooming with "Show path nodes & outlines" turned on is noticeably smoother on detailed traces.',
+    ],
+  },
+  {
+    date: '2026-08-23',
     iteration: 3,
     kind: 'feature',
     title: 'Now available in French',
