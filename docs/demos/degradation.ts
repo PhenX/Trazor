@@ -11,7 +11,13 @@
 import { writeFileSync } from 'node:fs'
 import jpeg from 'jpeg-js'
 import { DEFAULTS } from '../../scripts/dataset/config.mjs'
-import { compositeOver, degrade, makeBackground } from '../../scripts/dataset/degrade.mjs'
+import {
+  compositeOver,
+  degrade,
+  makeBackground,
+  matteHalo,
+} from '../../scripts/dataset/degrade.mjs'
+import { createImage, lensDistort, perspectiveTransform } from '../../scripts/dataset/imageops.mjs'
 import { mulberry32, seedFor } from '../../scripts/dataset/random.mjs'
 import { renderShape } from '../../scripts/dataset/render.mjs'
 import { proceduralItem } from '../../scripts/dataset/sources.mjs'
@@ -65,6 +71,61 @@ for (let s = 0; s < 3; s++) {
   scenes.push(`<div class="row">${variants.join('')}</div>`)
 }
 
+// Geometric + matting augmentation (applied to the shape before targets are
+// derived, so edge/field/clean stay aligned; matting is input-only). Each is
+// composited over gray to make the warp and the halo rim visible.
+const gray = createImage(RES, RES)
+for (let i = 0; i < gray.data.length; i += 4) {
+  gray.data[i] = 210
+  gray.data[i + 1] = 214
+  gray.data[i + 2] = 220
+  gray.data[i + 3] = 255
+}
+// A config that isolates the multi-scale crop (no rotate/scale/perspective/lens).
+const cropCfg = {
+  ...cfg,
+  geometric: {
+    ...DEFAULTS.geometric,
+    enabled: true,
+    rotateDeg: 0,
+    scale: 0,
+    translateFrac: 0,
+    perspective: 0,
+    perspectiveProb: 0,
+    lens: 0,
+    lensProb: 0,
+    crop: true,
+    cropProb: 1,
+    cropZoom: { min: 2, max: 2 },
+  },
+}
+const geo: string[] = []
+for (let s = 0; s < 2; s++) {
+  const { svg } = proceduralItem(s * 5 + 11, 42)
+  const shape = renderShape(svg, cfg, mulberry32(seedFor(500, s)))
+  const persp = perspectiveTransform(shape, [
+    { x: 0.08, y: 0.02 },
+    { x: 0.9, y: 0.12 },
+    { x: 0.95, y: 0.92 },
+    { x: 0.05, y: 0.85 },
+  ])
+  geo.push(
+    `<div class="row">${[
+      cell(compositeOver(shape, gray), 'base'),
+      cell(compositeOver(persp, gray), 'perspective'),
+      cell(compositeOver(lensDistort(shape, 0.3), gray), 'lens distort'),
+      cell(
+        compositeOver(renderShape(svg, cropCfg, mulberry32(seedFor(560, s))), gray),
+        'multi-scale crop',
+      ),
+      cell(
+        compositeOver(matteHalo(shape, mulberry32(seedFor(570, s)), 0.85), gray),
+        'matting halo',
+      ),
+    ].join('')}</div>`,
+  )
+}
+
 const html = `<!doctype html>
 <meta charset="utf-8">
 <title>Dataset degradation pipeline</title>
@@ -85,11 +146,18 @@ seeded, so a given (seed, index) reproduces the sample exactly.</p>
 <p>Real uploads rarely sit on clean white: solid, gradient, radial, checker, stripes, and fractal/texture kinds.</p>
 <div class="row">${backgrounds.join('')}</div>
 <h2>Degradation range (same clean scene, different draws)</h2>
-<p>Blur (isotropic/anisotropic), resampling, Gaussian + shot noise, gamma/brightness/contrast drift, dither or posterize,
-and single/double JPEG — applied with randomized probability and strength.</p>
+<p>Blur (isotropic/anisotropic, optional sinc ringing), resampling, Gaussian + shot noise, gamma/brightness/contrast
+drift, dither or posterize, and single/double JPEG — applied with randomized probability and strength.</p>
 ${scenes.join('\n')}
+<h2>Geometric &amp; matting augmentation</h2>
+<p>Applied to the shape <em>before</em> targets are derived, so edge/field/clean stay pixel-aligned — except the matting
+halo, an input-only imperfect-cutout rim. Each variant is composited over flat gray to make the warp and the rim
+visible.</p>
+${geo.join('\n')}
 `
 
 const out = new URL('degradation.html', import.meta.url)
 writeFileSync(out, html)
-console.log(`wrote ${out.pathname} — 8 backgrounds + ${scenes.length} scenes × 6 degraded variants`)
+console.log(
+  `wrote ${out.pathname} — 8 backgrounds + ${scenes.length} scenes × 6 degraded variants + ${geo.length} geometric rows`,
+)
