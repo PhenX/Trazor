@@ -32,6 +32,8 @@ export const DEFAULTS = {
     matteStrengthMax: 0.8, // max rim alpha fraction
     blurSigmaMax: 2, // max gaussian blur sigma
     blurAnisoProb: 0.5, // chance a blur uses a different vertical sigma (directional)
+    ringingProb: 0.2, // chance of windowed-sinc ringing (edge overshoot; 0 = off)
+    ringingRadius: 3, // sinc kernel radius
     resampleMinScale: 0.5, // down-then-up resampling floor (1 = disabled)
     noiseStdMax: 18, // gaussian read-noise sigma on the 0..255 scale
     poissonProb: 0.4, // chance of intensity-dependent shot noise (0 = off)
@@ -117,6 +119,9 @@ export function parseArgs(argv) {
       case 'no-matte':
         cfg.degrade.matteProb = 0
         break
+      case 'no-ringing':
+        cfg.degrade.ringingProb = 0
+        break
       case 'no-double-jpeg':
         cfg.degrade.doubleJpegProb = 0
         break
@@ -154,5 +159,6 @@ Usage: npm run dataset -- [options]
   --no-poisson               disable intensity-dependent shot noise
   --no-double-jpeg           never re-encode JPEG a second time
   --no-matte                 disable the matting-halo rim on inputs
+  --no-ringing               disable windowed-sinc edge ringing
   --help                     show this message
 `

@@ -140,6 +140,9 @@ export function degrade(scene, cfg, rng) {
     const sy = chance(rng, p.blurAnisoProb) ? uniform(rng, 0.3, p.blurSigmaMax) : sx
     out = gaussianBlur(out, sx, sy)
   }
+  // Sinc-ring: a windowed-sinc low-pass whose negative lobes overshoot near sharp
+  // edges (Gibbs ringing) — the halo bandlimiting / aggressive resampling leaves.
+  if (p.ringingProb > 0 && chance(rng, p.ringingProb)) out = sincRing(out, p.ringingRadius)
   // Low-resolution source: down- then up-sample.
   if (p.resampleMinScale < 1 && chance(rng, 0.7))
     out = resampleRoundtrip(out, uniform(rng, p.resampleMinScale, 1))
@@ -209,6 +212,23 @@ function makeValueNoise(rng) {
     }
     return clamp01(sum)
   }
+}
+
+// Windowed-sinc (Hamming) separable convolution. Its negative side lobes make
+// sharp edges overshoot/undershoot — the ringing artifact bandlimiting produces.
+function sincRing(img, radius) {
+  const r = Math.max(2, Math.round(radius))
+  const kernel = new Float32Array(r * 2 + 1)
+  let sum = 0
+  for (let i = -r; i <= r; i++) {
+    const x = i / (r / 2)
+    const sinc = i === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x)
+    const win = 0.54 + 0.46 * Math.cos((Math.PI * i) / r) // Hamming
+    kernel[i + r] = sinc * win
+    sum += kernel[i + r]
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum
+  return convolveSeparable(img, kernel, r, kernel, r)
 }
 
 // Separable Gaussian blur with independent horizontal/vertical sigma (RGB only;

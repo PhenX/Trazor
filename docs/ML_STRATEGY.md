@@ -180,15 +180,16 @@ Then add corruptions specific to _real vectorizer inputs_, which generic super-r
 - **Tone** — gamma / color-profile shifts, contrast changes.
 - **Line-art specific** — paper grain, pencil texture, scanner speckle for ink/centerline modes.
 
-**Shipped** (seeded, probabilistic): tone (gamma/brightness/contrast), isotropic **and** anisotropic blur, down/up
-resampling, Gaussian **and** shot (Poisson) noise, Floyd–Steinberg dither and posterize, single **and** double JPEG, and
-procedural backgrounds (solid/gradient/radial/checker/stripes/fractal/texture) — all in
+**Shipped** (seeded, probabilistic): tone (gamma/brightness/contrast), isotropic **and** anisotropic blur (plus
+windowed-sinc edge ringing), down/up resampling, Gaussian **and** shot (Poisson) noise, Floyd–Steinberg dither and
+posterize, single **and** double JPEG, and procedural backgrounds (solid/gradient/radial/checker/stripes/fractal/texture)
+— all in
 [`../scripts/dataset/degrade.mjs`](../scripts/dataset/README.md); a projective (perspective) warp, radial lens
 distortion, and a **multi-scale crop** (render larger, crop a native-size window — closing the training/inference tiling
 scale gap) in the geometric augmentation (`render.mjs`), all applied to the shape so targets stay aligned; and
 **input-side matting halos** (an imperfect-cutout rim applied only to the input, so the ground truth stays aligned).
-**Still pending** (tracked in [`ML_ROADMAP.md`](ML_ROADMAP.md) item 2): true photographic-asset backgrounds and
-sinc-ringing blur.
+**Still pending** (tracked in [`ML_ROADMAP.md`](ML_ROADMAP.md) item 2): true photographic-asset backgrounds (real photos,
+not just procedural texture).
 
 ### Where to get SVGs
 

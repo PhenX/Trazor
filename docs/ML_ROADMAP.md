@@ -71,15 +71,16 @@ that regresses clean inputs beyond tolerance is flagged.
 
 ## 2. Degradation & data realism — **partially implemented**
 
-**Shipped** (seeded/deterministic): tone (gamma/brightness/contrast), anisotropic blur, Gaussian + shot (Poisson) noise,
-single/double JPEG, Floyd–Steinberg dither, and richer procedural backgrounds (radial/stripes/fractal/texture) in
+**Shipped** (seeded/deterministic): tone (gamma/brightness/contrast), anisotropic blur, windowed-sinc edge ringing,
+Gaussian + shot (Poisson) noise, single/double JPEG, Floyd–Steinberg dither, and richer procedural backgrounds
+(radial/stripes/fractal/texture) in
 `degrade.mjs`; in `render.mjs`'s geometric augmentation (all applied to the shape, so targets stay aligned) a
 **projective (perspective) warp**, **radial lens distortion**, and a **multi-scale crop** (render larger, crop a
 native-size window — closing the tiling domain gap); **input-side matting halos** (imperfect-cutout rim, applied only to
 the input); mild defaults raised (`blurSigmaMax` 2, `noiseStdMax` 18, `jpegQuality.min` 20). Visual: the
-[`degradation`](demos/degradation.html) demo. **Still pending:** true photographic-asset backgrounds, sinc-ringing blur,
-and `canonicalize()`. Next: retrain the edge and cleanup models on the richer data, then record the item-1 numbers as the
-new baseline.
+[`degradation`](demos/degradation.html) demo. **Still pending:** true photographic-asset backgrounds (real photos) and
+`canonicalize()` (flatten transforms / resolve `<use>` for real SVG corpora). Next: retrain the edge and cleanup models
+on the richer data, then record the item-1 numbers as the new baseline.
 
 **Why.** `scripts/dataset/degrade.mjs` + `config.mjs` ship a mild subset of the high-order degradation model
 [`ML_STRATEGY.md`](ML_STRATEGY.md#the-degradation-pipeline-why-clean-renders-fail) calls for, so the models under-cover

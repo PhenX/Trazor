@@ -55,8 +55,9 @@ with `--targets edge,clean,field` (all three by default).
    **clean scene** (also the cleanup target). The model **input** is composited separately from a copy that may carry a
    matting-halo rim (imperfect-cutout artifact), so the clean/edge/field targets stay halo-free and aligned. — `sample.mjs`
 4. **Degrade** a copy of the clean scene, each effect applied with a seeded probability and strength: tone
-   (gamma/brightness/contrast) → blur (isotropic or anisotropic) → down/up resample → Gaussian + shot noise → dither or
-   posterize → single/double JPEG (high-order degradation, Real-ESRGAN / BSRGAN style) → the **input**. See the
+   (gamma/brightness/contrast) → blur (isotropic or anisotropic, plus optional sinc ringing) → down/up resample →
+   Gaussian and shot noise → dither or posterize → single/double JPEG (high-order degradation, Real-ESRGAN / BSRGAN style) → the
+   **input**. See the
    [`degradation`](../../docs/demos/degradation.html) demo for a visual. — `degrade.mjs`
 
 ## Determinism
