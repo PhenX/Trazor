@@ -2,8 +2,10 @@
 
 How (and how much) to use machine learning to push output quality toward the best commercial vectorizers, and — the
 question that motivated this doc — **what a training dataset should look like, how big it should be, and how to produce
-it**. This is a strategy/roadmap document, not a contract; nothing here is shipped yet. Shipped algorithms and models are
-tracked in [`REFERENCES.md`](REFERENCES.md); the pipeline it plugs into is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+it**. This is a strategy/roadmap document, not a contract; most of it is not shipped — the exception is the first
+milestone, the **learned edge pre-pass**, which is now trained and shipped ([`EDGE_PREPASS.md`](EDGE_PREPASS.md)). Shipped
+algorithms and models are tracked in [`REFERENCES.md`](REFERENCES.md); the pipeline it plugs into is in
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## TL;DR
 
@@ -93,8 +95,8 @@ First, be clear about **what determinism is _for_ here**, because it decides the
 always.** No GPU floats, no ML, no wall-clock, fixed-seed PRNG. This is what the test suite and the byte-identical promise
 rest on. **Unchanged.**
 
-**Tier 2 — ML conditioning stages** (background removal, segmentation, and future edge / cleanup / refinement models):
-**may use WebGPU.** Their job is to produce an intermediate that Tier 1 then consumes.
+**Tier 2 — ML conditioning stages** (background removal, segmentation, the shipped learned edge pre-pass, and further
+cleanup / refinement models): **may use WebGPU.** Their job is to produce an intermediate that Tier 1 then consumes.
 
 The lever that makes this safe is the **discretization boundary**. Tier 1's inputs are already _discrete_ —
 `BinaryMask`, `LabelMap`, thresholded `GrayImage`. If a Tier-2 model emits a continuous probability/feature map and Tier 1
@@ -217,6 +219,10 @@ Then add corruptions specific to _real vectorizer inputs_, which generic super-r
 Pick **one** sub-problem, prove the whole loop small, then scale the data. **A runnable scaffold already exists** — the
 seeded dataset generator in [`../scripts/dataset`](../scripts/dataset/README.md) and the model spec in
 [`EDGE_PREPASS.md`](EDGE_PREPASS.md):
+
+> **Status:** this milestone is done for the **learned edge pre-pass** — steps 1–4 below were carried through and the
+> trained `edge-prepass.onnx` now ships from the [`models` release](https://github.com/PhenX/Vectorizer/releases/tag/models).
+> The same recipe applies to the remaining stages (cleanup, primitive detection).
 
 1. Choose **Learned edge pre-pass** (stage 1, [`EDGE_PREPASS.md`](EDGE_PREPASS.md)) or **Cleanup pre-pass** (stage 2,
    [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md)) — both are image→image, the easiest to supervise and the clearest win on

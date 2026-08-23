@@ -70,6 +70,15 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   <https://arxiv.org/abs/2312.05284> — pruned SAM used for in-browser
   segmentation. Weights: `Xenova/slimsam-77-uniform` ONNX export (quantized),
   Apache-2.0.
+- **Learned edge pre-pass — this project’s own model, MIT.** A compact
+  boundary-detection network (HED / PiDiNet class, cited in
+  [`ML_STRATEGY.md`](ML_STRATEGY.md#references)) that predicts clean region
+  boundaries from a degraded raster and guides despeckle / small-region merge so
+  real detail survives (`packages/ml/src/edge.ts`; spec and training in
+  [`EDGE_PREPASS.md`](EDGE_PREPASS.md)). Weights: `edge-prepass.onnx` (~0.46 MB,
+  int8), fetched from this repo’s [`models` GitHub
+  Release](https://github.com/PhenX/Vectorizer/releases/tag/models) at deploy
+  time and served same-origin — not committed to git.
 - **ONNX Runtime Web** — WebGPU/WASM inference runtime, MIT.
   <https://onnxruntime.ai/>
 - **Daniel Gatis, “rembg” (software), MIT.**
@@ -96,6 +105,7 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   **J. Kopf & D. Lischinski, “Depixelizing Pixel Art”, _SIGGRAPH_ 2011** —
   background for the pixel-art and gradient-handling roadmap items.
 - **ML & dataset roadmap.** Prospective ML models (DeepSVG, StarVector,
-  LIVE/DiffVG, edge and degradation networks) and how a training set would be
+  LIVE/DiffVG, cleanup/refinement networks) and how a training set would be
   produced are discussed in [`ML_STRATEGY.md`](ML_STRATEGY.md). Citations move
-  into this file once the corresponding code ships.
+  into this file once the corresponding code ships — as the learned edge
+  pre-pass now has (above).

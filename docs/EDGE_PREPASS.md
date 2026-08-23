@@ -1,9 +1,17 @@
-# Model spec: learned edge pre-pass
+# Learned edge pre-pass
 
-The first on-device conditioning model proposed in [`ML_STRATEGY.md`](ML_STRATEGY.md) — a small network that predicts
-clean region **boundaries** from a degraded raster, so the tracer decomposes cleaner cracks on noisy, anti-aliased or
-JPEG-crushed input. This is a spec, not shipped code. Its training data is produced by
-[`../scripts/dataset`](../scripts/dataset/README.md) (the `edge/` target).
+The first on-device conditioning model from [`ML_STRATEGY.md`](ML_STRATEGY.md) — a small network that predicts clean
+region **boundaries** from a degraded raster, so the tracer decomposes cleaner cracks on noisy, anti-aliased or
+JPEG-crushed input. Its training data is produced by [`../scripts/dataset`](../scripts/dataset/README.md) (the `edge/`
+target).
+
+**Status — shipped.** The integration is implemented end to end (`@vectorizer/ml`'s `EdgeEnhancer`, the engine consumers,
+and the studio's **Edge pre-pass (ML)** toggle), and the trained weights are published: `edge-prepass.onnx` (~0.46 MB,
+MIT) is attached to the [`models` release](https://github.com/PhenX/Vectorizer/releases/tag/models). The deploy workflow
+fetches it into `apps/web/public/models/` at build time, so the deployed site serves it same-origin (see
+[Export & verification](#export--verification)). Weights are not committed, so a plain `npm run dev` still runs
+weightless and fails soft until you drop the `.onnx` in locally. Below is both the design record and the shipped model's
+spec.
 
 A lower-integration-risk sibling — a **cleanup pre-pass** (image→image restoration) — trains from the same dataset (the
 `clean/` target) and is specified in [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md).
@@ -56,7 +64,8 @@ SlimSAM ≈10 MB).
 - **Architecture:** a compact edge network — PiDiNet-tiny class (~0.1–0.7 M params) or a lightweight encoder–decoder
   U-Net (~1–2 M params) with a single sigmoid boundary head. Deep supervision (side outputs fused, HED-style) helps and
   is cheap.
-- **Budget:** target **< 5 MB** quantized ONNX (int8 or fp16), so the extra download stays in line with u2netp.
+- **Budget:** target **< 5 MB** quantized ONNX (int8 or fp16), so the extra download stays in line with u2netp. The
+  shipped model is **~0.46 MB**, comfortably under.
 - **Resolution:** train at **256×256** tiles. At inference, **tile** large images (up to the app's 4096×4096) on a fixed
   overlapping grid (e.g. 512 with 32 px overlap) and stitch — a fixed grid keeps the pass deterministic for a given
   backend.
