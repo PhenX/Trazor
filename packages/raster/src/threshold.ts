@@ -2,7 +2,7 @@
  * Global (Otsu 1979) and adaptive (integral-image local mean, Crow 1984
  * summed-area tables) thresholding of grayscale images.
  */
-import type { BinaryMask, GrayImage } from '@vectorizer/core'
+import type { BinaryMask, GrayImage } from '@trazor/core'
 
 /** Histogram bin for a gray value in [0, 1] with 256 uniform bins. */
 function binOf(v: number): number {

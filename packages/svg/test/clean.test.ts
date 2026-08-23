@@ -1,4 +1,4 @@
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { cleanCommands } from '../src/clean'
 

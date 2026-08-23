@@ -1,5 +1,5 @@
 {
-  "name": "@vectorizer/assist",
+  "name": "@trazor/assist",
   "version": "0.1.0",
   "private": true,
   "description": "Image analysis heuristics and automatic settings recommendation",
@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vectorizer/core": "*",
-    "@vectorizer/raster": "*"
+    "@trazor/core": "*",
+    "@trazor/raster": "*"
   }
 }

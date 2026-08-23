@@ -1,5 +1,5 @@
-import type { BinaryMask, TurnPolicy } from '@vectorizer/core'
-import { signedAreaFlat } from '@vectorizer/core'
+import type { BinaryMask, TurnPolicy } from '@trazor/core'
+import { signedAreaFlat } from '@trazor/core'
 import type { FlatPoints } from './paths'
 
 /**

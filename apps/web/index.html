@@ -5,18 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Vectorizer — convert raster images (PNG, JPEG, WebP…) to clean, editable SVG entirely in your browser. Color, black & white and centerline tracing with cut-ready output profiles. No uploads, no server."
+      content="Trazor — convert raster images (PNG, JPEG, WebP…) to clean, editable SVG entirely in your browser. Color, black & white and centerline tracing with cut-ready output profiles. No uploads, no server."
     />
     <meta name="color-scheme" content="dark light" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230f1115'/%3E%3Cpath%20d='M7%2024C12%208%2020%208%2025%2024'%20fill='none'%20stroke='%236c7bff'%20stroke-width='2.5'%20stroke-linecap='round'/%3E%3Cpath%20d='M7%2024%2012%2013M25%2024%2020%2013'%20stroke='%233d4661'%20stroke-width='1.4'/%3E%3Ccircle%20cx='12'%20cy='13'%20r='1.8'%20fill='%239aa3b2'/%3E%3Ccircle%20cx='20'%20cy='13'%20r='1.8'%20fill='%239aa3b2'/%3E%3Crect%20x='4.8'%20y='21.8'%20width='4.4'%20height='4.4'%20rx='1'%20fill='%23e8eaf0'/%3E%3Crect%20x='22.8'%20y='21.8'%20width='4.4'%20height='4.4'%20rx='1'%20fill='%23e8eaf0'/%3E%3C/svg%3E"
     />
-    <title>Vectorizer</title>
+    <title>Trazor</title>
     <script>
       // Apply the saved theme before first paint to avoid a flash of the wrong theme.
       try {
-        var saved = JSON.parse(localStorage.getItem('vectorizer:v1') || '{}')
+        var saved = JSON.parse(localStorage.getItem('trazor:v1') || '{}')
         var theme =
           saved.theme === 'light' || saved.theme === 'dark'
             ? saved.theme

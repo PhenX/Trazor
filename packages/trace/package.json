@@ -1,5 +1,5 @@
 {
-  "name": "@vectorizer/trace",
+  "name": "@trazor/trace",
   "version": "0.1.0",
   "private": true,
   "description": "Vector tracing: contour extraction, simplification, Bézier fitting, centerline extraction",
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vectorizer/core": "*"
+    "@trazor/core": "*"
   }
 }

@@ -1,5 +1,5 @@
-import { CancelledError } from '@vectorizer/core'
-import type { GrayImage, RasterImage, VectorizeSettings } from '@vectorizer/core'
+import { CancelledError } from '@trazor/core'
+import type { GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from './native'
 import type { StageCache } from './native'
 import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'

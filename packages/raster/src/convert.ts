@@ -1,13 +1,13 @@
 /**
  * Color-space conversion buffers (Oklab, Ottosson 2020).
  *
- * The math below mirrors `rgbToOklab` from `@vectorizer/core` term for term —
+ * The math below mirrors `rgbToOklab` from `@trazor/core` term for term —
  * same constants, same operation order — inlined over a precomputed
  * sRGB→linear LUT so converting a whole image allocates nothing per pixel and
  * produces bit-identical values to calling the core helper.
  */
-import { srgbToLinear } from '@vectorizer/core'
-import type { GrayImage, RasterImage } from '@vectorizer/core'
+import { srgbToLinear } from '@trazor/core'
+import type { GrayImage, RasterImage } from '@trazor/core'
 
 /** `srgbToLinear(v / 255)` for every byte value. */
 const SRGB_LINEAR = (() => {

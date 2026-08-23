@@ -14,7 +14,7 @@ tracer changes, and discretization keeps happening downstream at quantize/thresh
 
 A **Tier-2 conditioning stage** under the two-tier determinism contract in [`ML_STRATEGY.md`](ML_STRATEGY.md): optional,
 fail-soft, and never writing final geometry. It improves the _input_ to the deterministic classical core. It lives in
-`@vectorizer/ml` beside `BackgroundRemover`, `MagicSegmenter`, and `EdgeEnhancer`.
+`@trazor/ml` beside `BackgroundRemover`, `MagicSegmenter`, and `EdgeEnhancer`.
 
 ```
 decode → resize → denoise → flatten            [raster]  preprocess
@@ -92,7 +92,7 @@ Identical to the edge pre-pass, task-aware ([`export_onnx.py`](../scripts/train/
   app resolves it against its deploy base with `overrideModelUrl` and `import.meta.env.BASE_URL`. See
   [`apps/web/public/models/README.md`](../apps/web/public/models/README.md) for the publish steps.
 
-## Integration (`@vectorizer/ml`)
+## Integration (`@trazor/ml`)
 
 Mirrors `BackgroundRemover` (a one-shot that returns a new image), plus the reproducible-mode backend option:
 

@@ -1,15 +1,15 @@
-# Vectorizer
+# Trazor
 
 **Raster → SVG, entirely in your browser.** A vectorization studio that turns
 PNG/JPEG/WebP/GIF/BMP images into clean, editable, cuttable SVG — with no
 server, no upload, no account. Host it on any static host (GitHub Pages
 included); your images never leave the machine.
 
-![Vectorizer screenshot](docs/screenshot.png)
+![Trazor screenshot](docs/screenshot.png)
 
 ## Why another vectorizer?
 
-Because the tracing algorithm is the product. Vectorizer implements a
+Because the tracing algorithm is the product. Trazor implements a
 full **Potrace-class curve chain** (from Peter Selinger's 2003 paper — clean-room,
 no GPL code) and applies it **per color layer**, not just to black & white:
 
@@ -111,18 +111,18 @@ npm-workspaces monorepo, strict TypeScript, zero runtime dependencies in the
 algorithm packages. The pipeline runs in a Web Worker with cooperative
 cancellation (latest settings win; stale runs abort between stages).
 
-![How Vectorizer works](docs/how-it-works.svg)
+![How Trazor works](docs/how-it-works.svg)
 
-| Package              | Role                                                                                                                                                                                    |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@vectorizer/core`   | Shared types, settings schema + profiles, Oklab color math, geometry, deterministic PRNG                                                                                                |
-| `@vectorizer/raster` | Resize, denoise (median/bilateral), background flattening, k-means++ quantization (exact & fixed palettes), Otsu/adaptive thresholds, morphology, Zhang-Suen thinning, chamfer distance |
-| `@vectorizer/trace`  | The tracer: crack decomposition, Potrace-chain fitting, shared boundary graph (seam-free cutout), centerline extraction, Schneider fitting                                              |
-| `@vectorizer/svg`    | Compact SVG serialization (px/mm, evenodd holes, gap-fill strokes) + output analysis                                                                                                    |
-| `@vectorizer/engine` | Mode pipelines, staging/progress/cancellation, warnings, worker protocol + client                                                                                                       |
-| `@vectorizer/ml`     | Background removal & click-to-segment on ONNX Runtime Web, model cache                                                                                                                  |
-| `@vectorizer/assist` | Image statistics → recommended settings & suggested palettes                                                                                                                            |
-| `apps/web`           | Vue 3 + Pinia studio UI                                                                                                                                                                 |
+| Package          | Role                                                                                                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@trazor/core`   | Shared types, settings schema + profiles, Oklab color math, geometry, deterministic PRNG                                                                                                |
+| `@trazor/raster` | Resize, denoise (median/bilateral), background flattening, k-means++ quantization (exact & fixed palettes), Otsu/adaptive thresholds, morphology, Zhang-Suen thinning, chamfer distance |
+| `@trazor/trace`  | The tracer: crack decomposition, Potrace-chain fitting, shared boundary graph (seam-free cutout), centerline extraction, Schneider fitting                                              |
+| `@trazor/svg`    | Compact SVG serialization (px/mm, evenodd holes, gap-fill strokes) + output analysis                                                                                                    |
+| `@trazor/engine` | Mode pipelines, staging/progress/cancellation, warnings, worker protocol + client                                                                                                       |
+| `@trazor/ml`     | Background removal & click-to-segment on ONNX Runtime Web, model cache                                                                                                                  |
+| `@trazor/assist` | Image statistics → recommended settings & suggested palettes                                                                                                                            |
+| `apps/web`       | Vue 3 + Pinia studio UI                                                                                                                                                                 |
 
 **Pipeline**: decode → resize → denoise → flatten alpha → _(color)_ Oklab
 k-means++ → region cleanup → per-layer Potrace chain (stacked) or shared

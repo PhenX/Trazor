@@ -1,4 +1,4 @@
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { buildPathData, formatNumber, serializeSvg } from '../src/index'
 import type { SvgDocument } from '../src/index'
@@ -93,7 +93,7 @@ describe('serializeSvg', () => {
     const svg = serializeSvg(goldenDoc(), { precision: 2 })
     expect(svg).toBe(
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
-        '<!-- Vectorizer: traced client-side -->' +
+        '<!-- Trazor: traced client-side -->' +
         '<title>Icon</title>' +
         '<path d="M 2 2 L 22 2 L 22 22 L 2 22 Z M 8 8 L 16 8 L 16 16 L 8 16 Z"' +
         ' fill="#102030" fill-rule="evenodd"/>' +
@@ -107,7 +107,7 @@ describe('serializeSvg', () => {
   it('pretty mode puts each child on its own indented line', () => {
     const lines = serializeSvg(goldenDoc(), { precision: 2, pretty: true }).split('\n')
     expect(lines[0]).toMatch(/^<svg /)
-    expect(lines[1]).toBe('  <!-- Vectorizer: traced client-side -->')
+    expect(lines[1]).toBe('  <!-- Trazor: traced client-side -->')
     expect(lines[2]).toBe('  <title>Icon</title>')
     expect(lines[3]).toMatch(/^ {2}<path /)
     expect(lines[4]).toMatch(/^ {2}<path /)

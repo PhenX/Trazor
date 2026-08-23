@@ -1,6 +1,6 @@
-import type { RasterImage } from '@vectorizer/core'
-import { clamp, hexToRgb, oklabToHex, rgbToOklab } from '@vectorizer/core'
-import { quantize } from '@vectorizer/raster'
+import type { RasterImage } from '@trazor/core'
+import { clamp, hexToRgb, oklabToHex, rgbToOklab } from '@trazor/core'
+import { quantize } from '@trazor/raster'
 import type { ImageAnalysis } from './analyze'
 import { analyzeImage } from './analyze'
 

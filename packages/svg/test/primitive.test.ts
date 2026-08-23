@@ -1,4 +1,4 @@
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { detectPrimitive, serializeSvg } from '../src/index'
 import type { Primitive, SvgDocument } from '../src/index'

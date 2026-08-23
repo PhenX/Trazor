@@ -1,4 +1,4 @@
-import { distToSegment } from '@vectorizer/core'
+import { distToSegment } from '@trazor/core'
 
 /**
  * Douglas-Peucker simplification (1973) of an open polyline (flat xy),

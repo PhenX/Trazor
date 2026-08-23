@@ -1,5 +1,5 @@
 /**
- * @vectorizer/raster — classical raster operations consumed by the
+ * @trazor/raster — classical raster operations consumed by the
  * vectorization engine: downscaling, denoising, background flattening,
  * color-space conversion, quantization, thresholding, region cleanup,
  * morphology and skeletonization.

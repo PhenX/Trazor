@@ -6,7 +6,7 @@ import {
   parseSettingsImport,
   serializeSettings,
   TARGET_PROFILES,
-} from '@vectorizer/core'
+} from '@trazor/core'
 import type {
   GrayImage,
   ProfileId,
@@ -15,11 +15,11 @@ import type {
   TargetProfile,
   VectorizeResult,
   VectorizeSettings,
-} from '@vectorizer/core'
-import { analyzeImage, recommendSettings, suggestPalettes } from '@vectorizer/assist'
-import type { ImageAnalysis, PaletteSuggestion } from '@vectorizer/assist'
-import { VectorizerClient } from '@vectorizer/engine'
-import type { MlAvailability, MlProgress } from '@vectorizer/ml'
+} from '@trazor/core'
+import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
+import type { ImageAnalysis, PaletteSuggestion } from '@trazor/assist'
+import { TrazorClient } from '@trazor/engine'
+import type { MlAvailability, MlProgress } from '@trazor/ml'
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { decodeBlob } from '../lib/decode'
@@ -27,7 +27,7 @@ import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
 import { getSample } from '../lib/samples'
 
-const STORAGE_KEY = 'vectorizer:v1'
+const STORAGE_KEY = 'trazor:v1'
 const RUN_DEBOUNCE_MS = 300
 
 export type Theme = 'dark' | 'light'
@@ -153,16 +153,16 @@ export const useAppStore = defineStore('app', () => {
   const autoOnLoad = ref(persisted.autoOnLoad !== false)
 
   // Non-reactive machinery
-  let client: VectorizerClient | null = null
+  let client: TrazorClient | null = null
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
   // ML instances are heavyweight; keep them outside reactivity.
-  let remover: import('@vectorizer/ml').BackgroundRemover | null = null
-  let segmenter: import('@vectorizer/ml').MagicSegmenter | null = null
+  let remover: import('@trazor/ml').BackgroundRemover | null = null
+  let segmenter: import('@trazor/ml').MagicSegmenter | null = null
   let segmenterImage: RasterImage | null = null
-  let edgeModel: import('@vectorizer/ml').EdgeEnhancer | null = null
-  let cleanupModel: import('@vectorizer/ml').CleanupEnhancer | null = null
+  let edgeModel: import('@trazor/ml').EdgeEnhancer | null = null
+  let cleanupModel: import('@trazor/ml').CleanupEnhancer | null = null
   // Edge hint cached per working image (independent of trace settings).
   let edgeHintImage: RasterImage | null = null
   let edgeHint: GrayImage | null = null
@@ -327,7 +327,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // -------------------------- Palette suggestions ------------------------
-  // Derived from image stats by @vectorizer/assist. Recomputed (deferred, so
+  // Derived from image stats by @trazor/assist. Recomputed (deferred, so
   // first paint isn't blocked) whenever the working image changes; cached per
   // image so restoring the original is instant.
   function refreshPaletteSuggestions(image: RasterImage): void {
@@ -394,8 +394,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // ---------------------------- Vectorization ----------------------------
-  function getClient(): VectorizerClient {
-    client ??= new VectorizerClient(
+  function getClient(): TrazorClient {
+    client ??= new TrazorClient(
       () =>
         new Worker(new URL('../worker/vectorize.worker.ts', import.meta.url), { type: 'module' }),
     )
@@ -463,7 +463,7 @@ export const useAppStore = defineStore('app', () => {
     if (mlState.availability !== null || mlState.probing) return
     mlState.probing = true
     try {
-      const ml = await import('@vectorizer/ml')
+      const ml = await import('@trazor/ml')
       mlState.availability = await ml.detectBackend()
     } catch (e) {
       mlState.availability = {
@@ -492,7 +492,7 @@ export const useAppStore = defineStore('app', () => {
       mlState.edge = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
-      const ml = await import('@vectorizer/ml')
+      const ml = await import('@trazor/ml')
       // Resolve the project model against the deploy base (served same-origin).
       ml.overrideModelUrl(
         'edge-prepass',
@@ -529,7 +529,7 @@ export const useAppStore = defineStore('app', () => {
       mlState.removeBg = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
-      const ml = await import('@vectorizer/ml')
+      const ml = await import('@trazor/ml')
       remover ??= await ml.BackgroundRemover.create(onProgress)
       const out = await remover.run(image, { onProgress })
       // Only apply if the user hasn't swapped images mid-run.
@@ -560,7 +560,7 @@ export const useAppStore = defineStore('app', () => {
       mlState.cleanup = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
-      const ml = await import('@vectorizer/ml')
+      const ml = await import('@trazor/ml')
       ml.overrideModelUrl(
         'cleanup',
         new URL(`${import.meta.env.BASE_URL}models/cleanup.onnx`, location.origin).href,
@@ -627,7 +627,7 @@ export const useAppStore = defineStore('app', () => {
       mlState.magic = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
-      const ml = await import('@vectorizer/ml')
+      const ml = await import('@trazor/ml')
       segmenter ??= await ml.MagicSegmenter.create(onProgress)
       if (segmenterImage !== image) {
         await segmenter.setImage(image, onProgress)

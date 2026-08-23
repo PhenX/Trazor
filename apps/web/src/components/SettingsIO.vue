@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { SETTINGS_EXPORT_VERSION } from '@vectorizer/core'
+import { SETTINGS_EXPORT_VERSION } from '@trazor/core'
 import { computed, ref } from 'vue'
 import { copyText, downloadText } from '../lib/download'
 import { useAppStore } from '../store/appStore'
@@ -25,7 +25,7 @@ async function onCopy(): Promise<void> {
 }
 
 function onSaveFile(): void {
-  downloadText(exportJson.value, 'vectorizer-settings.json', 'application/json')
+  downloadText(exportJson.value, 'trazor-settings.json', 'application/json')
   store.notify('Settings file saved', 'success')
 }
 

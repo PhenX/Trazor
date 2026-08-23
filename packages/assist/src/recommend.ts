@@ -1,5 +1,5 @@
-import type { ProfileId, VectorizeSettings } from '@vectorizer/core'
-import { clamp, clampInt, getProfile } from '@vectorizer/core'
+import type { ProfileId, VectorizeSettings } from '@trazor/core'
+import { clamp, clampInt, getProfile } from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
 export interface Recommendation {

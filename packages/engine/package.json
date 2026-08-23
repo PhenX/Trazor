@@ -1,5 +1,5 @@
 {
-  "name": "@vectorizer/engine",
+  "name": "@trazor/engine",
   "version": "0.1.0",
   "private": true,
   "description": "Native vectorization pipeline, engine registry, worker entry and typed client",
@@ -9,9 +9,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@vectorizer/core": "*",
-    "@vectorizer/raster": "*",
-    "@vectorizer/svg": "*",
-    "@vectorizer/trace": "*"
+    "@trazor/core": "*",
+    "@trazor/raster": "*",
+    "@trazor/svg": "*",
+    "@trazor/trace": "*"
   }
 }

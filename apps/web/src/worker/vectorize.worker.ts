@@ -1,3 +1,3 @@
-import { installWorkerHandler } from '@vectorizer/engine'
+import { installWorkerHandler } from '@trazor/engine'
 
 installWorkerHandler(self as never)

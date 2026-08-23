@@ -6,12 +6,12 @@ import {
   parseSettingsImport,
   serializeSettings,
   SETTINGS_EXPORT_VERSION,
-} from '@vectorizer/core'
+} from '@trazor/core'
 
 describe('settings export', () => {
   it('stamps the format markers and current version', () => {
     const doc = createSettingsExport(DEFAULT_SETTINGS)
-    expect(doc.app).toBe('vectorizer')
+    expect(doc.app).toBe('trazor')
     expect(doc.kind).toBe('settings')
     expect(doc.version).toBe(SETTINGS_EXPORT_VERSION)
     expect(doc.activeProfileId).toBeNull()

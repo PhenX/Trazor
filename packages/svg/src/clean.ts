@@ -8,7 +8,7 @@
  * unchanged. Curve anchors (Q/C) are never touched.
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { clampPrecision } from './pathdata'
 
 interface Subpath {

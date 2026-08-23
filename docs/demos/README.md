@@ -1,7 +1,7 @@
 # Demos
 
 Kept visual demos that illustrate a change or an algorithm behavior — the raw material for future docs, PRs and the
-README. Each demo is a small **generator** (`*.ts`, importing the real `@vectorizer/*` packages) plus its **rendered
+README. Each demo is a small **generator** (`*.ts`, importing the real `@trazor/*` packages) plus its **rendered
 output** (`*.html`, self-contained). Both are committed so a demo can be re-rendered as the code evolves and dropped into
 documentation without rebuilding it from memory.
 

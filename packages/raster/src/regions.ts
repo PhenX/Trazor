@@ -2,8 +2,8 @@
  * Label-map region cleanup. Connected components are found with explicit
  * stack-based flood fill (no recursion — images can be 4096×4096).
  */
-import { createMask, deltaEOkSq } from '@vectorizer/core'
-import type { BinaryMask, LabelMap } from '@vectorizer/core'
+import { createMask, deltaEOkSq } from '@trazor/core'
+import type { BinaryMask, LabelMap } from '@trazor/core'
 
 export interface MergeOptions {
   /** Palette colors in Oklab, length `labels.count * 3`, indexed by label. Enables the contrast keep. */

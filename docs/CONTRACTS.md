@@ -1,14 +1,14 @@
 # Package contracts
 
-Authoritative API surface each package must export. `@vectorizer/core` (already
+Authoritative API surface each package must export. `@trazor/core` (already
 implemented — read it first) defines the shared vocabulary: `RasterImage`,
 `GrayImage`, `BinaryMask`, `LabelMap`, `PathCommand`, `VectorizeSettings`,
-`VectorizeResult`, `VectorizerEngine`, color/geometry helpers, `mulberry32`.
+`VectorizeResult`, `TrazorEngine`, color/geometry helpers, `mulberry32`.
 
 Rules that apply to every package:
 
 - Pure TypeScript, strict mode, ESM, no runtime dependencies beyond what the
-  package.json already declares. No DOM APIs outside `@vectorizer/ml` and
+  package.json already declares. No DOM APIs outside `@trazor/ml` and
   `apps/web` (everything else must run in Node for tests and in workers).
 - Determinism: identical inputs ⇒ identical outputs. Any randomness must come
   from `mulberry32` with a caller-provided or fixed seed. Never `Math.random()`.
@@ -24,7 +24,7 @@ Rules that apply to every package:
   (created by them, merged later) in the same citation style, including what
   the reference is used for and the implementing file.
 
-## @vectorizer/core — settings import/export
+## @trazor/core — settings import/export
 
 ```ts
 // settings-io.ts — portable, versioned settings snapshots (studio import/export).
@@ -33,7 +33,7 @@ Rules that apply to every package:
 export const SETTINGS_EXPORT_VERSION: number
 
 export interface SettingsExport {
-  app: 'vectorizer'
+  app: 'trazor'
   kind: 'settings'
   version: number
   settings: VectorizeSettings
@@ -64,7 +64,7 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
-## @vectorizer/raster
+## @trazor/raster
 
 ```ts
 // resize.ts — area-averaged box downscale. Returns input object unchanged when
@@ -224,7 +224,7 @@ bimodal histogram lands between the modes; `zhangSuenThin` reduces a 5px-thick
 line to a connected 1px path; `mergeSmallRegions` removes single-pixel speckles;
 `resizeToFit` halves cleanly and preserves mean color within 1/255.
 
-## @vectorizer/svg
+## @trazor/svg
 
 ```ts
 export interface SvgShape {
@@ -327,7 +327,7 @@ Tests: golden small document; precision edge cases (0.5 → ".5"? No: "0.5" is
 fine, just no trailing zeros); mm height keeps aspect ratio; analyzeSvg
 round-trips path/node/color counts of a serialized document.
 
-## @vectorizer/ml
+## @trazor/ml
 
 Browser-only package (the app imports it lazily). `onnxruntime-web` must be
 loaded via dynamic `import()` inside the factory functions so the main bundle
@@ -358,7 +358,7 @@ export type MlProgress =
 export type MlProgressFn = (p: MlProgress) => void
 
 export class ModelStore {
-  // Cache Storage 'vectorizer-models-v1'
+  // Cache Storage 'trazor-models-v1'
   fetch(spec: ModelSpec, onProgress?: MlProgressFn): Promise<ArrayBuffer>
   usage(): Promise<{ models: number; bytes: number }>
   clear(): Promise<void>
@@ -442,7 +442,7 @@ Implementation notes:
   letterbox coordinate mapping) in Node with fabricated tensors; do NOT try to
   run ORT in tests.
 
-## @vectorizer/engine (for reference — implemented by the main agent)
+## @trazor/engine (for reference — implemented by the main agent)
 
 Worker protocol used by the app:
 
@@ -469,7 +469,7 @@ export function installWorkerHandler(scope: {
   postMessage(msg: unknown, transfer?: Transferable[]): void
 }): void
 
-export class VectorizerClient {
+export class TrazorClient {
   constructor(createWorker: () => Worker)
   /** Latest-wins: starting a new run cancels the pending one (rejects CancelledError). */
   vectorize(
@@ -480,7 +480,7 @@ export class VectorizerClient {
   ): Promise<VectorizeResult>
   dispose(): void
 }
-export function createNativeEngine(): VectorizerEngine
+export function createNativeEngine(): TrazorEngine
 export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
@@ -500,7 +500,7 @@ export interface StageCache {
 }
 ```
 
-## @vectorizer/assist (reference — implemented by the main agent)
+## @trazor/assist (reference — implemented by the main agent)
 
 ```ts
 export interface ImageAnalysis {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LabelMap } from '@vectorizer/core'
+import type { LabelMap } from '@trazor/core'
 import { clearBorderLabel, extractLabelMask, maskArea, mergeSmallRegions } from '../src/index'
 import { maskOf } from './helpers'
 

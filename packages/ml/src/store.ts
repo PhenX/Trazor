@@ -2,7 +2,7 @@ import { errorMessage } from './errors'
 import type { ModelSpec } from './registry'
 import type { MlProgressFn } from './types'
 
-const CACHE_NAME = 'vectorizer-models-v1'
+const CACHE_NAME = 'trazor-models-v1'
 
 async function openCache(): Promise<Cache | null> {
   if (typeof caches === 'undefined') return null

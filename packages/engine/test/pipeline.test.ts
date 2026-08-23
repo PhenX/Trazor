@@ -6,10 +6,10 @@ import {
   fillRaster,
   normalizeSettings,
   setPixel,
-} from '@vectorizer/core'
-import type { RasterImage, VectorizeSettings } from '@vectorizer/core'
-import { vectorize } from '@vectorizer/engine'
-import type { StageCache } from '@vectorizer/engine'
+} from '@trazor/core'
+import type { RasterImage, VectorizeSettings } from '@trazor/core'
+import { vectorize } from '@trazor/engine'
+import type { StageCache } from '@trazor/engine'
 
 function redSquareOnWhite(): RasterImage {
   const img = createRaster(60, 60)
@@ -318,7 +318,7 @@ describe('native engine pipeline', () => {
 
 describe('worker protocol', () => {
   it('round-trips vectorize and cancel through a fake scope', async () => {
-    const { installWorkerHandler } = await import('@vectorizer/engine')
+    const { installWorkerHandler } = await import('@trazor/engine')
     type Listener = (ev: { data: unknown }) => void
     let listener: Listener | null = null
     const outbox: unknown[] = []
@@ -356,7 +356,7 @@ describe('worker protocol', () => {
   })
 
   it('accepts an optional edge hint through the worker message', async () => {
-    const { installWorkerHandler } = await import('@vectorizer/engine')
+    const { installWorkerHandler } = await import('@trazor/engine')
     type Listener = (ev: { data: unknown }) => void
     let listener: Listener | null = null
     const outbox: unknown[] = []

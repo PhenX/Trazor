@@ -10,8 +10,8 @@
  *
  * Everything is deterministic for a given input and seed.
  */
-import { clampInt, hexToRgb, mulberry32, rgbToHex, rgbToOklab } from '@vectorizer/core'
-import type { BinaryMask, LabelMap, RasterImage } from '@vectorizer/core'
+import { clampInt, hexToRgb, mulberry32, rgbToHex, rgbToOklab } from '@trazor/core'
+import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 
 export interface QuantizeOptions {

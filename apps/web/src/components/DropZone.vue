@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { RasterImage } from '@vectorizer/core'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import type { RasterImage } from '@trazor/core'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { acceptAttr } from '../lib/decode'
 import { SAMPLES } from '../lib/samples'
 import { useAppStore } from '../store/appStore'
@@ -138,6 +138,16 @@ onMounted(() => {
   window.addEventListener('paste', onPaste)
   void renderThumbs()
 })
+
+// Thumbnails are painted imperatively onto the canvases, so they must be
+// repainted every time the empty state is recreated — returning home from a
+// loaded image mounts a fresh, blank set of canvases.
+watch(
+  () => store.hasImage,
+  (hasImage) => {
+    if (!hasImage) void nextTick(renderThumbs)
+  },
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('dragenter', onDragEnter)

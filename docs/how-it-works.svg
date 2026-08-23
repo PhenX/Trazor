@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 700" width="1080" height="700"
-     role="img" aria-label="How Vectorizer works: a raster image becomes clean SVG through a deterministic classical core running in a Web Worker; an optional on-device ML edge pre-pass (EdgeEnhancer, WebGPU or WASM) produces a boundary map that is discretized at a fixed threshold before the tracer, so output stays byte-identical without it. The model is trained offline (SVG corpus, rasterized and degraded into pairs, U-Net, exported to ONNX) and ships same-origin with the app.">
+     role="img" aria-label="How Trazor works: a raster image becomes clean SVG through a deterministic classical core running in a Web Worker; an optional on-device ML edge pre-pass (EdgeEnhancer, WebGPU or WASM) produces a boundary map that is discretized at a fixed threshold before the tracer, so output stays byte-identical without it. The model is trained offline (SVG corpus, rasterized and degraded into pairs, U-Net, exported to ONNX) and ships same-origin with the app.">
   <style>
     :root{
       --card:#ffffff; --ink:#1f2933; --muted:#616e7c; --edge:#b7c0cb;
@@ -64,7 +64,7 @@
   <rect class="bg" x="0" y="0" width="1080" height="700" rx="16"/>
 
   <!-- Header -->
-  <text class="t-title" x="40" y="44">How Vectorizer works</text>
+  <text class="t-title" x="40" y="44">How Trazor works</text>
   <text class="t-sub" x="40" y="66">Raster → clean SVG, entirely client-side — with an optional, on-device ML edge pre-pass.</text>
 
   <!-- ================= BAND A: runtime ================= -->

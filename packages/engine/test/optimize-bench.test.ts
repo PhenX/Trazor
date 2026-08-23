@@ -1,8 +1,8 @@
-import type { BinaryMask } from '@vectorizer/core'
-import { traceMask } from '@vectorizer/trace'
-import type { TraceMaskOptions } from '@vectorizer/trace'
-import { analyzeSvg, serializeSvg } from '@vectorizer/svg'
-import type { SvgDocument, SvgShape } from '@vectorizer/svg'
+import type { BinaryMask } from '@trazor/core'
+import { traceMask } from '@trazor/trace'
+import type { TraceMaskOptions } from '@trazor/trace'
+import { analyzeSvg, serializeSvg } from '@trazor/svg'
+import type { SvgDocument, SvgShape } from '@trazor/svg'
 import { describe, expect, it } from 'vitest'
 
 const CURVE_OPTS: TraceMaskOptions = {

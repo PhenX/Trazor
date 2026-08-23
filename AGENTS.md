@@ -1,4 +1,4 @@
-# Vectorizer — Agent Instructions
+# Trazor — Agent Instructions
 
 Root guide for any AI agent (Claude Code, opencode, Copilot, Cursor, …). It covers the whole monorepo: what lives
 where, how to run and verify things, and the conventions that apply everywhere.
@@ -31,19 +31,19 @@ the feature tour and [`docs/REFERENCES.md`](docs/REFERENCES.md) for the literatu
 ## Repository layout
 
 ```
-packages/                  Algorithm packages, consumed by name (@vectorizer/*). Pure TS, no DOM (except ml).
-  core/                    @vectorizer/core — shared types, settings schema + profiles, Oklab color math,
+packages/                  Algorithm packages, consumed by name (@trazor/*). Pure TS, no DOM (except ml).
+  core/                    @trazor/core — shared types, settings schema + profiles, Oklab color math,
                            geometry, path model, deterministic PRNG. Zero deps. Everything depends on it.
-  raster/                  @vectorizer/raster — resize, denoise, background flatten, k-means++ quantization,
+  raster/                  @trazor/raster — resize, denoise, background flatten, k-means++ quantization,
                            Otsu/adaptive threshold, morphology, Zhang-Suen thinning, chamfer distance.
-  trace/                   @vectorizer/trace — THE tracer: crack decomposition, Potrace chain, shared boundary
+  trace/                   @trazor/trace — THE tracer: crack decomposition, Potrace chain, shared boundary
                            graph (seam-free cutout), centerline extraction, Schneider fitting.
-  svg/                     @vectorizer/svg — compact SVG serialization + output analysis.
-  engine/                  @vectorizer/engine — mode pipelines, progress/cancellation, warnings, worker + client.
-  ml/                      @vectorizer/ml — background removal & click-to-segment via onnxruntime-web. Browser-only.
-  assist/                  @vectorizer/assist — image statistics → recommended settings & suggested palettes.
+  svg/                     @trazor/svg — compact SVG serialization + output analysis.
+  engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client.
+  ml/                      @trazor/ml — background removal & click-to-segment via onnxruntime-web. Browser-only.
+  assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
 apps/
-  web/                     @vectorizer/web — Vue 3 + Pinia + Vite studio UI. The deployable app.
+  web/                     @trazor/web — Vue 3 + Pinia + Vite studio UI. The deployable app.
 docs/                      CONTRACTS.md (package APIs), REFERENCES.md (sources), screenshot.png.
 scripts/                   e2e.mjs — real-browser smoke test / screenshot generator.
 shared configs             .oxlintrc.json, .oxfmtrc.json, tsconfig.base.json, tsconfig.packages.json, vitest.config.ts.
@@ -51,8 +51,8 @@ shared configs             .oxlintrc.json, .oxfmtrc.json, tsconfig.base.json, ts
 
 **Where a new workspace goes** — keep the split consistent:
 
-- `packages/*` — an algorithm package consumed _by name_ (`@vectorizer/*`), pure and testable in Node. No DOM APIs
-  except `@vectorizer/ml` (which guards all browser access behind functions so it still imports in Node).
+- `packages/*` — an algorithm package consumed _by name_ (`@trazor/*`), pure and testable in Node. No DOM APIs
+  except `@trazor/ml` (which guards all browser access behind functions so it still imports in Node).
 - `apps/*` — a deployable surface. Today just `web`.
 
 Every workspace is listed in the root [`package.json`](package.json) `workspaces` array (`packages/*`, `apps/*`).
@@ -98,12 +98,12 @@ Run typecheck, lint and tests **once at the end** before the final commit — no
 - **Strict TypeScript**, ESM everywhere. `verbatimModuleSyntax` is on — use `import type` for type-only imports.
 - **American English** spelling in code and docs ("initialize", "color", "normalize").
 - **Determinism is a hard requirement.** The same image + settings must produce byte-identical SVG. Never call
-  `Math.random()` — draw from `mulberry32` (`@vectorizer/core`) with a fixed or caller-provided seed. `Date.now()` /
+  `Math.random()` — draw from `mulberry32` (`@trazor/core`) with a fixed or caller-provided seed. `Date.now()` /
   `new Date()` must not affect output.
 - **Hot pixel loops** use typed arrays and precomputed indices — no per-pixel closures, objects or allocations. Images
   can be 4096×4096.
 - **No DOM APIs in algorithm packages** (`core`/`raster`/`trace`/`svg`/`engine`/`assist`) — they must run in Node
-  (tests) and in a Web Worker. `@vectorizer/ml` may touch browser APIs but only behind functions, never at module top
+  (tests) and in a Web Worker. `@trazor/ml` may touch browser APIs but only behind functions, never at module top
   level, so it still imports cleanly in Node.
 - **Cross-package boundaries are the contract.** [`docs/CONTRACTS.md`](docs/CONTRACTS.md) is the authoritative API
   surface; when you change an exported signature, update the contract and every caller in the same commit.

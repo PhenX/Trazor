@@ -7,7 +7,7 @@
  * where a neighbor still traces the Bézier boundary and must not diverge.
  */
 
-import type { PathCommand } from '@vectorizer/core'
+import type { PathCommand } from '@trazor/core'
 import { clampPrecision } from './pathdata'
 
 export type Primitive =
