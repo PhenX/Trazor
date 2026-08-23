@@ -168,6 +168,7 @@ interface TraceResult {
   dE: number
   edgeDE: number
   p95: number
+  spurious: number
   nodes: number
   bytes: number
   ms: number
@@ -178,7 +179,7 @@ interface TraceResult {
 function fidelity(
   svg: string,
   srcWhite: RasterImage,
-): { dE: number; edgeDE: number; p95: number; nodes: number; bytes: number } {
+): { dE: number; edgeDE: number; p95: number; spurious: number; nodes: number; bytes: number } {
   const render = rasterizeSvg(svg, srcWhite.width)
   const ref = resampleNearest(srcWhite, render.width, render.height)
   const q = qualityStats(render, ref)
@@ -186,6 +187,7 @@ function fidelity(
     dE: q.mean,
     edgeDE: q.edge,
     p95: q.p95,
+    spurious: q.spurious,
     nodes: analyzeSvg(svg).nodeCount,
     bytes: Buffer.byteLength(svg, 'utf8'),
   }
@@ -268,6 +270,7 @@ function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
     dE: mean((t) => t.dE),
     edgeDE: mean((t) => t.edgeDE),
     p95: mean((t) => t.p95),
+    spurious: mean((t) => t.spurious),
     nodes: mean((t) => t.nodes),
     bytes: mean((t) => t.bytes),
     ms: mean((t) => t.ms),
@@ -342,7 +345,7 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
       const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
         `  ${fam.padEnd(12)} ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}` +
-          `   nodes T/V ${nodeRatio}×   KB T/V ${byteRatio}×`,
+          `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
       )
     } else {
       console.log(
@@ -356,7 +359,7 @@ const THUMB_W = 520
 
 function metaLine(t: TraceResult | null): string {
   return t
-    ? `ΔE ${fmt(t.dE, 4)} · band ${fmt(t.edgeDE, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB · ${Math.round(t.ms)} ms`
+    ? `ΔE ${fmt(t.dE, 4)} · band ${fmt(t.edgeDE, 4)} · spurious ${fmt(t.spurious, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB`
     : '—'
 }
 
@@ -489,9 +492,9 @@ async function main(): Promise<void> {
     const v = agg(rows, (r) => r.vtracer)
     if (t && v) {
       console.log(
-        `\n  overall  ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band(edge ΔE) T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
-          `p95 T ${fmt(t.p95)} V ${fmt(v.p95)}   score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   ` +
-          `nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
+        `\n  overall  ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
+          `spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   p95 T ${fmt(t.p95)} V ${fmt(v.p95)}   ` +
+          `score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
       )
     }
     if (vfail > 0) console.log(`  (${vfail} image(s) vtracer could not trace)`)
@@ -514,6 +517,7 @@ async function main(): Promise<void> {
         dE: r.trazor.dE,
         edgeDE: r.trazor.edgeDE,
         p95: r.trazor.p95,
+        spurious: r.trazor.spurious,
         nodes: r.trazor.nodes,
         bytes: r.trazor.bytes,
         ms: r.trazor.ms,
@@ -523,6 +527,7 @@ async function main(): Promise<void> {
             dE: r.vtracer.dE,
             edgeDE: r.vtracer.edgeDE,
             p95: r.vtracer.p95,
+            spurious: r.vtracer.spurious,
             nodes: r.vtracer.nodes,
             bytes: r.vtracer.bytes,
             ms: r.vtracer.ms,

@@ -86,8 +86,11 @@ useful sanity check, not a target — a trained model predicts a sparser, denois
 `tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
 tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
 each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
-reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE and a p95 worst-tail (the localized
-band/hue errors a whole-image mean dilutes away), plus node count, byte size, and wall-clock time.
+reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, and a **spurious-hue**
+score — each traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam
+(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus node
+count, byte size, and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
+global k-means on color content.
 
 It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
 segmentation. Re-run it after either and watch the photo/gradient gap close **without** regressing the flat / line-art

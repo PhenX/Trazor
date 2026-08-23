@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { Resvg } from '@resvg/resvg-js'
 import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
-import { deltaEOk, rgbToOklab } from '@trazor/core'
+import { deltaEOk, deltaEOkSq, rgbToOklab } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
 
 /** Read a PNG or JPEG as a RasterImage (fresh Uint8ClampedArray, length w*h*4). */
@@ -95,14 +95,21 @@ export interface QualityStats {
   /** 95th-percentile per-pixel ΔE — the worst-tail, which localized bands raise
    *  even when the mean looks fine. */
   p95: number
+  /** Spurious-hue: mean, over the edge band, of each traced color's ΔE to the
+   *  NEAREST source color in a local window. Plain ΔE compares a traced pixel to
+   *  the one aligned source pixel — and a rim is a real mixture, so a wrong band
+   *  still scores low — whereas this asks whether the traced color exists anywhere
+   *  nearby in the source. A hue invented at a seam has no near-match and scores
+   *  high: the band artifact the eye flags but pixel ΔE forgives. */
+  spurious: number
 }
 
 /**
  * Banding-aware fidelity of a rendered SVG against the (white-composited) source,
  * both same-sized and opaque over white. Beyond the whole-image mean it reports
- * the mean ΔE in a dilated band around source edges (where quantization bands
- * appear) and the 95th-percentile ΔE (the worst tail localized errors raise) —
- * the two things a whole-image mean hides.
+ * the mean ΔE in a dilated band around source edges, the 95th-percentile ΔE, and
+ * a spurious-hue score (traced colors with no near-match in the local source) —
+ * the localized band/hue errors a whole-image mean hides.
  */
 export function qualityStats(render: RasterImage, ref: RasterImage): QualityStats {
   const W = render.width
@@ -183,7 +190,49 @@ export function qualityStats(render: RasterImage, ref: RasterImage): QualityStat
       break
     }
   }
-  return { mean: n > 0 ? sum / n : 0, edge: ecount > 0 ? esum / ecount : 0, p95 }
+
+  // Spurious hue: within the edge band, each traced color's distance to the
+  // nearest source color in a RAD-window (min squared Oklab distance, rooted
+  // once). Precompute the source's Oklab so the window search is arithmetic only.
+  const sl = new Float32Array(n * 3)
+  for (let p = 0, i = 0, o = 0; p < n; p++, i += 4, o += 3) {
+    const [sL, sa, sb] = rgbToOklab(sd[i] / 255, sd[i + 1] / 255, sd[i + 2] / 255)
+    sl[o] = sL
+    sl[o + 1] = sa
+    sl[o + 2] = sb
+  }
+  const RAD = 3
+  let ssum = 0
+  let scount = 0
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const p = y * W + x
+      if (near[p] === 0) continue
+      const i = p * 4
+      const [L, A, B] = rgbToOklab(rd[i] / 255, rd[i + 1] / 255, rd[i + 2] / 255)
+      let best = Infinity
+      for (let dy = -RAD; dy <= RAD; dy++) {
+        const yy = y + dy
+        if (yy < 0 || yy >= H) continue
+        for (let dx = -RAD; dx <= RAD; dx++) {
+          const xx = x + dx
+          if (xx < 0 || xx >= W) continue
+          const q = (yy * W + xx) * 3
+          const dd = deltaEOkSq(L, A, B, sl[q], sl[q + 1], sl[q + 2])
+          if (dd < best) best = dd
+        }
+      }
+      ssum += Math.sqrt(best)
+      scount++
+    }
+  }
+
+  return {
+    mean: n > 0 ? sum / n : 0,
+    edge: ecount > 0 ? esum / ecount : 0,
+    p95,
+    spurious: scount > 0 ? ssum / scount : 0,
+  }
 }
 
 /** app score: 1 − 4·ΔE, clamped to [0,1] (apps/web/src/lib/fidelity.ts). */
