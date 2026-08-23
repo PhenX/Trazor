@@ -130,22 +130,6 @@ export interface QuantizeResult {
   counts: Uint32Array // pixels per label, length count
 }
 export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeResult
-
-// segment.ts — region-based front-end (opt-in via `segmentation: 'regions'`).
-// Quantizes the original image, runs deterministic SLIC superpixels over Oklab
-// (grid init, no randomness), then reassigns every pixel to the *majority*
-// palette label of its superpixel. Same `QuantizeResult` shape as `quantize`, so
-// it substitutes for it in the engine. Never invents a color (labels are only
-// ever existing palette entries); coarsens into flat blocky regions ⇒ far fewer
-// nodes, much smaller files, softer edges. Fixed/exact/empty palettes defer to
-// `quantize` unchanged. Holds invented seam hues about as low as
-// `colorCoherence`, no lower — a simplifying knob, not a fidelity one.
-export interface SegmentOptions extends QuantizeOptions {
-  superpixelSize?: number // target region side px; default max(6, round(sqrt(n/8000)))
-  compactness?: number // higher ⇒ squarer regions over color edges; default 8
-  iterations?: number // SLIC refinement passes; default 10, clamped 1..20
-}
-export function segmentRegions(image: RasterImage, opts: SegmentOptions): QuantizeResult
 ```
 
 `quantize` requirements:

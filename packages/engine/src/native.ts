@@ -40,7 +40,6 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
-  segmentRegions,
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
@@ -222,7 +221,6 @@ function palKeyOf(s: VectorizeSettings): string {
     s.autoPaletteSize,
     s.colorSpace,
     s.quantizeQuality,
-    s.segmentation,
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
@@ -444,10 +442,7 @@ async function colorPipeline(
       autoK: settings.autoPaletteSize,
       fixedPalette: settings.palette,
     }
-    const q =
-      settings.segmentation === 'regions'
-        ? segmentRegions(image, quantOpts)
-        : quantize(image, quantOpts)
+    const q = quantize(image, quantOpts)
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
         ? q.paletteHex.length
