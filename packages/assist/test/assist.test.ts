@@ -71,6 +71,22 @@ function navyOnWhite() {
   return img
 }
 
+/** Two flat color fields buried under heavy noise — a compressed/degraded flat graphic. */
+function compressedFlat() {
+  const img = createRaster(200, 200)
+  const rnd = mulberry32(11)
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 200; x++) {
+      const left = x < 100
+      // Bin-centered base colors + noise that stays inside the coarse bin, so
+      // the two flat fields still dominate (high two-tone) under heavy speckle.
+      const n = () => (rnd() - 0.5) * 18
+      setPixel(img, x, y, (left ? 48 : 208) + n(), (left ? 112 : 80) + n(), (left ? 176 : 48) + n())
+    }
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
@@ -138,6 +154,14 @@ describe('recommendSettings', () => {
     const rec = recommendSettings(analyzeImage(navyOnWhite()))
     expect(rec.profileId).not.toBe('bw-sketch')
     expect(['logo', 'illustration']).toContain(rec.profileId)
+  })
+
+  it('cleans up a degraded flat graphic instead of posterizing it as a photo', () => {
+    const rec = recommendSettings(analyzeImage(compressedFlat()))
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.patch.denoise).toBe('bilateral')
+    expect(rec.patch.autoPaletteSize).toBe(true)
+    expect(rec.patch.minRegionArea).toBeGreaterThanOrEqual(24)
   })
 })
 

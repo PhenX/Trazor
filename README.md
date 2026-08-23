@@ -63,11 +63,15 @@ On top of that, three things most tracers don't do:
 - **Auto settings**: instant image-statistics analysis recommends a profile,
   palette size and preprocessing, with human-readable reasons — applied
   automatically as each image loads (toggleable), or on demand. Detects
-  grayscale content and keeps saturated two-tone marks in color.
+  grayscale content, keeps saturated two-tone marks in color, and recovers
+  clean shapes from compression-degraded flat art (denoise + speckle cleanup).
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
   `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
-- **Studio UI**: drag & drop / paste / samples, split & difference views with
+- **Studio UI**: drag & drop / paste / one-click sample gallery (flat logo,
+  photo, pixel art, poster landscape, ink, illustration, a detailed monochrome
+  mandala and a degraded-JPEG recovery test), quick **Home** / **Open** nav,
+  split & difference views with
   zoom/pan, a **node overlay** (toggle, `N`) that draws every path's anchor
   points, Bézier handles and outlines — color-coded by element kind (traced
   paths vs. `rect`/`circle`/`ellipse` primitives, with a legend) so you can see

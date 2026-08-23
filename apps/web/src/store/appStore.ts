@@ -242,6 +242,20 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  /** Drop the current image and return to the landing screen (drop zone + samples). */
+  function clearImage(): void {
+    cancelMagicSelect()
+    runCounter++ // supersede any in-flight vectorization
+    sourceImage.value = null
+    workingImage.value = null
+    sourceName.value = ''
+    result.value = null
+    fidelity.value = null
+    error.value = null
+    progress.value = null
+    busy.value = false
+  }
+
   // ------------------------------ Settings -------------------------------
   function applyProfile(id: ProfileId): void {
     const profile = getProfile(id)
@@ -700,6 +714,7 @@ export const useAppStore = defineStore('app', () => {
     dismissToast,
     loadBlob,
     loadSample,
+    clearImage,
     applyProfile,
     updateSettings,
     resetField,

@@ -103,7 +103,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="app">
-    <AppHeader />
+    <AppHeader @open-file="dropZone?.openPicker()" />
     <div class="body" :class="{ 'result-collapsed': resultHidden }">
       <SettingsPanel />
       <main class="main">
