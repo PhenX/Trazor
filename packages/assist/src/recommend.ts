@@ -8,6 +8,9 @@ export interface Recommendation {
   rationale: string[]
 }
 
+/** Mean Oklab chroma below this reads as effectively grayscale. */
+const ACHROMATIC_CHROMA = 0.03
+
 /**
  * Rule-based settings recommendation from measured image statistics. Fully
  * local and instant — no models involved. When `goal` names a profile, the
@@ -31,6 +34,12 @@ export function recommendSettings(
     patch.paletteSize = clampInt(Math.max(2, a.distinctColors), 2, 64)
     rationale.push(`Kept the ${a.distinctColors} original colors exactly.`)
     return { profileId, patch, rationale }
+  }
+
+  // A near-grayscale photo traces as tonal gray layers, not a color palette.
+  if (profileId === 'photo' && a.colorfulness < ACHROMATIC_CHROMA) {
+    patch.mode = 'grayscale'
+    rationale.push('Nearly grayscale — tracing as tonal grayscale layers.')
   }
 
   if (patch.mode === 'color' || patch.mode === 'grayscale' || patch.mode === undefined) {
@@ -65,12 +74,14 @@ function pickProfile(a: ImageAnalysis, rationale: string[]): ProfileId {
     rationale.push('Small canvas with few flat colors — treating as pixel art.')
     return 'pixel-art'
   }
-  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25) {
+  // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
+  // two-color mark (navy on white, say) keeps its color through a flat profile.
+  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && a.colorfulness < ACHROMATIC_CHROMA) {
     rationale.push('Essentially two-tone with high contrast — black & white tracing fits best.')
     return 'bw-sketch'
   }
   if (a.photoScore > 0.6) {
-    rationale.push('Photographic content — posterized photo profile.')
+    rationale.push('Photographic content — posterized profile.')
     return 'photo'
   }
   if (a.distinctColors <= 24 && a.microGradientDensity < 0.08) {

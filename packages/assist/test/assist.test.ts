@@ -37,12 +37,51 @@ function sprite() {
   return img
 }
 
+/** Grayscale gradient with luminance noise (R=G=B) — a photographic gray scene. */
+function grayPhoto() {
+  const img = createRaster(200, 200)
+  const rnd = mulberry32(9)
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 200; x++) {
+      const base = 40 + ((x + y) / 400) * 170
+      const v = Math.max(0, Math.min(255, base + (rnd() - 0.5) * 50))
+      setPixel(img, x, y, v, v, v)
+    }
+  }
+  return img
+}
+
+/** Half black, half white — an achromatic high-contrast sketch. */
+function inkOnWhite() {
+  const img = createRaster(200, 200)
+  fillRaster(img, 255, 255, 255)
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 100; x++) setPixel(img, x, y, 12, 12, 12)
+  }
+  return img
+}
+
+/** Half navy, half white — high contrast but clearly colored. */
+function navyOnWhite() {
+  const img = createRaster(200, 200)
+  fillRaster(img, 255, 255, 255)
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 100; x++) setPixel(img, x, y, 20, 30, 120)
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
     expect(a.distinctColors).toBeLessThanOrEqual(4)
     expect(a.photoScore).toBeLessThan(0.4)
     expect(a.hasAlpha).toBe(false)
+  })
+
+  it('measures a grayscale image as achromatic and a colored one as chromatic', () => {
+    expect(analyzeImage(grayPhoto()).colorfulness).toBeLessThan(0.03)
+    expect(analyzeImage(navyOnWhite()).colorfulness).toBeGreaterThan(0.03)
   })
 
   it('measures noise/gradients as photographic', () => {
@@ -82,6 +121,23 @@ describe('recommendSettings', () => {
     const rec = recommendSettings(analyzeImage(flatLogo()), 'vinyl-cut')
     expect(rec.profileId).toBe('vinyl-cut')
     expect(rec.patch.unit).toBe('mm')
+  })
+
+  it('routes a grayscale photo to the photo profile in grayscale mode', () => {
+    const rec = recommendSettings(analyzeImage(grayPhoto()))
+    expect(rec.profileId).toBe('photo')
+    expect(rec.patch.mode).toBe('grayscale')
+  })
+
+  it('routes an achromatic high-contrast sketch to B&W', () => {
+    const rec = recommendSettings(analyzeImage(inkOnWhite()))
+    expect(rec.profileId).toBe('bw-sketch')
+  })
+
+  it('keeps a saturated two-tone mark in color rather than B&W', () => {
+    const rec = recommendSettings(analyzeImage(navyOnWhite()))
+    expect(rec.profileId).not.toBe('bw-sketch')
+    expect(['logo', 'illustration']).toContain(rec.profileId)
   })
 })
 

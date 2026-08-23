@@ -3,7 +3,7 @@ import type { RasterImage } from '@vectorizer/core'
 import { create2dCanvas } from './decode'
 
 export interface SampleDef {
-  id: 'badge' | 'portrait' | 'sprite'
+  id: 'badge' | 'portrait' | 'sprite' | 'peaks' | 'ink' | 'bloom'
   label: string
   tagline: string
   make(): Promise<RasterImage> | RasterImage
@@ -218,6 +218,184 @@ function makeSprite(): RasterImage {
   return ctx.getImageData(0, 0, size, size)
 }
 
+/** Draw a solid silhouette from a baseline up over a ridge of [x, y] points. */
+function ridge(ctx: Ctx2D, base: number, pts: ReadonlyArray<readonly [number, number]>): void {
+  const w = ctx.canvas.width
+  ctx.beginPath()
+  ctx.moveTo(0, base)
+  for (const [x, y] of pts) ctx.lineTo(x, y)
+  ctx.lineTo(w, base)
+  ctx.lineTo(w, w)
+  ctx.lineTo(0, w)
+  ctx.closePath()
+  ctx.fill()
+}
+
+/** Flat, poster-style landscape — bold solid colors, no gradients or noise. */
+function makePeaks(): RasterImage {
+  const size = 640
+  const { ctx } = create2dCanvas(size, size)
+
+  // Two flat sky bands (deliberately no gradient — this stays crisp as vectors).
+  ctx.fillStyle = '#ffd27a'
+  ctx.fillRect(0, 0, size, size)
+  ctx.fillStyle = '#ffb066'
+  ctx.fillRect(0, 300, size, size - 300)
+
+  // Flat sun disc.
+  ctx.fillStyle = '#fff4dc'
+  ctx.beginPath()
+  ctx.arc(320, 236, 96, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Mountain ranges, back to front — each a single solid tone.
+  ctx.fillStyle = '#e8825c'
+  ridge(ctx, 372, [
+    [0, 330],
+    [150, 250],
+    [286, 360],
+    [420, 250],
+    [560, 356],
+    [640, 300],
+  ])
+  ctx.fillStyle = '#c85f4e'
+  ridge(ctx, 470, [
+    [0, 452],
+    [120, 392],
+    [268, 470],
+    [408, 372],
+    [548, 468],
+    [640, 424],
+  ])
+  ctx.fillStyle = '#7a4a63'
+  ridge(ctx, 540, [
+    [0, 520],
+    [180, 470],
+    [360, 540],
+    [520, 476],
+    [640, 528],
+  ])
+
+  // Foreground water.
+  ctx.fillStyle = '#2f3b57'
+  ctx.fillRect(0, 556, size, size - 556)
+  // Sun reflection stripes on the water.
+  ctx.fillStyle = '#3f5170'
+  for (let i = 0; i < 4; i++) {
+    const w = 150 - i * 26
+    ctx.fillRect(320 - w / 2, 574 + i * 18, w, 8)
+  }
+
+  return ctx.getImageData(0, 0, size, size)
+}
+
+/** Bold single-ink scene — high-contrast black on white for B&W / stencil tracing. */
+function makeInk(): RasterImage {
+  const size = 640
+  const { ctx } = create2dCanvas(size, size)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, size, size)
+  ctx.fillStyle = '#000000'
+
+  // Ink sun disc.
+  ctx.beginPath()
+  ctx.arc(414, 196, 92, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Solid mountain silhouette.
+  ridge(ctx, 460, [
+    [0, 452],
+    [128, 372],
+    [244, 470],
+    [360, 300],
+    [470, 430],
+    [548, 356],
+    [640, 452],
+  ])
+
+  // A small flock — each bird a soft double stroke.
+  ctx.strokeStyle = '#000000'
+  ctx.lineWidth = 5
+  ctx.lineCap = 'round'
+  const birds: ReadonlyArray<readonly [number, number, number]> = [
+    [150, 150, 1],
+    [212, 178, 0.82],
+    [252, 138, 0.7],
+  ]
+  for (const [bx, by, s] of birds) {
+    const wing = 22 * s
+    ctx.beginPath()
+    ctx.moveTo(bx - wing, by)
+    ctx.quadraticCurveTo(bx - wing * 0.3, by - wing * 0.7, bx, by)
+    ctx.quadraticCurveTo(bx + wing * 0.3, by - wing * 0.7, bx + wing, by)
+    ctx.stroke()
+  }
+
+  return ctx.getImageData(0, 0, size, size)
+}
+
+/** Draw one ring of `count` almond petals radiating from a center. */
+function petalRing(
+  ctx: Ctx2D,
+  cx: number,
+  cy: number,
+  count: number,
+  r0: number,
+  r1: number,
+  width: number,
+  color: string,
+  phase = 0,
+): void {
+  ctx.fillStyle = color
+  for (let i = 0; i < count; i++) {
+    const a = phase + (i / count) * Math.PI * 2
+    const dx = Math.cos(a)
+    const dy = Math.sin(a)
+    const px = -dy * width
+    const py = dx * width
+    const b: [number, number] = [cx + dx * r0, cy + dy * r0]
+    const tip: [number, number] = [cx + dx * r1, cy + dy * r1]
+    const m: [number, number] = [cx + dx * (r0 + r1) * 0.5, cy + dy * (r0 + r1) * 0.5]
+    ctx.beginPath()
+    ctx.moveTo(b[0], b[1])
+    ctx.quadraticCurveTo(m[0] + px, m[1] + py, tip[0], tip[1])
+    ctx.quadraticCurveTo(m[0] - px, m[1] - py, b[0], b[1])
+    ctx.closePath()
+    ctx.fill()
+  }
+}
+
+/** Symmetric flat mandala — several solid colors, clean geometry for illustration tracing. */
+function makeBloom(): RasterImage {
+  const size = 640
+  const { ctx } = create2dCanvas(size, size)
+  const cx = size / 2
+  const cy = size / 2
+
+  ctx.fillStyle = '#fbf6ec'
+  ctx.fillRect(0, 0, size, size)
+
+  petalRing(ctx, cx, cy, 12, 96, 288, 40, '#e76f51')
+  petalRing(ctx, cx, cy, 12, 84, 230, 46, '#f4a261', Math.PI / 12)
+  petalRing(ctx, cx, cy, 10, 64, 176, 42, '#2a9d8f')
+  petalRing(ctx, cx, cy, 10, 48, 128, 34, '#8ab17d', Math.PI / 10)
+
+  // Layered center.
+  const discs: ReadonlyArray<readonly [number, string]> = [
+    [84, '#e9c46a'],
+    [56, '#264653'],
+    [30, '#e76f51'],
+  ]
+  for (const [r, color] of discs) {
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  return ctx.getImageData(0, 0, size, size)
+}
+
 export const SAMPLES: readonly SampleDef[] = [
   {
     id: 'badge',
@@ -236,6 +414,24 @@ export const SAMPLES: readonly SampleDef[] = [
     label: 'Sprite',
     tagline: 'Pixel art · 24×24',
     make: makeSprite,
+  },
+  {
+    id: 'peaks',
+    label: 'Peaks',
+    tagline: 'Flat color · 640×640',
+    make: makePeaks,
+  },
+  {
+    id: 'ink',
+    label: 'Ink',
+    tagline: 'Black & white · 640×640',
+    make: makeInk,
+  },
+  {
+    id: 'bloom',
+    label: 'Bloom',
+    tagline: 'Illustration · 640×640',
+    make: makeBloom,
   },
 ]
 

@@ -95,6 +95,18 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           Auto settings
         </button>
 
+        <label
+          class="auto-onload"
+          title="Analyze and apply recommended settings to each image as it loads"
+        >
+          <input
+            type="checkbox"
+            :checked="store.autoOnLoad"
+            @change="store.setAutoOnLoad(($event.target as HTMLInputElement).checked)"
+          />
+          <span>Apply automatically on load</span>
+        </label>
+
         <div v-if="store.assistRationale" class="rationale card">
           <div class="rationale-head">
             <span>Why these settings</span>
@@ -722,6 +734,24 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
 .auto-btn {
   margin-top: 8px;
   width: 100%;
+}
+
+.auto-onload {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-onload input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .rationale {

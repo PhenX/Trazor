@@ -24,6 +24,8 @@ export interface ImageAnalysis {
   meanLightness: number
   /** Std-dev of Oklab lightness. */
   contrast: number
+  /** Mean Oklab chroma (√(a²+b²)). Near 0 for grayscale, higher for saturated art. */
+  colorfulness: number
 }
 
 /**
@@ -45,6 +47,7 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   let microCount = 0
   let sumL = 0
   let sumL2 = 0
+  let sumChroma = 0
 
   for (let y = 0; y < height; y += step) {
     const row = y * width
@@ -62,9 +65,10 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
       const coarseKey = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
       coarse.set(coarseKey, (coarse.get(coarseKey) ?? 0) + 1)
 
-      const L = rgbToOklab(r / 255, g / 255, b / 255)[0]
+      const [L, oa, ob] = rgbToOklab(r / 255, g / 255, b / 255)
       sumL += L
       sumL2 += L * L
+      sumChroma += Math.hypot(oa, ob)
 
       if (x + step < width && y + step < height) {
         const iR = (row + x + step) * 4
@@ -100,6 +104,7 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const meanLightness = sampleCount === 0 ? 0 : sumL / sampleCount
   const variance = sampleCount === 0 ? 0 : Math.max(0, sumL2 / sampleCount - meanLightness ** 2)
   const contrast = Math.sqrt(variance)
+  const colorfulness = sampleCount === 0 ? 0 : sumChroma / sampleCount
 
   const edgeDensity = sampleCount === 0 ? 0 : edgeCount / sampleCount
   const microGradientDensity = sampleCount === 0 ? 0 : microCount / sampleCount
@@ -132,5 +137,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     dominantHex,
     meanLightness,
     contrast,
+    colorfulness,
   }
 }

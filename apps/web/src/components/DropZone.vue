@@ -203,8 +203,8 @@ defineExpose({ openPicker })
             >
               <span class="thumb-wrap checker">
                 <canvas
-                  width="112"
-                  height="112"
+                  width="160"
+                  height="160"
                   :ref="(el) => setThumbRef(sample.id, el as HTMLCanvasElement | null)"
                 />
               </span>
@@ -347,6 +347,7 @@ defineExpose({ openPicker })
 
 .thumb-wrap {
   display: block;
+  width: 100%;
   border-radius: var(--radius-s);
   overflow: hidden;
   border: 1px solid var(--border);
@@ -355,8 +356,9 @@ defineExpose({ openPicker })
 
 .thumb-wrap canvas {
   display: block;
-  width: 112px;
-  height: 112px;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
 }
 
 .sample-label {
@@ -402,5 +404,22 @@ defineExpose({ openPicker })
 .veil-sub {
   font-size: 11.5px;
   color: var(--text-2);
+}
+
+/* Mobile: tighten spacing and drop the sample grid to two comfortable columns. */
+@media (max-width: 560px) {
+  .empty-inner {
+    gap: 22px;
+    padding: 20px;
+  }
+
+  .target {
+    padding: 28px 18px 24px;
+  }
+
+  .sample-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
 }
 </style>

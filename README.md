@@ -61,7 +61,9 @@ On top of that, three things most tracers don't do:
   Models download once and cache in the browser; the app is fully functional
   without them.
 - **Auto settings**: instant image-statistics analysis recommends a profile,
-  palette size and preprocessing, with human-readable reasons.
+  palette size and preprocessing, with human-readable reasons — applied
+  automatically as each image loads (toggleable), or on demand. Detects
+  grayscale content and keeps saturated two-tone marks in color.
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
   `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
