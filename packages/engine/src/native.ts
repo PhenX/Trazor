@@ -40,6 +40,7 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  segmentRegions,
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
@@ -221,6 +222,7 @@ function palKeyOf(s: VectorizeSettings): string {
     s.autoPaletteSize,
     s.colorSpace,
     s.quantizeQuality,
+    s.segmentation,
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
@@ -432,7 +434,7 @@ async function colorPipeline(
     for (let i = 0; i < clusterSample.data.length; i++) {
       clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
     }
-    const q = quantize(image, {
+    const quantOpts = {
       k: settings.paletteSize,
       colorSpace: settings.colorSpace,
       quality: settings.quantizeQuality,
@@ -441,7 +443,11 @@ async function colorPipeline(
       sampleMask: clusterSample,
       autoK: settings.autoPaletteSize,
       fixedPalette: settings.palette,
-    })
+    }
+    const q =
+      settings.segmentation === 'regions'
+        ? segmentRegions(image, quantOpts)
+        : quantize(image, quantOpts)
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
         ? q.paletteHex.length

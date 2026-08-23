@@ -21,6 +21,18 @@ export type LayeringMode = 'stacked' | 'cutout'
  */
 export type CurveMode = 'spline' | 'polygon' | 'pixel'
 
+/**
+ * Color segmentation front-end:
+ * - `kmeans`: global Oklab k-means — each pixel independently takes the nearest
+ *   palette color. Fast and edge-accurate; can invent a wrong-colored sliver at
+ *   an anti-aliased seam (which `colorCoherence` cleans in place). The default.
+ * - `regions`: SLIC superpixels each vote a single palette label, collapsing the
+ *   image into large flat shapes — far fewer nodes and a much smaller file, at
+ *   the cost of blockier edges. A stylizing/simplifying knob, not a fidelity one:
+ *   it holds invented hues about as low as `kmeans`+`colorCoherence`, no lower.
+ */
+export type ColorSegmentation = 'kmeans' | 'regions'
+
 /** Ambiguity resolution when tracing meets a checkerboard junction. */
 export type TurnPolicy = 'minority' | 'majority' | 'black' | 'white' | 'left' | 'right'
 
@@ -60,6 +72,13 @@ export interface VectorizeSettings {
   colorSpace: 'oklab' | 'rgb'
   /** 1-10; scales k-means sample count and iterations. */
   quantizeQuality: number
+  /**
+   * Color segmentation front-end. `kmeans` labels each pixel independently
+   * (edge-accurate, the fidelity default). `regions` votes one palette label per
+   * SLIC superpixel, coarsening into large flat shapes — much smaller files,
+   * blockier edges; for stylized/low-detail output.
+   */
+  segmentation: ColorSegmentation
   /**
    * Fixed output palette ('#rrggbb' entries). When non-null, quantization maps
    * every pixel to the nearest of exactly these colors and `paletteSize` /
@@ -166,6 +185,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   autoPaletteSize: false,
   colorSpace: 'oklab',
   quantizeQuality: 5,
+  segmentation: 'kmeans',
   palette: null,
   layering: 'stacked',
   minRegionArea: 6,
@@ -217,6 +237,7 @@ export function normalizeSettings(
   s.alphaThreshold = clampInt(s.alphaThreshold, 0, 255)
   s.paletteSize = clampInt(s.paletteSize, 2, 64)
   s.quantizeQuality = clampInt(s.quantizeQuality, 1, 10)
+  if (s.segmentation !== 'regions') s.segmentation = 'kmeans'
   if (s.palette !== null) {
     const seen = new Set<string>()
     const valid: string[] = []

@@ -12,6 +12,8 @@ export { toGrayscale, toOklabBuffer } from './convert'
 export { detectEdges } from './edges'
 export { quantize } from './quantize'
 export type { QuantizeOptions, QuantizeResult } from './quantize'
+export { segmentRegions } from './segment'
+export type { SegmentOptions } from './segment'
 export {
   adaptiveBinarize,
   binarize,
