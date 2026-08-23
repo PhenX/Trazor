@@ -49,13 +49,13 @@ Vector`, `Cityscape Sunset`, `K1_drawing`, `tank-unit`, `vectorstock`).
 
 ## Where Trazor already won (baseline, auto settings)
 
-| metric | Trazor | VTracer |
-|---|---|---|
-| ΔE | 0.0283 | 0.0321 |
-| band | 0.0513 | 0.0578 |
-| p95 | 0.1107 | 0.1285 |
+| metric       | Trazor     | VTracer    |
+| ------------ | ---------- | ---------- |
+| ΔE           | 0.0283     | 0.0321     |
+| band         | 0.0513     | 0.0578     |
+| p95          | 0.1107     | 0.1285     |
 | **spurious** | **0.0158** | **0.0137** |
-| bytes vs V | 0.33× | 1.0× |
+| bytes vs V   | 0.33×      | 1.0×       |
 
 Only **spurious** favored VTracer. VTracer buys it with far more clusters/colors
 (its `vectorstock` output is 123k nodes / 3.7 MB vs Trazor's 16k / 0.39 MB) — many
@@ -84,14 +84,14 @@ survive; redundant ones don't. `Gum Tree` settles at ~20k nodes, not 76k.
 
 ## The fix, measured (auto path)
 
-| metric | before | after | VTracer |
-|---|---|---|---|
-| ΔE | 0.0283 | **0.0229** | 0.0321 |
-| band | 0.0513 | **0.0471** | 0.0578 |
-| spurious | 0.0158 | **0.0129** | 0.0137 |
-| p95 | 0.1107 | **0.0976** | 0.1285 |
-| score | 0.887 | **0.908** | 0.872 |
-| bytes vs V | 0.33× | 0.94× | 1.0× |
+| metric     | before | after      | VTracer |
+| ---------- | ------ | ---------- | ------- |
+| ΔE         | 0.0283 | **0.0229** | 0.0321  |
+| band       | 0.0513 | **0.0471** | 0.0578  |
+| spurious   | 0.0158 | **0.0129** | 0.0137  |
+| p95        | 0.1107 | **0.0976** | 0.1285  |
+| score      | 0.887  | **0.908**  | 0.872   |
+| bytes vs V | 0.33×  | 0.94×      | 1.0×    |
 
 Per-image highlights: dog ΔE 0.0407 → **0.0302** (de-greened, beats VTracer 0.0421);
 `Gum Tree` ΔE 0.0128 → **0.0074**, bands gone, only 331 KB → 438 KB. Illustration
@@ -99,13 +99,13 @@ spurious 0.0130 → **0.0097**, now under VTracer's 0.0102.
 
 Palette-size sweep that pinned the operating point (kmeans, forced k):
 
-| k | spurious | bytes vs V | note |
-|---|---|---|---|
-| 16 | 0.0158 | 0.33× | ships-before; invented hues |
-| 24 | 0.0143 | 1.03× | gap ~closed |
-| 32 | 0.0138 | 1.38× | ties VTracer |
-| 24 + autoK | 0.0133 | **0.76×** | beats VTracer, smaller files |
-| 32 + autoK | 0.0126 | 1.04× | beats VTracer more |
+| k          | spurious | bytes vs V | note                         |
+| ---------- | -------- | ---------- | ---------------------------- |
+| 16         | 0.0158   | 0.33×      | ships-before; invented hues  |
+| 24         | 0.0143   | 1.03×      | gap ~closed                  |
+| 32         | 0.0138   | 1.38×      | ties VTracer                 |
+| 24 + autoK | 0.0133   | **0.76×**  | beats VTracer, smaller files |
+| 32 + autoK | 0.0126   | 1.04×      | beats VTracer more           |
 
 ## Dead ends (don't re-try without a new idea)
 
