@@ -140,6 +140,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       'Multi-color: each color becomes its own <g> layer — cut it on that color of vinyl and stack the sheets.',
       'Stacked layers extend under the ones above, so overlaps stay gap-free once weeded and layered.',
       'Auto-reduce keeps the sheet count low; raise Colors if a shade you need is missing.',
+      'The backdrop color is dropped (no full backing sheet) — turn off Omit background to keep it.',
       'Millimeter units at 100% scale; raise Min region to drop specks a blade cannot weed.',
     ],
     patch: {
@@ -150,6 +151,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       groupByColor: true,
       minRegionArea: 16,
       preserveDetails: true,
+      omitBackground: true,
       smoothing: 0.7,
       curveOptimize: true,
       unit: 'mm',

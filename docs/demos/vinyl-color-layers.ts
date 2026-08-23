@@ -11,9 +11,9 @@
  * Output: docs/demos/vinyl-color-layers.html
  */
 import { writeFileSync } from 'node:fs'
-import { createRaster, fillRaster, normalizeSettings, setPixel } from '@vectorizer/core'
-import type { RasterImage } from '@vectorizer/core'
-import { vectorize } from '@vectorizer/engine'
+import { createRaster, fillRaster, getProfile, normalizeSettings, setPixel } from '@trazor/core'
+import type { RasterImage } from '@trazor/core'
+import { vectorize } from '@trazor/engine'
 
 /** A small flat badge: overlapping spot colors plus a tiny detail dot. */
 function badge(): RasterImage {
@@ -49,20 +49,8 @@ const BEFORE = normalizeSettings({
   maxDimension: 0,
 })
 
-const AFTER = normalizeSettings({
-  mode: 'color',
-  paletteSize: 6,
-  autoPaletteSize: true,
-  layering: 'stacked',
-  groupByColor: true,
-  minRegionArea: 16,
-  preserveDetails: true,
-  smoothing: 0.7,
-  curveOptimize: true,
-  unit: 'mm',
-  precision: 3,
-  maxDimension: 0,
-})
+// The live vinyl-cut profile (color, stacked, grouped, omit-background), full size.
+const AFTER = normalizeSettings({ ...getProfile('vinyl-cut').patch, maxDimension: 0 })
 
 /** Split a grouped SVG into one standalone tile per <g> color layer. */
 function peelLayers(svg: string, w: number, h: number): { color: string; svg: string }[] {
@@ -122,7 +110,7 @@ const html = `<title>Vinyl — Color Layers</title>
   <p class="sub">The same flat graphic traced through the engine. The old profile was black &amp; white, so every color
     became a single silhouette. The new profile keeps the colors, stacks them (each lower layer extends under the ones
     above, so weeded sheets stack without gaps), and wraps each color in its own <code>&lt;g&gt;</code> layer — one
-    selectable vinyl sheet per color.</p>
+    selectable vinyl sheet per color. The backdrop color is dropped, so there is no full backing sheet to weed.</p>
 
   <section class="row">
     <h2>Before vs after</h2>

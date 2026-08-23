@@ -30,15 +30,15 @@
   <p class="sub">The same flat graphic traced through the engine. The old profile was black &amp; white, so every color
     became a single silhouette. The new profile keeps the colors, stacks them (each lower layer extends under the ones
     above, so weeded sheets stack without gaps), and wraps each color in its own <code>&lt;g&gt;</code> layer — one
-    selectable vinyl sheet per color.</p>
+    selectable vinyl sheet per color. The backdrop color is dropped, so there is no full backing sheet to weed.</p>
 
   <section class="row">
     <h2>Before vs after</h2>
     <p>B&amp;W profile: 1 color, 1 paths. Color profile:
-      5 colors, 6 paths, 5 layers.</p>
+      4 colors, 5 paths, 4 layers.</p>
     <div class="pair">
-      <figure><figcaption>Before · B&amp;W profile</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="26.458mm" height="26.458mm"><!-- Vectorizer: traced client-side --><path d="M 40.768 15.642 c 7.425-2.355 16.64-1.173 23.604 2.019 c 7.786 3.568 14.351 10.169 18.007 17.901 c 2.392 5.057 2.808 7.199 2.808 14.438 c 0 7.239-0.416 9.381-2.808 14.438 c-3.666 7.754-10.249 14.321-18.007 17.978 c-4.977 2.345-7.167 2.767-14.372 2.767 c-7.205 0-9.395-0.422-14.372-2.767 c-7.758-3.657-14.341-10.224-18.007-17.978 c-2.392-5.059-2.808-7.197-2.806-14.438 c 0.001-7.201 0.424-9.397 2.768-14.368 c 4.583-9.724 13.032-16.771 23.185-19.99 Z M 57.18 42.576 c 7.389-3.736 16.775-0.361 20.358 6.947 c 3.602 7.348 0.168 16.471-7.061 20.015 c-7.375 3.616-16.47 0.147-20.03-7.087 c-3.546-7.204-0.37-16.284 6.733-19.875 Z" fill="#000000" fill-rule="evenodd"/></svg></div></figure>
-      <figure><figcaption>After · color, stacked, grouped</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="26.458mm" height="26.458mm"><!-- Vectorizer: traced client-side --><g id="layer-1"><title>#ffffff</title><path d="M 0 50 V 0 H 100 V 100 H 0 V 50 Z" fill="#ffffff" fill-rule="evenodd"/></g><g id="layer-2"><title>#286ebe</title><ellipse cx="49.998" cy="49.922" rx="35.493" ry="35.578" fill="#286ebe"/></g><g id="layer-3"><title>#d23c32</title><path d="M 29.96 31.303 c 5.356-2.833 10.781-2.802 16.133 0.026 c 3.275 1.731 5.049 3.602 6.907 7.288 l 2.5 4.96 L 58 42.246 c 4.14-2.203 11.063-1.049 14.749 1.575 c 9.073 6.461 7.538 20.968-2.371 25.67 c-7.099 3.369-16.36 0.281-19.751-6.865 l-1.62-3.414 l-3.715 1.894 c-7.833 3.994-17.875 0.715-21.989-7.066 c-2.818-5.328-2.818-10.752 0-16.08 c 1.574-2.976 3.681-5.083 6.657-6.657 Z M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#d23c32" fill-rule="evenodd"/></g><g id="layer-4"><title>#f0c83c</title><circle cx="63.899" cy="56.024" r="14.878" fill="#f0c83c"/><path d="M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#f0c83c" fill-rule="evenodd"/></g><g id="layer-5"><title>#3ca05a</title><path d="M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#3ca05a" fill-rule="evenodd"/></g></svg></div></figure>
+      <figure><figcaption>Before · B&amp;W profile</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="26.458mm" height="26.458mm"><!-- Trazor: traced client-side --><path d="M 40.768 15.642 c 7.425-2.355 16.64-1.173 23.604 2.019 c 7.786 3.568 14.351 10.169 18.007 17.901 c 2.392 5.057 2.808 7.199 2.808 14.438 c 0 7.239-0.416 9.381-2.808 14.438 c-3.666 7.754-10.249 14.321-18.007 17.978 c-4.977 2.345-7.167 2.767-14.372 2.767 c-7.205 0-9.395-0.422-14.372-2.767 c-7.758-3.657-14.341-10.224-18.007-17.978 c-2.392-5.059-2.808-7.197-2.806-14.438 c 0.001-7.201 0.424-9.397 2.768-14.368 c 4.583-9.724 13.032-16.771 23.185-19.99 Z M 57.18 42.576 c 7.389-3.736 16.775-0.361 20.358 6.947 c 3.602 7.348 0.168 16.471-7.061 20.015 c-7.375 3.616-16.47 0.147-20.03-7.087 c-3.546-7.204-0.37-16.284 6.733-19.875 Z" fill="#000000" fill-rule="evenodd"/></svg></div></figure>
+      <figure><figcaption>After · color, stacked, grouped</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="26.458mm" height="26.458mm"><!-- Trazor: traced client-side --><g id="layer-1"><title>#286ebe</title><ellipse cx="49.998" cy="49.922" rx="35.493" ry="35.578" fill="#286ebe"/></g><g id="layer-2"><title>#d23c32</title><path d="M 29.96 31.303 c 5.356-2.833 10.781-2.802 16.133 0.026 c 3.275 1.731 5.049 3.602 6.907 7.288 l 2.5 4.96 L 58 42.246 c 4.14-2.203 11.063-1.049 14.749 1.575 c 9.073 6.461 7.538 20.968-2.371 25.67 c-7.099 3.369-16.36 0.281-19.751-6.865 l-1.62-3.414 l-3.715 1.894 c-7.833 3.994-17.875 0.715-21.989-7.066 c-2.818-5.328-2.818-10.752 0-16.08 c 1.574-2.976 3.681-5.083 6.657-6.657 Z M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#d23c32" fill-rule="evenodd"/></g><g id="layer-3"><title>#f0c83c</title><circle cx="63.899" cy="56.024" r="14.878" fill="#f0c83c"/><path d="M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#f0c83c" fill-rule="evenodd"/></g><g id="layer-4"><title>#3ca05a</title><path d="M 62 33 v-3 h 6 v 6 h-6 v-3 Z" fill="#3ca05a" fill-rule="evenodd"/></g></svg></div></figure>
     </div>
   </section>
 
@@ -47,10 +47,6 @@
     <p>Each <code>&lt;g&gt;</code> layer peeled out on its own. Lower layers carry the full region (they extend under the
       colors above), so cutting each on its vinyl and stacking them reproduces the graphic with no seams.</p>
     <div class="tiles"><figure class="tile">
-      <figcaption><span class="sw" style="background:#ffffff"></span>#ffffff</figcaption>
-      <div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#fff"/><path d="M 0 50 V 0 H 100 V 100 H 0 V 50 Z" fill="#ffffff" fill-rule="evenodd"/></svg></div>
-    </figure>
-<figure class="tile">
       <figcaption><span class="sw" style="background:#286ebe"></span>#286ebe</figcaption>
       <div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#fff"/><ellipse cx="49.998" cy="49.922" rx="35.493" ry="35.578" fill="#286ebe"/></svg></div>
     </figure>
