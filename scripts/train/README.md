@@ -150,6 +150,10 @@ npm run dataset -- --source procedural --count 40000 --out data/proc
 python scripts/train/train.py --data data/proc data/real --epochs 80 --workers 8
 ```
 
+`pipeline.py` accepts the same several `--data` roots (with `--skip-data`, since it generates one set), so the last step
+can also be `python scripts/train/pipeline.py --data data/proc data/real --skip-data --epochs 80 --quantize` to train and
+export in one go.
+
 Rule of thumb: **~⅔ procedural + ~⅓ real**, adding more real as you collect it. Fonts are the easiest real source —
 export glyphs to per-file SVGs. Splits are per source family in each root, so families never leak across train/val/test.
 

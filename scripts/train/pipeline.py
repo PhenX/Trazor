@@ -6,6 +6,7 @@ Cross-platform (Windows / macOS / Linux). Each step is also runnable on its own
     python scripts/train/pipeline.py --smoke                     # ~30s end-to-end sanity check
     python scripts/train/pipeline.py --count 20000 --epochs 40 --quantize
     python scripts/train/pipeline.py --data dataset-out --skip-data --epochs 40
+    python scripts/train/pipeline.py --data data/proc data/real --skip-data --epochs 40
     python scripts/train/pipeline.py --task cleanup --count 20000 --quantize
 
 Run --smoke first on a new machine: it exercises the whole chain (data-gen →
@@ -72,7 +73,14 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Generate data, train, and export a pre-pass model.")
     p.add_argument("--task", choices=sorted(DEFAULT_OUT), default="edge", help="edge or cleanup")
     p.add_argument("--count", type=int, default=20000, help="samples to generate")
-    p.add_argument("--data", default=None, help="dataset dir (default: dataset-out; --smoke uses its own isolated dir)")
+    p.add_argument(
+        "--data",
+        nargs="+",
+        default=None,
+        help="dataset dir(s); several are concatenated at train time like train.py "
+        "(default: dataset-out; --smoke uses its own isolated dir). Generation writes "
+        "one set, so pass a single dir to generate, or several with --skip-data to mix",
+    )
     p.add_argument("--epochs", type=int, default=60)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--base-channels", type=int, default=16, help="model width / size")
@@ -102,7 +110,10 @@ def main() -> None:
     # Resolve paths: smoke stays fully isolated under SMOKE_DIR (gitignored) — its
     # own dataset dir, checkpoint dir, and ONNX, none of them the real dataset or
     # the shipped model.
-    data = args.data or (f"{SMOKE_DIR}/data" if args.smoke else "dataset-out")
+    default_root = f"{SMOKE_DIR}/data" if args.smoke else "dataset-out"
+    # --data may name several roots (concatenated at train time, matching train.py);
+    # generation writes a single dataset, so exactly one root is expected there.
+    data_roots = args.data or [default_root]
     ckpt_dir = SMOKE_DIR if args.smoke else "scripts/train/checkpoints"
     out = args.out or (
         f"{SMOKE_DIR}/{args.task}.onnx" if args.smoke else DEFAULT_OUT[args.task]
@@ -114,16 +125,29 @@ def main() -> None:
         )
 
     if args.skip_data:
-        print(f"skipping data generation, using {data}")
+        print(f"skipping data generation, using {', '.join(data_roots)}")
     else:
+        # Generation writes one dataset; several roots only make sense for mixing
+        # already-generated sets, which is the --skip-data path.
+        if len(data_roots) > 1:
+            raise SystemExit(
+                "data generation writes one dataset, but --data named several roots: "
+                f"{', '.join(data_roots)}.\n"
+                "Generate each separately (npm run dataset -- --out <dir>), then re-run "
+                "with --skip-data to mix them; or pass a single --data dir to generate."
+            )
         # The dataset carries both targets (edge + clean), so one generated set
         # trains either task. npm is npm.cmd on Windows; shell=True keeps it portable.
-        run(f'npm run dataset -- --count {args.count} --jobs {args.jobs} --out "{data}"', shell=True)
+        run(
+            f'npm run dataset -- --count {args.count} --jobs {args.jobs} --out "{data_roots[0]}"',
+            shell=True,
+        )
 
     run([
         sys.executable, str(HERE / "train.py"),
         "--task", args.task,
-        "--data", data, "--epochs", str(args.epochs),
+        # Forward every root; train.py's --data is nargs="+" and concatenates them.
+        "--data", *data_roots, "--epochs", str(args.epochs),
         "--batch", str(args.batch), "--base-channels", str(args.base_channels),
         "--ssim-weight", str(args.ssim_weight),
         "--patience", str(args.patience), "--workers", str(args.workers),
