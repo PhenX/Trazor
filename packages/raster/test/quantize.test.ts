@@ -231,6 +231,7 @@ describe('quantize — k-means path', () => {
     })
     const res = quantize(img, { ...baseOpts, k: 8, seed: 3 })
     const labelOfColor = new Map<number, number>()
+    let mismatches = 0
     for (let y = 0; y < 60; y++) {
       for (let x = 0; x < 60; x++) {
         const p = (y * 60 + x) * 4
@@ -238,9 +239,10 @@ describe('quantize — k-means path', () => {
         const lab = res.labels.data[y * 60 + x]
         const seen = labelOfColor.get(key)
         if (seen === undefined) labelOfColor.set(key, lab)
-        else expect(lab).toBe(seen)
+        else if (seen !== lab) mismatches++
       }
     }
+    expect(mismatches).toBe(0)
   })
 
   it('autoK merges centroids closer than 0.03 in Oklab', () => {

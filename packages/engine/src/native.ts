@@ -83,16 +83,18 @@ function edgeProtectMask(
   return { width, height, data }
 }
 
-/** Cumulative progress budget per stage (sums to 1). */
+// Cumulative progress budget per stage (sums to 1). Curve fitting happens
+// inside the trace stage, so `fit` carries no separate work or budget — the
+// stage id is retained only for downstream compatibility.
 const STAGE_BUDGET: Record<StageId, number> = {
   preprocess: 0.12,
   palette: 0.2,
   segment: 0.08,
-  trace: 0.42,
-  fit: 0.06,
+  trace: 0.48,
+  fit: 0,
   svg: 0.12,
 }
-const STAGE_ORDER: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'fit', 'svg']
+const STAGE_ORDER: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'svg']
 
 class Run {
   private timings: StageTiming[] = []
@@ -549,7 +551,6 @@ async function colorPipeline(
     }
   }
   setPalette(usedPalette)
-  run.stage('fit')
   run.progress(1)
 }
 
@@ -652,8 +653,6 @@ async function inkPipeline(
     }
     run.progress(1)
   }
-  run.stage('fit')
-  run.progress(1)
 }
 
 function desaturateInPlace(image: RasterImage): void {
