@@ -156,3 +156,62 @@ export function adaptiveBinarize(
   }
   return { width: w, height: h, data: out }
 }
+
+/**
+ * Signed boundary field for the adaptive threshold, in [-0.5, 0.5]: the
+ * `signedThresholdField` construction with a per-pixel level `t(x,y) =
+ * localMean - bias01` (the same local mean `adaptiveBinarize` compares against).
+ * Positive where that pixel is marked ink, negative outside, zero at the local
+ * crossing; each side is normalized by its own distance to the extreme so a hard
+ * edge's zero contour stays on the lattice while an anti-aliased ramp crosses at
+ * its true sub-pixel position. Feeds the tracer's `coverage` in adaptive bw
+ * mode, giving it the sub-pixel edges the global threshold already had.
+ */
+export function signedAdaptiveField(
+  gray: GrayImage,
+  radius: number,
+  bias01: number,
+  invert: boolean,
+): GrayImage {
+  const { width: w, height: h, data } = gray
+  const r = Math.max(1, Math.round(radius))
+  const s = invert ? -1 : 1
+
+  const iw = w + 1
+  const integ = new Float64Array(iw * (h + 1))
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0
+    const src = y * w
+    const prev = y * iw
+    const cur = (y + 1) * iw
+    for (let x = 0; x < w; x++) {
+      rowSum += data[src + x]
+      integ[cur + x + 1] = integ[prev + x + 1] + rowSum
+    }
+  }
+
+  const out = new Float32Array(w * h)
+  for (let y = 0; y < h; y++) {
+    const y0 = y - r < 0 ? 0 : y - r
+    const y1 = y + r >= h ? h - 1 : y + r
+    const rowTop = y0 * iw
+    const rowBot = (y1 + 1) * iw
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      const x0 = x - r < 0 ? 0 : x - r
+      const x1 = x + r >= w ? w - 1 : x + r
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1)
+      const mean =
+        (integ[rowBot + x1 + 1] -
+          integ[rowTop + x1 + 1] -
+          integ[rowBot + x0] +
+          integ[rowTop + x0]) /
+        area
+      const t = mean - bias01
+      const d = t - data[i]
+      const scale = d > 0 ? 0.5 / Math.max(t, 1e-6) : 0.5 / Math.max(1 - t, 1e-6)
+      out[i] = s * d * scale
+    }
+  }
+  return { width: w, height: h, data: out }
+}

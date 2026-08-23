@@ -1,6 +1,69 @@
 import type { GrayImage } from '@vectorizer/core'
 import type { FlatPoints } from './paths'
 
+/**
+ * A signed scalar field over the pixel grid, in [-0.5, 0.5]: positive on one
+ * side of a boundary, negative on the other, zero at the true edge; magnitude
+ * 0.5 is a fully saturated (non-anti-aliased) pixel. A `GrayImage` produced by
+ * `signedThresholdField` is one such field; a color-boundary field
+ * (`pairwiseField`) is another. `at(x, y)` reads the value at integer pixel
+ * (x, y); callers clamp the coordinates.
+ */
+export interface SignedField {
+  width: number
+  height: number
+  at(x: number, y: number): number
+}
+
+/**
+ * Signed color-boundary field between two region colors, in [-0.5, 0.5]:
+ * negative deep in `left`, positive deep in `right`, zero where the pixel color
+ * is the perceptual 50% mix — the true anti-aliased edge between two flat
+ * regions. Built from a per-pixel Oklab buffer (interleaved [L, a, b]): an
+ * anti-aliased rim pixel reads an intermediate value, a fully saturated
+ * interior pixel reads ±0.5, so a hard color edge (no intermediate sample) is
+ * left on the lattice exactly like a hard threshold edge is.
+ */
+export function pairwiseField(
+  oklab: Float32Array,
+  width: number,
+  height: number,
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): SignedField {
+  const lL = left[0]
+  const la = left[1]
+  const lb = left[2]
+  const rL = right[0]
+  const ra = right[1]
+  const rb = right[2]
+  const dx = lL - rL
+  const dy = la - ra
+  const dz = lb - rb
+  const dLR = Math.sqrt(dx * dx + dy * dy + dz * dz)
+  const inv = dLR > 1e-6 ? 0.5 / dLR : 0
+  return {
+    width,
+    height,
+    at(x: number, y: number): number {
+      const o = (y * width + x) * 3
+      const L = oklab[o]
+      const a = oklab[o + 1]
+      const b = oklab[o + 2]
+      const dll = L - lL
+      const dla = a - la
+      const dlb = b - lb
+      const drl = L - rL
+      const dra = a - ra
+      const drb = b - rb
+      const dl = Math.sqrt(dll * dll + dla * dla + dlb * dlb)
+      const dr = Math.sqrt(drl * drl + dra * dra + drb * drb)
+      const v = (dl - dr) * inv
+      return v < -0.5 ? -0.5 : v > 0.5 ? 0.5 : v
+    },
+  }
+}
+
 /** Clamp for a single vertex's sub-pixel displacement (px). */
 const MAX_SHIFT = 0.75
 /**
@@ -27,12 +90,14 @@ const SATURATED = 0.4999
  * edge carries no sub-pixel truth, and moving its corners would only bend the
  * straight runs that meet there.
  */
-export function refineRingToField(ring: FlatPoints, field: GrayImage): FlatPoints {
-  const { width: w, height: h, data } = field
+export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedField): FlatPoints {
+  const w = field.width
+  const h = field.height
+  const data = 'data' in field ? field.data : null
   const sample = (x: number, y: number): number => {
     const cx = x < 0 ? 0 : x >= w ? w - 1 : x
     const cy = y < 0 ? 0 : y >= h ? h - 1 : y
-    return data[cy * w + cx]
+    return data !== null ? data[cy * w + cx] : (field as SignedField).at(cx, cy)
   }
 
   const n = ring.length >> 1

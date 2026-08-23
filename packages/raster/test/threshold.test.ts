@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adaptiveBinarize, binarize, otsuThreshold } from '../src/index'
+import { adaptiveBinarize, binarize, otsuThreshold, signedAdaptiveField } from '../src/index'
 import { grayOf, maskOf } from './helpers'
 
 describe('otsuThreshold', () => {
@@ -113,5 +113,40 @@ describe('adaptiveBinarize', () => {
         expect(v).toBe(expected)
       }
     }
+  })
+})
+
+describe('signedAdaptiveField', () => {
+  it('is positive exactly where adaptiveBinarize marks ink', () => {
+    // Illumination gradient with a couple of darker marks.
+    const dots = new Set(['5,4', '26,4'])
+    const g = grayOf(32, 9, (x, y) => {
+      const base = 0.2 + (0.6 * x) / 31
+      return dots.has(`${x},${y}`) ? base - 0.3 : base
+    })
+    for (const invert of [false, true]) {
+      const mask = adaptiveBinarize(g, 3, 0.05, invert)
+      const field = signedAdaptiveField(g, 3, 0.05, invert)
+      for (let i = 0; i < field.data.length; i++) {
+        // Ink ⇔ field > 0 (ties at exactly 0 map to background, as in binarize).
+        expect(field.data[i] > 0).toBe(mask.data[i] === 1)
+      }
+    }
+  })
+
+  it('crosses zero at the anti-aliased edge, not the pixel lattice', () => {
+    // A ramp from light to dark crossing a local mean around x≈4.5.
+    const g = grayOf(10, 1, (x) => 0.9 - 0.09 * x)
+    const field = signedAdaptiveField(g, 4, 0, false)
+    // The field changes sign along the ramp and stays in [-0.5, 0.5].
+    let sawNeg = false
+    let sawPos = false
+    for (const v of field.data) {
+      if (v < 0) sawNeg = true
+      if (v > 0) sawPos = true
+      expect(v).toBeGreaterThanOrEqual(-0.5001)
+      expect(v).toBeLessThanOrEqual(0.5001)
+    }
+    expect(sawNeg && sawPos).toBe(true)
   })
 })

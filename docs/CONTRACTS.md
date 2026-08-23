@@ -166,6 +166,12 @@ export function signedThresholdField(
   threshold01: number,
   invert: boolean,
 ): GrayImage // centered coverage in [-0.5, 0.5]: +inside/−outside, 0 at the crossing; feeds trace `coverage`
+export function signedAdaptiveField(
+  gray: GrayImage,
+  radius: number,
+  bias01: number,
+  invert: boolean,
+): GrayImage // signedThresholdField with the per-pixel adaptive level (local mean − bias); feeds trace `coverage` in adaptive bw mode
 
 // regions.ts
 // 4-connected components of equal label; components smaller than minArea are

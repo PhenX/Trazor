@@ -8,9 +8,25 @@ import { smoothOpen } from './potrace/smooth'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { reverseCommands } from './paths'
+import { pairwiseField, refineRingToField } from './refine'
+import type { SignedField } from './refine'
+
+/**
+ * Per-pixel Oklab buffer (interleaved [L, a, b], matching the label map's
+ * dimensions) plus per-label palette Oklab (interleaved, indexed by label). When
+ * present, each shared boundary chain is refined onto the sub-pixel color edge
+ * between its two regions — the anti-aliased boundary position, not the pixel
+ * staircase. The chain is fitted once and reused by both neighbors, so the
+ * seam-free guarantee is preserved; junction endpoints stay pinned.
+ */
+export interface ColorField {
+  oklab: Float32Array
+  paletteOklab: Float32Array
+}
 
 export interface TraceCutoutOptions extends TraceCurveOptions {
   minArea: number
+  colorField?: ColorField
 }
 
 export interface RegionShape {
@@ -212,6 +228,21 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
     addInstance(chain.left, { chain, forward: false, used: false })
   }
 
+  // Sub-pixel color-boundary field for a chain, from its two region colors.
+  const makeField = (chain: Chain): SignedField | undefined => {
+    const cf = opts.colorField
+    if (!cf || chain.left < 0 || chain.right < 0) return undefined
+    const li = chain.left * 3
+    const ri = chain.right * 3
+    return pairwiseField(
+      cf.oklab,
+      w,
+      h,
+      [cf.paletteOklab[li], cf.paletteOklab[li + 1], cf.paletteOklab[li + 2]],
+      [cf.paletteOklab[ri], cf.paletteOklab[ri + 1], cf.paletteOklab[ri + 2]],
+    )
+  }
+
   // ---- assembly ----
   const shapes: RegionShape[] = []
   for (const [label, byCorner] of regionInstances) {
@@ -226,7 +257,7 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
           start.used = true
           const area = (start.forward ? start.chain.shoelace : -start.chain.shoelace) / 2
           if (area < 0) holeCount++
-          commands.push(...loopCommands(start.chain, start.forward, opts))
+          commands.push(...loopCommands(start.chain, start.forward, opts, makeField))
           continue
         }
 
@@ -241,7 +272,7 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
         for (;;) {
           inst.used = true
           ringArea += inst.forward ? inst.chain.shoelace : -inst.chain.shoelace
-          ringCmds.push(...instanceCommands(inst, opts))
+          ringCmds.push(...instanceCommands(inst, opts, makeField))
           const [ex, ey] = instEnd(inst)
           const nextList = byCorner.get(cornerKey(ex, ey))
           const next = pickContinuation(nextList, instLastDir(inst), start)
@@ -300,9 +331,10 @@ function instEnd(inst: Instance): [number, number] {
 function instanceCommands(
   inst: { chain: Chain; forward: boolean },
   opts: TraceCurveOptions,
+  makeField: (chain: Chain) => SignedField | undefined,
 ): PathCommand[] {
   const chain = inst.chain
-  if (!chain.fwd) chain.fwd = fitOpenChain(chain.points, opts)
+  if (!chain.fwd) chain.fwd = fitOpenChain(chain.points, opts, makeField(chain))
   if (inst.forward) return chain.fwd
   if (!chain.rev) {
     const sx = chain.points[0]
@@ -314,8 +346,13 @@ function instanceCommands(
 }
 
 /** Complete closed ring commands of a pure-loop chain (memoized, shared). */
-function loopCommands(chain: Chain, forward: boolean, opts: TraceCurveOptions): PathCommand[] {
-  if (!chain.fwdClosed) chain.fwdClosed = fitLoop(chain.points, opts)
+function loopCommands(
+  chain: Chain,
+  forward: boolean,
+  opts: TraceCurveOptions,
+  makeField: (chain: Chain) => SignedField | undefined,
+): PathCommand[] {
+  if (!chain.fwdClosed) chain.fwdClosed = fitLoop(chain.points, opts, makeField(chain))
   if (forward) return chain.fwdClosed
   if (!chain.rev) chain.rev = reverseCommands(chain.fwdClosed)
   return chain.rev
@@ -326,7 +363,7 @@ function stripM(commands: PathCommand[]): PathCommand[] {
 }
 
 /** Closed loop chain: rotate to a corner, then run the full closed chain. */
-function fitLoop(points: FlatPoints, opts: TraceCurveOptions): PathCommand[] {
+function fitLoop(points: FlatPoints, opts: TraceCurveOptions, field?: SignedField): PathCommand[] {
   // points[last] === points[0]; drop the duplicate for ring form.
   const ring = points.slice(0, points.length - 2)
   const n = ring.length >> 1
@@ -349,7 +386,7 @@ function fitLoop(points: FlatPoints, opts: TraceCurveOptions): PathCommand[] {
     rotated[i * 2] = ring[src * 2]
     rotated[i * 2 + 1] = ring[src * 2 + 1]
   }
-  return closedPathToCommands(rotated, opts)
+  return closedPathToCommands(rotated, opts, field)
 }
 
 /**
@@ -357,16 +394,32 @@ function fitLoop(points: FlatPoints, opts: TraceCurveOptions): PathCommand[] {
  * shared, so adjacent regions connect perfectly). Returns commands WITHOUT the
  * leading M, starting from the chain's first point.
  */
-function fitOpenChain(points: FlatPoints, opts: TraceCurveOptions): PathCommand[] {
+function fitOpenChain(
+  points: FlatPoints,
+  opts: TraceCurveOptions,
+  field?: SignedField,
+): PathCommand[] {
   const n = points.length >> 1
   if (n < 2) return []
   if (opts.curveMode === 'pixel') {
     return openPixelCommands(points)
   }
 
+  // The optimal polygon needs the integer lattice (unit-step straightness);
+  // sub-pixel refinement then feeds only the sums + vertex adjustment. Junction
+  // endpoints stay exactly on the lattice so adjacent chains still connect.
   const vertexIdx = optimalPolyline(points)
-  const sums = computeSums(points)
-  const adjusted = adjustVertices(points, sums, vertexIdx, false)
+  let geom = points
+  if (field) {
+    geom = refineRingToField(points, field)
+    const last = geom.length
+    geom[0] = points[0]
+    geom[1] = points[1]
+    geom[last - 2] = points[last - 2]
+    geom[last - 1] = points[last - 1]
+  }
+  const sums = computeSums(geom)
+  const adjusted = adjustVertices(geom, sums, vertexIdx, false)
   const m = adjusted.length >> 1
 
   if (opts.curveMode === 'polygon' || m <= 2) {

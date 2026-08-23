@@ -8,6 +8,7 @@ import { smoothClosed } from './potrace/smooth'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { refineRingToField } from './refine'
+import type { SignedField } from './refine'
 
 export interface TraceCurveOptions {
   curveMode: CurveMode
@@ -103,7 +104,11 @@ export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape
  * convex corner (decomposition invariant), so the cycle is linearized there
  * for the straightness/DP stages, while adjustment and smoothing stay cyclic.
  */
-export function closedPathToCommands(ring: FlatPoints, opts: TraceCurveOptions): PathCommand[] {
+export function closedPathToCommands(
+  ring: FlatPoints,
+  opts: TraceCurveOptions,
+  field?: SignedField,
+): PathCommand[] {
   if (opts.curveMode === 'pixel') return pixelCommands(ring)
 
   // Extended array: append the start point so the DP sees an open anchored path.
@@ -116,8 +121,10 @@ export function closedPathToCommands(ring: FlatPoints, opts: TraceCurveOptions):
   // The optimal polygon picks vertices on the integer lattice (its straightness
   // analysis needs unit steps); sub-pixel refinement then feeds only the moment
   // sums and vertex adjustment, so each segment's best-fit line tracks the true
-  // edge rather than the staircase.
-  const geom = opts.coverage ? refineRingToField(ext, opts.coverage) : ext
+  // edge rather than the staircase. `field` (a color-boundary field for cutout
+  // loops) takes precedence over the mode-level `coverage` (bw threshold field).
+  const sampler = field ?? opts.coverage
+  const geom = sampler ? refineRingToField(ext, sampler) : ext
   const sums = computeSums(geom)
   const adjusted = adjustVertices(geom, sums, vertexIdx, true)
 

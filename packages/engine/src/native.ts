@@ -37,8 +37,10 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  signedAdaptiveField,
   signedThresholdField,
   toGrayscale,
+  toOklabBuffer,
   zhangSuenThin,
 } from '@vectorizer/raster'
 import { traceCenterline, traceLabelMap, traceMask } from '@vectorizer/trace'
@@ -351,9 +353,17 @@ async function colorPipeline(
   const usedPalette: string[] = []
 
   if (settings.layering === 'cutout') {
+    // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
+    // true anti-aliased edge between its two region colors. Skipped in pixel
+    // mode (exact lattice) and when the palette is degenerate.
+    const colorField =
+      settings.curveMode !== 'pixel' && q.paletteHex.length > 1
+        ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(q.paletteRgb) }
+        : undefined
     const regions = traceLabelMap(labels, {
       ...curveOpts,
       minArea: traceMinArea,
+      colorField,
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
@@ -439,6 +449,14 @@ async function inkPipeline(
       settings.invert,
       opaque,
     )
+    if (settings.curveMode !== 'pixel') {
+      coverage = signedAdaptiveField(
+        gray,
+        settings.adaptiveRadius,
+        settings.adaptiveBias / 255,
+        settings.invert,
+      )
+    }
   } else {
     const t =
       settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
@@ -513,6 +531,23 @@ function desaturateInPlace(image: RasterImage): void {
     data[i + 1] = v
     data[i + 2] = v
   }
+}
+
+/** Per-label palette colors as an interleaved Oklab buffer (length count*3). */
+function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
+  const m = (paletteRgb.length / 3) | 0
+  const out = new Float32Array(m * 3)
+  for (let i = 0; i < m; i++) {
+    const [L, a, b] = rgbToOklab(
+      paletteRgb[i * 3] / 255,
+      paletteRgb[i * 3 + 1] / 255,
+      paletteRgb[i * 3 + 2] / 255,
+    )
+    out[i * 3] = L
+    out[i * 3 + 1] = a
+    out[i * 3 + 2] = b
+  }
+  return out
 }
 
 /** Nearest palette entry to the dominant border color (for omitBackground). */
