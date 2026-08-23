@@ -163,21 +163,32 @@ rotation; `geometry.ts` expands `A` back to cubics for the overlay; `reverseComm
 [`shape-matching`](demos/shape-matching.html) demo (traced pie wedge / half-disc / elliptical wedge), and verified
 pixel-lossless through resvg. `REFERENCES.md`, `CONTRACTS.md`, and the README roadmap line updated.
 
-**Pending:** **cutout-arc consistency** (fit a shared boundary chain once, reused by both neighbors) so `roundPrimitives` —
-hence `A` — can turn on for cutout without seam divergence. RANSAC robustification is optional.
+**Cutout-arc consistency (shipped).** Arc fitting now benefits cutout too, seam-safely. `traceLabelMap` already fits each
+shared boundary chain **once** and derives the neighbor's copy by reversal; it now takes an optional `refineChain`
+transform applied to that single fitted chain, so both neighbors inherit the identical (reversed) arcs — no seam
+divergence. The engine wires `refineChain = fitArcs` for cutout when `optimizeSvg` is on. Junctions stay pinned because
+they are integer lattice points and the arc grid-snap preserves integers; `reverseCommands` flips arc sweep so the reverse
+matches exactly. Full-shape primitive **elements** (`<circle>`/`<ellipse>`/`<rect rx>`) stay off for cutout — an element
+can't be shared with a neighbor's path edge — so `roundPrimitives` remains disabled at serialization; the arcs come from
+the chain instead. Covered by `packages/engine/test/cutout-arc.test.ts` (shared boundary collapses to arcs and drops
+nodes; every inner anchor appears exactly in the outer region — no gap; byte-identical without `refineChain`; a cutout
+disc SVG emits arcs, no `<circle>`, with a lower node count). Rounded-rect corner radius also refined to sub-pixel
+(`detectRoundedRect` golden-section search).
+
+**Pending:** RANSAC robustification of the fits is optional; otherwise item 4 is complete.
 
 **Why.** The biggest _visible_ quality gap and the commercial shape-fitting advantage. A circle or partial ring became many
 cubic pieces; a true `<circle>` / `<ellipse>` / elliptical-arc `A` matches the ideal shape exactly with far fewer nodes —
 and with the least-squares fits, the recovered primitive/arc tracks the original points as closely as the samples allow.
 
-**Files (done).** `packages/svg/src/fit.ts`, `packages/svg/src/arc.ts` (new), `packages/svg/src/primitive.ts`,
-`packages/core/src/path.ts` (`A` + `arcToCenter`), `packages/svg/src/{pathdata,optimize,serialize,geometry}.ts`,
-`packages/trace/src/paths.ts`, tests, `REFERENCES.md`.
-**Files (pending).** `packages/svg` + `packages/engine` (cutout-arc sharing so round can turn on for cutout).
+**Files (done).** `packages/svg/src/fit.ts`, `packages/svg/src/arc.ts` (new), `packages/svg/src/primitive.ts`
+(least-squares fits + golden-section rrect radius), `packages/core/src/path.ts` (`A` + `arcToCenter`),
+`packages/svg/src/{pathdata,optimize,serialize,geometry}.ts`, `packages/trace/src/{paths,boundary}.ts` (`refineChain`),
+`packages/engine/src/native.ts` (wire `fitArcs` for cutout), tests, `REFERENCES.md`.
 
 **Acceptance.** Circle/ellipse inputs emit true primitives with sub-pixel parameter error (done); circular- and
-elliptical-arc runs collapse to `A` with a node-count drop and no visible render change (done); cutout-anchor consistency
-pending.
+elliptical-arc runs collapse to `A` with a node-count drop and no visible render change (done); cutout keeps arcs
+seam-consistent (done).
 
 **Docs.** `packages/trace/ARCHITECTURE.md`, `CONTRACTS.md`, `REFERENCES.md` (Kåsa, Fitzgibbon, SVG F.6.5), README roadmap
 line flipped to shipped.

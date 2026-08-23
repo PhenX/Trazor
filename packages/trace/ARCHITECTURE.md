@@ -76,6 +76,13 @@ The chain is refined **once** and reused by both neighbors, and junction endpoin
 seam-free guarantee holds. Straight junction-to-junction edges (no interior polygon vertex) are unaffected; loops and
 curved chains carry the refinement. Omitting the field is byte-identical to the classical lattice trace.
 
+_Optional per-chain post-fit_ (`refineChain`): a transform applied to each shared chain's fitted commands **once** (the
+engine wires `@trazor/svg`'s `fitArcs` here for cutout when path optimization is on, collapsing circular/elliptical Bézier
+runs to `A` arcs). Because the neighbor's copy is derived by reversal, both inherit the identical transform, so cutout
+gets the arc node-reduction without seam divergence; junction endpoints are integer lattice points, which the arc
+grid-snap preserves. Full-shape primitive _elements_ (`<circle>` etc.) stay off for cutout — an element can't be shared
+with a neighbor's path edge — so only the in-path arcs apply.
+
 ## Centerline (`centerline.ts`)
 
 Skeleton (from `raster`'s Zhang-Suen thinning) → condensed 8-neighbor pixel graph (redundant diagonals suppressed) →

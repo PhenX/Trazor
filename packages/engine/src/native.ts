@@ -47,7 +47,7 @@ import {
 } from '@trazor/raster'
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
-import { analyzeSvg, serializeSvg } from '@trazor/svg'
+import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
@@ -323,8 +323,10 @@ export async function vectorize(
     {
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
-      // Circle/ellipse detection is a sub-pixel change; keep it off for cutout,
-      // where the neighbor still traces the Bézier boundary and must match.
+      // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays
+      // off for cutout — an element can't be shared with a neighbor's path edge.
+      // Arc fitting for cutout happens seam-safely per shared chain instead (the
+      // `refineChain` passed to traceLabelMap below).
       roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
       // One <g> layer per color for cut/print separation — color layers only.
       groupByColor:
@@ -522,6 +524,12 @@ async function colorPipeline(
     const regions = traceLabelMap(labels, {
       ...curveOpts,
       colorField,
+      // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
+      // (fitted once, reused reversed) so cutout gets the node reduction without
+      // seam divergence. Full-shape primitives stay off for cutout (an element
+      // can't be shared with a neighbour's path), which is why `roundPrimitives`
+      // is disabled at serialization above.
+      refineChain: settings.optimizeSvg ? (cmds) => fitArcs(cmds, settings.precision) : undefined,
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {

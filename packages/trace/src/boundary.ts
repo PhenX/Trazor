@@ -26,6 +26,14 @@ export interface ColorField {
 
 export interface TraceCutoutOptions extends TraceCurveOptions {
   colorField?: ColorField
+  /**
+   * Optional post-fit transform applied to each shared boundary chain ONCE
+   * (e.g. arc fitting). Because the reverse instance is derived from the same
+   * fitted commands, both neighbours inherit an identical transform, so the
+   * seam-free guarantee is preserved. Must keep the chain's terminal endpoints
+   * (junction corners) exactly, or adjacent chains would no longer meet.
+   */
+  refineChain?: (commands: PathCommand[]) => PathCommand[]
 }
 
 export interface RegionShape {
@@ -329,11 +337,23 @@ function instEnd(inst: Instance): [number, number] {
 /** Fitted commands of one directed OPEN chain instance, memoized per chain. */
 function instanceCommands(
   inst: { chain: Chain; forward: boolean },
-  opts: TraceCurveOptions,
+  opts: TraceCutoutOptions,
   makeField: (chain: Chain) => SignedField | undefined,
 ): PathCommand[] {
   const chain = inst.chain
-  if (!chain.fwd) chain.fwd = fitOpenChain(chain.points, opts, makeField(chain))
+  if (!chain.fwd) {
+    const fwd = fitOpenChain(chain.points, opts, makeField(chain))
+    // Refine the chain once, with its leading M so an arc knows its start point,
+    // then strip the M back off. Both instances share this, so the reverse below
+    // inherits the identical (reversed) transform — the seam stays exact.
+    if (opts.refineChain) {
+      const sx = chain.points[0]
+      const sy = chain.points[1]
+      chain.fwd = stripM(opts.refineChain([{ type: 'M', x: sx, y: sy }, ...fwd]))
+    } else {
+      chain.fwd = fwd
+    }
+  }
   if (inst.forward) return chain.fwd
   if (!chain.rev) {
     const sx = chain.points[0]
@@ -348,10 +368,13 @@ function instanceCommands(
 function loopCommands(
   chain: Chain,
   forward: boolean,
-  opts: TraceCurveOptions,
+  opts: TraceCutoutOptions,
   makeField: (chain: Chain) => SignedField | undefined,
 ): PathCommand[] {
-  if (!chain.fwdClosed) chain.fwdClosed = fitLoop(chain.points, opts, makeField(chain))
+  if (!chain.fwdClosed) {
+    const loop = fitLoop(chain.points, opts, makeField(chain))
+    chain.fwdClosed = opts.refineChain ? opts.refineChain(loop) : loop
+  }
   if (forward) return chain.fwdClosed
   if (!chain.rev) chain.rev = reverseCommands(chain.fwdClosed)
   return chain.rev
