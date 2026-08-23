@@ -43,22 +43,18 @@ function angleDiff(a: number, b: number): number {
   return d
 }
 
-/** Distance from p to segment a–b. */
-function pointSegDist(p: Pt, a: Pt, b: Pt): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const len2 = dx * dx + dy * dy
-  let t = len2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0
-  t = t < 0 ? 0 : t > 1 ? 1 : t
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
-}
-
 /**
- * True when every sample lies within `tol` of the reconstructed arc — the test
- * that selects the correct (large-arc, sweep) pair. Both arcs sharing the
- * endpoints lie on the same conic, so a sample-on-conic check cannot tell them
- * apart; only the one that actually sweeps through the samples fits. Works for
- * circles and ellipses alike (no reliance on parametric-vs-polar angle).
+ * True when every sample lies on the reconstructed arc — the test that selects
+ * the correct (large-arc, sweep) pair. Both arcs sharing the endpoints lie on
+ * the same conic, so a sample-on-conic check cannot tell them apart; only the
+ * one that actually sweeps through the samples fits.
+ *
+ * The check is analytic, so it is exact at every radius: transform each sample
+ * into the reconstructed ellipse's local frame, require it on the unit circle
+ * within `tol`, and require its parametric angle inside the swept range. (A
+ * polyline approximation of the arc would misjudge large radii — its chords cut
+ * inside the true arc — which made the accept/reject decision depend on
+ * floating-point at the tolerance boundary.)
  */
 function arcFitsSamples(
   start: Pt,
@@ -66,24 +62,29 @@ function arcFitsSamples(
   samples: Pt[],
   tol: number,
 ): boolean {
-  const poly: Pt[] = [start]
-  let prev = start
-  for (const c of arcToCubics(start.x, start.y, arc)) {
-    if (c.type === 'C') {
-      for (let t = 0.2; t <= 1.0001; t += 0.2) poly.push(cubicPoint(prev, c, t))
-      prev = { x: c.x, y: c.y }
-    } else if (c.type === 'L') {
-      poly.push({ x: c.x, y: c.y })
-      prev = { x: c.x, y: c.y }
+  const c = arcToCenter(start.x, start.y, arc)
+  if (c === null) return false
+  const { cx, cy, rx, ry, phi, theta1, dTheta } = c
+  const cosP = Math.cos(phi)
+  const sinP = Math.sin(phi)
+  const minR = Math.min(rx, ry)
+  const TWO_PI = 2 * Math.PI
+  const inSweep = (t: number): boolean => {
+    let d = t - theta1
+    if (dTheta >= 0) {
+      d = ((d % TWO_PI) + TWO_PI) % TWO_PI
+      return d <= dTheta + 1e-6
     }
+    d = -(((-d % TWO_PI) + TWO_PI) % TWO_PI)
+    return d >= dTheta - 1e-6
   }
   for (const s of samples) {
-    let nearest = Infinity
-    for (let i = 0; i + 1 < poly.length && nearest > tol; i++) {
-      const d = pointSegDist(s, poly[i], poly[i + 1])
-      if (d < nearest) nearest = d
-    }
-    if (nearest > tol) return false
+    const dx = s.x - cx
+    const dy = s.y - cy
+    const ux = (dx * cosP + dy * sinP) / rx
+    const uy = (-dx * sinP + dy * cosP) / ry
+    if (Math.abs(Math.hypot(ux, uy) - 1) * minR > tol) return false // off the conic
+    if (!inSweep(Math.atan2(uy, ux))) return false // on the complementary arc
   }
   return true
 }
@@ -98,11 +99,22 @@ interface Conic {
   tol: number
 }
 
+/**
+ * Acceptance tolerance in *pixels*: a boundary sample may lie this far off the
+ * fitted conic and the arc still be accepted. It is a fixed sub-pixel budget,
+ * NOT radius-relative, because it governs how far the emitted arc can render
+ * from the original curve — the same at every radius. (A radius-scaled tolerance
+ * let a large, only-roughly-circular run collapse to an arc that rendered
+ * visibly off, and which runs crossed that threshold depended on platform
+ * floating-point, so the output diverged between machines.)
+ */
+const CONIC_TOL_PX = 0.6
+
 /** Fit the run's samples to a circle first, then an ellipse; null if neither fits. */
 function fitConic(samples: Pt[]): Conic | null {
   const circle = fitCircle(samples)
   if (circle !== null && circle.r > 0) {
-    const tol = Math.max(0.6, circle.r * 0.02)
+    const tol = CONIC_TOL_PX
     const onCircle = samples.every(
       (p) => Math.abs(Math.hypot(p.x - circle.cx, p.y - circle.cy) - circle.r) <= tol,
     )
@@ -112,7 +124,7 @@ function fitConic(samples: Pt[]): Conic | null {
   }
   const e = fitEllipse(samples)
   if (e !== null && e.rx > 0 && e.ry > 0) {
-    const tol = Math.max(0.6, Math.min(e.rx, e.ry) * 0.02)
+    const tol = CONIC_TOL_PX
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
     const onEllipse = samples.every((p) => {

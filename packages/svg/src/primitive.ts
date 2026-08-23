@@ -99,6 +99,16 @@ function cubicMid(p0: Pt, c: Extract<PathCommand, { type: 'C' }>): Pt {
 }
 
 /**
+ * Round-primitive acceptance tolerance in pixels — how far a boundary sample may
+ * lie off the fitted circle/ellipse. A fixed sub-pixel budget, NOT radius-
+ * relative: it bounds how far the emitted `<circle>`/`<ellipse>` can render from
+ * the traced boundary at every radius, so a large, only-roughly-round shape is
+ * not accepted as an idealized element that renders visibly off (which a
+ * radius-scaled tolerance allowed, non-deterministically across platforms).
+ */
+const ROUND_TOL_PX = 0.6
+
+/**
  * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
  * all-cubic loop. Parameters come from least-squares fits (`fit.ts`) — a Kåsa
  * circle fit and a direct conic ellipse fit — so uneven anchor spacing does not
@@ -122,7 +132,7 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   // Circle first, so a true circle stays a circle rather than a near-round ellipse.
   const circle = fitCircle(samples)
   if (circle && circle.r > 0) {
-    const tol = Math.max(0.6, circle.r * 0.02)
+    const tol = ROUND_TOL_PX
     const onCircle = samples.every(
       (p) => Math.abs(Math.hypot(p.x - circle.cx, p.y - circle.cy) - circle.r) <= tol,
     )
@@ -133,7 +143,7 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   // Ellipse: the direct conic fit recovers a rotation too.
   const e = fitEllipse(samples)
   if (e && e.rx > 0 && e.ry > 0) {
-    const tol = Math.max(0.6, Math.min(e.rx, e.ry) * 0.02)
+    const tol = ROUND_TOL_PX
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
     const onEllipse = samples.every((p) => {

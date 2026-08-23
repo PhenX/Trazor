@@ -217,6 +217,29 @@ describe('fitArcs', () => {
     }
   })
 
+  it('still collapses a genuine large-radius arc (tolerance cap is absolute, not radius-scaled)', () => {
+    // A clean r=300 arc: its cubics track the circle to well under a pixel, so
+    // the absolute (~0.75px) acceptance cap must not reject it.
+    const { start, cubics } = arcCubics(0, 0, 300, 0, Math.PI / 2, 2)
+    const a = fitArcs([start, ...cubics], 2).find((c) => c.type === 'A')
+    if (a?.type !== 'A') throw new Error('expected an A')
+    expect(a.rx).toBeCloseTo(300, 0)
+  })
+
+  it('rejects a large run that is ~1.5px off a circle (would pass a radius-scaled tolerance)', () => {
+    // r=300 arc, but with two interior anchors pushed ~1.5px outward — not a
+    // circle to sub-pixel. A radius-scaled tol (r*0.02 = 6px) would collapse it;
+    // the absolute cap must keep it as cubics so the emitted arc can't render off.
+    const { start, cubics } = arcCubics(0, 0, 300, 0, Math.PI / 2, 4)
+    const bumped = cubics.map((c, i) => {
+      if (c.type !== 'C' || i === cubics.length - 1) return c
+      const r = Math.hypot(c.x, c.y)
+      const s = (r + 1.5) / r // push the shared anchor 1.5px radially outward
+      return { ...c, x: c.x * s, y: c.y * s }
+    })
+    expect(fitArcs([start, ...bumped], 2).some((c) => c.type === 'A')).toBe(false)
+  })
+
   it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
     const { start, cubics } = ellipseArcCubics(100, 100, 60, 30, 0, 0, 2, 2)
     const out = fitArcs([start, ...cubics], 2)
