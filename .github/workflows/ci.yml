@@ -20,3 +20,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Browser checks need a real Chromium and the built app (dist/). test:render
+      # proves the SVG output optimizations render identically; e2e smoke-tests the
+      # studio (and refreshes docs/screenshot.png — not committed from CI).
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run test:render
+      - run: npm run e2e
