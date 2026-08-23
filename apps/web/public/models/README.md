@@ -30,9 +30,10 @@ Locally you can drop a `.onnx` here by hand to test — it's git-ignored, so it 
 
 ## The models
 
-- **`edge-prepass.onnx`** — the learned edge pre-pass ([`docs/EDGE_PREPASS.md`](../../../../docs/EDGE_PREPASS.md)).
-  `MODEL_REGISTRY['edge-prepass']` points at `models/edge-prepass.onnx`. Until it exists, `EdgeEnhancer.create()` fails
-  soft and the app traces classically.
+- **`edge-prepass.onnx`** — the learned edge pre-pass ([`docs/EDGE_PREPASS.md`](../../../../docs/EDGE_PREPASS.md)),
+  **published on the `models` release** (~0.46 MB) and fetched here automatically by the deploy.
+  `MODEL_REGISTRY['edge-prepass']` points at `models/edge-prepass.onnx`; when it is absent (a plain local build),
+  `EdgeEnhancer.create()` fails soft and the app traces classically.
 - **`cleanup.onnx`** — the learned cleanup pre-pass ([`docs/CLEANUP_PREPASS.md`](../../../../docs/CLEANUP_PREPASS.md)),
   run by the studio's **Clean up (ML)** button. `MODEL_REGISTRY.cleanup` points at `models/cleanup.onnx`. Until it exists,
   `CleanupEnhancer.create()` fails soft and the working image is left untouched.

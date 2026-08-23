@@ -35,12 +35,13 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // it from the very site it is served from — no CORS, no external host. This
     // default is relative; the app resolves it against its deploy base at startup
     // with overrideModelUrl(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`).
-    // Weights are not committed: the deploy workflow fetches them from a GitHub
-    // Release into apps/web/public/models/ at build time (train per
-    // docs/EDGE_PREPASS.md). Until a build includes them, create() fails soft (the
-    // fetch 404s) and the app traces exactly as it does today.
+    // Weights are published on the `models` GitHub Release and fetched into
+    // apps/web/public/models/ by the deploy workflow at build time — not committed
+    // to git (train per docs/EDGE_PREPASS.md). A local `npm run dev` has no weights
+    // unless you drop the .onnx in, and create() then fails soft (the fetch 404s)
+    // and the app traces exactly as it does today.
     url: 'models/edge-prepass.onnx',
-    approxBytes: 3_000_000,
+    approxBytes: 475_000,
     license: 'MIT',
   },
   cleanup: {

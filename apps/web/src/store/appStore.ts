@@ -17,7 +17,7 @@ import type {
   VectorizeSettings,
 } from '@vectorizer/core'
 import { analyzeImage, recommendSettings, suggestPalettes } from '@vectorizer/assist'
-import type { PaletteSuggestion } from '@vectorizer/assist'
+import type { ImageAnalysis, PaletteSuggestion } from '@vectorizer/assist'
 import { VectorizerClient } from '@vectorizer/engine'
 import type { MlAvailability, MlProgress } from '@vectorizer/ml'
 import { defineStore } from 'pinia'
@@ -60,6 +60,7 @@ interface PersistedState {
   profileModified?: boolean
   theme?: Theme
   edgePrepass?: boolean
+  autoOnLoad?: boolean
 }
 
 function loadPersisted(): PersistedState {
@@ -148,6 +149,8 @@ export const useAppStore = defineStore('app', () => {
   const magicPoints = ref<MagicPoint[]>([])
   /** Optional ML edge pre-pass, consumed by bw/centerline tracing. */
   const edgePrepass = ref(persisted.edgePrepass === true)
+  /** Analyze each newly loaded image and apply recommended settings. On by default. */
+  const autoOnLoad = ref(persisted.autoOnLoad !== false)
 
   // Non-reactive machinery
   let client: VectorizerClient | null = null
@@ -164,6 +167,17 @@ export const useAppStore = defineStore('app', () => {
   let edgeHintImage: RasterImage | null = null
   let edgeHint: GrayImage | null = null
   const suggestionCache = new WeakMap<RasterImage, PaletteSuggestion[]>()
+  // Image statistics feed both auto settings and palette suggestions; compute once per image.
+  const analysisCache = new WeakMap<RasterImage, ImageAnalysis>()
+
+  function getAnalysis(image: RasterImage): ImageAnalysis {
+    let analysis = analysisCache.get(image)
+    if (!analysis) {
+      analysis = analyzeImage(image)
+      analysisCache.set(image, analysis)
+    }
+    return analysis
+  }
 
   // ------------------------------ Derived --------------------------------
   const hasImage = computed(() => workingImage.value !== null)
@@ -191,16 +205,27 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // ------------------------------ Loading --------------------------------
+  /**
+   * Install a freshly decoded image as both source and working image, then
+   * (when auto-on-load is on) analyze it and apply recommended settings. Both
+   * the image swap and the settings change land before the debounced trace
+   * fires, so a single run traces the recommended result.
+   */
+  async function installImage(image: RasterImage, name: string): Promise<void> {
+    cancelMagicSelect()
+    sourceImage.value = image
+    workingImage.value = image
+    sourceName.value = name
+    result.value = null
+    fidelity.value = null
+    error.value = null
+    if (autoOnLoad.value) await autoRecommend()
+  }
+
   async function loadBlob(blob: Blob, name: string): Promise<void> {
     try {
       const image = await decodeBlob(blob, name)
-      cancelMagicSelect()
-      sourceImage.value = image
-      workingImage.value = image
-      sourceName.value = name || 'image'
-      result.value = null
-      fidelity.value = null
-      error.value = null
+      await installImage(image, name || 'image')
     } catch (e) {
       notify(`Could not load image: ${errorMessage(e)}`, 'error')
     }
@@ -211,16 +236,24 @@ export const useAppStore = defineStore('app', () => {
     if (!sample) return
     try {
       const image = await sample.make()
-      cancelMagicSelect()
-      sourceImage.value = image
-      workingImage.value = image
-      sourceName.value = sample.label.toLowerCase()
-      result.value = null
-      fidelity.value = null
-      error.value = null
+      await installImage(image, sample.label.toLowerCase())
     } catch (e) {
       notify(`Could not build sample: ${errorMessage(e)}`, 'error')
     }
+  }
+
+  /** Drop the current image and return to the landing screen (drop zone + samples). */
+  function clearImage(): void {
+    cancelMagicSelect()
+    runCounter++ // supersede any in-flight vectorization
+    sourceImage.value = null
+    workingImage.value = null
+    sourceName.value = ''
+    result.value = null
+    fidelity.value = null
+    error.value = null
+    progress.value = null
+    busy.value = false
   }
 
   // ------------------------------ Settings -------------------------------
@@ -277,8 +310,7 @@ export const useAppStore = defineStore('app', () => {
     const image = workingImage.value
     if (!image) return
     try {
-      const analysis = analyzeImage(image)
-      const rec = recommendSettings(analysis)
+      const rec = recommendSettings(getAnalysis(image))
       // The recommendation refines its suggested profile, so apply the profile
       // patch first and the recommendation patch on top (both over defaults).
       settings.value = normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch })
@@ -310,7 +342,7 @@ export const useAppStore = defineStore('app', () => {
       // The image may have been replaced while we waited.
       if (workingImage.value !== image) return
       try {
-        const suggestions = suggestPalettes(image)
+        const suggestions = suggestPalettes(image, getAnalysis(image))
         suggestionCache.set(image, suggestions)
         paletteSuggestions.value = suggestions
       } catch {
@@ -484,6 +516,10 @@ export const useAppStore = defineStore('app', () => {
     edgePrepass.value = on
   }
 
+  function setAutoOnLoad(on: boolean): void {
+    autoOnLoad.value = on
+  }
+
   async function removeBackground(): Promise<void> {
     const image = workingImage.value
     if (!image || mlState.removeBg.busy) return
@@ -626,7 +662,7 @@ export const useAppStore = defineStore('app', () => {
 
   // ---------------------------- Persistence ------------------------------
   watch(
-    [settings, activeProfileId, profileModified, theme, edgePrepass],
+    [settings, activeProfileId, profileModified, theme, edgePrepass, autoOnLoad],
     () => {
       try {
         const state: PersistedState = {
@@ -635,6 +671,7 @@ export const useAppStore = defineStore('app', () => {
           profileModified: profileModified.value,
           theme: theme.value,
           edgePrepass: edgePrepass.value,
+          autoOnLoad: autoOnLoad.value,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -666,6 +703,7 @@ export const useAppStore = defineStore('app', () => {
     magicActive,
     magicPoints,
     edgePrepass,
+    autoOnLoad,
     // derived
     hasImage,
     activeProfile,
@@ -676,6 +714,7 @@ export const useAppStore = defineStore('app', () => {
     dismissToast,
     loadBlob,
     loadSample,
+    clearImage,
     applyProfile,
     updateSettings,
     resetField,
@@ -692,6 +731,7 @@ export const useAppStore = defineStore('app', () => {
     run,
     ensureMlAvailability,
     setEdgePrepass,
+    setAutoOnLoad,
     removeBackground,
     cleanUp,
     restoreOriginal,

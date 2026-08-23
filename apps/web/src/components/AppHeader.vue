@@ -2,6 +2,8 @@
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+
+const emit = defineEmits<{ openFile: [] }>()
 </script>
 
 <template>
@@ -26,6 +28,50 @@ const store = useAppStore()
     </div>
 
     <div class="actions">
+      <template v-if="store.hasImage">
+        <button
+          class="btn btn-ghost btn-sm hdr-action"
+          title="Back to the landing screen"
+          @click="store.clearImage()"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              d="M2.5 7.5 8 2.8l5.5 4.7M4 6.6V13h8V6.6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span class="hdr-label">Home</span>
+        </button>
+        <button
+          class="btn btn-ghost btn-sm hdr-action"
+          title="Load another image (Ctrl+O)"
+          @click="emit('openFile')"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              d="M8 10.5V3m0 0L5.3 5.7M8 3l2.7 2.7"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M3 10v2.2A1.3 1.3 0 0 0 4.3 13.5h7.4A1.3 1.3 0 0 0 13 12.2V10"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span class="hdr-label">Open</span>
+        </button>
+        <span class="hdr-sep" aria-hidden="true" />
+      </template>
       <button
         class="btn btn-ghost btn-icon"
         :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
@@ -122,5 +168,29 @@ const store = useAppStore()
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.hdr-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hdr-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
+/* Collapse the action labels to icons on narrow screens. */
+@media (max-width: 560px) {
+  .hdr-label {
+    display: none;
+  }
+
+  .hdr-action {
+    gap: 0;
+  }
 }
 </style>

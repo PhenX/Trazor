@@ -8,6 +8,19 @@ export interface Recommendation {
   rationale: string[]
 }
 
+/** Mean Oklab chroma below this reads as effectively grayscale. */
+const ACHROMATIC_CHROMA = 0.03
+
+/**
+ * Photographic-looking texture (noise, blocking, ringing) sitting on top of a
+ * few dominant flat colors — a compressed or rescaled flat graphic (a JPEG
+ * logo, a screenshot) rather than a true photograph, whose colors spread out
+ * so no two dominate. These want strong cleanup, not photo posterization.
+ */
+function isCompressedFlat(a: ImageAnalysis): boolean {
+  return a.photoScore > 0.6 && a.twoToneCoverage > 0.55 && a.colorfulness >= ACHROMATIC_CHROMA
+}
+
 /**
  * Rule-based settings recommendation from measured image statistics. Fully
  * local and instant — no models involved. When `goal` names a profile, the
@@ -33,6 +46,15 @@ export function recommendSettings(
     return { profileId, patch, rationale }
   }
 
+  // A near-grayscale photo traces as tonal gray layers, not a color palette.
+  if (profileId === 'photo' && a.colorfulness < ACHROMATIC_CHROMA) {
+    patch.mode = 'grayscale'
+    rationale.push('Nearly grayscale — tracing as tonal grayscale layers.')
+  }
+
+  // Respect an explicit photo goal; otherwise treat compressed-flat art specially.
+  const compressedFlat = profileId !== 'photo' && isCompressedFlat(a)
+
   if (patch.mode === 'color' || patch.mode === 'grayscale' || patch.mode === undefined) {
     const suggested = suggestPaletteSize(a)
     patch.paletteSize = suggested
@@ -41,10 +63,24 @@ export function recommendSettings(
         ? `Rich color content — using ${suggested} palette entries.`
         : `≈${a.distinctColors} distinct colors measured — ${suggested} palette entries cover it.`,
     )
-    if (a.photoScore > 0.55 && patch.denoise === undefined) {
+    if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat) {
       patch.denoise = 'bilateral'
       rationale.push('Photographic texture detected — bilateral denoise keeps edges clean.')
     }
+  }
+
+  // Recover clean shapes from a degraded flat graphic: smooth the block/ringing
+  // noise so region boundaries aren't jagged, and let near-duplicate colors and
+  // speckle merge away instead of becoming their own layers.
+  if (compressedFlat) {
+    patch.denoise = 'bilateral'
+    patch.blurRadius = Math.max(patch.blurRadius ?? 0, 1)
+    patch.autoPaletteSize = true
+    patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 24)
+    patch.smoothing = Math.max(patch.smoothing ?? 0, 0.9)
+    rationale.push(
+      'Compression artifacts — denoise, light blur and speckle merge recover clean shapes.',
+    )
   }
 
   if (a.pixels > 4_000_000) {
@@ -65,12 +101,18 @@ function pickProfile(a: ImageAnalysis, rationale: string[]): ProfileId {
     rationale.push('Small canvas with few flat colors — treating as pixel art.')
     return 'pixel-art'
   }
-  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25) {
+  // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
+  // two-color mark (navy on white, say) keeps its color through a flat profile.
+  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && a.colorfulness < ACHROMATIC_CHROMA) {
     rationale.push('Essentially two-tone with high contrast — black & white tracing fits best.')
     return 'bw-sketch'
   }
   if (a.photoScore > 0.6) {
-    rationale.push('Photographic content — posterized photo profile.')
+    if (isCompressedFlat(a)) {
+      rationale.push('Compression noise over a few flat colors — cleaning up as flat art.')
+      return 'illustration'
+    }
+    rationale.push('Photographic content — posterized profile.')
     return 'photo'
   }
   if (a.distinctColors <= 24 && a.microGradientDensity < 0.08) {

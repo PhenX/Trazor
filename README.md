@@ -56,16 +56,24 @@ On top of that, three things most tracers don't do:
   **Pen plotter** (centerline), **Stencil** (island detection warns about
   pieces that would fall out).
 - **Local ML tools** (optional, on-device via ONNX Runtime Web, WebGPU with
-  WASM fallback): **background removal** (U²-Netp, ~4.6 MB) and **magic
-  select** — click an object (SlimSAM, ~10 MB) and vectorize just that.
-  Models download once and cache in the browser; the app is fully functional
-  without them.
+  WASM fallback): **background removal** (U²-Netp, ~4.6 MB), **magic
+  select** — click an object (SlimSAM, ~10 MB) and vectorize just that — and a
+  learned **edge pre-pass** (the project's own ~0.46 MB model, served
+  same-origin) that guides the tracer to keep fine detail on noisy or
+  compressed input. Models download once and cache in the browser; the app is
+  fully functional without them.
 - **Auto settings**: instant image-statistics analysis recommends a profile,
-  palette size and preprocessing, with human-readable reasons.
+  palette size and preprocessing, with human-readable reasons — applied
+  automatically as each image loads (toggleable), or on demand. Detects
+  grayscale content, keeps saturated two-tone marks in color, and recovers
+  clean shapes from compression-degraded flat art (denoise + speckle cleanup).
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
   `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
-- **Studio UI**: drag & drop / paste / samples, split & difference views with
+- **Studio UI**: drag & drop / paste / one-click sample gallery (flat logo,
+  photo, pixel art, poster landscape, ink, illustration, a detailed monochrome
+  mandala and a degraded-JPEG recovery test), quick **Home** / **Open** nav,
+  split & difference views with
   zoom/pan, a **node overlay** (toggle, `N`) that draws every path's anchor
   points, Bézier handles and outlines — color-coded by element kind (traced
   paths vs. `rect`/`circle`/`ellipse` primitives, with a legend) so you can see
