@@ -29,14 +29,14 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 
 ## Priority overview
 
-| #     | Item                                  | Fixes                              | Impact                     | Effort | Risk                          |
-| ----- | ------------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
-| **1** | ΔE-through-tracer eval harness ✅     | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
-| **2** | Degradation & data realism ◐          | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
-| **3** | Learned signed-field head ◐           | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
-| **4** | Primitive / arc fitting (classical) ◐ | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
-| **5** | Cleanup model capacity ✅             | under-capacity vs its own spec     | Med                        | S      | Low                           |
-| **6** | Bounded differentiable refinement     | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
+| #     | Item                                   | Fixes                              | Impact                     | Effort | Risk                          |
+| ----- | -------------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
+| **1** | ΔE-through-tracer eval harness ✅      | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
+| **2** | Degradation & data realism ◐           | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
+| **3** | Learned signed-field head ◐            | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
+| **4** | Primitive / arc fitting (classical) ✅ | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
+| **5** | Cleanup model capacity ✅              | under-capacity vs its own spec     | Med                        | S      | Low                           |
+| **6** | Bounded differentiable refinement      | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
 
 **Sequencing:** Sprint 1 = **1 → 2** (then retrain edge + cleanup, record the new baseline). Sprint 2 = **5** (quick) +
 **3**. Sprint 3 = **4**. Later = **6** (offline oracle first). Item 1 comes first because nothing else is trustworthy
@@ -137,7 +137,7 @@ so refinement snaps to the clean edge. Tier-1-touching: byte-identical classical
 **Acceptance.** On degraded b/w silhouettes, boundary-position error vs. clean ground truth and ΔE improve over the
 classical field; clean inputs unregressed; classical path byte-identical and WASM parity holds.
 
-## 4. Primitive / arc fitting (classical, no training) — **fitting accuracy done**
+## 4. Primitive / arc fitting (classical, no training) — **implemented** (cutout-arc consistency pending)
 
 **Shipped & tested.** The serializer already detected rect / rounded-rect / circle / ellipse (axis-aligned + rotated) /
 regular-polygon / star; the **parameter estimates were heuristics** (centroid + mean-radius for circles; PCA +
@@ -146,26 +146,36 @@ points" gap. Replaced them with least-squares fits in `packages/svg/src/fit.ts`:
 **direct conic (Fitzgibbon-class) ellipse fit** (Jacobi eigen-decomposition of the design scatter, points normalized for
 conditioning), integrated into `primitive.ts` behind the same accept/reject tolerances. Covered by
 `packages/svg/test/fit.test.ts` (exact recovery from uneven sampling, rotated-ellipse angle, noise robustness, non-ellipse
-rejection) and two `primitive.test.ts` accuracy tests. `REFERENCES.md` updated.
+rejection) and two `primitive.test.ts` accuracy tests.
 
-**Pending:** the **elliptical-arc `A` command** — a new `PathCommand` variant that ripples through `core`/`trace`/`svg`,
-letting a circular/elliptical boundary chain (or a partial arc) collapse to one `A` instead of many cubics — and **cutout
-consistency** (fit the shared boundary chain once, reused by both neighbors; `roundPrimitives` is still off for cutout).
-RANSAC robustification is optional. Flip the README elliptical-arc roadmap line only when `A` lands.
+The **elliptical-arc `A` command** also shipped: a new `PathCommand` variant threaded through `core`/`trace`/`svg`. Any run
+of ≥2 consecutive cubics that lie on one circle collapses to a single `A` in `packages/svg/src/arc.ts` (`fitArcs`) — a
+least-squares circle fit, a simple-arc / sub-360° check, and a reconstruct-and-verify accept test, with radii and endpoint
+snapped to the precision grid. It runs before `optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout
+and the no-round classical path stay byte-identical). `core` computes exact arc bounds via `arcToCenter` (SVG F.6.5);
+`geometry.ts` expands `A` back to cubics for the overlay; `reverseCommands` flips the sweep flag. Covered by
+`packages/svg/test/arc.test.ts`, `packages/core/test/path.test.ts`, `packages/trace/test/paths.test.ts`, and verified
+pixel-lossless through resvg. `REFERENCES.md`, `CONTRACTS.md`, and the README roadmap line updated.
 
-**Why.** The biggest _visible_ quality gap and the commercial shape-fitting advantage. A circle currently becomes many
+**Pending:** only **circular** arcs are fitted (genuine elliptical-arc runs stay cubic — a follow-up); and **cutout-arc
+consistency** (fit a shared boundary chain once, reused by both neighbors) so `roundPrimitives` — hence `A` — can turn on
+for cutout without seam divergence. RANSAC robustification is optional.
+
+**Why.** The biggest _visible_ quality gap and the commercial shape-fitting advantage. A circle or partial ring became many
 cubic pieces; a true `<circle>` / `<ellipse>` / elliptical-arc `A` matches the ideal shape exactly with far fewer nodes —
-and now, with the least-squares fits, the recovered `<circle>`/`<ellipse>` tracks the original points as closely as the
-samples allow.
+and with the least-squares fits, the recovered primitive/arc tracks the original points as closely as the samples allow.
 
-**Files (done).** `packages/svg/src/fit.ts` (new), `packages/svg/src/primitive.ts`, tests, `REFERENCES.md`.
-**Files (pending).** `packages/core` (`A` command), `packages/trace`, `packages/svg` (arc emission).
+**Files (done).** `packages/svg/src/fit.ts`, `packages/svg/src/arc.ts` (new), `packages/svg/src/primitive.ts`,
+`packages/core/src/path.ts` (`A` + `arcToCenter`), `packages/svg/src/{pathdata,optimize,serialize,geometry}.ts`,
+`packages/trace/src/paths.ts`, tests, `REFERENCES.md`.
+**Files (pending).** `packages/svg` (elliptical-arc fit, cutout-arc sharing), `packages/engine` (allow round for cutout).
 
-**Acceptance.** Circle/ellipse inputs emit true primitives with sub-pixel parameter error (done); arcs + node-count drop
-and cutout-anchor consistency pending the `A` command.
+**Acceptance.** Circle/ellipse inputs emit true primitives with sub-pixel parameter error (done); circular-arc runs
+collapse to `A` with a node-count drop and no visible render change (done); elliptical arcs and cutout-anchor consistency
+pending.
 
-**Docs.** `packages/trace/ARCHITECTURE.md`, `CONTRACTS.md`, `REFERENCES.md` (Kåsa, Fitzgibbon), flip the README roadmap line to
-shipped.
+**Docs.** `packages/trace/ARCHITECTURE.md`, `CONTRACTS.md`, `REFERENCES.md` (Kåsa, Fitzgibbon, SVG F.6.5), README roadmap
+line flipped to shipped.
 
 ## 5. Cleanup model capacity — **implemented** (residual pending)
 

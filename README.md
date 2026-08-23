@@ -70,7 +70,8 @@ On top of that, three things most tracers don't do:
   clean shapes from compression-degraded flat art (denoise + speckle cleanup).
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
-  `<rect>`/`<circle>` detection), **group-by-color** (one `<g>` layer per color
+  `<rect>`/`<circle>` detection, and circular-arc `A` fitting that collapses
+  near-circular Bézier runs to exact arcs), **group-by-color** (one `<g>` layer per color
   so cut/print tools separate sheets automatically), tiny-feature warnings below
   cuttable size.
 - **Studio UI**: drag & drop / paste / one-click sample gallery (flat logo,
@@ -160,7 +161,6 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 ## Roadmap
 
-- SVG elliptical-arc (`A`) fitting for near-circular arcs
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Gradient detection & mesh-free gradient fills for photo modes

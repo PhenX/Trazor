@@ -252,8 +252,9 @@ export interface SerializeOptions {
   // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
   // merging consecutive same-paint paths (never larger, same geometry); default false
   optimizePaths?: boolean
-  // also emit <circle>/<ellipse> for near-round loops (sub-pixel); keep off for
-  // cutout mode, where a neighbor still traces the Bézier edge; default false
+  // also emit <circle>/<ellipse> for near-round loops and collapse near-circular
+  // Bézier runs to `A` arcs (both sub-pixel); keep off for cutout mode, where a
+  // neighbor still traces the Bézier edge; default false
   roundPrimitives?: boolean
   // wrap each paint color's shapes in its own <g id="layer-N"><title>#hex</title>
   // (first-appearance order) so cut/print tools read one layer per color; default false
@@ -266,6 +267,10 @@ export function buildPathData(commands: readonly PathCommand[], precision: numbe
 export function optimizePathData(commands: readonly PathCommand[], precision: number): string
 // Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
+// Collapse every run of ≥2 consecutive cubics that lie on one circle into a
+// single `A` arc (radii/endpoint snapped to the precision grid); non-arc runs
+// pass through. serializeSvg applies this when roundPrimitives is set.
+export function fitArcs(commands: readonly PathCommand[], precision: number): PathCommand[]
 export type Primitive =
   | { kind: 'rect'; x: number; y: number; width: number; height: number }
   | { kind: 'rrect'; x: number; y: number; width: number; height: number; r: number } // circular corners → <rect rx>
@@ -306,9 +311,10 @@ export interface SvgGeometry {
 // Decode SVG text back into the absolute path model for inspection overlays
 // (anchor points, Bézier handles, outlines). Regex-based, no DOM; exact on our
 // serializer output, best-effort on foreign SVGs. Paths resolve relative/H/V/S/T
-// shorthands to absolute M/L/Q/C/Z; rect/circle/ellipse/line/polyline/polygon
-// convert to equivalent commands (round primitives via the 4-Bézier kappa arc);
-// a `rotate(a [cx cy])` transform (what the serializer emits) is applied.
+// shorthands to absolute M/L/Q/C/Z (arcs `A` expand to cubics); rect/circle/
+// ellipse/line/polyline/polygon convert to equivalent commands (round primitives
+// via the 4-Bézier kappa arc); a `rotate(a [cx cy])` transform (what the
+// serializer emits) is applied.
 export function extractGeometry(svg: string): SvgGeometry
 ```
 

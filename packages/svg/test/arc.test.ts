@@ -1,7 +1,6 @@
 import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
-import { arcToCubics, fitArcs } from '../src/arc'
-import { extractGeometry, serializeSvg } from '../src/index'
+import { arcToCubics, extractGeometry, fitArcs, serializeSvg } from '../src/index'
 import type { SvgDocument } from '../src/index'
 
 /** A circular arc (`cx, cy`, radius `r`) sampled as `segs` kappa-ish cubics from
