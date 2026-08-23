@@ -29,14 +29,14 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 
 ## Priority overview
 
-| #     | Item                                 | Fixes                              | Impact                     | Effort | Risk                          |
-| ----- | ------------------------------------ | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
-| **1** | ΔE-through-tracer eval harness       | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
-| **2** | Degradation & data realism           | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
-| **3** | Learned signed-field head            | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
-| **4** | Primitive / arc fitting (classical)  | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
-| **5** | Cleanup model capacity               | under-capacity vs its own spec     | Med                        | S      | Low                           |
-| **6** | Bounded differentiable refinement    | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
+| #     | Item                                | Fixes                              | Impact                     | Effort | Risk                          |
+| ----- | ----------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
+| **1** | ΔE-through-tracer eval harness ✅   | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
+| **2** | Degradation & data realism          | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
+| **3** | Learned signed-field head           | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
+| **4** | Primitive / arc fitting (classical) | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
+| **5** | Cleanup model capacity              | under-capacity vs its own spec     | Med                        | S      | Low                           |
+| **6** | Bounded differentiable refinement   | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
 
 **Sequencing:** Sprint 1 = **1 → 2** (then retrain edge + cleanup, record the new baseline). Sprint 2 = **5** (quick) +
 **3**. Sprint 3 = **4**. Later = **6** (offline oracle first). Item 1 comes first because nothing else is trustworthy
@@ -44,7 +44,10 @@ without it.
 
 ---
 
-## 1. ΔE-through-tracer evaluation & selection harness
+## 1. ΔE-through-tracer evaluation & selection harness — **implemented**
+
+Shipped in [`scripts/eval`](../scripts/eval/README.md) (`trace-eval.ts`) + [`scripts/train/predict.py`](../scripts/train/predict.py),
+wired as `npm run eval:prepass`. What remains is running it on real trained checkpoints to drive item-2 selection.
 
 **Why.** [`EDGE_PREPASS.md`](EDGE_PREPASS.md) and [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md) both prescribe selecting
 checkpoints by downstream Oklab ΔE "without regressing clean inputs," but `scripts/train/train.py` selects on val loss

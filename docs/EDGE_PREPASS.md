@@ -83,7 +83,9 @@ Offline, in PyTorch (not part of the repo's Node/TS build):
   predictions through the tracer and compare the app's existing **Oklab ΔE fidelity** and node counts against tracing the
   degraded input with no pre-pass.
 - **Selection:** pick the checkpoint that maximizes downstream ΔE improvement on degraded val inputs **without regressing
-  clean inputs** (a pre-pass that hurts clean images is a net loss — see success criteria).
+  clean inputs** (a pre-pass that hurts clean images is a net loss — see success criteria). The
+  [`scripts/eval`](../scripts/eval/README.md) harness measures exactly this (both buckets) — `predict.py` then
+  `npm run eval:prepass`.
 
 ## Export & verification
 

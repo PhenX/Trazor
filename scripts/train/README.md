@@ -185,9 +185,11 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 - **`checkpoints/preview-<task>.png`** is written on every improvement — columns are **input · prediction · target** for
   a few val samples. Smeared predictions → add capacity or data; missed faint boundaries → increase contrast/degradation
   variety in the data.
-- **The real metric is the app's Oklab ΔE.** Once the ONNX is in place, use the tool it feeds (**Edge pre-pass** toggle,
-  or **Clean up (ML)** button) on a few noisy inputs and compare ΔE / node count against off — that, not the val proxy,
-  is what ships.
+- **The real metric is the app's Oklab ΔE.** Measure it automatically over a held-out split with the
+  [`../eval`](../eval/README.md) harness — `python scripts/train/predict.py …` then `npm run eval:prepass …` traces
+  baseline vs pre-pass and reports ΔE / node count for degraded and clean buckets. Select the checkpoint that wins on
+  degraded **without** regressing clean. (In the studio, the **Edge pre-pass** toggle / **Clean up (ML)** button give the
+  same read on a single image.)
 
 ### Determinism
 

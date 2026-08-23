@@ -77,7 +77,8 @@ python scripts/train/pipeline.py --task cleanup --count 20000 --quantize
 - **Optimizer:** AdamW, cosine decay.
 - **Metrics:** PSNR on the held-out split, **plus the downstream metric that matters** — feed cleaned images through the
   tracer and compare the app's **Oklab ΔE fidelity** and node counts against tracing the degraded input directly.
-- **Selection:** maximize downstream ΔE improvement on degraded val inputs **without regressing clean inputs**.
+- **Selection:** maximize downstream ΔE improvement on degraded val inputs **without regressing clean inputs** — measured
+  by the [`scripts/eval`](../scripts/eval/README.md) harness (`predict.py` then `npm run eval:prepass --task cleanup`).
 
 ## Export & verification
 
