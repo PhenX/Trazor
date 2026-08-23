@@ -1,26 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { formatBytes } from '../lib/format'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 const usage = ref<{ models: number; bytes: number } | null>(null)
 let modelStore: import('@trazor/ml').ModelStore | null = null
 
 const backendBadge = computed(() => {
   if (store.mlState.probing || (!store.mlState.availability && store.hasImage)) {
-    return { label: 'detecting…', cls: '', title: 'Probing WebGPU / WASM support' }
+    return { label: t('ml.backendDetecting'), cls: '', title: t('ml.backendDetectingTitle') }
   }
   const a = store.mlState.availability
-  if (!a) return { label: 'idle', cls: '', title: 'Backend not probed yet' }
+  if (!a) return { label: t('ml.backendIdle'), cls: '', title: t('ml.backendIdleTitle') }
   if (a.available && a.backend === 'webgpu') {
-    return { label: 'WebGPU', cls: 'chip--success', title: 'Hardware-accelerated inference' }
+    return { label: t('ml.backendWebgpu'), cls: 'chip--success', title: t('ml.backendWebgpuTitle') }
   }
   if (a.available && a.backend === 'wasm') {
-    return { label: 'WASM', cls: 'chip--accent', title: 'CPU (WebAssembly) inference' }
+    return { label: t('ml.backendWasm'), cls: 'chip--accent', title: t('ml.backendWasmTitle') }
   }
-  return { label: 'unavailable', cls: 'chip--warn', title: a.reason ?? 'ML is unavailable' }
+  return {
+    label: t('ml.backendUnavailable'),
+    cls: 'chip--warn',
+    title: a.reason ?? t('ml.backendUnavailableTitle'),
+  }
 })
 
 const mlReady = computed(() => store.mlState.availability?.available === true)
@@ -45,9 +51,12 @@ async function clearCache(): Promise<void> {
     modelStore ??= new ml.ModelStore()
     await modelStore.clear()
     await refreshUsage()
-    store.notify('Model cache cleared', 'info')
+    store.notify(t('toasts.modelCacheCleared'), 'info')
   } catch (e) {
-    store.notify(`Could not clear the model cache: ${e instanceof Error ? e.message : e}`, 'error')
+    store.notify(
+      t('toasts.modelCacheFailed', { error: e instanceof Error ? e.message : String(e) }),
+      'error',
+    )
   }
 }
 
@@ -63,7 +72,7 @@ onMounted(() => {
 <template>
   <section class="ml card">
     <header class="ml-head">
-      <span class="ml-title">Local ML tools</span>
+      <span class="ml-title">{{ t('ml.title') }}</span>
       <span class="chip" :class="backendBadge.cls" :title="backendBadge.title">
         {{ backendBadge.label }}
       </span>
@@ -76,7 +85,7 @@ onMounted(() => {
           :disabled="
             !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
           "
-          :title="mlReady ? 'Remove the background with a local U²-Net model' : backendBadge.title"
+          :title="mlReady ? t('ml.removeBgTitle') : backendBadge.title"
           @click="store.removeBackground()"
         >
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
@@ -90,7 +99,7 @@ onMounted(() => {
             />
             <path d="M4.5 10.5h7" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2" />
           </svg>
-          {{ removeBusy ? 'Removing background…' : 'Remove background' }}
+          {{ removeBusy ? t('ml.removeBgBusy') : t('ml.removeBg') }}
         </button>
         <div
           v-if="removeBusy"
@@ -117,11 +126,7 @@ onMounted(() => {
           :disabled="
             !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
           "
-          :title="
-            mlReady
-              ? 'ML cleanup — denoise / deblock the image before tracing (all modes; needs the cleanup model)'
-              : backendBadge.title
-          "
+          :title="mlReady ? t('ml.cleanupTitle') : backendBadge.title"
           @click="store.cleanUp()"
         >
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
@@ -141,7 +146,7 @@ onMounted(() => {
               opacity="0.7"
             />
           </svg>
-          {{ cleanupBusy ? 'Cleaning up…' : 'Clean up (ML)' }}
+          {{ cleanupBusy ? t('ml.cleanupBusy') : t('ml.cleanup') }}
         </button>
         <div
           v-if="cleanupBusy"
@@ -160,9 +165,7 @@ onMounted(() => {
           />
         </div>
         <p v-if="cleanupBusy" class="phase">{{ store.mlState.cleanup.phase }}</p>
-        <p v-else class="phase instructions">
-          Rewrites pixels for the tracer · needs the cleanup model.
-        </p>
+        <p v-else class="phase instructions">{{ t('ml.cleanupNote') }}</p>
       </div>
 
       <div class="tool">
@@ -172,7 +175,7 @@ onMounted(() => {
           :disabled="
             !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
           "
-          :title="mlReady ? 'Click regions to keep or exclude (SlimSAM)' : backendBadge.title"
+          :title="mlReady ? t('ml.magicTitle') : backendBadge.title"
           :aria-pressed="store.magicActive"
           @click="store.toggleMagicSelect()"
         >
@@ -182,7 +185,7 @@ onMounted(() => {
               fill="currentColor"
             />
           </svg>
-          {{ store.magicActive ? 'Magic select — active' : 'Magic select' }}
+          {{ store.magicActive ? t('ml.magicActive') : t('ml.magic') }}
         </button>
         <div
           v-if="magicBusy"
@@ -202,8 +205,8 @@ onMounted(() => {
         </div>
         <p v-if="magicBusy" class="phase">{{ store.mlState.magic.phase }}</p>
         <p v-else-if="store.magicActive" class="phase instructions">
-          click = keep · alt / right-click = exclude · <kbd>Enter</kbd> apply ·
-          <kbd>Esc</kbd> cancel
+          {{ t('ml.magicHint') }} · <kbd>Enter</kbd> {{ t('common.apply') }} · <kbd>Esc</kbd>
+          {{ t('common.cancel') }}
         </p>
       </div>
 
@@ -214,11 +217,7 @@ onMounted(() => {
           :disabled="
             !store.hasImage || !mlReady || removeBusy || magicBusy || edgeBusy || cleanupBusy
           "
-          :title="
-            mlReady
-              ? 'ML edge pre-pass — protects thin features from despeckling on noisy input (all modes)'
-              : backendBadge.title
-          "
+          :title="mlReady ? t('ml.edgeTitle') : backendBadge.title"
           :aria-pressed="store.edgePrepass"
           @click="store.setEdgePrepass(!store.edgePrepass)"
         >
@@ -244,7 +243,7 @@ onMounted(() => {
               stroke-linejoin="round"
             />
           </svg>
-          {{ store.edgePrepass ? 'Edge pre-pass — on' : 'Edge pre-pass (ML)' }}
+          {{ store.edgePrepass ? t('ml.edgeActive') : t('ml.edge') }}
         </button>
         <div
           v-if="edgeBusy"
@@ -263,39 +262,35 @@ onMounted(() => {
           />
         </div>
         <p v-if="edgeBusy" class="phase">{{ store.mlState.edge.phase }}</p>
-        <p v-else-if="store.edgePrepass" class="phase instructions">
-          Applies to every mode · needs the edge-prepass model.
-        </p>
+        <p v-else-if="store.edgePrepass" class="phase instructions">{{ t('ml.edgeNote') }}</p>
       </div>
 
       <div class="ml-foot">
         <button
           v-if="store.isWorkingModified"
           class="chip chip--accent chip--btn"
-          title="Discard ML edits and trace the original image again"
+          :title="t('ml.restoreTitle')"
           @click="store.restoreOriginal()"
         >
-          ↺ Restore original
+          {{ t('ml.restore') }}
         </button>
         <details class="models" @toggle="onPopoverToggle">
-          <summary class="chip chip--btn">Models</summary>
+          <summary class="chip chip--btn">{{ t('ml.models') }}</summary>
           <div class="models-pop card">
             <p class="models-line">
-              Cached:
+              {{ t('ml.cached') }}
               <strong>{{
-                usage ? `${usage.models} model${usage.models === 1 ? '' : 's'}` : '—'
+                usage ? t('ml.cachedModels', { count: usage.models }, usage.models) : '—'
               }}</strong>
               <span v-if="usage" class="muted"> · {{ formatBytes(usage.bytes) }}</span>
             </p>
-            <p class="models-note muted">
-              Models download once from their public source and run entirely on this device.
-            </p>
+            <p class="models-note muted">{{ t('ml.modelsNote') }}</p>
             <button
               class="btn btn-sm"
               :disabled="!usage || usage.models === 0"
               @click="clearCache()"
             >
-              Clear cache
+              {{ t('ml.clearCache') }}
             </button>
           </div>
         </details>

@@ -1,6 +1,6 @@
 export { analyzeImage } from './analyze'
 export type { ImageAnalysis } from './analyze'
 export { recommendSettings } from './recommend'
-export type { Recommendation } from './recommend'
+export type { Recommendation, RationaleKey } from './recommend'
 export { suggestPalettes } from './palettes'
 export type { PaletteSuggestion } from './palettes'

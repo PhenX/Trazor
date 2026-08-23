@@ -3,6 +3,7 @@ import { DEFAULT_SETTINGS, TARGET_PROFILES } from '@trazor/core'
 import type { VectorizeMode, VectorizeSettings } from '@trazor/core'
 import type { PaletteSuggestion } from '@trazor/assist'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../store/appStore'
 import ColorRow from './controls/ColorRow.vue'
 import ControlRow from './controls/ControlRow.vue'
@@ -14,6 +15,7 @@ import MlTools from './MlTools.vue'
 import SettingsIO from './SettingsIO.vue'
 
 const store = useAppStore()
+const { t, tm, rt } = useI18n()
 const s = computed(() => store.settings)
 const D = DEFAULT_SETTINGS
 
@@ -25,16 +27,11 @@ const isColorLike = computed(() => s.value.mode === 'color' || s.value.mode === 
 const isBwLike = computed(() => s.value.mode === 'bw' || s.value.mode === 'centerline')
 const isCenterline = computed(() => s.value.mode === 'centerline')
 
-const MODES: ReadonlyArray<{ value: VectorizeMode; label: string; title: string }> = [
-  { value: 'color', label: 'Color', title: 'Multi-color tracing with a quantized palette' },
-  { value: 'grayscale', label: 'Gray', title: 'Grayscale layers' },
-  { value: 'bw', label: 'B&W', title: 'Single-color silhouette from a threshold' },
-  {
-    value: 'centerline',
-    label: 'Centerline',
-    title:
-      'One stroke down the middle of each drawn line — for line art & pen plotters, not filled shapes',
-  },
+const MODES: ReadonlyArray<{ value: VectorizeMode }> = [
+  { value: 'color' },
+  { value: 'grayscale' },
+  { value: 'bw' },
+  { value: 'centerline' },
 ]
 
 const fixedPalette = computed(() => s.value.palette)
@@ -51,13 +48,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
       <!-- Profiles -->
       <section class="group">
         <header class="group-head">
-          <h2 class="group-title">Target profile</h2>
+          <h2 class="group-title">{{ t('panel.targetProfile') }}</h2>
           <button
             class="btn btn-ghost btn-sm"
-            title="Reset every setting to its default"
+            :title="t('panel.resetAllTitle')"
             @click="store.resetSettings()"
           >
-            Reset all
+            {{ t('panel.resetAll') }}
           </button>
         </header>
         <div class="profile-grid">
@@ -69,26 +66,28 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
               'is-active': store.activeProfileId === profile.id,
               'is-modified': store.activeProfileId === profile.id && store.profileModified,
             }"
-            :title="profile.tagline"
+            :title="t(`profiles.${profile.id}.tagline`)"
             @click="store.applyProfile(profile.id)"
           >
-            {{ profile.label }}
+            {{ t(`profiles.${profile.id}.label`) }}
             <span
               v-if="store.activeProfileId === profile.id && store.profileModified"
               class="mod-star"
-              title="Settings modified from this profile"
+              :title="t('panel.profileModifiedStar')"
               >•</span
             >
           </button>
         </div>
-        <ul v-if="store.activeProfile" class="profile-notes">
-          <li v-for="(note, i) in store.activeProfile.notes" :key="i">{{ note }}</li>
+        <ul v-if="store.activeProfileId" class="profile-notes">
+          <li v-for="(note, i) in tm(`profiles.${store.activeProfileId}.notes`)" :key="i">
+            {{ rt(note) }}
+          </li>
         </ul>
 
         <button
           class="btn auto-btn"
           :disabled="!store.hasImage"
-          title="Analyze the image and recommend settings"
+          :title="t('panel.autoSettingsTitle')"
           @click="store.autoRecommend()"
         >
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
@@ -97,34 +96,33 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
               fill="currentColor"
             />
           </svg>
-          Auto settings
+          {{ t('panel.autoSettings') }}
         </button>
 
-        <label
-          class="auto-onload"
-          title="Analyze and apply recommended settings to each image as it loads"
-        >
+        <label class="auto-onload" :title="t('panel.applyOnLoadTitle')">
           <input
             type="checkbox"
             :checked="store.autoOnLoad"
             @change="store.setAutoOnLoad(($event.target as HTMLInputElement).checked)"
           />
-          <span>Apply automatically on load</span>
+          <span>{{ t('panel.applyOnLoad') }}</span>
         </label>
 
         <div v-if="store.assistRationale" class="rationale card">
           <div class="rationale-head">
-            <span>Why these settings</span>
+            <span>{{ t('panel.why') }}</span>
             <button
               class="btn btn-ghost btn-icon btn-sm"
-              aria-label="Dismiss"
+              :aria-label="t('common.dismiss')"
               @click="store.dismissRationale()"
             >
               ×
             </button>
           </div>
           <ul>
-            <li v-for="(reason, i) in store.assistRationale" :key="i">{{ reason }}</li>
+            <li v-for="(reason, i) in store.assistRationale" :key="i">
+              {{ t(`rationale.${reason.code}`, reason.params ?? {}) }}
+            </li>
           </ul>
         </div>
       </section>
@@ -135,103 +133,105 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
 
       <!-- Mode -->
       <section class="group">
-        <h2 class="group-title">Mode</h2>
+        <h2 class="group-title">{{ t('panel.sectionMode') }}</h2>
         <div class="seg">
           <button
             v-for="mode in MODES"
             :key="mode.value"
             :class="{ 'is-active': s.mode === mode.value }"
-            :title="mode.title"
+            :title="t(`modes.${mode.value}.title`)"
             @click="set('mode', mode.value)"
           >
-            {{ mode.label }}
+            {{ t(`modes.${mode.value}.label`) }}
           </button>
         </div>
       </section>
 
       <!-- Input -->
       <section class="group">
-        <h2 class="group-title">Input</h2>
+        <h2 class="group-title">{{ t('panel.sectionInput') }}</h2>
         <SliderRow
-          label="Max size"
+          :label="t('settings.maxSize.label')"
           :model-value="s.maxDimension"
           :min="0"
           :max="4096"
           :step="16"
           :default-value="D.maxDimension"
-          zero-label="original"
-          hint="Longest side is downscaled to this many pixels before tracing. 0 keeps the original size."
+          :zero-label="t('settings.maxSize.zero')"
+          :hint="t('settings.maxSize.hint')"
           @update:model-value="set('maxDimension', $event)"
         />
         <SelectRow
-          label="Denoise"
+          :label="t('settings.denoise.label')"
           :model-value="s.denoise"
           :options="[
-            { value: 'none', label: 'None' },
-            { value: 'median', label: 'Median (dust & specks)' },
-            { value: 'bilateral', label: 'Bilateral (photo noise)' },
+            { value: 'none', label: t('settings.denoise.none') },
+            { value: 'median', label: t('settings.denoise.median') },
+            { value: 'bilateral', label: t('settings.denoise.bilateral') },
           ]"
           :default-value="D.denoise"
-          hint="Pre-filter to remove noise before tracing"
+          :hint="t('settings.denoise.hint')"
           @update:model-value="set('denoise', $event)"
         />
         <SliderRow
-          label="Blur"
+          :label="t('settings.blur.label')"
           :model-value="s.blurRadius"
           :min="0"
           :max="10"
           :step="0.5"
           :default-value="D.blurRadius"
-          hint="Gaussian pre-blur radius (px). Helps noisy photos, hurts crisp art."
+          :hint="t('settings.blur.hint')"
           @update:model-value="set('blurRadius', $event)"
         />
         <SelectRow
-          label="Background"
+          :label="t('settings.background.label')"
           :model-value="s.background"
           :options="[
-            { value: 'auto', label: 'Auto detect' },
-            { value: 'transparent', label: 'Treat alpha as empty' },
-            { value: 'custom', label: 'Composite over color' },
+            { value: 'auto', label: t('settings.background.auto') },
+            { value: 'transparent', label: t('settings.background.transparent') },
+            { value: 'custom', label: t('settings.background.custom') },
           ]"
           :default-value="D.background"
-          hint="How transparent pixels are handled"
+          :hint="t('settings.background.hint')"
           @update:model-value="set('background', $event)"
         />
         <ColorRow
           v-if="s.background === 'custom'"
-          label="Backdrop"
+          :label="t('settings.backdrop.label')"
           :model-value="s.backgroundColor"
           :default-value="D.backgroundColor"
-          hint="The image is composited over this color first"
+          :hint="t('settings.backdrop.hint')"
           @update:model-value="set('backgroundColor', $event)"
         />
         <SliderRow
           v-if="s.background !== 'custom'"
-          label="Alpha cutoff"
+          :label="t('settings.alphaCutoff.label')"
           :model-value="s.alphaThreshold"
           :min="0"
           :max="255"
           :default-value="D.alphaThreshold"
-          hint="Alpha below this counts as empty"
+          :hint="t('settings.alphaCutoff.hint')"
           @update:model-value="set('alphaThreshold', $event)"
         />
       </section>
 
       <!-- Palette -->
       <section v-if="isColorLike" class="group">
-        <h2 class="group-title">Palette</h2>
+        <h2 class="group-title">{{ t('panel.sectionPalette') }}</h2>
 
-        <div class="pal-list" role="listbox" aria-label="Palette source">
+        <div class="pal-list" role="listbox" :aria-label="t('palettes.source')">
           <button
             class="pal-row"
             role="option"
             :class="{ 'is-active': fixedPalette === null }"
             :aria-selected="fixedPalette === null"
-            title="Extract the palette from the image with k-means"
+            :title="t('palettes.automaticTitle')"
             @click="store.clearFixedPalette()"
           >
-            <span class="pal-label">Automatic</span>
-            <span class="pal-meta">k-means · {{ s.paletteSize }} colors</span>
+            <span class="pal-label">{{ t('palettes.automatic') }}</span>
+            <span class="pal-meta">{{
+              t('palettes.automaticMeta', { count: s.paletteSize })
+            }}</span>
           </button>
           <button
             v-for="sug in store.paletteSuggestions"
@@ -240,10 +240,12 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
             role="option"
             :class="{ 'is-active': isActiveSuggestion(sug) }"
             :aria-selected="isActiveSuggestion(sug)"
-            :title="sug.description"
+            :title="t(`palettes.${sug.id}.description`)"
             @click="store.setFixedPalette(sug.colors)"
           >
-            <span class="pal-label">{{ sug.label }}</span>
+            <span class="pal-label">{{
+              t(`palettes.${sug.id}.label`, { count: sug.colors.length })
+            }}</span>
             <span class="pal-strip">
               <span
                 v-for="(color, i) in sug.colors"
@@ -254,7 +256,7 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
             </span>
           </button>
           <p v-if="store.paletteSuggestionsPending" class="pal-pending">
-            updating suggestions for this image…
+            {{ t('palettes.updating') }}
           </p>
         </div>
 
@@ -270,273 +272,275 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
             <input
               type="color"
               :value="color"
-              :aria-label="`Edit palette color ${i + 1}`"
+              :aria-label="t('palettes.editColor', { index: i + 1 })"
               @input="store.editPaletteEntry(i, ($event.target as HTMLInputElement).value)"
             />
             <button
               class="pal-remove"
-              :aria-label="`Remove palette color ${i + 1}`"
+              :aria-label="t('palettes.removeColor', { index: i + 1 })"
               @click="store.removePaletteEntry(i)"
             >
               ×
             </button>
           </span>
-          <button class="pal-add" title="Add a color" @click="store.addPaletteEntry()">+</button>
+          <button class="pal-add" :title="t('palettes.addColor')" @click="store.addPaletteEntry()">
+            +
+          </button>
           <button
             class="chip chip--btn pal-back"
-            title="Return to automatic palette extraction"
+            :title="t('palettes.backToAutoTitle')"
             @click="store.clearFixedPalette()"
           >
-            × back to automatic
+            {{ t('palettes.backToAuto') }}
           </button>
         </div>
 
         <template v-if="fixedPalette === null">
           <SliderRow
-            label="Colors"
+            :label="t('settings.colors.label')"
             :model-value="s.paletteSize"
             :min="2"
             :max="64"
             :default-value="D.paletteSize"
-            hint="Number of output colors"
+            :hint="t('settings.colors.hint')"
             @update:model-value="set('paletteSize', $event)"
           />
           <SwitchRow
-            label="Auto reduce"
+            :label="t('settings.autoReduce.label')"
             :model-value="s.autoPaletteSize"
             :default-value="D.autoPaletteSize"
-            hint="Merge near-duplicate colors so simple art gets fewer layers"
+            :hint="t('settings.autoReduce.hint')"
             @update:model-value="set('autoPaletteSize', $event)"
           />
           <SliderRow
-            label="Quality"
+            :label="t('settings.quality.label')"
             :model-value="s.quantizeQuality"
             :min="1"
             :max="10"
             :default-value="D.quantizeQuality"
-            hint="Clustering effort — higher is slower and more accurate"
+            :hint="t('settings.quality.hint')"
             @update:model-value="set('quantizeQuality', $event)"
           />
           <SelectRow
-            label="Color space"
+            :label="t('settings.colorSpace.label')"
             :model-value="s.colorSpace"
             :options="[
-              { value: 'oklab', label: 'Oklab (perceptual)' },
-              { value: 'rgb', label: 'RGB' },
+              { value: 'oklab', label: t('settings.colorSpace.oklab') },
+              { value: 'rgb', label: t('settings.colorSpace.rgb') },
             ]"
             :default-value="D.colorSpace"
-            hint="Clustering space — Oklab is almost always better"
+            :hint="t('settings.colorSpace.hint')"
             @update:model-value="set('colorSpace', $event)"
           />
         </template>
 
-        <ControlRow label="Layering" hint="How color layers relate to each other">
+        <ControlRow :label="t('settings.layering.label')" :hint="t('settings.layering.hint')">
           <div class="radio-cards">
             <button
               :class="{ 'is-active': s.layering === 'stacked' }"
-              title="Layers are painted back-to-front and extend under each other"
+              :title="t('settings.layering.stackedTitle')"
               @click="set('layering', 'stacked')"
             >
-              <strong>Stacked</strong>
-              <span>Seam-proof overdraw</span>
+              <strong>{{ t('settings.layering.stacked') }}</strong>
+              <span>{{ t('settings.layering.stackedSub') }}</span>
             </button>
             <button
               :class="{ 'is-active': s.layering === 'cutout' }"
-              title="Exact partition with mathematically shared edges"
+              :title="t('settings.layering.cutoutTitle')"
               @click="set('layering', 'cutout')"
             >
-              <strong>Cutout</strong>
-              <span>Exact edges, cut-ready</span>
+              <strong>{{ t('settings.layering.cutout') }}</strong>
+              <span>{{ t('settings.layering.cutoutSub') }}</span>
             </button>
           </div>
         </ControlRow>
         <SliderRow
-          label="Min region"
+          :label="t('settings.minRegion.label')"
           :model-value="s.minRegionArea"
           :min="0"
           :max="256"
           :default-value="D.minRegionArea"
-          hint="Regions smaller than this many pixels are merged away"
+          :hint="t('settings.minRegion.hint')"
           @update:model-value="set('minRegionArea', $event)"
         />
         <SwitchRow
-          label="Keep details"
+          :label="t('settings.keepDetails.label')"
           :model-value="s.preserveDetails"
           :default-value="D.preserveDetails"
-          hint="Keep small high-contrast features (e.g. a logo dot) instead of merging them away"
+          :hint="t('settings.keepDetails.hint')"
           @update:model-value="set('preserveDetails', $event)"
         />
         <SliderRow
           v-if="s.layering === 'cutout'"
-          label="Gap fill"
+          :label="t('settings.gapFill.label')"
           :model-value="s.gapFill"
           :min="0"
           :max="2"
           :step="0.05"
           :default-value="D.gapFill"
-          zero-label="off"
-          hint="Hairline-seam compensation stroke width (px) for cutout rendering"
+          :zero-label="t('settings.gapFill.zero')"
+          :hint="t('settings.gapFill.hint')"
           @update:model-value="set('gapFill', $event)"
         />
         <SwitchRow
-          label="Omit background"
+          :label="t('settings.omitBackground.label')"
           :model-value="s.omitBackground"
           :default-value="D.omitBackground"
-          hint="Drop the layer matching the detected background color (stickers, cut files)"
+          :hint="t('settings.omitBackground.hint')"
           @update:model-value="set('omitBackground', $event)"
         />
         <SwitchRow
-          label="Group by color"
+          :label="t('settings.groupByColor.label')"
           :model-value="s.groupByColor"
           :default-value="D.groupByColor"
-          hint="Wrap each color in its own layer group — one selectable sheet/screen per color for cutting or printing"
+          :hint="t('settings.groupByColor.hint')"
           @update:model-value="set('groupByColor', $event)"
         />
       </section>
 
       <!-- Threshold -->
       <section v-if="isBwLike" class="group">
-        <h2 class="group-title">Threshold</h2>
+        <h2 class="group-title">{{ t('panel.sectionThreshold') }}</h2>
         <SelectRow
-          label="Method"
+          :label="t('settings.method.label')"
           :model-value="s.thresholdMode"
           :options="[
-            { value: 'auto', label: 'Auto (Otsu)' },
-            { value: 'fixed', label: 'Fixed level' },
-            { value: 'adaptive', label: 'Adaptive (uneven light)' },
+            { value: 'auto', label: t('settings.method.auto') },
+            { value: 'fixed', label: t('settings.method.fixed') },
+            { value: 'adaptive', label: t('settings.method.adaptive') },
           ]"
           :default-value="D.thresholdMode"
-          hint="How the ink / paper split is chosen"
+          :hint="t('settings.method.hint')"
           @update:model-value="set('thresholdMode', $event)"
         />
         <SliderRow
           v-if="s.thresholdMode === 'fixed'"
-          label="Level"
+          :label="t('settings.level.label')"
           :model-value="s.threshold"
           :min="0"
           :max="255"
           :default-value="D.threshold"
-          hint="Pixels darker than this become ink"
+          :hint="t('settings.level.hint')"
           @update:model-value="set('threshold', $event)"
         />
         <template v-if="s.thresholdMode === 'adaptive'">
           <SliderRow
-            label="Radius"
+            :label="t('settings.radius.label')"
             :model-value="s.adaptiveRadius"
             :min="2"
             :max="128"
             :default-value="D.adaptiveRadius"
-            hint="Window radius (px) for the local mean"
+            :hint="t('settings.radius.hint')"
             @update:model-value="set('adaptiveRadius', $event)"
           />
           <SliderRow
-            label="Bias"
+            :label="t('settings.bias.label')"
             :model-value="s.adaptiveBias"
             :min="-64"
             :max="64"
             :default-value="D.adaptiveBias"
-            hint="Added to the local mean — positive keeps only clearly darker pixels"
+            :hint="t('settings.bias.hint')"
             @update:model-value="set('adaptiveBias', $event)"
           />
         </template>
         <SwitchRow
-          label="Invert"
+          :label="t('settings.invert.label')"
           :model-value="s.invert"
           :default-value="D.invert"
-          hint="Trace light-on-dark artwork"
+          :hint="t('settings.invert.hint')"
           @update:model-value="set('invert', $event)"
         />
       </section>
 
       <!-- Curves -->
       <section class="group">
-        <h2 class="group-title">Curves</h2>
+        <h2 class="group-title">{{ t('panel.sectionCurves') }}</h2>
         <SelectRow
-          label="Geometry"
+          :label="t('settings.geometry.label')"
           :model-value="s.curveMode"
           :options="[
-            { value: 'spline', label: 'Smooth splines' },
-            { value: 'polygon', label: 'Straight polygons' },
-            { value: 'pixel', label: 'Exact pixel edges' },
+            { value: 'spline', label: t('settings.geometry.spline') },
+            { value: 'polygon', label: t('settings.geometry.polygon') },
+            { value: 'pixel', label: t('settings.geometry.pixel') },
           ]"
           :default-value="D.curveMode"
-          hint="Spline fits Béziers; pixel keeps every stair-step (pixel art)"
+          :hint="t('settings.geometry.hint')"
           @update:model-value="set('curveMode', $event)"
         />
         <SliderRow
-          label="Smoothing"
+          :label="t('settings.smoothing.label')"
           :model-value="s.smoothing"
           :min="0"
           :max="1"
           :step="0.01"
           :default-value="D.smoothing"
           :disabled="s.curveMode !== 'spline'"
-          hint="0 keeps every corner, 1 smooths aggressively"
+          :hint="t('settings.smoothing.hint')"
           @update:model-value="set('smoothing', $event)"
         />
         <SwitchRow
-          label="Optimize"
+          :label="t('settings.optimize.label')"
           :model-value="s.curveOptimize"
           :default-value="D.curveOptimize"
           :disabled="s.curveMode === 'pixel'"
-          hint="Merge adjacent curve segments when a single curve fits"
+          :hint="t('settings.optimize.hint')"
           @update:model-value="set('curveOptimize', $event)"
         />
         <SliderRow
           v-if="s.curveOptimize && s.curveMode !== 'pixel'"
-          label="Tolerance"
+          :label="t('settings.tolerance.label')"
           :model-value="s.optTolerance"
           :min="0"
           :max="5"
           :step="0.05"
           :default-value="D.optTolerance"
-          hint="Max deviation (px) allowed when merging curves"
+          :hint="t('settings.tolerance.hint')"
           @update:model-value="set('optTolerance', $event)"
         />
         <details class="advanced">
-          <summary>Advanced</summary>
+          <summary>{{ t('panel.advanced') }}</summary>
           <SelectRow
-            label="Turn policy"
+            :label="t('settings.turnPolicy.label')"
             :model-value="s.turnPolicy"
             :options="[
-              { value: 'minority', label: 'Minority' },
-              { value: 'majority', label: 'Majority' },
-              { value: 'black', label: 'Black' },
-              { value: 'white', label: 'White' },
-              { value: 'left', label: 'Left' },
-              { value: 'right', label: 'Right' },
+              { value: 'minority', label: t('settings.turnPolicy.minority') },
+              { value: 'majority', label: t('settings.turnPolicy.majority') },
+              { value: 'black', label: t('settings.turnPolicy.black') },
+              { value: 'white', label: t('settings.turnPolicy.white') },
+              { value: 'left', label: t('settings.turnPolicy.left') },
+              { value: 'right', label: t('settings.turnPolicy.right') },
             ]"
             :default-value="D.turnPolicy"
-            hint="Ambiguity resolution at checkerboard junctions"
+            :hint="t('settings.turnPolicy.hint')"
             @update:model-value="set('turnPolicy', $event)"
           />
           <SliderRow
-            label="Simplify"
+            :label="t('settings.simplify.label')"
             :model-value="s.simplifyTolerance"
             :min="0"
             :max="10"
             :step="0.1"
             :default-value="D.simplifyTolerance"
-            hint="Pre-fit polyline simplification epsilon (px), open paths / polygon mode"
+            :hint="t('settings.simplify.hint')"
             @update:model-value="set('simplifyTolerance', $event)"
           />
           <SliderRow
-            label="Corner angle"
+            :label="t('settings.cornerAngle.label')"
             :model-value="s.cornerThreshold"
             :min="0"
             :max="180"
             :default-value="D.cornerThreshold"
-            hint="Interior angle (°) below which an open-path vertex is pinned as a corner (centerline)"
+            :hint="t('settings.cornerAngle.hint')"
             @update:model-value="set('cornerThreshold', $event)"
           />
           <SliderRow
-            label="Fit tolerance"
+            :label="t('settings.fitTolerance.label')"
             :model-value="s.fitTolerance"
             :min="0.1"
             :max="10"
             :step="0.1"
             :default-value="D.fitTolerance"
-            hint="Max fitting error (px) for open-path Bézier fitting (centerline)"
+            :hint="t('settings.fitTolerance.hint')"
             @update:model-value="set('fitTolerance', $event)"
           />
         </details>
@@ -544,62 +548,58 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
 
       <!-- Centerline -->
       <section v-if="isCenterline" class="group">
-        <h2 class="group-title">Centerline</h2>
-        <p class="mode-note">
-          Traces one stroke down the middle of each drawn line — for line art, handwriting and pen
-          plotters. On filled shapes or photos it returns a spidery skeleton, not matching outlines;
-          use B&amp;W or Color there.
-        </p>
+        <h2 class="group-title">{{ t('panel.sectionCenterline') }}</h2>
+        <p class="mode-note">{{ t('settings.centerlineNote') }}</p>
         <SliderRow
-          label="Stroke width"
+          :label="t('settings.strokeWidth.label')"
           :model-value="s.strokeWidth"
           :min="0"
           :max="64"
           :step="0.5"
           :default-value="D.strokeWidth"
-          zero-label="auto"
-          hint="Output stroke width (px). 0 estimates it from the ink width."
+          :zero-label="t('settings.strokeWidth.zero')"
+          :hint="t('settings.strokeWidth.hint')"
           @update:model-value="set('strokeWidth', $event)"
         />
         <SliderRow
-          label="Prune"
+          :label="t('settings.prune.label')"
           :model-value="s.pruneLength"
           :min="0"
           :max="128"
           :default-value="D.pruneLength"
-          hint="Skeleton branches shorter than this (px) are removed as noise"
+          :hint="t('settings.prune.hint')"
           @update:model-value="set('pruneLength', $event)"
         />
       </section>
 
       <!-- Output -->
       <section class="group">
-        <h2 class="group-title">Output</h2>
+        <h2 class="group-title">{{ t('panel.sectionOutput') }}</h2>
         <ColorRow
           v-if="isBwLike"
-          label="Ink color"
+          :label="t('settings.inkColor.label')"
           :model-value="s.fillColor"
           :default-value="D.fillColor"
-          hint="Paint color for B&W and centerline output"
+          :hint="t('settings.inkColor.hint')"
           @update:model-value="set('fillColor', $event)"
         />
         <SliderRow
-          label="Precision"
+          :label="t('settings.precision.label')"
           :model-value="s.precision"
           :min="0"
           :max="4"
           :default-value="D.precision"
-          hint="Decimal places for SVG coordinates"
+          :hint="t('settings.precision.hint')"
           @update:model-value="set('precision', $event)"
         />
         <SwitchRow
-          label="Minify paths"
+          :label="t('settings.minify.label')"
           :model-value="s.optimizeSvg"
           :default-value="D.optimizeSvg"
-          hint="Compact path data with relative and H/V commands — identical shapes, smaller file"
+          :hint="t('settings.minify.hint')"
           @update:model-value="set('optimizeSvg', $event)"
         />
-        <ControlRow label="Units" hint="px for screens, mm for physical machines">
+        <ControlRow :label="t('settings.units.label')" :hint="t('settings.units.hint')">
           <div class="seg unit-seg">
             <button :class="{ 'is-active': s.unit === 'px' }" @click="set('unit', 'px')">px</button>
             <button :class="{ 'is-active': s.unit === 'mm' }" @click="set('unit', 'mm')">mm</button>
@@ -607,28 +607,28 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
         </ControlRow>
         <SliderRow
           v-if="s.unit === 'mm'"
-          label="Width (mm)"
+          :label="t('settings.widthMm.label')"
           :model-value="s.widthMm"
           :min="0"
           :max="1000"
           :default-value="D.widthMm"
-          zero-label="96 dpi"
-          hint="Physical width. 0 derives it from the pixel size at 96 dpi."
+          :zero-label="t('settings.widthMm.zero')"
+          :hint="t('settings.widthMm.hint')"
           @update:model-value="set('widthMm', $event)"
         />
         <TextRow
-          label="Title"
+          :label="t('settings.title.label')"
           :model-value="s.svgTitle"
           :default-value="D.svgTitle"
-          placeholder="Untitled"
-          hint="Embedded as the SVG <title>"
+          :placeholder="t('settings.title.placeholder')"
+          :hint="t('settings.title.hint')"
           @update:model-value="set('svgTitle', $event)"
         />
         <SwitchRow
-          label="Island check"
+          :label="t('settings.islandCheck.label')"
           :model-value="s.detectIslands"
           :default-value="D.detectIslands"
-          hint="Warn about enclosed islands that would fall out of a physical stencil"
+          :hint="t('settings.islandCheck.hint')"
           @update:model-value="set('detectIslands', $event)"
         />
       </section>

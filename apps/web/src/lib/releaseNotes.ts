@@ -4,6 +4,11 @@
 // date plus a per-day iteration (see `releaseId`). Add a new entry at the TOP
 // of RELEASE_NOTES on every merged pull request that changes something a user
 // would notice — the process and id scheme live in apps/web/AGENTS.md.
+//
+// Note copy (title/items) is authored in English; only the surrounding chrome
+// (date, "New" badge, kind labels) is localized.
+
+import { i18n } from '../i18n'
 
 export type ReleaseNoteKind = 'feature' | 'improvement' | 'fix'
 
@@ -30,6 +35,16 @@ export interface ReleaseNote {
  * strictly newest-to-oldest.
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
+  {
+    date: '2026-08-23',
+    iteration: 3,
+    kind: 'feature',
+    title: 'Now available in French',
+    items: [
+      'The studio is now translated into French and picks your language automatically from your browser.',
+      'A language menu in the header lets you switch between English and French at any time, and your choice is remembered.',
+    ],
+  },
   {
     date: '2026-08-23',
     iteration: 2,
@@ -98,24 +113,19 @@ export function countUnseen(lastSeenId: string | null): number {
   return index === -1 ? RELEASE_NOTES.length : index
 }
 
-const MONTHS = [
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-]
-
-/** Format an ISO `YYYY-MM-DD` date as, e.g., `August 23, 2026`. */
+/**
+ * Format an ISO `YYYY-MM-DD` date for the active locale, e.g. `August 23, 2026`
+ * or `23 août 2026`. Built from `Date.UTC` (not the wall clock), so it is
+ * deterministic for a given date + locale.
+ */
 export function formatReleaseDate(date: string): string {
   const [year, month, day] = date.split('-').map(Number)
-  const name = MONTHS[month - 1] ?? date
-  return `${name} ${day}, ${year}`
+  if (!year || !month || !day) return date
+  const utc = new Date(Date.UTC(year, month - 1, day))
+  return new Intl.DateTimeFormat(i18n.global.locale.value, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(utc)
 }

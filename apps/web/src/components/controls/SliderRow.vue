@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ControlRow from './ControlRow.vue'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -71,7 +74,7 @@ function reset(): void {
       :max="max"
       :step="step"
       :disabled="disabled"
-      :aria-label="`${label} (numeric)`"
+      :aria-label="t('controls.numericAria', { label })"
       @change="commit(($event.target as HTMLInputElement).value)"
     />
     <span v-if="zeroLabel && modelValue === 0" class="zero-note">{{ zeroLabel }}</span>

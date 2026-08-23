@@ -1,4 +1,4 @@
-import type { StageId } from '@trazor/core'
+import { i18n } from '../i18n'
 
 /** 12345 → "12.3 kB" (SI units, trimmed decimals). */
 export function formatBytes(bytes: number): string {
@@ -20,16 +20,7 @@ export function formatMs(ms: number): string {
   return `${(ms / 1000).toFixed(2)} s`
 }
 
-/** 12345 → "12,345" (non-breaking group separators). */
+/** 12345 → "12,345" / "12 345" — grouped for the active locale. */
 export function formatCount(n: number): string {
-  return new Intl.NumberFormat('en-US').format(n)
-}
-
-export const STAGE_LABELS: Record<StageId, string> = {
-  preprocess: 'Preprocess',
-  palette: 'Palette',
-  segment: 'Segment',
-  trace: 'Trace',
-  fit: 'Fit curves',
-  svg: 'Write SVG',
+  return new Intl.NumberFormat(i18n.global.locale.value).format(n)
 }

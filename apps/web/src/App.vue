@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
+import { useI18n } from 'vue-i18n'
 import AppHeader from './components/AppHeader.vue'
 import DropZone from './components/DropZone.vue'
 import PreviewViewport from './components/PreviewViewport.vue'
@@ -11,6 +12,7 @@ import { downloadSvg } from './lib/download'
 import { useAppStore } from './store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 const viewport = ref<InstanceType<typeof PreviewViewport> | null>(null)
 const dropZone = ref<InstanceType<typeof DropZone> | null>(null)
 
@@ -24,6 +26,11 @@ const releaseNotesOpen = ref(false)
 watchEffect(() => {
   document.documentElement.dataset.theme = store.theme
   document.documentElement.style.background = ''
+})
+
+// Keep the document language in sync with the active locale (a11y + selection).
+watchEffect(() => {
+  document.documentElement.lang = store.locale
 })
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -141,7 +148,7 @@ onBeforeUnmount(() => {
             stroke-linejoin="round"
           />
         </svg>
-        {{ resultHidden ? 'Show preview' : 'Hide preview' }}
+        {{ resultHidden ? t('app.showPreview') : t('app.hidePreview') }}
       </button>
       <DropZone ref="dropZone" />
     </div>

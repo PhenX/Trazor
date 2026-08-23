@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { SETTINGS_EXPORT_VERSION } from '@trazor/core'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { copyText, downloadText } from '../lib/download'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 type Panel = 'idle' | 'export' | 'import'
 const panel = ref<Panel>('idle')
@@ -21,12 +23,15 @@ function toggle(next: Exclude<Panel, 'idle'>): void {
 
 async function onCopy(): Promise<void> {
   const ok = await copyText(exportJson.value)
-  store.notify(ok ? 'Settings copied' : 'Clipboard unavailable', ok ? 'success' : 'error')
+  store.notify(
+    t(ok ? 'toasts.settingsCopied' : 'toasts.clipboardUnavailable'),
+    ok ? 'success' : 'error',
+  )
 }
 
 function onSaveFile(): void {
   downloadText(exportJson.value, 'trazor-settings.json', 'application/json')
-  store.notify('Settings file saved', 'success')
+  store.notify(t('toasts.settingsFileSaved'), 'success')
 }
 
 function applyImport(): void {
@@ -52,7 +57,7 @@ async function onFileChosen(event: Event): Promise<void> {
     importText.value = await file.text()
     applyImport()
   } catch {
-    store.notify('Could not read the file', 'error')
+    store.notify(t('toasts.couldNotReadFile'), 'error')
   }
 }
 </script>
@@ -60,13 +65,13 @@ async function onFileChosen(event: Event): Promise<void> {
 <template>
   <section class="sio card">
     <header class="sio-head">
-      <span class="sio-title">Import / export</span>
+      <span class="sio-title">{{ t('sio.title') }}</span>
       <div class="sio-tabs">
         <button
           class="chip chip--btn"
           :class="{ 'is-active': panel === 'export' }"
           :aria-pressed="panel === 'export'"
-          title="Copy or save the current settings as JSON"
+          :title="t('sio.exportTitle')"
           @click="toggle('export')"
         >
           <svg viewBox="0 0 14 14" width="11" height="11" aria-hidden="true">
@@ -79,13 +84,13 @@ async function onFileChosen(event: Event): Promise<void> {
               stroke-linejoin="round"
             />
           </svg>
-          Export
+          {{ t('sio.export') }}
         </button>
         <button
           class="chip chip--btn"
           :class="{ 'is-active': panel === 'import' }"
           :aria-pressed="panel === 'import'"
-          title="Load settings from JSON or a file"
+          :title="t('sio.importTitle')"
           @click="toggle('import')"
         >
           <svg viewBox="0 0 14 14" width="11" height="11" aria-hidden="true">
@@ -98,7 +103,7 @@ async function onFileChosen(event: Event): Promise<void> {
               stroke-linejoin="round"
             />
           </svg>
-          Import
+          {{ t('sio.import') }}
         </button>
       </div>
     </header>
@@ -109,18 +114,20 @@ async function onFileChosen(event: Event): Promise<void> {
         class="sio-area mono"
         readonly
         rows="7"
-        aria-label="Exported settings JSON"
+        :aria-label="t('sio.exportedAria')"
         :value="exportJson"
         @focus="($event.target as HTMLTextAreaElement).select()"
       />
       <div class="sio-actions">
-        <button class="btn btn-sm" title="Copy the JSON to the clipboard" @click="onCopy">
-          Copy JSON
+        <button class="btn btn-sm" :title="t('sio.copyJsonTitle')" @click="onCopy">
+          {{ t('sio.copyJson') }}
         </button>
-        <button class="btn btn-sm" title="Download a .json file" @click="onSaveFile">
-          Save file
+        <button class="btn btn-sm" :title="t('sio.saveFileTitle')" @click="onSaveFile">
+          {{ t('sio.saveFile') }}
         </button>
-        <span class="sio-note">carries a version field (v{{ SETTINGS_EXPORT_VERSION }})</span>
+        <span class="sio-note">{{
+          t('sio.versionNote', { version: SETTINGS_EXPORT_VERSION })
+        }}</span>
       </div>
     </div>
 
@@ -133,8 +140,8 @@ async function onFileChosen(event: Event): Promise<void> {
         spellcheck="false"
         autocapitalize="off"
         autocomplete="off"
-        placeholder="Paste exported settings JSON here, or load a file…"
-        aria-label="Settings JSON to import"
+        :placeholder="t('sio.importPlaceholder')"
+        :aria-label="t('sio.importAria')"
       />
       <input
         ref="fileInput"
@@ -146,16 +153,16 @@ async function onFileChosen(event: Event): Promise<void> {
         @change="onFileChosen"
       />
       <div class="sio-actions">
-        <button class="btn btn-sm" title="Load a settings .json file" @click="openFilePicker">
-          Load file…
+        <button class="btn btn-sm" :title="t('sio.loadFileTitle')" @click="openFilePicker">
+          {{ t('sio.loadFile') }}
         </button>
         <button
           class="btn btn-primary btn-sm"
           :disabled="!importText.trim()"
-          title="Replace the current settings with the pasted JSON"
+          :title="t('sio.applyTitle')"
           @click="applyImport"
         >
-          Apply
+          {{ t('sio.apply') }}
         </button>
       </div>
     </div>

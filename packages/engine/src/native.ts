@@ -324,6 +324,7 @@ export async function vectorize(
       code: 'node-count',
       severity: 'info',
       message: `${analysis.nodeCount.toLocaleString()} nodes — consider more smoothing or a smaller max size for editing/cutting.`,
+      params: { count: analysis.nodeCount },
     })
   }
   if (settings.unit === 'mm') {
@@ -471,6 +472,7 @@ async function colorPipeline(
       code: 'palette-clamped',
       severity: 'info',
       message: `Palette reduced to ${paletteClampedTo} colors (near-duplicates merged).`,
+      params: { count: paletteClampedTo },
     })
   }
 
@@ -726,6 +728,7 @@ function warnIslands(traced: TracedShape[], warnings: VectorizeWarning[]): void 
       code: 'stencil-islands',
       severity: 'warning',
       message: `${islands} enclosed island${islands === 1 ? '' : 's'} would fall out of a physical stencil — add bridges in your editor.`,
+      params: { count: islands },
     })
   }
 }
@@ -747,6 +750,7 @@ function warnCenterlineInput(mask: BinaryMask, warnings: VectorizeWarning[]): vo
       code: 'centerline-input',
       severity: 'warning',
       message: `Centerline traces the middle of thin lines, but ~${Math.round(fraction * 100)}% of this image is filled — expect a skeleton, not matching outlines. Use B&W or Color mode for solid shapes.`,
+      params: { percent: Math.round(fraction * 100) },
     })
   }
 }
@@ -781,6 +785,7 @@ function warnTinyFeatures(
       code: 'tiny-features',
       severity: 'warning',
       message: `Smallest shape is ~${(minSide * mmPerPx).toFixed(2)} mm — most blades/lasers cannot cut below 1 mm cleanly.`,
+      params: { mm: (minSide * mmPerPx).toFixed(2) },
     })
   }
 }

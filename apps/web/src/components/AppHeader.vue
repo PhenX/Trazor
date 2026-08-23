@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { SUPPORTED_LOCALES } from '../i18n'
+import type { LocaleCode } from '../i18n'
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 
 const emit = defineEmits<{ openFile: []; openReleaseNotes: [] }>()
 
@@ -10,6 +14,10 @@ const emit = defineEmits<{ openFile: []; openReleaseNotes: [] }>()
 const unseenBadge = computed(() =>
   store.unseenReleaseCount > 9 ? '9+' : String(store.unseenReleaseCount),
 )
+
+function onLocaleChange(event: Event): void {
+  store.setLocale((event.target as HTMLSelectElement).value as LocaleCode)
+}
 </script>
 
 <template>
@@ -30,14 +38,14 @@ const unseenBadge = computed(() =>
         <rect x="22.8" y="21.8" width="4.4" height="4.4" rx="1" fill="var(--text-1)" />
       </svg>
       <span class="wordmark">Trazor</span>
-      <span class="tagline">raster → SVG, entirely in your browser</span>
+      <span class="tagline">{{ t('header.tagline') }}</span>
     </div>
 
     <div class="actions">
       <template v-if="store.hasImage">
         <button
           class="btn btn-ghost btn-sm hdr-action"
-          title="Back to the landing screen"
+          :title="t('header.homeTitle')"
           @click="store.clearImage()"
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -50,11 +58,11 @@ const unseenBadge = computed(() =>
               stroke-linejoin="round"
             />
           </svg>
-          <span class="hdr-label">Home</span>
+          <span class="hdr-label">{{ t('header.home') }}</span>
         </button>
         <button
           class="btn btn-ghost btn-sm hdr-action"
-          title="Load another image (Ctrl+O)"
+          :title="t('header.openTitle')"
           @click="emit('openFile')"
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -74,7 +82,7 @@ const unseenBadge = computed(() =>
               stroke-linecap="round"
             />
           </svg>
-          <span class="hdr-label">Open</span>
+          <span class="hdr-label">{{ t('header.open') }}</span>
         </button>
         <span class="hdr-sep" aria-hidden="true" />
       </template>
@@ -82,13 +90,13 @@ const unseenBadge = computed(() =>
         class="btn btn-ghost btn-icon whatsnew"
         :title="
           store.unseenReleaseCount > 0
-            ? `What's new — ${store.unseenReleaseCount} since your last visit`
-            : `What's new`
+            ? t('header.whatsNewTitleCount', { count: store.unseenReleaseCount })
+            : t('header.whatsNew')
         "
         :aria-label="
           store.unseenReleaseCount > 0
-            ? `What's new, ${store.unseenReleaseCount} new since your last visit`
-            : `What's new`
+            ? t('header.whatsNewAriaCount', { count: store.unseenReleaseCount })
+            : t('header.whatsNew')
         "
         @click="emit('openReleaseNotes')"
       >
@@ -122,8 +130,8 @@ const unseenBadge = computed(() =>
       </button>
       <button
         class="btn btn-ghost btn-icon"
-        :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
-        :aria-label="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        :title="store.theme === 'dark' ? t('header.toLight') : t('header.toDark')"
+        :aria-label="store.theme === 'dark' ? t('header.toLight') : t('header.toDark')"
         @click="store.toggleTheme()"
       >
         <svg
@@ -151,13 +159,34 @@ const unseenBadge = computed(() =>
           />
         </svg>
       </button>
+      <label class="lang" :title="t('language.label')">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3" />
+          <path
+            d="M1.8 8h12.4M8 1.8c2 2 2 10.4 0 12.4M8 1.8c-2 2-2 10.4 0 12.4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+          />
+        </svg>
+        <select
+          class="lang-select"
+          :value="store.locale"
+          :aria-label="t('language.label')"
+          @change="onLocaleChange"
+        >
+          <option v-for="code in SUPPORTED_LOCALES" :key="code" :value="code">
+            {{ t(`language.${code}`) }}
+          </option>
+        </select>
+      </label>
       <a
         class="btn btn-ghost btn-icon"
         href="https://github.com/PhenX/Trazor"
         target="_blank"
         rel="noopener noreferrer"
-        title="View source on GitHub"
-        aria-label="View source on GitHub"
+        :title="t('header.github')"
+        :aria-label="t('header.github')"
       >
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor">
           <path
@@ -229,6 +258,47 @@ const unseenBadge = computed(() =>
   height: 20px;
   margin: 0 3px;
   background: var(--border);
+}
+
+/* Language picker: a globe glyph with a select overlaid so it reads as an icon
+   button while staying a native, accessible control. */
+.lang {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.lang:hover {
+  color: var(--text-1);
+  background: var(--bg-2);
+}
+
+.lang-select {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.lang-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.lang-select option {
+  color: var(--text-1);
+  background: var(--bg-1);
 }
 
 /* "What's new" trigger + its since-last-visit badge. */

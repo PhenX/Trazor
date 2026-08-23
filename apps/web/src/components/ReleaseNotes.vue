@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   countUnseen,
   formatReleaseDate,
@@ -10,6 +11,7 @@ import {
 import { useAppStore } from '../store/appStore'
 
 const store = useAppStore()
+const { t } = useI18n()
 const emit = defineEmits<{ close: [] }>()
 
 // Snapshot how many notes were unseen when the panel opened, BEFORE marking
@@ -18,12 +20,6 @@ const newCount = countUnseen(store.lastSeenRelease)
 
 function isNew(index: number): boolean {
   return index < newCount
-}
-
-const KIND_LABEL: Record<ReleaseNoteKind, string> = {
-  feature: 'New feature',
-  improvement: 'Improvement',
-  fix: 'Fix',
 }
 
 const KIND_CLASS: Record<ReleaseNoteKind, string> = {
@@ -83,12 +79,12 @@ onBeforeUnmount(() => {
               stroke-linecap="round"
             />
           </svg>
-          <h2 id="rn-title" class="rn-title">What's new</h2>
+          <h2 id="rn-title" class="rn-title">{{ t('release.title') }}</h2>
         </div>
         <button
           class="btn btn-ghost btn-icon"
           type="button"
-          aria-label="Close what's new"
+          :aria-label="t('release.close')"
           @click="close"
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
@@ -111,8 +107,10 @@ onBeforeUnmount(() => {
               <span class="rn-date">{{ formatReleaseDate(note.date) }}</span>
             </div>
             <div class="rn-meta-right">
-              <span v-if="isNew(i)" class="rn-new">New</span>
-              <span class="chip" :class="KIND_CLASS[note.kind]">{{ KIND_LABEL[note.kind] }}</span>
+              <span v-if="isNew(i)" class="rn-new">{{ t('release.new') }}</span>
+              <span class="chip" :class="KIND_CLASS[note.kind]">{{
+                t(`release.${note.kind}`)
+              }}</span>
             </div>
           </div>
           <h3 class="rn-note-title">{{ note.title }}</h3>
@@ -123,14 +121,14 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="rn-foot">
-        <span class="muted">Notes are dated and numbered per day until versioning lands.</span>
+        <span class="muted">{{ t('release.footNote') }}</span>
         <a
           class="rn-foot-link"
           href="https://github.com/PhenX/Trazor/commits/main"
           target="_blank"
           rel="noopener noreferrer"
         >
-          Full history
+          {{ t('release.fullHistory') }}
         </a>
       </footer>
     </div>
