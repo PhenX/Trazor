@@ -251,8 +251,12 @@ defineExpose({ openPicker })
   inset: 0;
   z-index: 30;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* `safe` centers the content while it fits but pins it to the top once it's
+     taller than the viewport, so the upload target stays reachable instead of
+     scrolling off above the fold. Plain `center` clips the overflow equally top
+     and bottom, and only the bottom is scrollable — cropping the top. */
+  align-items: safe center;
+  justify-content: safe center;
   background: var(--bg-0);
   overflow: auto;
 }
