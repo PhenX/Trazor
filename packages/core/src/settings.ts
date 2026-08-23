@@ -125,6 +125,12 @@ export interface VectorizeSettings {
   precision: number
   /** Compact path data with relative + H/V commands (identical geometry, smaller file). */
   optimizeSvg: boolean
+  /**
+   * Group output shapes into one `<g>` layer per color (color / grayscale modes),
+   * in first-appearance order. Cut and print software then reads each color as a
+   * single selectable layer — one vinyl sheet or one screen per color.
+   */
+  groupByColor: boolean
   unit: 'px' | 'mm'
   /** Physical width when `unit` is `mm`; 0 derives it from 96 dpi. */
   widthMm: number
@@ -175,6 +181,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   fillColor: '#000000',
   precision: 2,
   optimizeSvg: true,
+  groupByColor: false,
   unit: 'px',
   widthMm: 0,
   svgTitle: '',

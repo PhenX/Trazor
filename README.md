@@ -52,9 +52,9 @@ On top of that, three things most tracers don't do:
   colors).
 - **Target profiles** with machine-aware defaults and practical notes:
   Illustration, Photo/Poster, Logo, Screen print, Pixel art, Ink sketch,
-  **Vinyl cutter** (mm units, speck filtering), **Laser engrave**,
-  **Pen plotter** (centerline), **Stencil** (island detection warns about
-  pieces that would fall out).
+  **Vinyl cutter** (layered spot color — one `<g>` sheet per color, mm units),
+  **Laser engrave**, **Pen plotter** (centerline, for line art), **Stencil**
+  (island detection warns about pieces that would fall out).
 - **Local ML tools** (optional, on-device via ONNX Runtime Web, WebGPU with
   WASM fallback): **background removal** (U²-Netp, ~4.6 MB), **magic
   select** — click an object (SlimSAM, ~10 MB) and vectorize just that — and a
@@ -69,7 +69,9 @@ On top of that, three things most tracers don't do:
   clean shapes from compression-degraded flat art (denoise + speckle cleanup).
 - **Physical output**: px or **mm units** with real document sizes, precision
   control, **path minification** (relative/H/V commands, collinear cleanup,
-  `<rect>`/`<circle>` detection), tiny-feature warnings below cuttable size.
+  `<rect>`/`<circle>` detection), **group-by-color** (one `<g>` layer per color
+  so cut/print tools separate sheets automatically), tiny-feature warnings below
+  cuttable size.
 - **Studio UI**: drag & drop / paste / one-click sample gallery (flat logo,
   photo, pixel art, poster landscape, ink, illustration, a detailed monochrome
   mandala and a degraded-JPEG recovery test), quick **Home** / **Open** nav,

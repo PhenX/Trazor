@@ -53,6 +53,14 @@ export interface SerializeOptions {
    * traces the Bézier boundary and must match exactly. Default false.
    */
   roundPrimitives?: boolean
+  /**
+   * Wrap the shapes of each paint color in its own `<g>` layer (fill color, or
+   * stroke when there is no fill), in first-appearance order, each carrying an
+   * `id` and a `<title>` naming the color. Cut/print software then reads one
+   * selectable layer per color. Reorders same-color shapes to sit together;
+   * safe for a disjoint partition (cutout) or one-run-per-color paint order
+   * (stacked). Default false. */
+  groupByColor?: boolean
 }
 
 /** Stable marker emitted right after the opening tag. */
@@ -189,33 +197,87 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   if (doc.desc !== undefined && doc.desc !== '') {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
-  // Consecutive optimized paths that share identical paint fold into one
-  // <path> (same-fill shapes in our output are disjoint, so the union renders
-  // identically). Primitives and un-optimized paths flush the pending run.
-  let pending: { d: string; paint: string } | null = null
-  const flush = (): void => {
-    if (pending !== null) {
-      children.push(`<path d="${pending.d}"${pending.paint}/>`)
-      pending = null
+  if (opts.groupByColor === true) {
+    // One <g> per paint color (first-appearance order); its same-paint shapes
+    // fold into a single <path>. Pretty mode indents each layer's children.
+    let layer = 0
+    for (const group of groupShapesByColor(doc.shapes)) {
+      const body = foldShapes(group.shapes, precision, optimize, roundPrimitives)
+      if (body.length === 0) continue
+      layer++
+      const groupOpen = `<g id="layer-${layer}"><title>${xmlEscape(group.key)}</title>`
+      children.push(
+        opts.pretty === true
+          ? `${groupOpen}\n    ${body.join('\n    ')}\n  </g>`
+          : `${groupOpen}${body.join('')}</g>`,
+      )
+    }
+  } else {
+    for (const child of foldShapes(doc.shapes, precision, optimize, roundPrimitives)) {
+      children.push(child)
     }
   }
-  for (const shape of doc.shapes) {
-    const out = shapeOut(shape, precision, optimize, roundPrimitives)
-    if (out === null) continue
-    if (out.kind === 'element') {
-      flush()
-      children.push(out.svg)
-    } else if (pending !== null && pending.paint === out.paint) {
-      pending.d += ` ${out.d}`
-    } else {
-      flush()
-      pending = { d: out.d, paint: out.paint }
-    }
-  }
-  flush()
 
   if (opts.pretty === true) {
     return `${open}\n  ${children.join('\n  ')}\n</svg>\n`
   }
   return `${open}${children.join('')}</svg>`
+}
+
+/**
+ * Emit shapes as finished element strings. Consecutive optimized paths that
+ * share identical paint fold into one `<path>` (same-paint shapes in our output
+ * are disjoint, so the union renders identically); primitives and un-optimized
+ * paths flush the pending run. Shapes that produce no output are dropped.
+ */
+function foldShapes(
+  shapes: readonly SvgShape[],
+  precision: number,
+  optimize: boolean,
+  roundPrimitives: boolean,
+): string[] {
+  const out: string[] = []
+  let pending: { d: string; paint: string } | null = null
+  const flush = (): void => {
+    if (pending !== null) {
+      out.push(`<path d="${pending.d}"${pending.paint}/>`)
+      pending = null
+    }
+  }
+  for (const shape of shapes) {
+    const so = shapeOut(shape, precision, optimize, roundPrimitives)
+    if (so === null) continue
+    if (so.kind === 'element') {
+      flush()
+      out.push(so.svg)
+    } else if (pending !== null && pending.paint === so.paint) {
+      pending.d += ` ${so.d}`
+    } else {
+      flush()
+      pending = { d: so.d, paint: so.paint }
+    }
+  }
+  flush()
+  return out
+}
+
+/**
+ * Partition shapes into one bucket per paint color — the fill, or the stroke
+ * when there is no fill — keeping the order in which each color first appears.
+ */
+function groupShapesByColor(shapes: readonly SvgShape[]): { key: string; shapes: SvgShape[] }[] {
+  const groups: { key: string; shapes: SvgShape[] }[] = []
+  const byKey = new Map<string, SvgShape[]>()
+  for (const shape of shapes) {
+    const key =
+      shape.fill !== undefined && shape.fill !== 'none' ? shape.fill : (shape.stroke ?? '')
+    let bucket = byKey.get(key)
+    if (bucket === undefined) {
+      bucket = []
+      byKey.set(key, bucket)
+      groups.push({ key, shapes: bucket })
+    }
+    bucket.push(shape)
+  }
+  return groups
 }

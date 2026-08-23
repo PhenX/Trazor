@@ -29,7 +29,12 @@ const MODES: ReadonlyArray<{ value: VectorizeMode; label: string; title: string 
   { value: 'color', label: 'Color', title: 'Multi-color tracing with a quantized palette' },
   { value: 'grayscale', label: 'Gray', title: 'Grayscale layers' },
   { value: 'bw', label: 'B&W', title: 'Single-color silhouette from a threshold' },
-  { value: 'centerline', label: 'Centerline', title: 'Single strokes along the middle of lines' },
+  {
+    value: 'centerline',
+    label: 'Centerline',
+    title:
+      'One stroke down the middle of each drawn line — for line art & pen plotters, not filled shapes',
+  },
 ]
 
 const fixedPalette = computed(() => s.value.palette)
@@ -380,6 +385,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           hint="Drop the layer matching the detected background color (stickers, cut files)"
           @update:model-value="set('omitBackground', $event)"
         />
+        <SwitchRow
+          label="Group by color"
+          :model-value="s.groupByColor"
+          :default-value="D.groupByColor"
+          hint="Wrap each color in its own layer group — one selectable sheet/screen per color for cutting or printing"
+          @update:model-value="set('groupByColor', $event)"
+        />
       </section>
 
       <!-- Threshold -->
@@ -533,6 +545,11 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
       <!-- Centerline -->
       <section v-if="isCenterline" class="group">
         <h2 class="group-title">Centerline</h2>
+        <p class="mode-note">
+          Traces one stroke down the middle of each drawn line — for line art, handwriting and pen
+          plotters. On filled shapes or photos it returns a spidery skeleton, not matching outlines;
+          use B&amp;W or Color there.
+        </p>
         <SliderRow
           label="Stroke width"
           :model-value="s.strokeWidth"
@@ -669,6 +686,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.mode-note {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--text-3);
 }
 
