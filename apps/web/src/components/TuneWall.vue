@@ -107,12 +107,30 @@ function viewBox(w: number, h: number): string {
   return `${vx} ${vy} ${vw} ${vh}`
 }
 
+// Map the pointer to normalized image coordinates, accounting for any
+// letterboxing (xMidYMid meet) when the surface aspect differs from the image
+// aspect — so the loupe tracks the cursor on the tiles and the taller inspector
+// panes alike, and the source and candidates stay locked to the same region.
 function onMove(e: MouseEvent): void {
   if (!compareZoom.value) return
   const el = e.currentTarget as HTMLElement
   const r = el.getBoundingClientRect()
-  cx.value = clamp((e.clientX - r.left) / r.width, 0, 1)
-  cy.value = clamp((e.clientY - r.top) / r.height, 0, 1)
+  if (r.width <= 0 || r.height <= 0) return
+  const imgAspect = aspect.value
+  const elAspect = r.width / r.height
+  let cw = r.width
+  let ch = r.height
+  let ox = 0
+  let oy = 0
+  if (elAspect > imgAspect) {
+    cw = r.height * imgAspect
+    ox = (r.width - cw) / 2
+  } else {
+    ch = r.width / imgAspect
+    oy = (r.height - ch) / 2
+  }
+  cx.value = clamp((e.clientX - r.left - ox) / cw, 0, 1)
+  cy.value = clamp((e.clientY - r.top - oy) / ch, 0, 1)
 }
 
 function onWheel(e: WheelEvent): void {
@@ -354,6 +372,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
           <figure class="tw-pane">
             <svg
               class="tw-svg"
+              :style="{ aspectRatio: aspect }"
               :viewBox="viewBox(dimsFor(inspected).w, dimsFor(inspected).h)"
               preserveAspectRatio="xMidYMid meet"
               @mousemove="onMove"
@@ -372,6 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
           <figure v-if="sourceUrl && store.workingImage" class="tw-pane">
             <svg
               class="tw-svg"
+              :style="{ aspectRatio: aspect }"
               :viewBox="viewBox(store.workingImage.width, store.workingImage.height)"
               preserveAspectRatio="xMidYMid meet"
               @mousemove="onMove"
@@ -501,6 +521,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
   position: relative;
   display: block;
   width: 100%;
+  margin: 0;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
@@ -690,12 +711,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
   margin: 0;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
 .tw-pane .tw-svg {
-  flex: 1;
   min-height: 0;
+  max-width: 100%;
+  max-height: calc(100% - 20px);
+  width: auto;
+  height: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   background: repeating-conic-gradient(var(--bg-2) 0% 25%, var(--bg-1) 0% 50%) 50% / 16px 16px;
