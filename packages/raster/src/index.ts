@@ -14,6 +14,8 @@ export { flattenIllumination } from './illumination'
 export type { FlattenIlluminationOptions } from './illumination'
 export { quantize } from './quantize'
 export type { QuantizeOptions, QuantizeResult } from './quantize'
+export { segmentRegions } from './segment'
+export type { SegmentOptions, SegmentResult } from './segment'
 export {
   adaptiveBinarize,
   binarize,

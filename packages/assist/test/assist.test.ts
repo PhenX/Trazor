@@ -107,6 +107,88 @@ function compressedFlat() {
   return img
 }
 
+/** Soft radial coverage of a disc at a pixel center → an anti-aliased rim. */
+function discCoverage(x: number, y: number, cx: number, cy: number, rad: number, ramp: number) {
+  const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+  return Math.max(0, Math.min(1, (rad + ramp / 2 - d) / ramp))
+}
+function mixByte(a: number, b: number, t: number) {
+  return Math.round(a * (1 - t) + b * t)
+}
+
+/** Many anti-aliased colored discs on white. Crisp flat art, but its soft rims
+ *  invent thousands of colors and dense micro-gradients, so it scores as
+ *  photographic — while the large disc/background interiors stay perfectly flat.
+ *  This is the web-clip-art case that the photoScore heuristic alone misroutes. */
+function antialiasedField() {
+  const w = 320
+  const h = 320
+  const img = createRaster(w, h)
+  fillRaster(img, 255, 255, 255)
+  const cols = [
+    [220, 40, 60],
+    [30, 70, 200],
+    [250, 210, 20],
+    [40, 160, 90],
+    [180, 60, 190],
+  ]
+  const rnd = mulberry32(12345)
+  const discs: number[][] = []
+  for (let i = 0; i < 280; i++) {
+    discs.push([
+      12 + rnd() * (w - 24),
+      12 + rnd() * (h - 24),
+      6 + rnd() * 9,
+      (rnd() * cols.length) | 0,
+    ])
+  }
+  const ramp = 3.5
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 255
+      let g = 255
+      let b = 255
+      for (const [cx, cy, rad, ci] of discs) {
+        if (Math.abs(x - cx) > rad + ramp || Math.abs(y - cy) > rad + ramp) continue
+        const cov = discCoverage(x, y, cx, cy, rad, ramp)
+        if (cov > 0) {
+          const c = cols[ci]
+          r = mixByte(r, c[0], cov)
+          g = mixByte(g, c[1], cov)
+          b = mixByte(b, c[2], cov)
+        }
+      }
+      setPixel(img, x, y, r, g, b)
+    }
+  }
+  return img
+}
+
+/** A vivid disc on a large black field — the mean chroma is dragged below the
+ *  achromatic line by the black, but the colored pixels are unmistakable, so it
+ *  must not be flattened to grayscale. */
+function coloredOnBlack() {
+  const img = createRaster(200, 200)
+  fillRaster(img, 0, 0, 0)
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 200; x++) {
+      let r = 0
+      let g = 0
+      let b = 0
+      const cr = discCoverage(x, y, 100, 100, 42, 2)
+      r = mixByte(r, 220, cr)
+      g = mixByte(g, 40, cr)
+      b = mixByte(b, 60, cr)
+      const cb = discCoverage(x, y, 100, 100, 22, 2)
+      r = mixByte(r, 30, cb)
+      g = mixByte(g, 70, cb)
+      b = mixByte(b, 200, cb)
+      if (r || g || b) setPixel(img, x, y, r, g, b)
+    }
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
@@ -118,6 +200,18 @@ describe('analyzeImage', () => {
   it('measures a grayscale image as achromatic and a colored one as chromatic', () => {
     expect(analyzeImage(grayPhoto()).colorfulness).toBeLessThan(0.03)
     expect(analyzeImage(navyOnWhite()).colorfulness).toBeGreaterThan(0.03)
+  })
+
+  it('measures large flat interiors that anti-aliasing does not erase', () => {
+    // Anti-aliased flat art keeps big exactly-flat fields; photo noise leaves none.
+    expect(analyzeImage(antialiasedField()).flatDensity).toBeGreaterThan(0.3)
+    expect(analyzeImage(noisyPhoto()).flatDensity).toBeLessThan(0.05)
+  })
+
+  it('measures a vivid subject on black as colored despite low mean chroma', () => {
+    const a = analyzeImage(coloredOnBlack())
+    expect(a.colorfulness).toBeLessThan(0.03) // mean chroma dragged down by the black field
+    expect(a.coloredFraction).toBeGreaterThan(0.05) // yet a clear fraction is genuinely colored
   })
 
   it('measures noise/gradients as photographic', () => {
@@ -181,6 +275,27 @@ describe('recommendSettings', () => {
     const rec = recommendSettings(analyzeImage(navyOnWhite()))
     expect(rec.profileId).not.toBe('bw-sketch')
     expect(['logo', 'illustration']).toContain(rec.profileId)
+  })
+
+  it('keeps anti-aliased flat art as a color illustration, not a photo', () => {
+    const a = analyzeImage(antialiasedField())
+    // The adversarial condition: it scores as photographic, yet its flat
+    // interiors mark it as clean art — the flat-art veto must win.
+    expect(a.photoScore).toBeGreaterThan(0.6)
+    expect(a.flatDensity).toBeGreaterThan(0.15)
+    const rec = recommendSettings(a)
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.patch.mode).toBe('color')
+    expect(rec.patch.denoise).not.toBe('bilateral') // crisp edges, not photo blur
+    // Region growing (not global quantization) so the anti-aliased edges never
+    // invent a third rim color, with small rim regions folded away.
+    expect(rec.patch.segmentation).toBe('regions')
+    expect(rec.patch.minRegionArea ?? 0).toBeGreaterThanOrEqual(16)
+  })
+
+  it('keeps a colored subject on a black backdrop in color, not grayscale', () => {
+    const rec = recommendSettings(analyzeImage(coloredOnBlack()))
+    expect(rec.patch.mode).not.toBe('grayscale')
   })
 
   it('cleans up a degraded flat graphic instead of posterizing it as a photo', () => {

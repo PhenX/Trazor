@@ -9,6 +9,8 @@ import ReleaseNotes from './components/ReleaseNotes.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatsBar from './components/StatsBar.vue'
 import ToastHost from './components/ToastHost.vue'
+import TunePanel from './components/TunePanel.vue'
+import TuneWall from './components/TuneWall.vue'
 import { downloadSvg } from './lib/download'
 import { useAppStore } from './store/appStore'
 
@@ -47,6 +49,16 @@ function isTypingTarget(target: EventTarget | null): boolean {
 function onKeyDown(event: KeyboardEvent): void {
   // The release-notes overlay owns the keyboard while it is open (it handles Escape itself).
   if (releaseNotesOpen.value) return
+
+  // The auto-optimize overlay owns the keyboard while open: Escape closes it,
+  // and its own inputs handle the rest.
+  if (store.tuneOpen) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      store.closeTune()
+    }
+    return
+  }
 
   const meta = event.metaKey || event.ctrlKey
 
@@ -191,6 +203,10 @@ onBeforeUnmount(() => {
 
       <DropZone ref="dropZone" />
     </div>
+    <div v-if="store.tuneOpen" class="tune-overlay" role="dialog" aria-modal="true">
+      <TunePanel />
+      <TuneWall />
+    </div>
     <ReleaseNotes v-if="releaseNotesOpen" @close="releaseNotesOpen = false" />
     <ToastHost />
   </div>
@@ -203,6 +219,29 @@ onBeforeUnmount(() => {
   height: 100%;
   background: var(--bg-0);
   color: var(--text-1);
+}
+
+/* Auto-optimize overlay: full-window shell with the controls left, results right. */
+.tune-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  min-height: 0;
+  background: var(--bg-0);
+  animation: tune-fade 0.14s ease;
+}
+
+@keyframes tune-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .tune-overlay {
+    flex-direction: column;
+  }
 }
 
 .body {

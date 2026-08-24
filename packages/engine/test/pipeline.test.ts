@@ -624,9 +624,11 @@ describe('stage cache (E3)', () => {
     const cached = await run(img, { ...base, smoothing: 0.9, optTolerance: 0.4 }, cache)
     const fresh = await run(img, { ...base, smoothing: 0.9, optTolerance: 0.4 })
     expect(cached.svg).toBe(fresh.svg)
-    // The cache is populated and its labels were reused (not recomputed).
+    // The cache is populated and its palette entry was reused (a hit, not recomputed).
     expect(cache.imageId).toBe(1)
-    expect(cache.labels).toBeDefined()
+    expect(cache.palette?.size).toBeGreaterThan(0)
+    expect(cache.stats?.preHits).toBeGreaterThan(0)
+    expect(cache.stats?.palHits).toBeGreaterThan(0)
   })
 
   it('a palette change invalidates the label cache (matches a fresh run)', async () => {
@@ -668,6 +670,37 @@ describe('stage cache (E3)', () => {
     const cachedGray = await run(img, { mode: 'grayscale', paletteSize: 6 }, cache)
     const freshGray = await run(img, { mode: 'grayscale', paletteSize: 6 })
     expect(cachedGray.svg).toBe(freshGray.svg)
+  })
+
+  it('keeps several palettes warm so alternating them hits the cache (byte-identical)', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    const base = { mode: 'color' as const, layering: 'cutout' as const }
+    // Warm two distinct palettes, then revisit each: a single-slot cache would
+    // have evicted the first, but the LRU keeps both.
+    await run(img, { ...base, paletteSize: 4 }, cache)
+    await run(img, { ...base, paletteSize: 8 }, cache)
+    const before = { ...(cache.stats as NonNullable<StageCache['stats']>) }
+    const revisit4 = await run(img, { ...base, paletteSize: 4 }, cache)
+    const revisit8 = await run(img, { ...base, paletteSize: 8 }, cache)
+    expect(revisit4.svg).toBe((await run(img, { ...base, paletteSize: 4 })).svg)
+    expect(revisit8.svg).toBe((await run(img, { ...base, paletteSize: 8 })).svg)
+    // Both revisits were palette hits (no new misses beyond the two warm-ups).
+    expect(cache.palette?.size).toBe(2)
+    expect((cache.stats as NonNullable<StageCache['stats']>).palHits - before.palHits).toBe(2)
+  })
+
+  it('evicts the oldest palette beyond the cache size', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    const base = { mode: 'color' as const }
+    // Five distinct palettes on one worker; the cache retains at most four.
+    for (const k of [3, 4, 5, 6, 7]) await run(img, { ...base, paletteSize: k }, cache)
+    expect(cache.palette && cache.palette.size).toBeLessThanOrEqual(4)
+    // The oldest (paletteSize 3) was evicted, so revisiting it is a miss again,
+    // but the result is still byte-identical to a fresh trace.
+    const revisit3 = await run(img, { ...base, paletteSize: 3 }, cache)
+    expect(revisit3.svg).toBe((await run(img, { ...base, paletteSize: 3 })).svg)
   })
 })
 

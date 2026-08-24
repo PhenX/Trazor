@@ -36,6 +36,17 @@ export type BackgroundMode = 'auto' | 'transparent' | 'custom'
 
 export type DenoiseMode = 'none' | 'median' | 'bilateral'
 
+/**
+ * How color/grayscale modes turn pixels into flat regions:
+ * - `quantize`: global k-means palette, then spatial cleanup. General-purpose;
+ *   best when the image has real tonal variation (photos, gradients).
+ * - `regions`: marker-controlled region growing (watershed). No global palette,
+ *   so an anti-aliased edge is split between its two neighbors instead of
+ *   inventing a third rim color — the faithful choice for flat art (logos,
+ *   cartoons, line art) with crisp anti-aliased boundaries.
+ */
+export type SegmentationMode = 'quantize' | 'regions'
+
 export interface VectorizeSettings {
   mode: VectorizeMode
 
@@ -60,7 +71,13 @@ export interface VectorizeSettings {
   alphaThreshold: number
 
   // ---- Palette (color / grayscale modes) ----
-  /** Number of output colors (2-64). */
+  /**
+   * How pixels become flat regions in color/grayscale modes. `quantize` is the
+   * global-palette default; `regions` grows regions from flat interiors so
+   * anti-aliased edges never invent a rim color (best for flat art / line art).
+   */
+  segmentation: SegmentationMode
+  /** Number of output colors (2-64). With `regions`, an upper budget rather than an exact count. */
   paletteSize: number
   /** Let the engine lower `paletteSize` when the image needs fewer colors. */
   autoPaletteSize: boolean
@@ -174,6 +191,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   backgroundColor: '#ffffff',
   alphaThreshold: 8,
 
+  segmentation: 'quantize',
   paletteSize: 16,
   autoPaletteSize: false,
   colorSpace: 'oklab',
@@ -245,6 +263,7 @@ export function normalizeSettings(
     }
     s.palette = valid.length > 0 ? valid : null
   }
+  s.segmentation = s.segmentation === 'regions' ? 'regions' : 'quantize'
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)

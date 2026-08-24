@@ -42,6 +42,7 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  segmentRegions,
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
@@ -80,6 +81,13 @@ const EDGE_PROTECT_THRESHOLD = 0.5
  * so rim mixtures cannot claim a palette entry.
  */
 const CLUSTER_EDGE_THRESHOLD = 40
+
+/**
+ * Oklab ΔE below which region-growing segmentation folds two regions into one
+ * color. Perceptual-distance gated, so it merges near-duplicates and splits of
+ * one color but never collapses genuinely different hues together.
+ */
+const SEGMENT_MERGE_THRESHOLD = 0.1
 
 /**
  * Discretize an edge hint into a protect mask at the working resolution: resize
@@ -183,25 +191,74 @@ class Run {
   }
 }
 
+/** A cleaned label map + palette for one palette settings slice (LRU value). */
+interface PaletteEntry {
+  labels: LabelMap
+  paletteHex: string[]
+  paletteRgb: Uint8Array
+  counts: Uint32Array
+  /** Palette length when autoPaletteSize clamped it, else undefined (for the warning). */
+  paletteClampedTo?: number
+}
+
 /**
  * Reusable intermediates the worker keeps across runs so that tuning trace-only
- * settings does not re-run preprocessing and quantization. A single entry keyed
- * by the client's image id plus the settings slice each stage depends on; a new
- * image or a changed preprocess/palette setting invalidates it. Reuse is
- * byte-identical to recomputation (deterministic stages, complete keys).
+ * settings does not re-run preprocessing and quantization. One preprocess entry
+ * keyed by the client's image id plus the preprocess settings slice, and a small
+ * LRU of palette entries keyed by the palette slice — so a search that alternates
+ * palettes on one worker (e.g. an oscillating incumbent) keeps recent ones warm
+ * instead of thrashing a single slot. A new image or changed preprocess setting
+ * clears the whole cache. Reuse is byte-identical to recomputation (deterministic
+ * stages, complete keys).
  */
 export interface StageCache {
   imageId?: number
   preKey?: string
   workImage?: RasterImage
   opaque?: BinaryMask | null
-  palKey?: string
-  labels?: LabelMap
-  paletteHex?: string[]
-  paletteRgb?: Uint8Array
-  counts?: Uint32Array
-  /** Palette length when autoPaletteSize clamped it, else undefined (for the warning). */
-  paletteClampedTo?: number
+  /** LRU of palette entries (valid for the current image + preKey); newest last. */
+  palette?: Map<string, PaletteEntry>
+  /** Reuse counters, for measuring affinity/cache effectiveness. */
+  stats?: StageCacheStats
+}
+
+/** Cache hit/miss counters (both preprocess and palette stages). */
+export interface StageCacheStats {
+  preHits: number
+  preMisses: number
+  palHits: number
+  palMisses: number
+}
+
+/** Palette entries retained per worker; caps memory while covering an oscillating incumbent. */
+const PALETTE_CACHE_SIZE = 4
+
+function cacheStats(cache: StageCache): StageCacheStats {
+  return (cache.stats ??= { preHits: 0, preMisses: 0, palHits: 0, palMisses: 0 })
+}
+
+/** LRU get: returns the entry and moves it to newest, or undefined on a miss. */
+function paletteGet(cache: StageCache, palKey: string): PaletteEntry | undefined {
+  const map = cache.palette
+  if (!map) return undefined
+  const entry = map.get(palKey)
+  if (entry) {
+    map.delete(palKey)
+    map.set(palKey, entry)
+  }
+  return entry
+}
+
+/** LRU put: inserts as newest and evicts the oldest beyond {@link PALETTE_CACHE_SIZE}. */
+function palettePut(cache: StageCache, palKey: string, entry: PaletteEntry): void {
+  const map = (cache.palette ??= new Map())
+  map.delete(palKey)
+  map.set(palKey, entry)
+  while (map.size > PALETTE_CACHE_SIZE) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
 }
 
 export interface VectorizeRunOptions {
@@ -227,6 +284,7 @@ function preKeyOf(s: VectorizeSettings): string {
 /** Settings that change the quantized + cleaned label map. */
 function palKeyOf(s: VectorizeSettings): string {
   return [
+    s.segmentation,
     s.paletteSize,
     s.autoPaletteSize,
     s.colorSpace,
@@ -267,6 +325,7 @@ export async function vectorize(
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
+    cacheStats(cache).preHits++
     run.progress(1)
   } else {
     let img = resizeToFit(source, settings.maxDimension)
@@ -284,17 +343,13 @@ export async function vectorize(
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
     if (cacheable) {
-      // New image or preprocess ⇒ reset the whole entry (palette depends on it).
+      cacheStats(cache).preMisses++
+      // New image or preprocess ⇒ every palette entry depended on it, so clear them.
       cache.imageId = imageId
       cache.preKey = preKey
       cache.workImage = image
       cache.opaque = opaque
-      cache.palKey = undefined
-      cache.labels = undefined
-      cache.paletteHex = undefined
-      cache.paletteRgb = undefined
-      cache.counts = undefined
-      cache.paletteClampedTo = undefined
+      cache.palette = new Map()
     }
   }
   const { width, height } = image
@@ -428,16 +483,49 @@ async function colorPipeline(
   let counts: Uint32Array
   let paletteClampedTo: number | undefined
 
-  if (canCachePal && cache.imageId === imageId && cache.palKey === palKey && cache.labels) {
-    labels = cache.labels
-    paletteHex = cache.paletteHex as string[]
-    paletteRgb = cache.paletteRgb as Uint8Array
-    counts = cache.counts as Uint32Array
-    paletteClampedTo = cache.paletteClampedTo
+  const cached =
+    canCachePal && cache && cache.imageId === imageId && palKey !== undefined
+      ? paletteGet(cache, palKey)
+      : undefined
+  if (cached) {
+    labels = cached.labels
+    paletteHex = cached.paletteHex
+    paletteRgb = cached.paletteRgb
+    counts = cached.counts
+    paletteClampedTo = cached.paletteClampedTo
+    cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
     await run.tick()
+  } else if (settings.segmentation === 'regions' && settings.palette === null) {
+    if (canCachePal) cacheStats(cache!).palMisses++
+    // Region growing (marker-controlled watershed): no global palette, so an
+    // anti-aliased edge is split between its two neighbors instead of inventing
+    // a third rim color. `paletteSize` is a budget (soft cap), not an exact
+    // count; autoPaletteSize lets the merge thresholds decide the count.
+    const seg = segmentRegions(image, {
+      mergeThreshold: SEGMENT_MERGE_THRESHOLD,
+      minRegionArea: settings.minRegionArea,
+      maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
+      mask: opaque,
+    })
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+    labels = seg.labels
+    paletteHex = seg.paletteHex
+    paletteRgb = seg.paletteRgb
+    counts = seg.counts
+    const backgroundLabel = settings.omitBackground ? nearestPaletteLabel(image, paletteHex) : -1
+    if (backgroundLabel >= 0) {
+      const cleared = clearBorderLabel(labels, backgroundLabel)
+      counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
+    }
+    if (canCachePal && palKey !== undefined) {
+      palettePut(cache!, palKey, { labels, paletteHex, paletteRgb, counts, paletteClampedTo })
+    }
   } else {
+    if (canCachePal) cacheStats(cache!).palMisses++
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
     // fixed-palette paths, which quantize resolves without clustering).
@@ -529,13 +617,8 @@ async function colorPipeline(
     }
     await run.tick()
 
-    if (canCachePal) {
-      cache.palKey = palKey
-      cache.labels = labels
-      cache.paletteHex = paletteHex
-      cache.paletteRgb = paletteRgb
-      cache.counts = counts
-      cache.paletteClampedTo = paletteClampedTo
+    if (canCachePal && palKey !== undefined) {
+      palettePut(cache!, palKey, { labels, paletteHex, paletteRgb, counts, paletteClampedTo })
     }
   }
 

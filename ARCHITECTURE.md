@@ -16,9 +16,10 @@ packages/core     shared vocabulary — everything else depends on it
 packages/raster   pixels in, pixels/labels/masks out (preprocess, quantize, threshold, thin)
 packages/trace    labels/masks in, vector paths out — the flagship (own ARCHITECTURE.md)
 packages/svg      paths in, SVG text (and analysis) out
-packages/engine   orchestrates the above per mode; runs in a Web Worker
+packages/engine   orchestrates the above per mode; runs in a Web Worker (+ TrazorPool for batch search)
 packages/ml       optional on-device ML that improves the input (bg removal, segment, edge pre-pass, cleanup)
 packages/assist   image statistics → recommended settings & palettes
+packages/tune     automatic settings search: weighted objectives + adaptive parameter descent (pure, no DOM)
 apps/web          Vue 3 + Pinia studio UI that drives the engine through a worker client
 ```
 
@@ -29,11 +30,16 @@ core ─┬─ raster ─┐
       ├─ trace  ─┼─ engine ─── apps/web
       ├─ svg   ──┘             │
       ├─ ml ──────────────────┤
-      └─ assist ──────────────┘
+      ├─ assist ──────────────┤
+      └─ tune ────────────────┘
 ```
 
-`core` depends on nothing. `raster`, `trace`, `svg`, `ml`, `assist` depend only on `core`. `engine` composes
-`raster + trace + svg`. `apps/web` depends on `engine`, `core`, `ml`, `assist`. There are no cycles; keep it that way.
+`core` depends on nothing. `raster`, `trace`, `svg`, `ml`, `assist`, `tune` depend only on `core`. `engine` composes
+`raster + trace + svg`. `apps/web` depends on `engine`, `core`, `ml`, `assist`, `tune`. There are no cycles; keep it that way.
+
+`tune` is the settings search: it never traces — the app runs each candidate through the `engine` worker pool
+(`TrazorPool`), scores it, and feeds metrics back — so `tune` stays a pure, DOM-free strategy. Its API surface is in
+[`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
 ## The pipeline
 
@@ -43,7 +49,7 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 ```
 decode (app)
   → resize → denoise → flatten alpha            [raster]         preprocess
-  → color/grayscale:  Oklab k-means++ quantize  [raster]         palette
+  → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
                       stacked:  per-layer Potrace chain           trace
                       cutout:   shared boundary graph  [trace]
@@ -76,7 +82,8 @@ decode (app)
 - **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
-  distance / stroke-width estimation.
+  distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
+  quantization for flat art — soft edges split between neighbors instead of inventing a rim color).
 - **`trace`** — the tracer. Crack-boundary decomposition, the Potrace curve chain, the seam-free boundary graph, and
   centerline extraction. Its own map: [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes, metadata),
@@ -89,6 +96,10 @@ decode (app)
   (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so the app works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
+- **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring
+  (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
+  round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; the app pairs it with the
+  engine's `TrazorPool` to trace and score candidates. Exact API: [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`apps/web`** — see [`apps/web/AGENTS.md`](apps/web/AGENTS.md).
 
 ## Cross-cutting invariants

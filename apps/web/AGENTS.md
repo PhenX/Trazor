@@ -69,6 +69,10 @@ published since the visitor's last visit (persisted as `lastSeenRelease`; the co
 part of "done", like updating docs. Skip it only for changes with no user-visible effect (pure refactors, tests, CI,
 internal-doc edits).
 
+- **One entry per pull request.** A PR gets a single `ReleaseNote`, however many commits, milestones, or user-visible
+  changes it spans — fold them into that one entry's `items` (and pick the `kind` that fits the PR as a whole) rather
+  than adding an entry per change. When a PR grows over several sessions, keep editing its single (still-unmerged) entry
+  instead of prepending new ones.
 - **Prepend** one `ReleaseNote` object to the **top** of the `RELEASE_NOTES` array — newest first. The array order is
   the source of truth for the "new since last visit" badge, so never reorder or rewrite already-published entries.
 - **Identify it by date, not a version** (there is no versioning yet): set `date` to the merge day (ISO `YYYY-MM-DD`)

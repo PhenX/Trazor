@@ -1,4 +1,6 @@
 import {
+  clamp,
+  clampInt,
   cloneRaster,
   DEFAULT_SETTINGS,
   getProfile,
@@ -18,7 +20,7 @@ import type {
 } from '@trazor/core'
 import { analyzeImage, recommendSettings } from '@trazor/assist'
 import type { ImageAnalysis, PaletteSuggestion, RationaleKey } from '@trazor/assist'
-import { TrazorClient } from '@trazor/engine'
+import { TrazorClient, TrazorPool } from '@trazor/engine'
 import { extractGeometry } from '@trazor/svg'
 import type { SvgGeometry } from '@trazor/svg'
 import type { MlAvailability, MlProgress } from '@trazor/ml'
@@ -31,6 +33,10 @@ import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
 import { FidelityClient } from '../lib/fidelityClient'
+import { defaultPoolSize, runAutoTune } from '../lib/tuner'
+import type { AutoTuneOptions, TuneSignal } from '../lib/tuner'
+import { DEFAULT_FREE } from '@trazor/tune'
+import type { ObjectiveId, ScoredCandidate, SeedPatch, TunableKey, TuneWeights } from '@trazor/tune'
 import { buildLayers } from '../lib/layers'
 import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
@@ -38,6 +44,31 @@ import { getSample } from '../lib/samples'
 
 const STORAGE_KEY = 'trazor:v1'
 const RUN_DEBOUNCE_MS = 300
+
+/** Default objective priorities for the auto-optimize search. */
+const DEFAULT_TUNE_WEIGHTS: TuneWeights = {
+  fidelity: 1,
+  simplicity: 0.5,
+  fileSize: 0.25,
+  colorEconomy: 0,
+  cleanliness: 0.25,
+}
+
+export type TunePresetId = 'maxFidelity' | 'balanced' | 'smallestFile' | 'cutReady'
+
+/** Preset priority mixes seeded by the preset chips. */
+const TUNE_PRESETS: Record<TunePresetId, TuneWeights> = {
+  maxFidelity: { fidelity: 1, simplicity: 0.1, fileSize: 0, colorEconomy: 0, cleanliness: 0.1 },
+  balanced: DEFAULT_TUNE_WEIGHTS,
+  smallestFile: {
+    fidelity: 0.4,
+    simplicity: 0.7,
+    fileSize: 1,
+    colorEconomy: 0.3,
+    cleanliness: 0.2,
+  },
+  cutReady: { fidelity: 0.5, simplicity: 0.6, fileSize: 0.2, colorEconomy: 1, cleanliness: 0.8 },
+}
 
 export type Theme = 'dark' | 'light'
 export type ToastKind = 'info' | 'success' | 'error'
@@ -76,6 +107,10 @@ interface PersistedState {
   locale?: LocaleCode
   /** Whether the layer visualizer panel is open (desktop preference). */
   layersOpen?: boolean
+  /** Auto-optimize objective priorities (persisted so they carry across sessions). */
+  tuneWeights?: TuneWeights
+  /** Auto-optimize iteration budget. */
+  tuneIterations?: number
 }
 
 /** A layer (and optional contour) singled out for preview highlighting. */
@@ -142,6 +177,30 @@ export const useAppStore = defineStore('app', () => {
   const progress = ref<{ stage: StageId; overall: number } | null>(null)
   const error = ref<string | null>(null)
   const fidelity = shallowRef<FidelityReport | null>(null)
+
+  // ---------------------------- Auto-optimize ----------------------------
+  /** Whether the auto-optimize overlay (controls + results wall) is open. */
+  const tuneOpen = ref(false)
+  /** True while a search is running. */
+  const tuneRunning = ref(false)
+  const tuneProgress = ref<{ evaluated: number; total: number; converged: boolean } | null>(null)
+  /** Every scored candidate (drives the comparison wall); replaced wholesale. */
+  const tuneResults = shallowRef<readonly ScoredCandidate[]>([])
+  const tuneBest = shallowRef<ScoredCandidate | null>(null)
+  const tuneFront = shallowRef<readonly ScoredCandidate[]>([])
+  const tuneError = ref<string | null>(null)
+  const tuneWeights = ref<TuneWeights>({ ...DEFAULT_TUNE_WEIGHTS, ...persisted.tuneWeights })
+  const tuneIterations = ref<number>(clampInt(persisted.tuneIterations ?? 40, 5, 300))
+  /** Minimum fidelity utility a candidate must clear; 0 disables the floor. */
+  const tuneMinFidelity = ref(0)
+  /** Advanced: also explore preprocessing (blur/denoise) — a full recompute per probe. */
+  const tuneExplorePreprocess = ref(false)
+  /** Advanced: also explore structural moves (curve mode, layering). */
+  const tuneExploreStructural = ref(false)
+  /** Id of the candidate currently applied to the live settings (highlights its tile). */
+  const tuneAppliedId = ref<number | null>(null)
+  /** True once a candidate has been applied, so the pre-search settings can be reverted. */
+  const tuneDirty = ref(false)
   const theme = ref<Theme>(
     persisted.theme === 'light' || persisted.theme === 'dark' ? persisted.theme : systemTheme(),
   )
@@ -186,6 +245,10 @@ export const useAppStore = defineStore('app', () => {
   let client: TrazorClient | null = null
   let assistClient: AssistClient | null = null
   let fidelityClient: FidelityClient | null = null
+  let tunePool: TrazorPool | null = null
+  // Active search cancellation flag + pre-search settings snapshot (for revert).
+  let tuneSignal: TuneSignal | null = null
+  let tuneBaseline: VectorizeSettings | null = null
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
@@ -284,6 +347,7 @@ export const useAppStore = defineStore('app', () => {
    */
   async function installImage(image: RasterImage, name: string): Promise<void> {
     cancelMagicSelect()
+    resetTune() // the previous image's search results no longer apply
     sourceImage.value = image
     workingImage.value = image
     sourceName.value = name
@@ -316,6 +380,8 @@ export const useAppStore = defineStore('app', () => {
   /** Drop the current image and return to the landing screen (drop zone + samples). */
   function clearImage(): void {
     cancelMagicSelect()
+    resetTune()
+    tuneOpen.value = false
     runCounter++ // supersede any in-flight vectorization
     sourceImage.value = null
     workingImage.value = null
@@ -488,6 +554,180 @@ export const useAppStore = defineStore('app', () => {
         new Worker(new URL('../worker/fidelity.worker.ts', import.meta.url), { type: 'module' }),
     )
     return fidelityClient
+  }
+
+  function getTunePool(image: RasterImage): TrazorPool {
+    const size = defaultPoolSize(image)
+    if (!tunePool || tunePool.size !== size) {
+      tunePool?.dispose()
+      tunePool = new TrazorPool(
+        () =>
+          new Worker(new URL('../worker/vectorize.worker.ts', import.meta.url), { type: 'module' }),
+        size,
+      )
+    }
+    return tunePool
+  }
+
+  // -- Auto-optimize controls --
+  function openTune(): void {
+    if (workingImage.value) tuneOpen.value = true
+  }
+
+  function closeTune(): void {
+    if (tuneRunning.value) stopTune()
+    tuneOpen.value = false
+  }
+
+  function setTuneWeight(id: ObjectiveId, value: number): void {
+    tuneWeights.value = { ...tuneWeights.value, [id]: clamp(value, 0, 1) }
+  }
+
+  function applyTunePreset(id: TunePresetId): void {
+    tuneWeights.value = { ...TUNE_PRESETS[id] }
+  }
+
+  function setTuneIterations(n: number): void {
+    tuneIterations.value = clampInt(n, 5, 300)
+  }
+
+  function setTuneMinFidelity(v: number): void {
+    tuneMinFidelity.value = clamp(v, 0, 1)
+  }
+
+  function setTuneExplore(group: 'preprocess' | 'structural', on: boolean): void {
+    if (group === 'preprocess') tuneExplorePreprocess.value = on
+    else tuneExploreStructural.value = on
+  }
+
+  /** The tunable-key set for the run: the defaults plus any opted-in advanced groups. */
+  function tuneFreeKeys(): TunableKey[] {
+    const keys: TunableKey[] = [...DEFAULT_FREE]
+    if (tuneExplorePreprocess.value) keys.push('blurRadius', 'denoise')
+    if (tuneExploreStructural.value) keys.push('curveMode', 'layering', 'segmentation')
+    return keys
+  }
+
+  function stripMode(patch: Partial<VectorizeSettings>): Partial<VectorizeSettings> {
+    const copy = { ...patch }
+    // The search never changes mode — that is the user's call — so seeds don't either.
+    delete copy.mode
+    return copy
+  }
+
+  /** Round-0 seed points: the assist recommendation and same-mode target profiles. */
+  function tuneSeeds(image: RasterImage): SeedPatch[] {
+    const seeds: SeedPatch[] = []
+    try {
+      const rec = recommendSettings(getAnalysis(image))
+      seeds.push({
+        patch: stripMode({ ...getProfile(rec.profileId).patch, ...rec.patch }),
+        origin: 'assist',
+      })
+    } catch {
+      // No seed from assist — the baseline + LHS still seed the search.
+    }
+    for (const profile of TARGET_PROFILES) {
+      if ((profile.patch.mode ?? 'color') !== settings.value.mode) continue
+      seeds.push({ patch: stripMode(profile.patch), origin: 'profile' })
+    }
+    return seeds.slice(0, 4)
+  }
+
+  async function startTune(): Promise<void> {
+    const image = workingImage.value
+    if (!image || tuneRunning.value) return
+    const pool = getTunePool(image)
+    tuneBaseline = settings.value
+    tuneDirty.value = false
+    tuneAppliedId.value = null
+    tuneRunning.value = true
+    tuneError.value = null
+    tuneResults.value = []
+    tuneBest.value = null
+    tuneFront.value = []
+    tuneProgress.value = { evaluated: 0, total: tuneIterations.value, converged: false }
+    const signal: TuneSignal = { cancelled: false }
+    tuneSignal = signal
+    const opts: AutoTuneOptions = {
+      weights: { ...tuneWeights.value },
+      iterations: tuneIterations.value,
+      seed: 1,
+      roundSize: Math.max(2, pool.size * 2),
+      free: tuneFreeKeys(),
+      minFidelity: tuneMinFidelity.value > 0 ? tuneMinFidelity.value : undefined,
+      seeds: tuneSeeds(image),
+      // Offer the data-derived palette suggestions as categorical candidates
+      // (color mode, automatic palette only — the search guards the rest).
+      palettes:
+        settings.value.mode === 'color' ? paletteSuggestions.value.map((s) => s.colors) : [],
+      onProgress: (p) => {
+        if (tuneSignal !== signal) return
+        tuneProgress.value = { evaluated: p.evaluated, total: p.total, converged: p.converged }
+        tuneBest.value = p.best
+        tuneResults.value = p.results
+        tuneFront.value = p.front
+      },
+    }
+    try {
+      const result = await runAutoTune(
+        image,
+        settings.value,
+        opts,
+        { pool, fidelity: getFidelityClient() },
+        signal,
+      )
+      if (tuneSignal !== signal) return
+      tuneResults.value = result.results
+      tuneBest.value = result.best
+      tuneFront.value = result.front
+    } catch (e) {
+      if (tuneSignal === signal && !signal.cancelled) tuneError.value = errorMessage(e)
+    } finally {
+      if (tuneSignal === signal) tuneRunning.value = false
+    }
+  }
+
+  function stopTune(): void {
+    if (tuneSignal) tuneSignal.cancelled = true
+    tuneRunning.value = false
+  }
+
+  /** Apply a candidate's settings to the live studio (re-traces via the settings watcher). */
+  function applyTuneCandidate(candidate: ScoredCandidate): void {
+    if (tuneBaseline === null) tuneBaseline = settings.value
+    updateSettings(candidate.settings)
+    tuneAppliedId.value = candidate.id
+    tuneDirty.value = true
+    notify(t('tune.appliedToast', { score: (candidate.score * 100).toFixed(1) }), 'success')
+  }
+
+  function applyTuneBest(): void {
+    if (tuneBest.value) applyTuneCandidate(tuneBest.value)
+  }
+
+  /** Restore the settings captured when the search started. */
+  function revertTune(): void {
+    if (!tuneBaseline) return
+    settings.value = tuneBaseline
+    if (activeProfileId.value) profileModified.value = true
+    tuneAppliedId.value = null
+    tuneDirty.value = false
+    notify(t('tune.revertedToast'), 'info')
+  }
+
+  /** Drop any results/running search (e.g. when the image changes). */
+  function resetTune(): void {
+    if (tuneRunning.value) stopTune()
+    tuneSignal = null
+    tuneResults.value = []
+    tuneBest.value = null
+    tuneFront.value = []
+    tuneProgress.value = null
+    tuneError.value = null
+    tuneAppliedId.value = null
+    tuneDirty.value = false
+    tuneBaseline = null
   }
 
   async function doRun(): Promise<void> {
@@ -779,6 +1019,8 @@ export const useAppStore = defineStore('app', () => {
       lastSeenRelease,
       locale,
       layersOpen,
+      tuneWeights,
+      tuneIterations,
     ],
     () => {
       try {
@@ -792,6 +1034,8 @@ export const useAppStore = defineStore('app', () => {
           lastSeenRelease: lastSeenRelease.value ?? undefined,
           locale: locale.value,
           layersOpen: layersOpen.value,
+          tuneWeights: tuneWeights.value,
+          tuneIterations: tuneIterations.value,
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
@@ -829,6 +1073,20 @@ export const useAppStore = defineStore('app', () => {
     layersOpen,
     layerHover,
     selectedLayer,
+    tuneOpen,
+    tuneRunning,
+    tuneProgress,
+    tuneResults,
+    tuneBest,
+    tuneFront,
+    tuneError,
+    tuneWeights,
+    tuneIterations,
+    tuneMinFidelity,
+    tuneExplorePreprocess,
+    tuneExploreStructural,
+    tuneAppliedId,
+    tuneDirty,
     // derived
     hasImage,
     activeProfile,
@@ -870,6 +1128,18 @@ export const useAppStore = defineStore('app', () => {
     undoMagicPoint,
     applyMagicSelect,
     markReleasesSeen,
+    openTune,
+    closeTune,
+    startTune,
+    stopTune,
+    setTuneWeight,
+    applyTunePreset,
+    setTuneIterations,
+    setTuneMinFidelity,
+    setTuneExplore,
+    applyTuneCandidate,
+    applyTuneBest,
+    revertTune,
     toggleTheme,
     setLocale,
     setLayerHover,

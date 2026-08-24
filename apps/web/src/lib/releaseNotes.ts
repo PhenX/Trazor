@@ -37,11 +37,43 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
-    iteration: 3,
+    iteration: 6,
     kind: 'feature',
     title: 'Flatten shading before tracing',
     items: [
       'A new “Flatten shading” slider in Preprocessing evens out smooth lightness shading — a 3D render’s highlight, a soft shadow, an uneven scan — before tracing, so a shaded region traces as one flat color instead of a stack of concentric tone bands. It keeps each color’s hue and the crisp edges between colors; only the lightness gradient is removed. Leave it off for flat art that has no shading.',
+    ],
+  },
+  {
+    date: '2026-08-24',
+    iteration: 5,
+    kind: 'feature',
+    title: 'Auto-optimize your settings',
+    items: [
+      'A new Auto-optimize tool searches the settings space for you: set how much you care about fidelity, simplicity, file size, fewer colors, and cleanliness, pick an iteration budget, and it traces many candidates in parallel to find the best combination for your image. Presets seed common goals (Max fidelity, Balanced, Smallest file, Cut-ready).',
+      'Compare every candidate on one wall, sorted by any measure or filtered to the best trade-offs. Turn on Compare zoom to magnify the exact same spot across all of them — and against the original — at once, or open any candidate side by side with the source and step through the rest with the arrow keys. Then apply the one you like, or revert to your original settings.',
+      'It also tries the suggested palettes for your image, and under Advanced can explore the segmentation method, curve style, and layering. Large images stay fast: the search explores at a reduced size first, then re-traces only its best candidates at full resolution.',
+    ],
+  },
+  {
+    date: '2026-08-24',
+    iteration: 4,
+    kind: 'feature',
+    title: 'Cleaner edges for flat art and line art',
+    items: [
+      'A new region-growing segmentation traces cartoons, logos and clip art far more faithfully. Instead of matching every pixel to one global palette — which turned the soft edge between two colors into a hairline rim of a third color — it grows each color region outward from its flat interior, so an anti-aliased edge is split cleanly between its two real neighbors. No more rim halos or speckled outlines, and the linework stays smooth.',
+      'Auto-detect switches to it automatically for crisp flat art; you can also pick it under Segmentation → Region growing, or keep Global palette for photos and gradients.',
+    ],
+  },
+  {
+    date: '2026-08-24',
+    iteration: 3,
+    kind: 'improvement',
+    title: 'Sharper auto-detect for clean artwork',
+    items: [
+      'Crisp cartoons, logos and clip art are no longer mistaken for photographs. The soft anti-aliased edges of clean art used to read as photographic texture, which picked the wrong profile — posterizing, over-smoothing, or even dropping all color and tracing in grayscale. Auto-detect now recognizes the large flat areas that only clean art has and keeps it as a faithful color illustration.',
+      'A vivid subject on a big black or white background stays in color. The background no longer dilutes the color measurement enough to flip the image to grayscale.',
+      'Far fewer tiny speck shapes along edges. Anti-aliased borders used to scatter thousands of hairline slivers of an in-between color; auto-detect now merges those specks and dissolves the seams, so the trace is the real shapes — cleaner and much smaller — without blurring the linework.',
     ],
   },
   {

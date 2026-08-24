@@ -44,6 +44,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
   ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge,
                            cleanup & signed-field conditioning models, via onnxruntime-web. Browser-only.
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
+  tune/                    @trazor/tune — automatic settings search: weighted objectives + adaptive
+                           parameter descent. Pure, DOM-free; the app pairs it with the engine worker pool.
 apps/
   web/                     @trazor/web — Vue 3 + Pinia + Vite studio UI. The deployable app.
 docs/                      CONTRACTS.md (package APIs), REFERENCES.md (sources), screenshot.png.

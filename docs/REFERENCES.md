@@ -67,6 +67,15 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Nobuyuki Otsu, “A Threshold Selection Method from Gray-Level Histograms”,
   _IEEE Trans. SMC_ 9(1), 1979.** Automatic binarization threshold
   (`packages/raster/src/threshold.ts`).
+- **Fernand Meyer, “Color image segmentation”, _ICIP_ 1992**, and **Luc Vincent
+  & Pierre Soille, “Watersheds in digital spaces: an efficient algorithm based on
+  immersion simulations”, _IEEE Trans. PAMI_ 13(6), 1991.** Marker-controlled
+  watershed by priority flooding: flat interiors seed the regions, a
+  color-distance priority queue grows them over anti-aliased edges. The
+  region-growing color segmentation front-end for flat art
+  (`packages/raster/src/segment.ts`), which avoids the third-color rim a global
+  palette invents on soft edges. Followed by a region-adjacency-graph
+  agglomerative merge (near-duplicate and small-region folding).
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).
@@ -89,6 +98,19 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   via summed windows, follow the shading inside a region but hold at hard color
   edges — so dividing the estimate out leaves no cross-boundary halo
   (`packages/raster/src/illumination.ts`).
+
+## Settings search (packages/tune)
+
+- **Robert Hooke & T. A. Jeeves, “‘Direct Search’ Solution of Numerical and
+  Statistical Problems”, _Journal of the ACM_ 8(2), 1961.** The adaptive
+  coordinate/pattern search behind the auto-tune loop: probe one parameter at a
+  time from the incumbent, expand the step on success and contract it on failure
+  (`packages/tune/src/search.ts`).
+- **M. D. McKay, R. J. Beckman & W. J. Conover, “A Comparison of Three Methods
+  for Selecting Values of Input Variables in the Analysis of Output from a
+  Computer Code”, _Technometrics_ 21(2), 1979.** Latin-hypercube sampling used
+  to seed the search’s first round so the free parameters are exercised at
+  spread-out levels (`packages/tune/src/search.ts`).
 
 ## Local ML models (packages/ml)
 
