@@ -563,6 +563,118 @@ export function vectorize(
 export interface StageCache {
   /* engine-internal fields */
 }
+
+// pool.ts — a fixed worker pool for throughput work (the settings search).
+// Unlike TrazorClient (latest-wins), every run() is queued and resolved
+// independently; a freed worker prefers the next queued job matching its last
+// affinityKey (its StageCache stays warm), else FIFO. Each worker keeps its own
+// cache; jobs for the same image object carry a stable imageId internally.
+export interface PoolJobOptions {
+  /** Preprocess+palette settings slice — the pool routes matching jobs to a warm worker. */
+  affinityKey?: string
+  onProgress?: (stage: StageId, overall: number) => void
+  edgeHint?: GrayImage
+  coverageHint?: GrayImage
+}
+export class TrazorPool {
+  constructor(createWorker: () => Worker, size: number)
+  readonly size: number
+  /** Queue a candidate; resolves with its result, independent of other jobs. */
+  run(
+    image: RasterImage,
+    settings: VectorizeSettings,
+    opts?: PoolJobOptions,
+  ): Promise<VectorizeResult>
+  /** Reject every queued and in-flight job with CancelledError. */
+  cancelAll(): void
+  dispose(): void
+}
+```
+
+## @trazor/tune
+
+The automatic settings search (docs/AUTO_TUNE_PLAN.md). Pure TypeScript, depends
+only on `@trazor/core`, no DOM — the caller (the app) traces candidates and feeds
+metrics back, so the strategy is deterministic and unit-testable in Node.
+
+```ts
+// score.ts — objectives mapped to 0..1 utilities.
+export type ObjectiveId = 'fidelity' | 'simplicity' | 'fileSize' | 'colorEconomy' | 'cleanliness'
+export const OBJECTIVE_IDS: readonly ObjectiveId[]
+export type TuneWeights = Record<ObjectiveId, number> // 0 = don't care; normalized internally
+export interface CandidateMetrics {
+  meanDeltaE: number // mean Oklab ΔE of the rendered SVG vs the source
+  nodeCount: number
+  pathCount: number
+  byteLength: number
+  colorCount: number
+  warnings: readonly VectorizeWarning[]
+  durationMs: number
+}
+export function fidelityUtility(meanDeltaE: number): number // clamp(1 − 4·ΔE, 0, 1)
+export function cleanlinessUtility(warnings: readonly VectorizeWarning[]): number
+export function isEmptyResult(metrics: CandidateMetrics): boolean
+export function utilitiesOf(m: CandidateMetrics, baseline: CandidateMetrics): Record<ObjectiveId, number>
+// The weight-normalized sum of the utilities. Fidelity is absolute; the
+// "fewer is better" axes anchor at 0.5 for the baseline candidate.
+export function scoreCandidate(
+  metrics: CandidateMetrics,
+  baseline: CandidateMetrics,
+  weights: TuneWeights,
+): { score: number; utilities: Record<ObjectiveId, number> }
+
+// params.ts — the tunable parameter space (metadata, not hardcoded loops).
+export interface ParamSpec {
+  key: TunableKey
+  kind: 'number' | 'int' | 'bool' | 'enum'
+  min?: number
+  max?: number
+  scale?: 'linear' | 'log' // step arithmetic domain; log needs min > 0
+  values?: readonly string[] // enum choices
+  modes?: readonly VectorizeMode[] // absent ⇒ every mode
+  group: 'preprocess' | 'palette' | 'binarize' | 'curve' | 'output' // cost tier a change invalidates
+  when?: (s: VectorizeSettings) => boolean // only meaningful under these settings
+  optIn?: boolean // held unless listed in TuneOptions.free
+}
+export type TunableKey = /* keyof VectorizeSettings minus identity/cosmetic fields */
+export const TUNABLE_PARAMS: readonly ParamSpec[]
+export const DEFAULT_FREE: readonly TunableKey[] // the non-opt-in keys
+export function specFor(key: TunableKey): ParamSpec
+export function applicableParams(keys: readonly TunableKey[], mode: VectorizeMode, s: VectorizeSettings): ParamSpec[]
+export function toUnit(spec: ParamSpec, value: number): number // value → [0,1] search coord
+export function fromUnit(spec: ParamSpec, unit: number): number // [0,1] → valid value
+export function settingsKey(s: VectorizeSettings): string // canonical dedup key (normalized)
+
+// search.ts — the deterministic, round-based state machine.
+export type CandidateOrigin = 'baseline' | 'assist' | 'profile' | 'sample' | 'step' | 'recombine' | 'restart'
+export interface TuneCandidate { id: number; settings: VectorizeSettings; origin: CandidateOrigin; tweaked?: TunableKey }
+export interface ScoredCandidate extends TuneCandidate {
+  metrics: CandidateMetrics
+  utilities: Record<ObjectiveId, number>
+  score: number
+  rejected?: 'empty' | 'fidelity-floor'
+}
+export interface CandidateResult { id: number; metrics: CandidateMetrics }
+export interface SeedPatch { patch: Partial<VectorizeSettings>; origin?: CandidateOrigin }
+export interface TuneOptions {
+  weights: TuneWeights
+  iterations: number // budget: novel candidates to evaluate
+  seed: number // whole search is deterministic in it
+  roundSize: number // candidates per round (≈ 2 × workers)
+  free?: readonly TunableKey[] // defaults to DEFAULT_FREE
+  minFidelity?: number // reject candidates below this fidelity utility
+  seeds?: readonly SeedPatch[] // extra round-0 starts (assist / profiles)
+}
+export class TuneSearch {
+  constructor(base: VectorizeSettings, opts: TuneOptions)
+  nextRound(): TuneCandidate[] // next novel batch; [] when spent or converged
+  report(results: readonly CandidateResult[]): void // barrier: the full emitted round
+  best(): ScoredCandidate | null
+  results(): readonly ScoredCandidate[] // every scored candidate (the comparison wall)
+  paretoFront(): readonly ScoredCandidate[] // non-dominated over fidelity/simplicity/colorEconomy
+  progress(): { evaluated: number; total: number; converged: boolean }
+}
+export function latinHypercube(n: number, dims: number, rand: () => number): number[][]
 ```
 
 ## @trazor/assist (reference — implemented by the main agent)

@@ -7,8 +7,14 @@ export interface ScoredDifference {
   diff: RasterImage
 }
 
+/** Raw result: the heatmap is absent on the score-only (search) path. */
+interface RawResult {
+  score: number
+  diff?: RasterImage
+}
+
 interface PendingJob {
-  resolve: (result: ScoredDifference) => void
+  resolve: (result: RawResult) => void
   reject: (error: Error) => void
 }
 
@@ -40,7 +46,10 @@ export class FidelityClient {
     const worker = this.ensureWorker()
     const id = this.nextId++
     return new Promise<ScoredDifference>((resolve, reject) => {
-      this.jobs.set(id, { resolve, reject })
+      this.jobs.set(id, {
+        resolve: (r) => resolve({ score: r.score, diff: r.diff as RasterImage }),
+        reject,
+      })
       const msg: FidelityInMessage = {
         type: 'score',
         id,
@@ -50,6 +59,60 @@ export class FidelityClient {
         reference: reference.buffer,
       }
       worker.postMessage(msg, [rendered.buffer, reference.buffer])
+    })
+  }
+
+  /**
+   * Store the shared reference raster (source over white) once per search. Every
+   * later `scoreAgainst(refId, …)` scores against it, so the reference is
+   * transferred a single time instead of per candidate. The buffer is
+   * transferred, so the caller must not reuse it.
+   */
+  setReference(
+    refId: number,
+    width: number,
+    height: number,
+    reference: Uint8ClampedArray<ArrayBuffer>,
+  ): void {
+    const worker = this.ensureWorker()
+    const msg: FidelityInMessage = {
+      type: 'set-reference',
+      refId,
+      width,
+      height,
+      reference: reference.buffer,
+    }
+    worker.postMessage(msg, [reference.buffer])
+  }
+
+  /**
+   * Score a rendered raster against a stored reference (from {@link setReference}),
+   * returning just the mean-ΔE similarity — no heatmap allocation. For the
+   * settings search. The rendered buffer is transferred.
+   */
+  scoreAgainst(
+    refId: number,
+    width: number,
+    height: number,
+    rendered: Uint8ClampedArray<ArrayBuffer>,
+  ): Promise<number> {
+    const worker = this.ensureWorker()
+    const id = this.nextId++
+    return new Promise<number>((resolve, reject) => {
+      this.jobs.set(id, {
+        resolve: (r) => resolve(r.score),
+        reject,
+      })
+      const msg: FidelityInMessage = {
+        type: 'score',
+        id,
+        width,
+        height,
+        rendered: rendered.buffer,
+        refId,
+        heatmap: false,
+      }
+      worker.postMessage(msg, [rendered.buffer])
     })
   }
 
@@ -85,7 +148,9 @@ export class FidelityClient {
     if (msg.type === 'result') {
       job.resolve({
         score: msg.score,
-        diff: { width: msg.width, height: msg.height, data: new Uint8ClampedArray(msg.diff) },
+        diff: msg.diff
+          ? { width: msg.width, height: msg.height, data: new Uint8ClampedArray(msg.diff) }
+          : undefined,
       })
     } else {
       job.reject(new Error(msg.message))

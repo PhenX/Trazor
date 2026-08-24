@@ -3,7 +3,7 @@
 **Status: design plan, not shipped behavior.** This documents the intended design of an automatic settings search
 ("brute force mode"): the user states how much they care about each quality axis (fidelity, document simplicity, …) and
 an iteration budget; the studio then explores the settings space in parallel workers, smartly tweaking one parameter at
-a time, and converges on the best settings for *this* image and *these* priorities.
+a time, and converges on the best settings for _this_ image and _these_ priorities.
 
 The pipeline it drives is described in [`../ARCHITECTURE.md`](../ARCHITECTURE.md); the settings it tunes are
 `VectorizeSettings` ([`../packages/core/src/settings.ts`](../packages/core/src/settings.ts)); the metrics it optimizes
@@ -19,14 +19,14 @@ complexity stats in `VectorizeResult.stats`).
   features, stencil islands), and stage timings all ship with every `VectorizeResult`.
 - **The worker already caches the expensive stages.** `StageCache` reuses the preprocessed image (keyed by the
   preprocess settings slice) and the quantized label map (keyed by the palette/cleanup slice). Candidates that only
-  touch curve parameters skip preprocessing *and* k-means — typically the two dominant costs in color mode — so a
+  touch curve parameters skip preprocessing _and_ k-means — typically the two dominant costs in color mode — so a
   well-scheduled search runs several times faster than naive full re-traces.
 - **The worker protocol is ready for pooling.** `installWorkerHandler` is stateless per job (plus its cache);
   spawning N vectorize workers needs no engine-side protocol change.
 
 The one honest caveat: pure brute force over ~20 mixed dimensions is combinatorially hopeless (even 3 values per
-parameter is 3²⁰ ≈ 3.5 billion runs). "Brute force" is the user experience — *the machine grinds so I don't tweak
-sliders* — but the implementation must be a budgeted guided search. That is exactly the "each time changing a
+parameter is 3²⁰ ≈ 3.5 billion runs). "Brute force" is the user experience — _the machine grinds so I don't tweak
+sliders_ — but the implementation must be a budgeted guided search. That is exactly the "each time changing a
 parameter, smartly tweaked" loop: seeded exploration, then adaptive one-parameter-at-a-time descent.
 
 ## Product shape
@@ -40,18 +40,38 @@ A **"Auto-optimize"** action in the settings panel (next to the existing per-ima
    - **File size** — output bytes.
    - **Color economy** — fewer palette entries (screens, vinyl sheets).
    - **Cleanliness** — fewer warnings: tiny sub-mm features, stencil islands.
-   - Preset chips seed the sliders: *Max fidelity*, *Balanced*, *Smallest file*, *Cut-ready*.
+   - Preset chips seed the sliders: _Max fidelity_, _Balanced_, _Smallest file_, _Cut-ready_.
 2. **Iterations** — total candidate evaluations (default 40; range ~10–300) with a live time estimate
    (`iterations × median candidate cost ÷ workers`, refined as results arrive).
-3. **Advanced** (disclosure) — parameter groups to explore vs hold (see the parameter space below), a *minimum
-   fidelity* guard, worker count (default auto), and opt-in structural moves (curve mode, layering).
-4. **Run** — live progress (evaluated / total, workers busy, best score so far, a best-score sparkline), a
-   **leaderboard** of the top candidates (score, fidelity %, nodes, colors, bytes, thumbnail), and a **Pareto view**
-   (fidelity vs. nodes scatter of the non-dominated set) — because the search is inherently multi-objective, the
-   weights pick a winner but the frontier is worth showing; any point is one click to apply.
+3. **Advanced** (disclosure) — parameter groups to explore vs hold (see the parameter space below), a _minimum
+   fidelity_ guard, worker count (default auto), and opt-in structural moves (curve mode, layering).
+4. **Run** — live progress (evaluated / total, workers busy, best score so far, a best-score sparkline) feeding the
+   **comparison wall** (below). A **Pareto toggle** dims the dominated tiles (fidelity vs. nodes frontier); score /
+   fidelity / nodes / colors / bytes are the sort keys.
 5. **Apply / revert** — applying commits the winning settings through the normal `updateSettings` flow (the debounced
    watcher re-traces; determinism guarantees the same SVG the search scored). The pre-search settings are snapshotted
    for one-click revert.
+
+### The comparison wall (primary results view)
+
+The score ranks candidates, but the score is a mean Oklab ΔE — it cannot tell you which of the top five _looks_ right
+where it matters (a nicked corner, a lost highlight, a wobbled letter). So the results view is a **wall of every
+candidate**, each an SVG tile, with a **synchronized magnifier** for side-by-side detail comparison:
+
+- **All results, not just the winners.** Every non-rejected candidate is a tile (source image pinned as the reference
+  tile), sortable by any objective and filterable to the Pareto front. This is why M1 retains each candidate's SVG:
+  the wall re-renders them, and the loupe zooms into them.
+- **A loupe that follows the mouse across every tile at once, on demand.** Holding a key (or toggling _Compare zoom_)
+  shows a magnifier at the pointer. The pointer position over _any_ tile is converted **once** to image-space
+  coordinates, then every tile renders that same region magnified — so your eye compares the identical patch across
+  all candidates simultaneously. Scroll (or `[` / `]`) changes magnification; the loupe follows until you release.
+- **Vector-crisp, nearly free.** Each tile and each loupe view is an inline `<svg>` whose `viewBox` is set to the
+  zoom rectangle — vector zoom stays sharp at any magnification with no re-rasterization, and the whole wall is one
+  shared `(cx, cy, zoom)` reactive state driving every tile's `viewBox`. The source reference tile magnifies in
+  lockstep, so you can compare each candidate against the original at the same magnified patch.
+- **Scales to the budget.** The tile grid is virtualized (only on-screen tiles mount their SVG); a large search
+  (200+ candidates) still scrolls smoothly. Click a tile to apply its settings, or open it full-bleed against the
+  source for a two-up before deciding.
 
 Everything is localized (en + fr), and the run is fully cancellable at any time.
 
@@ -61,19 +81,19 @@ Each candidate's metrics come straight from its `VectorizeResult` plus one fidel
 0..1 **utilities**, anchored to the baseline candidate (the user's current settings, traced in round 0) so the scoring
 is scale-free across images:
 
-| Objective     | Raw metric                          | Utility                                              |
-| ------------- | ----------------------------------- | ---------------------------------------------------- |
-| Fidelity      | mean Oklab ΔE                       | existing `clamp(1 − 4·ΔE, 0, 1)`                     |
-| Simplicity    | `nodeCount` n                       | `1 / (1 + n / n₀)` (0.5 at the baseline n₀)          |
-| File size     | `byteLength` b                      | `1 / (1 + b / b₀)`                                   |
-| Color economy | `colorCount` k                      | `1 / (1 + (k − 1) / max(1, k₀ − 1))`                 |
-| Cleanliness   | warnings                            | `max(0, 1 − Σ penalty)` (per-code penalties, capped) |
+| Objective     | Raw metric     | Utility                                              |
+| ------------- | -------------- | ---------------------------------------------------- |
+| Fidelity      | mean Oklab ΔE  | existing `clamp(1 − 4·ΔE, 0, 1)`                     |
+| Simplicity    | `nodeCount` n  | `1 / (1 + n / n₀)` (0.5 at the baseline n₀)          |
+| File size     | `byteLength` b | `1 / (1 + b / b₀)`                                   |
+| Color economy | `colorCount` k | `1 / (1 + (k − 1) / max(1, k₀ − 1))`                 |
+| Cleanliness   | warnings       | `max(0, 1 − Σ penalty)` (per-code penalties, capped) |
 
 Total score = `Σ wᵢ·uᵢ / Σ wᵢ` with the slider weights `wᵢ`. Two hard guards keep the weighted sum honest:
 
 - a candidate that produces an `empty-result` warning is **rejected**, not scored (an empty SVG has perfect
   simplicity);
-- the optional *minimum fidelity* constraint rejects candidates below the floor regardless of their other utilities.
+- the optional _minimum fidelity_ constraint rejects candidates below the floor regardless of their other utilities.
 
 Independent of the weights, the search maintains the **Pareto front** over (fidelity, simplicity, color economy) —
 the non-dominated candidates — for the results view.
@@ -89,7 +109,7 @@ The existing `computeFidelity` path is reused with three search-specific economi
   search instead of once per candidate.
 - **A common score resolution.** Every candidate SVG is rasterized at one capped size (long side ≤ 1024, or the
   working size if smaller) against a reference at the same size. This bounds the per-candidate main-thread
-  rasterization cost *and* keeps scores comparable if `maxDimension` is ever explored — scoring each result only
+  rasterization cost _and_ keeps scores comparable if `maxDimension` is ever explored — scoring each result only
   against a same-sized downscale of the source would let low-resolution traces hide their detail loss.
 
 SVG rasterization itself stays on the main thread (`<img>` + canvas — `createImageBitmap` can't rasterize SVG
@@ -118,17 +138,17 @@ interface ParamSpec {
 }
 ```
 
-| Group        | Cost per candidate                            | Free by default                                                                                                    | Opt-in (structural)                          | Held (never searched)                                                                    |
-| ------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `preprocess` | full pipeline                                 | —                                                                                                                  | `denoise`, `blurRadius`                      | `maxDimension`, `background*`, `alphaThreshold`                                          |
-| `palette`    | palette stage onward (preprocess cached)      | `paletteSize`, `autoPaletteSize`, `quantizeQuality`, `minRegionArea`, `preserveDetails`, `dissolveBands`, `colorCoherence` | `omitBackground`, suggested fixed palettes   | `palette` (a user-fixed palette stays fixed), `colorSpace`                               |
-| `binarize`   | palette-equivalent (bw/centerline)            | `thresholdMode`, `threshold`, `adaptiveRadius`, `adaptiveBias`                                                     | `invert`                                     | —                                                                                        |
-| `curve`      | trace onward (preprocess **and** palette cached) | `smoothing`, `curveOptimize`, `optTolerance`, `cornerThreshold`, `simplifyTolerance`, `turnPolicy`; centerline: `fitTolerance`, `pruneLength`, `strokeWidth` | `curveMode` (spline ↔ polygon), `layering`   | —                                                                                        |
-| `output`     | trace onward                                  | `precision`, `optimizeSvg` (only when the file-size weight is > 0)                                                 | —                                            | `unit`, `widthMm`, `svgTitle`, `fillColor`, `groupByColor`, `gapFill`, `detectIslands`   |
+| Group        | Cost per candidate                               | Free by default                                                                                                                                              | Opt-in (structural)                        | Held (never searched)                                                                  |
+| ------------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `preprocess` | full pipeline                                    | —                                                                                                                                                            | `denoise`, `blurRadius`                    | `maxDimension`, `background*`, `alphaThreshold`                                        |
+| `palette`    | palette stage onward (preprocess cached)         | `paletteSize`, `autoPaletteSize`, `quantizeQuality`, `minRegionArea`, `preserveDetails`, `dissolveBands`, `colorCoherence`                                   | `omitBackground`, suggested fixed palettes | `palette` (a user-fixed palette stays fixed), `colorSpace`                             |
+| `binarize`   | palette-equivalent (bw/centerline)               | `thresholdMode`, `threshold`, `adaptiveRadius`, `adaptiveBias`                                                                                               | `invert`                                   | —                                                                                      |
+| `curve`      | trace onward (preprocess **and** palette cached) | `smoothing`, `curveOptimize`, `optTolerance`, `cornerThreshold`, `simplifyTolerance`, `turnPolicy`; centerline: `fitTolerance`, `pruneLength`, `strokeWidth` | `curveMode` (spline ↔ polygon), `layering` | —                                                                                      |
+| `output`     | trace onward                                     | `precision`, `optimizeSvg` (only when the file-size weight is > 0)                                                                                           | —                                          | `unit`, `widthMm`, `svgTitle`, `fillColor`, `groupByColor`, `gapFill`, `detectIslands` |
 
 Notes on the defaults:
 
-- **`mode` is never searched.** Switching color ↔ bw ↔ centerline changes what the output *is*; that is the user's
+- **`mode` is never searched.** Switching color ↔ bw ↔ centerline changes what the output _is_; that is the user's
   call. (A future "try every mode" wizard could run one search per mode and present all four winners.)
 - **`curveMode` and `layering` are opt-in** because they change the output's character (angular polygons; stacked vs
   exact-partition structure), even though the objective function could legitimately trade them.
@@ -177,9 +197,9 @@ Round barriers are what keep the search deterministic under parallelism: workers
 but the strategy only sees a full round's results at once, sorted by candidate id. The cost is a little idle time at
 each barrier, which `R ≈ 2 × workers` amortizes (short and long candidates mix within a round).
 
-**Determinism contract, stated honestly:** given the same image, base settings, options, seed *and browser*, the
+**Determinism contract, stated honestly:** given the same image, base settings, options, seed _and browser_, the
 search reproduces the same candidate sequence and the same winner. The trace of any settings is byte-identical
-everywhere (Tier 1 untouched); the *scores* depend on the browser's SVG rasterizer (canvas anti-aliasing varies by
+everywhere (Tier 1 untouched); the _scores_ depend on the browser's SVG rasterizer (canvas anti-aliasing varies by
 engine), so the chosen winner can differ across browsers — the same standing as the fidelity score already shown in
 the stats bar. This mirrors the two-tier determinism contract in
 [`ML_STRATEGY.md`](ML_STRATEGY.md#determinism-and-webgpu-a-two-tier-contract): selection is conditioning, the core
@@ -212,19 +232,21 @@ stays exact.
 - **Edge pre-pass** — when the ML edge hint is active it is passed to every pool job (each gets its own transferred
   copy), so the search optimizes the pipeline the user will actually run; this disables the palette-stage cache
   (existing correctness rule), which the time estimate reflects.
-- **Memory discipline** — the results ledger keeps *settings + metrics + score* for every candidate (small), but SVG
-  text and thumbnails only for the current top-K (K ≈ 12) and Pareto members; anything else is re-derivable from its
-  settings on demand.
+- **Memory discipline** — the results ledger keeps _settings + metrics + score + SVG text_ for every candidate. SVG
+  is compact text (the wall and loupe re-render it, and it is byte-identically re-derivable from its settings anyway),
+  so retaining all of it is cheap; the search never holds a rasterized thumbnail or heatmap per candidate — the wall
+  rasterizes only the tiles currently on screen (virtualized), and the loupe zooms the vector directly.
 - **Cancellation** — stop cancels queued jobs, sends `cancel` for in-flight ones, and the store snapshot restores the
   pre-search settings. Loading a new image or editing settings mid-search stops the search first.
 
 ### Cost model (why this is fast enough)
 
 For a 1600 px color image, a full trace is typically hundreds of ms to a few seconds, dominated by k-means + segment
-+ trace. With affinity scheduling, curve-group candidates skip preprocess + palette entirely; scoring adds a few ms of
-rasterization (≤ 1024 px) plus a ~1–4 M-pixel ΔE pass in a fidelity worker. Ballpark for the default 40 iterations on
-4 workers: **tens of seconds, not minutes**, with the leaderboard improving live from the first round. The iteration
-estimate shown in the UI is computed from the baseline's measured `durationMs` and refined as real candidates land.
+
+- trace. With affinity scheduling, curve-group candidates skip preprocess + palette entirely; scoring adds a few ms of
+  rasterization (≤ 1024 px) plus a ~1–4 M-pixel ΔE pass in a fidelity worker. Ballpark for the default 40 iterations on
+  4 workers: **tens of seconds, not minutes**, with the leaderboard improving live from the first round. The iteration
+  estimate shown in the UI is computed from the baseline's measured `durationMs` and refined as real candidates land.
 
 ## Where the code lives
 
@@ -291,14 +313,15 @@ export function scoreCandidate(
 
 Supporting changes, each small and in its owner's package:
 
-| Where                                  | Change                                                                                          |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `packages/engine/src/pool.ts`          | `TrazorPool` (queue, affinity, cancelAll) reusing the existing protocol + worker file           |
-| `apps/web/src/worker/fidelity*`        | `set-reference` message, `heatmap: false` score mode, `FidelityPool` wrapper                    |
-| `apps/web/src/lib/tuner.ts`            | Orchestrator: rounds → pool → rasterize queue → fidelity → `report`; owns canvases and budgets  |
-| `apps/web/src/store/appStore.ts`       | Reactive tune state (running, progress, best, leaderboard, front, weights) + start/stop/apply/revert actions; the `Tuner` instance stays non-reactive like the other clients |
-| `apps/web/src/components/TunePanel.vue`| Priorities, iterations, advanced options, progress, leaderboard, Pareto scatter                 |
-| docs                                   | `CONTRACTS.md` (+`@trazor/tune`, `TrazorPool`), `ARCHITECTURE.md` map + dependency diagram, root `AGENTS.md` layout table, `REFERENCES.md` (pattern search: Hooke & Jeeves 1961; LHS: McKay et al. 1979), release note |
+| Where                                   | Change                                                                                                                                                                                                                 |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/engine/src/pool.ts`           | `TrazorPool` (queue, affinity, cancelAll) reusing the existing protocol + worker file                                                                                                                                  |
+| `apps/web/src/worker/fidelity*`         | `set-reference` message, `heatmap: false` score mode, `FidelityPool` wrapper                                                                                                                                           |
+| `apps/web/src/lib/tuner.ts`             | Orchestrator: rounds → pool → rasterize queue → fidelity → `report`; owns canvases and budgets                                                                                                                         |
+| `apps/web/src/store/appStore.ts`        | Reactive tune state (running, progress, best, leaderboard, front, weights) + start/stop/apply/revert actions; the `Tuner` instance stays non-reactive like the other clients                                           |
+| `apps/web/src/components/TunePanel.vue` | Priorities, iterations, advanced options, run progress, start/stop/apply/revert                                                                                                                                        |
+| `apps/web/src/components/TuneWall.vue`  | The comparison wall: virtualized SVG tile grid + synchronized loupe, sort/Pareto filter, click-to-apply                                                                                                                |
+| docs                                    | `CONTRACTS.md` (+`@trazor/tune`, `TrazorPool`), `ARCHITECTURE.md` map + dependency diagram, root `AGENTS.md` layout table, `REFERENCES.md` (pattern search: Hooke & Jeeves 1961; LHS: McKay et al. 1979), release note |
 
 Dependency direction stays clean: `tune` depends on `core` only (it never traces — the app feeds it results), the app
 wires `tune` + `engine` + fidelity together.
@@ -321,12 +344,12 @@ wires `tune` + `engine` + fidelity together.
 
 ## Milestones
 
-| #      | Milestone                                                                                                   | Effort | Risk |
-| ------ | ----------------------------------------------------------------------------------------------------------- | ------ | ---- |
-| **M1** | Core: `@trazor/tune` (params, scoring, search), `TrazorPool`, fidelity score-only path; dev-only trigger    | M      | Low  |
-| **M2** | Studio UI: panel, presets, progress, leaderboard, apply/revert; i18n; release note                          | M      | Low  |
-| **M3** | Sharper: affinity scheduling measured + tuned, optional multi-entry `StageCache`, sensitivity-ranked probes, Pareto scatter with click-to-apply | S–M | Low  |
-| **M4** | Breadth: suggested fixed palettes as categorical candidates, structural opt-ins (curve mode / layering), constraint presets, draft-resolution pre-screen for very large images (successive halving with per-parameter px-scaling rules), optional Node CLI batch tuner on the `scripts/eval` substrate | M–L | Med  |
+| #      | Milestone                                                                                                                                                                                                                                                                                              | Effort | Risk |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---- |
+| **M1** | Core: `@trazor/tune` (params, scoring, search), `TrazorPool`, fidelity score-only path; dev-only trigger                                                                                                                                                                                               | M      | Low  |
+| **M2** | Studio UI: panel, presets, progress, the comparison wall with synchronized loupe, apply/revert; i18n; release note                                                                                                                                                                                     | M      | Low  |
+| **M3** | Sharper: affinity scheduling measured + tuned, optional multi-entry `StageCache`, sensitivity-ranked probes, Pareto filter + two-up compare on the wall                                                                                                                                                | S–M    | Low  |
+| **M4** | Breadth: suggested fixed palettes as categorical candidates, structural opt-ins (curve mode / layering), constraint presets, draft-resolution pre-screen for very large images (successive halving with per-parameter px-scaling rules), optional Node CLI batch tuner on the `scripts/eval` substrate | M–L    | Med  |
 
 M1 before M2 keeps the algorithm honest: the strategy must demonstrably beat random sampling on the same budget in
 tests before it earns UI. The M4 CLI reuses the existing resvg-based eval harness, which would also let CI benchmark
@@ -350,7 +373,7 @@ the search itself against corpus images.
 
 1. **Naming.** "Auto-optimize" (proposed, sits well next to the existing "Auto" recommendation) vs. "Brute force" as
    the user-facing label. The French label would be « Optimisation auto ».
-2. **Default objective weights** for the presets, and whether *Cleanliness* should default to weight 0 outside
+2. **Default objective weights** for the presets, and whether _Cleanliness_ should default to weight 0 outside
    cut-oriented profiles.
 3. Should the winner **auto-apply** on completion, or always wait for an explicit Apply? (Proposed: auto-apply with
    revert, since the user asked for the search.)

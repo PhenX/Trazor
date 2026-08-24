@@ -18,7 +18,7 @@ import type {
 } from '@trazor/core'
 import { analyzeImage, recommendSettings } from '@trazor/assist'
 import type { ImageAnalysis, PaletteSuggestion, RationaleKey } from '@trazor/assist'
-import { TrazorClient } from '@trazor/engine'
+import { TrazorClient, TrazorPool } from '@trazor/engine'
 import { extractGeometry } from '@trazor/svg'
 import type { SvgGeometry } from '@trazor/svg'
 import type { MlAvailability, MlProgress } from '@trazor/ml'
@@ -31,6 +31,8 @@ import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
 import { FidelityClient } from '../lib/fidelityClient'
+import { defaultPoolSize, runAutoTune } from '../lib/tuner'
+import type { AutoTuneOptions, AutoTuneResult } from '../lib/tuner'
 import { buildLayers } from '../lib/layers'
 import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
@@ -186,6 +188,7 @@ export const useAppStore = defineStore('app', () => {
   let client: TrazorClient | null = null
   let assistClient: AssistClient | null = null
   let fidelityClient: FidelityClient | null = null
+  let tunePool: TrazorPool | null = null
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
@@ -488,6 +491,51 @@ export const useAppStore = defineStore('app', () => {
         new Worker(new URL('../worker/fidelity.worker.ts', import.meta.url), { type: 'module' }),
     )
     return fidelityClient
+  }
+
+  function getTunePool(image: RasterImage): TrazorPool {
+    const size = defaultPoolSize(image)
+    if (!tunePool || tunePool.size !== size) {
+      tunePool?.dispose()
+      tunePool = new TrazorPool(
+        () =>
+          new Worker(new URL('../worker/vectorize.worker.ts', import.meta.url), { type: 'module' }),
+        size,
+      )
+    }
+    return tunePool
+  }
+
+  /**
+   * Dev-only entry point for the settings search (M1): traces the current image
+   * across a search of the parameter space in a worker pool and reports the best
+   * settings found. Gated to dev builds — the studio UI (M2) is not wired yet.
+   * The winner is returned (and toasted); nothing is applied automatically.
+   */
+  async function autoTuneDev(
+    overrides: Partial<AutoTuneOptions> = {},
+  ): Promise<AutoTuneResult | undefined> {
+    if (!import.meta.env.DEV) return undefined
+    const image = workingImage.value
+    if (!image) {
+      notify(t('toasts.autoFailed', { error: 'no image' }), 'error')
+      return undefined
+    }
+    const pool = getTunePool(image)
+    const opts: AutoTuneOptions = {
+      weights: { fidelity: 1, simplicity: 0.5, fileSize: 0.25, colorEconomy: 0, cleanliness: 0.25 },
+      iterations: 40,
+      seed: 1,
+      roundSize: pool.size * 2,
+      ...overrides,
+    }
+    const result = await runAutoTune(image, settings.value, opts, {
+      pool,
+      fidelity: getFidelityClient(),
+    })
+    const pct = result.best ? `${(result.best.score * 100).toFixed(1)}%` : '—'
+    notify(`Auto-tune: best ${pct} over ${result.results.length} candidates`, 'success')
+    return result
   }
 
   async function doRun(): Promise<void> {
@@ -870,6 +918,7 @@ export const useAppStore = defineStore('app', () => {
     undoMagicPoint,
     applyMagicSelect,
     markReleasesSeen,
+    autoTuneDev,
     toggleTheme,
     setLocale,
     setLayerHover,
