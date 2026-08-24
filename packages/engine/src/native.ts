@@ -576,11 +576,36 @@ async function colorPipeline(
     }
     run.progress(1)
   } else {
-    // Stacked: paint order by pixel count, each layer covering itself plus all
-    // layers above, so lower shapes extend underneath and edges cannot crack.
+    // Stacked: each layer covers itself plus all layers above, so lower shapes
+    // extend underneath and edges cannot crack. The most connective color — the
+    // one whose regions have the largest total perimeter, i.e. that borders the
+    // most other regions — is pinned to the bottom as the full-silhouette base,
+    // so it reads as the outline/backdrop showing between the colors stacked on
+    // top: the standard layered-vinyl build (a cartoon's black outline, a flat
+    // design's background). A thin outline threading between regions outscores a
+    // compact blob of the same color, and a tiny dark speck never wins. The
+    // rest stack by descending area (large fields low, small details on top).
+    // Order sets only which sheet is the full base and the layer/group order —
+    // never the rendered pixels, since each pixel's topmost layer is its own.
     const order: number[] = []
     for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
     order.sort((a, b) => counts[b] - counts[a])
+    if (order.length > 1) {
+      const perim = regionPerimeters(labels)
+      let base = order[0]
+      let bestPerim = perim[base]
+      for (const l of order) {
+        if (perim[l] > bestPerim) {
+          bestPerim = perim[l]
+          base = l
+        }
+      }
+      const at = order.indexOf(base)
+      if (at > 0) {
+        order.splice(at, 1)
+        order.unshift(base)
+      }
+    }
 
     // Pixel indices bucketed by label (one O(n) pass) so each layer is built
     // from the previous one by removing just the label that dropped out — the
@@ -751,6 +776,30 @@ function desaturateInPlace(image: RasterImage): void {
     data[i + 1] = v
     data[i + 2] = v
   }
+}
+
+/**
+ * Per-label region perimeter: the number of cell sides that face a different
+ * label or the image exterior. A thin outline threading between regions, or a
+ * backdrop wrapping every shape, has a far larger perimeter than a compact blob
+ * of the same color — so the max-perimeter label is the one the others sit on
+ * top of. Indexed by label; unlabeled cells contribute nothing.
+ */
+function regionPerimeters(labels: LabelMap): Float64Array {
+  const { data, width, height } = labels
+  const perim = new Float64Array(labels.count)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x
+      const l = data[i]
+      if (l < 0) continue
+      if (x + 1 >= width || data[i + 1] !== l) perim[l]++
+      if (x - 1 < 0 || data[i - 1] !== l) perim[l]++
+      if (y + 1 >= height || data[i + width] !== l) perim[l]++
+      if (y - 1 < 0 || data[i - width] !== l) perim[l]++
+    }
+  }
+  return perim
 }
 
 /** Per-label palette colors as an interleaved Oklab buffer (length count*3). */

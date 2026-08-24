@@ -4,6 +4,7 @@ import {
   DEFAULT_SETTINGS,
   createRaster,
   fillRaster,
+  hexToRgb,
   normalizeSettings,
   setPixel,
 } from '@trazor/core'
@@ -30,6 +31,46 @@ function donut(): RasterImage {
     }
   }
   return img
+}
+
+/**
+ * A ringed icon on a transparent field: a gray ring wraps a red disk (so gray
+ * borders both the red and the exterior — the most shared boundary), with a
+ * small solid black dot on the red (the darkest color, but tiny). Red is the
+ * largest area; no single color is both largest and most-bordering, so the base
+ * layer cannot be chosen by area or by darkness alone.
+ */
+function ringedIcon(): RasterImage {
+  const img = createRaster(40, 40) // transparent background (alpha 0)
+  const disk = (cx: number, cy: number, r: number, rgb: [number, number, number]): void => {
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 40; x++) {
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) setPixel(img, x, y, ...rgb)
+      }
+    }
+  }
+  disk(20, 20, 16, [140, 140, 140]) // gray — becomes a ring once red covers its center
+  disk(20, 20, 12, [200, 40, 40]) // red field — largest area
+  for (let y = 16; y < 24; y++) {
+    for (let x = 16; x < 24; x++) setPixel(img, x, y, 10, 10, 10) // black dot — darkest, tiny
+  }
+  return img
+}
+
+/** Palette entry nearest (RGB) to a seeded color. */
+function nearestHex(palette: string[], rgb: [number, number, number]): string {
+  let best = palette[0]
+  let bestD = Infinity
+  for (const hex of palette) {
+    const c = hexToRgb(hex)
+    if (!c) continue
+    const d = (c[0] - rgb[0]) ** 2 + (c[1] - rgb[1]) ** 2 + (c[2] - rgb[2]) ** 2
+    if (d < bestD) {
+      bestD = d
+      best = hex
+    }
+  }
+  return best
 }
 
 function thickPlus(): RasterImage {
@@ -433,6 +474,31 @@ describe('stacked layer masks (E1)', () => {
       const label = order[i]
       for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
     }
+  })
+})
+
+describe('stacked base layer', () => {
+  it('pins the most-bordering color as the base, not the largest or darkest', async () => {
+    const base = { mode: 'color' as const, paletteSize: 6, layering: 'stacked' as const }
+    const result = await vectorize(ringedIcon(), settings(base))
+    expect(result.palette.length).toBeGreaterThanOrEqual(3)
+    const gray = nearestHex(result.palette, [140, 140, 140]) // most bordering (the ring)
+    const red = nearestHex(result.palette, [200, 40, 40]) // largest area
+    const black = nearestHex(result.palette, [10, 10, 10]) // darkest, tiny
+    expect(gray).not.toBe(red)
+    expect(gray).not.toBe(black)
+    // The base is painted first, so it is the first fill in the document: the
+    // connective ring — neither the biggest field nor the darkest speck.
+    const firstFill = /fill="(#[0-9a-f]{6})"/.exec(result.svg)?.[1]
+    expect(firstFill).toBe(gray)
+    expect(firstFill).not.toBe(red)
+    expect(firstFill).not.toBe(black)
+    // group-by-color names the first-painted color layer-1.
+    const grouped = await vectorize(ringedIcon(), settings({ ...base, groupByColor: true }))
+    const firstTitle = /<g id="layer-1"><title>(#[0-9a-f]{6})<\/title>/.exec(grouped.svg)?.[1]
+    expect(firstTitle).toBe(gray)
+    // Reordering never changes the rendered pixels: every color still appears.
+    for (const hex of result.palette) expect(result.svg).toContain(hex)
   })
 })
 

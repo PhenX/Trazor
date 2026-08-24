@@ -54,7 +54,10 @@ decode (app)
 ```
 
 - **stacked** layering paints regions back-to-front, each layer covering itself plus everything above it, so lower
-  shapes extend underneath and edges never crack.
+  shapes extend underneath and edges never crack. The most connective color — the one whose regions have the largest
+  total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
+  standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
+  on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
 - **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
   reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
   [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).

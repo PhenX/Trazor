@@ -37,6 +37,15 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 2,
+    kind: 'improvement',
+    title: 'Outline color anchors layered vinyl',
+    items: [
+      'In stacked color mode, the color that outlines the most — the black lines in a cartoon, the backdrop in a flat design — now forms the full base layer at the bottom of the stack, so it reads through the sheets stacked on top of it the way layered vinyl is built. The traced picture looks identical; only which color is the full backing sheet changes.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 1,
     kind: 'fix',
     title: 'A smoother, more responsive studio',
