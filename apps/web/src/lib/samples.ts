@@ -3,7 +3,16 @@ import type { RasterImage } from '@trazor/core'
 import { create2dCanvas } from './decode'
 
 export interface SampleDef {
-  id: 'badge' | 'portrait' | 'sprite' | 'peaks' | 'ink' | 'bloom' | 'mandala' | 'degraded'
+  id:
+    | 'badge'
+    | 'portrait'
+    | 'sprite'
+    | 'peaks'
+    | 'ink'
+    | 'bloom'
+    | 'mandala'
+    | 'confetti'
+    | 'degraded'
   label: string
   tagline: string
   make(): Promise<RasterImage> | RasterImage
@@ -520,6 +529,63 @@ function makeMandala(): RasterImage {
   })
 }
 
+/** Fill a rotated `sides`-pointed star (its concave tips add nodes on tracing). */
+function starPoly(
+  ctx: Ctx2D,
+  cx: number,
+  cy: number,
+  sides: number,
+  outer: number,
+  inner: number,
+  rot: number,
+): void {
+  ctx.beginPath()
+  for (let i = 0; i < sides * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner
+    const a = rot + (i * Math.PI) / sides
+    const x = cx + Math.cos(a) * r
+    const y = cy + Math.sin(a) * r
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.fill()
+}
+
+/**
+ * Dense confetti: a jittered grid of ~2,000 small crisp motifs — five- and
+ * six-point stars and diamonds — in solid black on white. Two colors keep the
+ * trace clean and compact, while the many separate, pointed shapes add up to
+ * well over ten thousand anchor points: a stress test for the geometry overlay
+ * that exercises the dense-pan freeze.
+ */
+function makeConfetti(): RasterImage {
+  return renderAt(960, (ctx) => {
+    const size = DESIGN
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, size, size)
+    ctx.fillStyle = '#161616'
+
+    const rnd = mulberry32(0xc0ff_e711)
+    const n = 44
+    const step = size / n
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const cx = (i + 0.5) * step + (rnd() - 0.5) * step * 0.4
+        const cy = (j + 0.5) * step + (rnd() - 0.5) * step * 0.4
+        const r = step * (0.32 + rnd() * 0.14)
+        const rot = rnd() * Math.PI
+        const kind = (rnd() * 3) | 0
+        if (kind === 0)
+          starPoly(ctx, cx, cy, 5, r, r * 0.42, rot) // 5-point star
+        else if (kind === 1)
+          starPoly(ctx, cx, cy, 6, r, r * 0.5, rot) // 6-point star
+        else starPoly(ctx, cx, cy, 2, r, r * 0.62, rot) // diamond
+      }
+    }
+  })
+}
+
 /** Clean flat vector icon (a camera) — the pristine art before degradation. */
 function drawCamera(ctx: Ctx2D): void {
   const cx = 320
@@ -716,6 +782,12 @@ export const SAMPLES: readonly SampleDef[] = [
     label: 'Mandala',
     tagline: 'Detailed B&W · 1280×1280',
     make: makeMandala,
+  },
+  {
+    id: 'confetti',
+    label: 'Confetti',
+    tagline: 'Dense pattern · 960×960',
+    make: makeConfetti,
   },
   {
     id: 'degraded',
