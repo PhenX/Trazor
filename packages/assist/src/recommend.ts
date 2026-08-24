@@ -34,13 +34,55 @@ class Rationale {
 const ACHROMATIC_CHROMA = 0.03
 
 /**
+ * A pixel gradient of exactly 0 covering at least this fraction of the image
+ * marks clean flat art (illustration, logo, cartoon). Anti-aliasing invents
+ * thousands of rim colors and a high `photoScore`, but its soft ramps sit only
+ * along edges — the large interiors stay perfectly flat. Photographs and
+ * compressed/rescaled graphics carry noise everywhere and never reach this.
+ */
+const FLAT_ART_MIN_DENSITY = 0.15
+
+/** With at least this fraction of genuinely colored pixels, an image is not grayscale. */
+const COLORED_FRACTION_MIN = 0.05
+
+/** Sub-this-size rim specks are merged away when cleaning anti-aliased flat art. */
+const FLAT_ART_MIN_REGION = 16
+
+/**
+ * Clean flat art (vector illustration, logo, cartoon) rather than a photograph
+ * or a degraded graphic. Anti-aliased edges make such art score as photographic
+ * (many colors, dense micro-gradients), so `photoScore` alone misroutes it; the
+ * flat interiors it keeps — which photos and compression noise destroy — are the
+ * reliable tell. Kept in color and traced faithfully, not denoised or posterized.
+ */
+function isCleanFlatArt(a: ImageAnalysis): boolean {
+  return a.flatDensity >= FLAT_ART_MIN_DENSITY
+}
+
+/**
+ * Effectively grayscale: not only is mean chroma low, but almost no pixel is
+ * genuinely colored. The `coloredFraction` guard keeps a vivid subject on a
+ * large neutral (black/white) backdrop — whose mean chroma the backdrop drags
+ * below `ACHROMATIC_CHROMA` — from being flattened to gray.
+ */
+function isAchromatic(a: ImageAnalysis): boolean {
+  return a.colorfulness < ACHROMATIC_CHROMA && a.coloredFraction < COLORED_FRACTION_MIN
+}
+
+/**
  * Photographic-looking texture (noise, blocking, ringing) sitting on top of a
  * few dominant flat colors — a compressed or rescaled flat graphic (a JPEG
  * logo, a screenshot) rather than a true photograph, whose colors spread out
- * so no two dominate. These want strong cleanup, not photo posterization.
+ * so no two dominate. These want strong cleanup, not photo posterization. Clean
+ * flat art is excluded: its crisp anti-aliased edges are not compression damage.
  */
 function isCompressedFlat(a: ImageAnalysis): boolean {
-  return a.photoScore > 0.6 && a.twoToneCoverage > 0.55 && a.colorfulness >= ACHROMATIC_CHROMA
+  return (
+    a.photoScore > 0.6 &&
+    a.twoToneCoverage > 0.55 &&
+    a.colorfulness >= ACHROMATIC_CHROMA &&
+    !isCleanFlatArt(a)
+  )
 }
 
 /**
@@ -70,12 +112,15 @@ export function recommendSettings(
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
-  // A near-grayscale photo traces as tonal gray layers, not a color palette.
-  if (profileId === 'photo' && a.colorfulness < ACHROMATIC_CHROMA) {
+  // A near-grayscale photo traces as tonal gray layers, not a color palette. A
+  // colored subject on a neutral backdrop (low mean chroma but real colored
+  // pixels) stays in color — `isAchromatic` accounts for the backdrop.
+  if (profileId === 'photo' && isAchromatic(a)) {
     patch.mode = 'grayscale'
     r.add('grayscale', 'Nearly grayscale — tracing as tonal grayscale layers.')
   }
 
+  const flatArt = isCleanFlatArt(a)
   // Respect an explicit photo goal; otherwise treat compressed-flat art specially.
   const compressedFlat = profileId !== 'photo' && isCompressedFlat(a)
 
@@ -103,9 +148,24 @@ export function recommendSettings(
         { count: a.distinctColors, size: chosen },
       )
     }
-    if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat) {
+    // Clean flat art is exempt from photo denoise (its edges are crisp, not
+    // noisy) — bilateral blur would only soften the linework.
+    if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat && !flatArt) {
       patch.denoise = 'bilateral'
       r.add('photoTexture', 'Photographic texture detected — bilateral denoise keeps edges clean.')
+    }
+    // Anti-aliased flat art: the soft rim between two flat colors quantizes into
+    // hairline slivers of a third color, scattering thousands of speck shapes.
+    // Merge sub-`FLAT_ART_MIN_REGION` regions and dissolve 1px seam bands so the
+    // trace is the clean shapes, not the anti-aliasing — no photo-style blur.
+    if (flatArt && rich) {
+      patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, FLAT_ART_MIN_REGION)
+      if ((patch.dissolveBands ?? 0) < 2) patch.dissolveBands = 2
+      r.add(
+        'flatArtCleanup',
+        `Anti-aliased edges — merging rim specks below ${FLAT_ART_MIN_REGION} px² and dissolving hairline seams.`,
+        { area: FLAT_ART_MIN_REGION },
+      )
     }
   }
 
@@ -144,7 +204,7 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   }
   // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
   // two-color mark (navy on white, say) keeps its color through a flat profile.
-  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && a.colorfulness < ACHROMATIC_CHROMA) {
+  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && isAchromatic(a)) {
     r.add(
       'pickBwSketch',
       'Essentially two-tone with high contrast — black & white tracing fits best.',
@@ -155,19 +215,17 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   // crisp strokes and few distinct tones — unlike a mid-toned grayscale photo,
   // which fills the tonal range with smooth micro-gradients. Threshold B&W keeps
   // the lines crisp and compact instead of stacking tonal gray layers.
-  if (
-    a.colorfulness < ACHROMATIC_CHROMA &&
-    a.meanLightness > 0.7 &&
-    a.edgeDensity > 0.1 &&
-    a.distinctColors <= 4096
-  ) {
+  if (isAchromatic(a) && a.meanLightness > 0.7 && a.edgeDensity > 0.1 && a.distinctColors <= 4096) {
     r.add(
       'pickInkLineart',
       'Achromatic line art with crisp edges and few tones — black & white tracing.',
     )
     return 'bw-sketch'
   }
-  if (a.photoScore > 0.6) {
+  // Photographic routing is vetoed for clean flat art: anti-aliasing makes crisp
+  // vector art score as photographic, but its flat interiors give it away, so it
+  // stays a faithful color trace instead of being posterized or over-cleaned.
+  if (!isCleanFlatArt(a) && a.photoScore > 0.6) {
     if (isCompressedFlat(a)) {
       r.add(
         'pickCompressedFlat',
@@ -181,6 +239,10 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   if (a.distinctColors <= 24 && a.microGradientDensity < 0.08) {
     r.add('pickLogo', 'Flat shapes with few colors — logo profile with seam-free cutout layers.')
     return 'logo'
+  }
+  if (isCleanFlatArt(a)) {
+    r.add('pickFlatArt', 'Clean flat art with anti-aliased edges — faithful color illustration.')
+    return 'illustration'
   }
   r.add('pickIllustration', 'Mixed flat artwork — illustration profile.')
   return 'illustration'

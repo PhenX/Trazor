@@ -520,7 +520,10 @@ export const en = {
     pickCompressedFlat: 'Compression noise over a few flat colors — cleaning up as flat art.',
     pickPhoto: 'Photographic content — posterized profile.',
     pickLogo: 'Flat shapes with few colors — logo profile with seam-free cutout layers.',
+    pickFlatArt: 'Clean flat art with anti-aliased edges — faithful color illustration.',
     pickIllustration: 'Mixed flat artwork — illustration profile.',
+    flatArtCleanup:
+      'Anti-aliased edges — merging rim specks below {area} px² and dissolving hairline seams.',
   },
 
   profiles: {

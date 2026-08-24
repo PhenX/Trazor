@@ -14,6 +14,14 @@ export interface ImageAnalysis {
   edgeDensity: number
   /** Fraction of pixels with a small-but-nonzero gradient — the texture photos have and flat art lacks. */
   microGradientDensity: number
+  /**
+   * Fraction of pixels identical to their right and down neighbors — the large
+   * uniform interiors flat art has (even anti-aliased, whose soft ramps sit only
+   * along edges) and photographs/compressed graphics lack (sensor/block noise
+   * leaves almost no exactly-flat pixel). Separates clean vector art from
+   * photographic texture regardless of how many colors anti-aliasing invents.
+   */
+  flatDensity: number
   /** Fraction of pixels covered by the two most common colors. */
   twoToneCoverage: number
   /** 0..1 likelihood the image is photographic. */
@@ -26,7 +34,18 @@ export interface ImageAnalysis {
   contrast: number
   /** Mean Oklab chroma (√(a²+b²)). Near 0 for grayscale, higher for saturated art. */
   colorfulness: number
+  /**
+   * Fraction of pixels whose Oklab chroma exceeds `COLORED_CHROMA` — a
+   * background-robust measure of how colored the content is. Unlike mean
+   * `colorfulness`, a large neutral (black/white) field cannot dilute it: a
+   * vivid subject on a black backdrop still reports a meaningful fraction, so it
+   * is not mistaken for grayscale.
+   */
+  coloredFraction: number
 }
+
+/** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
+const COLORED_CHROMA = 0.05
 
 /**
  * One statistical pass over the image, feeding the settings recommender.
@@ -45,6 +64,8 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   let sampleCount = 0
   let edgeCount = 0
   let microCount = 0
+  let flatCount = 0
+  let coloredCount = 0
   let sumL = 0
   let sumL2 = 0
   let sumChroma = 0
@@ -68,7 +89,9 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
       const [L, oa, ob] = rgbToOklab(r / 255, g / 255, b / 255)
       sumL += L
       sumL2 += L * L
-      sumChroma += Math.hypot(oa, ob)
+      const chroma = Math.hypot(oa, ob)
+      sumChroma += chroma
+      if (chroma > COLORED_CHROMA) coloredCount++
 
       if (x + step < width && y + step < height) {
         const iR = (row + x + step) * 4
@@ -78,6 +101,7 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
         const grad = Math.max(gx, gy)
         if (grad > 72) edgeCount++
         else if (grad > 3) microCount++
+        else if (grad === 0) flatCount++
       }
     }
   }
@@ -108,6 +132,8 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
 
   const edgeDensity = sampleCount === 0 ? 0 : edgeCount / sampleCount
   const microGradientDensity = sampleCount === 0 ? 0 : microCount / sampleCount
+  const flatDensity = sampleCount === 0 ? 0 : flatCount / sampleCount
+  const coloredFraction = sampleCount === 0 ? 0 : coloredCount / sampleCount
 
   const colorRichness = clamp(Math.log2(Math.max(1, colorSet.size)) / 15, 0, 1)
   const photoScore = clamp(
@@ -131,6 +157,7 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     entropyBits,
     edgeDensity,
     microGradientDensity,
+    flatDensity,
     twoToneCoverage,
     photoScore,
     pixelArtScore,
@@ -138,5 +165,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     meanLightness,
     contrast,
     colorfulness,
+    coloredFraction,
   }
 }

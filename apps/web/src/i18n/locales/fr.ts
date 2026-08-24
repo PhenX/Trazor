@@ -540,7 +540,10 @@ export const fr: MessageSchema = {
     pickPhoto: 'Contenu photographique — profil postérisé.',
     pickLogo:
       'Formes plates avec peu de couleurs — profil logo avec calques en découpe sans jointure.',
+    pickFlatArt: 'Dessin plat net aux bords anticrénelés — illustration couleur fidèle.',
     pickIllustration: 'Dessin plat mixte — profil illustration.',
+    flatArtCleanup:
+      'Bords anticrénelés — fusion des points de bord sous {area} px² et dissolution des jointures fines.',
   },
 
   profiles: {
