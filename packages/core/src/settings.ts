@@ -139,9 +139,12 @@ export interface VectorizeSettings {
   /** Compact path data with relative + H/V commands (identical geometry, smaller file). */
   optimizeSvg: boolean
   /**
-   * Group output shapes into one `<g>` layer per color (color / grayscale modes),
-   * in first-appearance order. Cut and print software then reads each color as a
-   * single selectable layer — one vinyl sheet or one screen per color.
+   * Group output shapes into `<g>` cut layers (color / grayscale modes) so cut
+   * and print software reads each as a single selectable layer. Cutout groups
+   * one layer per color (first-appearance order). Stacked groups one layer per
+   * paint level, because a color can recur at two heights — a base outline and a
+   * pupil island lifted on top — which must stay separate, correctly-ordered
+   * layers rather than one merged color.
    */
   groupByColor: boolean
   unit: 'px' | 'mm'

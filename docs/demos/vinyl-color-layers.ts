@@ -2,10 +2,11 @@
  * Visual demo: vinyl cutter — B&W silhouette vs. layered spot color. Traces a
  * small flat graphic three ways through the real engine: the old black & white
  * vinyl profile (every color flattened to one silhouette), the new color +
- * stacked + group-by-color profile (colors kept, one <g> layer per color), and
- * the same result peeled into its per-color layers — one vinyl sheet each,
- * every lower layer extending under the ones above so weeded stacks stay
- * gap-free.
+ * stacked profile grouped into cut layers, and the same result peeled into
+ * those layers — one vinyl sheet each, the most-bordering color (the outline)
+ * the full base sheet, every lower layer extending under the ones above so
+ * weeded stacks stay gap-free, and the enclosed pupil lifted onto its own top
+ * layer (so black appears twice: base and pupil).
  *
  * Run:  npx tsx docs/demos/vinyl-color-layers.ts
  * Output: docs/demos/vinyl-color-layers.html
@@ -15,7 +16,7 @@ import { createRaster, fillRaster, getProfile, normalizeSettings, setPixel } fro
 import type { RasterImage } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 
-/** A small flat badge: overlapping spot colors plus a tiny detail dot. */
+/** A small flat badge: black-outlined spot colors, plus an eye with a pupil. */
 function badge(): RasterImage {
   const S = 100
   const img = createRaster(S, S)
@@ -27,13 +28,21 @@ function badge(): RasterImage {
       }
     }
   }
-  disk(50, 50, 36, [40, 110, 190]) // blue field
-  disk(38, 46, 17, [210, 60, 50]) // red
-  disk(64, 56, 15, [240, 200, 60]) // yellow
-  // A 6×6 green detail (36 px): kept at the new min region (16), dropped at 48.
-  for (let y = 30; y < 36; y++) {
-    for (let x = 62; x < 68; x++) setPixel(img, x, y, 60, 160, 90)
-  }
+  // Each color is drawn over a slightly larger black disk, so black is the
+  // outline threading between every region: the body edge, and a rim around the
+  // red and yellow features. It is far from the largest area, but it borders the
+  // most, so it becomes the full base layer the others stack onto.
+  disk(50, 50, 38, [20, 20, 20]) // black outline
+  disk(50, 50, 34, [40, 110, 190]) // blue field
+  disk(38, 46, 18, [20, 20, 20]) // black outline
+  disk(38, 46, 14, [210, 60, 50]) // red
+  disk(64, 56, 16, [20, 20, 20]) // black outline
+  disk(64, 56, 12, [240, 200, 60]) // yellow
+  // An eye: a white sclera with a black pupil enclosed in it. The pupil shares
+  // the outline's black but is fully surrounded by white, so it lifts onto its
+  // own top layer — the blue and white sheets below it stay whole.
+  disk(52, 34, 9, [235, 235, 235]) // white sclera
+  disk(52, 34, 4, [20, 20, 20]) // black pupil (enclosed)
   return img
 }
 
@@ -109,8 +118,10 @@ const html = `<title>Vinyl — Color Layers</title>
   <h1>Vinyl cutter — from one silhouette to layered spot color</h1>
   <p class="sub">The same flat graphic traced through the engine. The old profile was black &amp; white, so every color
     became a single silhouette. The new profile keeps the colors, stacks them (each lower layer extends under the ones
-    above, so weeded sheets stack without gaps), and wraps each color in its own <code>&lt;g&gt;</code> layer — one
-    selectable vinyl sheet per color. The backdrop color is dropped, so there is no full backing sheet to weed.</p>
+    above, so weeded sheets stack without gaps), and wraps each stacking level in its own <code>&lt;g&gt;</code> cut
+    layer. An enclosed detail buried under two sheets — the eye pupil, beneath the blue face and the white sclera —
+    lifts onto its own top layer instead of punching a hole through both, so its black shows up as a second black layer
+    separate from the base outline. The backdrop color is dropped, so there is no full backing sheet to weed.</p>
 
   <section class="row">
     <h2>Before vs after</h2>
@@ -123,9 +134,12 @@ const html = `<title>Vinyl — Color Layers</title>
   </section>
 
   <section class="row">
-    <h2>Cut layers — one vinyl sheet per color</h2>
-    <p>Each <code>&lt;g&gt;</code> layer peeled out on its own. Lower layers carry the full region (they extend under the
-      colors above), so cutting each on its vinyl and stacking them reproduces the graphic with no seams.</p>
+    <h2>Cut layers — one vinyl sheet per layer</h2>
+    <p>Each <code>&lt;g&gt;</code> layer peeled out on its own, base first. The most-bordering color — the black
+      outline here — is the full base sheet, so it reads through as the outline between the colors stacked on it; every
+      lower layer extends under the ones above, so cutting each on its vinyl and stacking them reproduces the graphic
+      with no seams. The last tile is the eye pupil, lifted onto its own layer on top — the same black as the base, but
+      a separate sheet.</p>
     <div class="tiles">${tiles}</div>
   </section>
 </div>`

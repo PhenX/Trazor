@@ -32,6 +32,7 @@ import {
   despeckleMaskGuided,
   dissolveThinBands,
   estimateStrokeWidth,
+  findEnclosedComponents,
   flattenImage,
   gaussianBlur,
   medianFilter,
@@ -56,6 +57,13 @@ const QUANTIZE_SEED = 0x02f6e2b1
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
+
+/**
+ * Stacked layering lifts an enclosed pocket onto its own top layer only when at
+ * least this many sheets would otherwise stack over it (each with a hole cut for
+ * the pocket). One sheet's single hole weeds and aligns fine; two or more drift.
+ */
+const MIN_LIFT_DEPTH = 2
 
 /** Coherence relaxation strength (squared-Oklab per disagreeing neighbor) at colorCoherence 1. */
 const COHERENCE_LAMBDA = 0.03
@@ -320,6 +328,8 @@ export async function vectorize(
 
   // ---- svg ----
   run.stage('svg')
+  const grouped =
+    settings.groupByColor && (settings.mode === 'color' || settings.mode === 'grayscale')
   const svg = serializeSvg(
     {
       width,
@@ -337,9 +347,12 @@ export async function vectorize(
       // Arc fitting for cutout happens seam-safely per shared chain instead (the
       // `refineChain` passed to traceLabelMap below).
       roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
-      // One <g> layer per color for cut/print separation — color layers only.
-      groupByColor:
-        settings.groupByColor && (settings.mode === 'color' || settings.mode === 'grayscale'),
+      // One <g> per cut layer (color layers only). Cutout is a color partition,
+      // so group by color; stacked paints in layer order and a color can recur
+      // at two heights (a base outline and a pupil island above it), so group by
+      // paint layer to keep those separate and correctly ordered.
+      groupByColor: grouped && settings.layering === 'cutout',
+      groupByLayer: grouped && settings.layering !== 'cutout',
     },
   )
   run.progress(0.6)
@@ -576,24 +589,70 @@ async function colorPipeline(
     }
     run.progress(1)
   } else {
-    // Stacked: paint order by pixel count, each layer covering itself plus all
-    // layers above, so lower shapes extend underneath and edges cannot crack.
-    const order: number[] = []
-    for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
-    order.sort((a, b) => counts[b] - counts[a])
+    // Stacked: each layer covers itself plus all layers above, so lower shapes
+    // extend underneath and edges cannot crack. The most connective color — the
+    // one whose regions have the largest total perimeter, i.e. that borders the
+    // most other regions — is pinned to the bottom as the full-silhouette base,
+    // so it reads as the outline/backdrop showing between the colors stacked on
+    // top: the standard layered-vinyl build (a cartoon's black outline, a flat
+    // design's background). A thin outline threading between regions outscores a
+    // compact blob of the same color, and a tiny dark speck never wins. The
+    // rest stack by descending area (large fields low, small details on top).
+    // Order sets only which sheet is the full base and the layer/group order —
+    // never the rendered pixels, since each pixel's topmost layer is its own.
+    // An enclosed island whose color sits below its surround punches a floating
+    // hole in every layer stacked over it. Because the island is ringed by a
+    // single color, the count of those layers is exactly its stack depth below
+    // the surround: each level from just above the island up to the surround
+    // still has that ring, so each carries a hole. Lift a pocket only when two
+    // or more sheets stack over it — one sheet's single hole weeds and aligns
+    // cleanly, but two or more drift and let the middle sheets peek through.
+    // Lifting relabels the island into its surround for the solid base layers,
+    // then repaints it on top as its own island layer; its mask is exactly its
+    // own pixels, so nested regions still show through and the rendered pixels
+    // are unchanged — only the cut layers get cleaner.
+    const order0 = stackingOrder(labels, counts)
+    const position0 = new Int32Array(counts.length).fill(-1)
+    order0.forEach((l, i) => (position0[l] = i))
+    const islands = findEnclosedComponents(labels).filter((c) => {
+      const depth = position0[c.surround] - position0[c.label]
+      return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
+    })
+
+    // The label map painted for the base layers: island pixels take their
+    // surrounding label so nothing beneath them is punched out. With no islands
+    // this is the original map and order (no extra work).
+    let stackData = labels.data
+    let stackCounts = counts
+    let order = order0
+    if (islands.length > 0) {
+      stackData = new Int32Array(labels.data)
+      for (const c of islands) for (const p of c.pixels) stackData[p] = c.surround
+      stackCounts = new Uint32Array(counts.length)
+      for (let i = 0; i < stackData.length; i++) {
+        const l = stackData[i]
+        if (l >= 0) stackCounts[l]++
+      }
+      const stackLabels: LabelMap = {
+        width: labels.width,
+        height: labels.height,
+        data: stackData,
+        count: labels.count,
+      }
+      order = stackingOrder(stackLabels, stackCounts)
+    }
 
     // Pixel indices bucketed by label (one O(n) pass) so each layer is built
     // from the previous one by removing just the label that dropped out — the
     // union masks are the same bits as a per-layer full rescan, at O(n) total
     // instead of O(k·n).
-    const lab = labels.data
-    const nPix = lab.length
-    const offset = new Int32Array(counts.length + 1)
-    for (let l = 0; l < counts.length; l++) offset[l + 1] = offset[l] + counts[l]
-    const bucket = new Int32Array(offset[counts.length])
-    const cursor = offset.slice(0, counts.length)
+    const nPix = stackData.length
+    const offset = new Int32Array(stackCounts.length + 1)
+    for (let l = 0; l < stackCounts.length; l++) offset[l + 1] = offset[l] + stackCounts[l]
+    const bucket = new Int32Array(offset[stackCounts.length])
+    const cursor = offset.slice(0, stackCounts.length)
     for (let p = 0; p < nPix; p++) {
-      const l = lab[p]
+      const l = stackData[p]
       if (l >= 0) bucket[cursor[l]++] = p
     }
 
@@ -604,8 +663,11 @@ async function colorPipeline(
     }
     const data = layerMask.data
     // Layer 0 is every labeled pixel (all layers stacked); higher layers peel off.
-    for (let p = 0; p < nPix; p++) data[p] = lab[p] >= 0 ? 1 : 0
+    for (let p = 0; p < nPix; p++) data[p] = stackData[p] >= 0 ? 1 : 0
 
+    // Progress splits over the base layers plus the island layers on top.
+    const totalLayers = order.length + islands.length
+    let done = 0
     for (let i = 0; i < order.length; i++) {
       const traced = traceMask(layerMask, {
         ...curveOpts,
@@ -615,16 +677,62 @@ async function colorPipeline(
       const fill = paletteHex[order[i]]
       if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
       for (const shape of traced) {
-        shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd' })
+        shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: i })
       }
       // Remove this layer's own pixels so the next mask is the layers below it.
       const label = order[i]
       for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
-      run.progress((i + 1) / order.length)
+      done++
+      run.progress(done / totalLayers)
       // Sequential on purpose: yields the worker event loop between layers so
       // cancel messages interleave with the computation.
       // oxlint-disable-next-line no-await-in-loop
       await run.tick()
+    }
+
+    // Island layers: each lifted color repainted on top of every base layer.
+    // Islands of different colors are disjoint pixel sets, so their paint order
+    // is free; ascending label id keeps it deterministic.
+    if (islands.length > 0) {
+      const byColor = new Map<number, number[]>()
+      for (const c of islands) {
+        let arr = byColor.get(c.label)
+        if (arr === undefined) {
+          arr = []
+          byColor.set(c.label, arr)
+        }
+        for (const p of c.pixels) arr.push(p)
+      }
+      const islandColors = [...byColor.keys()].sort((a, b) => a - b)
+      const islandMask: BinaryMask = {
+        width: labels.width,
+        height: labels.height,
+        data: new Uint8Array(nPix),
+      }
+      for (let c = 0; c < islandColors.length; c++) {
+        const label = islandColors[c]
+        islandMask.data.fill(0)
+        for (const p of byColor.get(label) as number[]) islandMask.data[p] = 1
+        const traced = traceMask(islandMask, {
+          ...curveOpts,
+          turnPolicy: settings.turnPolicy,
+          minArea: traceMinArea,
+        })
+        const fill = paletteHex[label]
+        if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
+        for (const shape of traced) {
+          shapes.push({
+            commands: shape.commands,
+            fill,
+            fillRule: 'evenodd',
+            layerId: order.length + c,
+          })
+        }
+        done++
+        run.progress(done / totalLayers)
+        // oxlint-disable-next-line no-await-in-loop
+        await run.tick()
+      }
     }
   }
   setPalette(usedPalette)
@@ -751,6 +859,60 @@ function desaturateInPlace(image: RasterImage): void {
     data[i + 1] = v
     data[i + 2] = v
   }
+}
+
+/**
+ * Per-label region perimeter: the number of cell sides that face a different
+ * label or the image exterior. A thin outline threading between regions, or a
+ * backdrop wrapping every shape, has a far larger perimeter than a compact blob
+ * of the same color — so the max-perimeter label is the one the others sit on
+ * top of. Indexed by label; unlabeled cells contribute nothing.
+ */
+function regionPerimeters(labels: LabelMap): Float64Array {
+  const { data, width, height } = labels
+  const perim = new Float64Array(labels.count)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x
+      const l = data[i]
+      if (l < 0) continue
+      if (x + 1 >= width || data[i + 1] !== l) perim[l]++
+      if (x - 1 < 0 || data[i - 1] !== l) perim[l]++
+      if (y + 1 >= height || data[i + width] !== l) perim[l]++
+      if (y - 1 < 0 || data[i - width] !== l) perim[l]++
+    }
+  }
+  return perim
+}
+
+/**
+ * Stacking order for a label map, base first: the most connective color (max
+ * region perimeter — it borders the most other regions) is pinned to the bottom
+ * as the full-silhouette base; the rest follow by descending pixel count. Labels
+ * with no pixels are omitted. Only the base is re-seated, so the deterministic
+ * area order is otherwise preserved.
+ */
+function stackingOrder(labels: LabelMap, counts: Uint32Array): number[] {
+  const order: number[] = []
+  for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
+  order.sort((a, b) => counts[b] - counts[a])
+  if (order.length > 1) {
+    const perim = regionPerimeters(labels)
+    let base = order[0]
+    let bestPerim = perim[base]
+    for (const l of order) {
+      if (perim[l] > bestPerim) {
+        bestPerim = perim[l]
+        base = l
+      }
+    }
+    const at = order.indexOf(base)
+    if (at > 0) {
+      order.splice(at, 1)
+      order.unshift(base)
+    }
+  }
+  return order
 }
 
 /** Per-label palette colors as an interleaved Oklab buffer (length count*3). */

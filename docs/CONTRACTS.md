@@ -212,6 +212,16 @@ export function smoothLabelsSpatial(
 export function clearBorderLabel(labels: LabelMap, label: number): number
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask
 export function maskArea(mask: BinaryMask): number
+export interface EnclosedComponent {
+  label: number // the component's own label
+  surround: number // the single label that fully surrounds it
+  pixels: Int32Array // pixel indices, row-major
+}
+// 4-connected components fully enclosed by a single other label — every outside
+// neighbor is that one label, and the component touches neither the image border
+// nor a -1 pixel (an eye's pupil, a dot in a field). A connective outline is not
+// enclosed, so never returned. Deterministic (row-major discovery order).
+export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 
 // edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
 // (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
@@ -257,6 +267,7 @@ export interface SvgShape {
   strokeLinecap?: 'butt' | 'round' | 'square'
   strokeLinejoin?: 'miter' | 'round' | 'bevel'
   id?: string
+  layerId?: number // stacking layer (paint order); groups a cut layer under groupByLayer
 }
 export interface SvgDocument {
   width: number // px viewBox size
@@ -280,6 +291,10 @@ export interface SerializeOptions {
   // wrap each paint color's shapes in its own <g id="layer-N"><title>#hex</title>
   // (first-appearance order) so cut/print tools read one layer per color; default false
   groupByColor?: boolean
+  // wrap each stacking layer (a run of shapes sharing layerId) in its own <g>, in
+  // paint order — keeps a color that recurs at two heights (a base outline and a
+  // pupil island above it) as separate layers. Takes precedence over groupByColor.
+  groupByLayer?: boolean
 }
 export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
