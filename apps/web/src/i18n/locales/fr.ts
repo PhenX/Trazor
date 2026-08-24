@@ -122,6 +122,12 @@ export const fr: MessageSchema = {
       label: 'Seuil alpha',
       hint: 'Un alpha inférieur est considéré comme vide',
     },
+    segmentation: {
+      label: 'Segmentation',
+      hint: 'Comment les pixels deviennent des régions plates. La croissance de régions garde nets les bords anticrénelés des dessins plats ; la palette globale convient aux photos et dégradés',
+      quantize: 'Palette globale',
+      regions: 'Croissance de régions',
+    },
     colors: {
       label: 'Couleurs',
       hint: 'Nombre de couleurs en sortie',
@@ -622,7 +628,10 @@ export const fr: MessageSchema = {
     pickPhoto: 'Contenu photographique — profil postérisé.',
     pickLogo:
       'Formes plates avec peu de couleurs — profil logo avec calques en découpe sans jointure.',
+    pickFlatArt: 'Dessin plat net aux bords anticrénelés — illustration couleur fidèle.',
     pickIllustration: 'Dessin plat mixte — profil illustration.',
+    flatArtRegions:
+      'Dessin plat net — croissance des régions depuis les intérieurs plats (sans palette globale) pour garder les bords anticrénelés propres.',
   },
 
   profiles: {

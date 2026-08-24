@@ -102,6 +102,14 @@ export const TUNABLE_PARAMS: readonly ParamSpec[] = [
   { key: 'preserveDetails', kind: 'bool', modes: COLOR_MODES, group: 'palette' },
   { key: 'dissolveBands', kind: 'int', min: 0, max: 4, modes: COLOR_MODES, group: 'palette' },
   { key: 'colorCoherence', kind: 'number', min: 0, max: 1, modes: COLOR_MODES, group: 'palette' },
+  {
+    key: 'segmentation',
+    kind: 'enum',
+    values: ['quantize', 'regions'],
+    modes: COLOR_MODES,
+    group: 'palette',
+    optIn: true,
+  },
   { key: 'omitBackground', kind: 'bool', modes: COLOR_MODES, group: 'palette', optIn: true },
 
   // ---- binarize (bw / centerline) ----

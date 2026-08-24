@@ -49,7 +49,7 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 ```
 decode (app)
   → resize → denoise → flatten alpha            [raster]         preprocess
-  → color/grayscale:  Oklab k-means++ quantize  [raster]         palette
+  → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
                       stacked:  per-layer Potrace chain           trace
                       cutout:   shared boundary graph  [trace]
@@ -82,7 +82,8 @@ decode (app)
 - **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
-  distance / stroke-width estimation.
+  distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
+  quantization for flat art — soft edges split between neighbors instead of inventing a rim color).
 - **`trace`** — the tracer. Crack-boundary decomposition, the Potrace curve chain, the seam-free boundary graph, and
   centerline extraction. Its own map: [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes, metadata),

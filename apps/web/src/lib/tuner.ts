@@ -127,6 +127,7 @@ function affinityKey(s: VectorizeSettings): string {
     s.background,
     s.backgroundColor,
     s.alphaThreshold,
+    s.segmentation,
     s.paletteSize,
     s.autoPaletteSize,
     s.colorSpace,

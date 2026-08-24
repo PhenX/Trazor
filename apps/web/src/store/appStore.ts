@@ -604,7 +604,7 @@ export const useAppStore = defineStore('app', () => {
   function tuneFreeKeys(): TunableKey[] {
     const keys: TunableKey[] = [...DEFAULT_FREE]
     if (tuneExplorePreprocess.value) keys.push('blurRadius', 'denoise')
-    if (tuneExploreStructural.value) keys.push('curveMode', 'layering')
+    if (tuneExploreStructural.value) keys.push('curveMode', 'layering', 'segmentation')
     return keys
   }
 
