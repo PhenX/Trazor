@@ -859,8 +859,9 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 14px;
-  margin-left: -7px;
+  /* Wide, invisible catch area so the thin line is easy to grab anywhere. */
+  width: 26px;
+  margin-left: -13px;
   cursor: col-resize;
   z-index: 4;
   touch-action: none;
@@ -871,10 +872,17 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 1.5px;
-  margin-left: -0.75px;
+  width: 2px;
+  margin-left: -1px;
   background: var(--accent);
   opacity: 0.9;
+}
+
+/* Thicken the line on hover/drag so the grab target reads clearly. */
+.divider:hover .divider-line {
+  width: 3px;
+  margin-left: -1.5px;
+  opacity: 1;
 }
 
 .divider-grip {

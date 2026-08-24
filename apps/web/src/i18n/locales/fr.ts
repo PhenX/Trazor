@@ -56,6 +56,7 @@ export const fr: MessageSchema = {
     ink: { label: 'Encre', tagline: 'Noir et blanc · 960×960' },
     bloom: { label: 'Floraison', tagline: 'Illustration · 960×960' },
     mandala: { label: 'Mandala', tagline: 'N&B détaillé · 1280×1280' },
+    confetti: { label: 'Confettis', tagline: 'Motif dense · 960×960' },
     degraded: { label: 'JPEG', tagline: 'Raster dégradé · 960×960' },
   },
 

@@ -39,10 +39,12 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     date: '2026-08-24',
     iteration: 6,
     kind: 'improvement',
-    title: 'Smoother "Show path & nodes" overlay',
+    title: 'Preview overlay & compare polish',
     items: [
-      'Panning with the path-and-nodes overlay on is now smooth, even on dense traces. The anchor marks and control handles are built once and only recomputed when you zoom, instead of on every drag.',
+      'Panning with "Show path & nodes" on is now smooth, even on very dense traces. The anchor marks and handles are built once and only recomputed when you zoom; the densest traces reuse the last frame while you drag and redraw crisply once you stop.',
       'The anchor crosses are a touch smaller, so the geometry underneath is easier to read.',
+      'The PNG/SVG compare divider is easier to grab — a wider catch area and a slightly bolder line.',
+      'New "Confetti" sample: a dense pattern that traces to tens of thousands of nodes, handy for seeing the overlay on heavy geometry.',
     ],
   },
   {
