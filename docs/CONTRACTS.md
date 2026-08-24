@@ -102,6 +102,19 @@ export function borderDominantColor(image: RasterImage): [number, number, number
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
 export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
 
+// illumination.ts — single-scale Retinex flat-field on Oklab L (chroma untouched)
+export interface FlattenIlluminationOptions {
+  scale?: number // blur radius as a fraction of max(w,h), (0,1]; default 0.12
+  strength?: number // 0 = no-op clone, 1 = full division; default 1
+}
+// Divides the low-frequency lightness field out of L so smooth shading collapses
+// to a flat tone the quantizer keeps as one color. New image; alpha copied;
+// deterministic. Rings a halo at hard color edges (multiplicative model).
+export function flattenIllumination(
+  image: RasterImage,
+  opts?: FlattenIlluminationOptions,
+): RasterImage
+
 // quantize.ts
 export interface QuantizeOptions {
   k: number // 2..64

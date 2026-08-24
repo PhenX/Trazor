@@ -32,3 +32,4 @@ The output is a standalone page (open it directly, or embed its SVGs in a doc).
 | [`shape-matching`](shape-matching.ts)         | Traced shapes serialized as an optimized path vs. a recognized primitive (incl. rotated ellipse).                  |
 | [`vinyl-color-layers`](vinyl-color-layers.ts) | Vinyl cutter B&W silhouette vs. color + stacked + group-by-color, with the per-color `<g>` layers peeled apart.    |
 | [`degradation`](degradation.ts)               | The dataset generator's input-degradation pipeline: procedural backgrounds and degraded variants of a clean scene. |
+| [`flatten-shading`](flatten-shading.ts)       | `flattenIllumination` before tracing: a smoothly shaded flat field bands into tone rings; de-shading collapses it. |

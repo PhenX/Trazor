@@ -10,6 +10,8 @@ export { borderDominantColor, flattenImage } from './background'
 export type { FlattenResult } from './background'
 export { toGrayscale, toOklabBuffer } from './convert'
 export { detectEdges } from './edges'
+export { flattenIllumination } from './illumination'
+export type { FlattenIlluminationOptions } from './illumination'
 export { quantize } from './quantize'
 export type { QuantizeOptions, QuantizeResult } from './quantize'
 export {
