@@ -296,6 +296,17 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
         </div>
 
         <template v-if="fixedPalette === null">
+          <SelectRow
+            :label="t('settings.segmentation.label')"
+            :model-value="s.segmentation"
+            :options="[
+              { value: 'quantize', label: t('settings.segmentation.quantize') },
+              { value: 'regions', label: t('settings.segmentation.regions') },
+            ]"
+            :default-value="D.segmentation"
+            :hint="t('settings.segmentation.hint')"
+            @update:model-value="set('segmentation', $event)"
+          />
           <SliderRow
             :label="t('settings.colors.label')"
             :model-value="s.paletteSize"

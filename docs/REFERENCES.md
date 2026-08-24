@@ -67,6 +67,15 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Nobuyuki Otsu, “A Threshold Selection Method from Gray-Level Histograms”,
   _IEEE Trans. SMC_ 9(1), 1979.** Automatic binarization threshold
   (`packages/raster/src/threshold.ts`).
+- **Fernand Meyer, “Color image segmentation”, _ICIP_ 1992**, and **Luc Vincent
+  & Pierre Soille, “Watersheds in digital spaces: an efficient algorithm based on
+  immersion simulations”, _IEEE Trans. PAMI_ 13(6), 1991.** Marker-controlled
+  watershed by priority flooding: flat interiors seed the regions, a
+  color-distance priority queue grows them over anti-aliased edges. The
+  region-growing color segmentation front-end for flat art
+  (`packages/raster/src/segment.ts`), which avoids the third-color rim a global
+  palette invents on soft edges. Followed by a region-adjacency-graph
+  agglomerative merge (near-duplicate and small-region folding).
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).

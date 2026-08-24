@@ -121,6 +121,12 @@ export const en = {
       label: 'Alpha cutoff',
       hint: 'Alpha below this counts as empty',
     },
+    segmentation: {
+      label: 'Segmentation',
+      hint: 'How pixels become flat regions. Region growing keeps anti-aliased edges of flat art clean; global palette suits photos and gradients',
+      quantize: 'Global palette',
+      regions: 'Region growing',
+    },
     colors: {
       label: 'Colors',
       hint: 'Number of output colors',
@@ -522,8 +528,8 @@ export const en = {
     pickLogo: 'Flat shapes with few colors — logo profile with seam-free cutout layers.',
     pickFlatArt: 'Clean flat art with anti-aliased edges — faithful color illustration.',
     pickIllustration: 'Mixed flat artwork — illustration profile.',
-    flatArtCleanup:
-      'Anti-aliased edges — merging rim specks below {area} px² and dissolving hairline seams.',
+    flatArtRegions:
+      'Crisp flat art — growing regions from the flat interiors (no global palette) so anti-aliased edges stay clean.',
   },
 
   profiles: {

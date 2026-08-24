@@ -146,6 +146,40 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
 - Palette ordered by pixel count descending. Hex via core `rgbToHex`.
 
 ```ts
+// segment.ts — region-growing alternative to global quantization (flat art)
+export interface SegmentOptions {
+  flatThreshold?: number // Oklab gradient below which a pixel is a flat-region interior (marker); default 0.02
+  mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
+  minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
+  maxRegions?: number // soft cap: fold the closest pair (within 2·mergeThreshold) until met; 0 = none
+  mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
+}
+export interface SegmentResult {
+  labels: LabelMap // compact 0..count-1; -1 masked-out (mirrors QuantizeResult)
+  paletteHex: string[]
+  paletteRgb: Uint8Array // count*3
+  counts: Uint32Array
+}
+export function segmentRegions(image: RasterImage, opts?: SegmentOptions): SegmentResult
+```
+
+`segmentRegions` requirements (marker-controlled watershed; Meyer 1991):
+
+- Oklab gradient = max ΔE to any 4-neighbor. Markers are 4-connected components
+  of in-mask pixels with gradient < `flatThreshold`, each seeded with its mean.
+- A priority flood (binary min-heap keyed by Oklab distance to the claiming
+  marker's mean; ties by pixel index) grows markers over the remaining
+  edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
+  no third color is ever created on a boundary.
+- A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
+  regions under `minRegionArea` (closest first), then consolidates non-adjacent
+  near-duplicates globally; `maxRegions` folds the closest pair only within a
+  perceptual ceiling, so a budget never collapses genuinely different hues.
+- Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
+  candidates). Result mirrors `QuantizeResult` so the engine consumes it
+  identically. Selected by `VectorizeSettings.segmentation === 'regions'`.
+
+```ts
 // threshold.ts
 export function otsuThreshold(gray: GrayImage, mask?: BinaryMask | null): number // in [0,1], 256-bin
 export function binarize(

@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 4,
+    kind: 'feature',
+    title: 'Cleaner edges for flat art and line art',
+    items: [
+      'A new region-growing segmentation traces cartoons, logos and clip art far more faithfully. Instead of matching every pixel to one global palette — which turned the soft edge between two colors into a hairline rim of a third color — it grows each color region outward from its flat interior, so an anti-aliased edge is split cleanly between its two real neighbors. No more rim halos or speckled outlines, and the linework stays smooth.',
+      'Auto-detect switches to it automatically for crisp flat art; you can also pick it under Segmentation → Region growing, or keep Global palette for photos and gradients.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 3,
     kind: 'improvement',
     title: 'Sharper auto-detect for clean artwork',

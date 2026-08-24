@@ -287,9 +287,10 @@ describe('recommendSettings', () => {
     expect(rec.profileId).toBe('illustration')
     expect(rec.patch.mode).toBe('color')
     expect(rec.patch.denoise).not.toBe('bilateral') // crisp edges, not photo blur
-    // Anti-sliver cleanup so the anti-aliasing does not scatter speck shapes.
+    // Region growing (not global quantization) so the anti-aliased edges never
+    // invent a third rim color, with small rim regions folded away.
+    expect(rec.patch.segmentation).toBe('regions')
     expect(rec.patch.minRegionArea ?? 0).toBeGreaterThanOrEqual(16)
-    expect(rec.patch.dissolveBands ?? 0).toBeGreaterThanOrEqual(2)
   })
 
   it('keeps a colored subject on a black backdrop in color, not grayscale', () => {

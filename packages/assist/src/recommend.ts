@@ -154,17 +154,18 @@ export function recommendSettings(
       patch.denoise = 'bilateral'
       r.add('photoTexture', 'Photographic texture detected — bilateral denoise keeps edges clean.')
     }
-    // Anti-aliased flat art: the soft rim between two flat colors quantizes into
-    // hairline slivers of a third color, scattering thousands of speck shapes.
-    // Merge sub-`FLAT_ART_MIN_REGION` regions and dissolve 1px seam bands so the
-    // trace is the clean shapes, not the anti-aliasing — no photo-style blur.
-    if (flatArt && rich) {
+    // Anti-aliased flat art: global k-means maps the soft rim between two flat
+    // colors to a nearest *third* palette color, drawing hairline slivers along
+    // every edge. Region growing instead grows each region from its flat
+    // interior, so a soft edge is split between its two real neighbors and no
+    // third rim color can form — the faithful, seam-free choice. Small regions
+    // below `FLAT_ART_MIN_REGION` still fold into their surroundings.
+    if (flatArt) {
+      patch.segmentation = 'regions'
       patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, FLAT_ART_MIN_REGION)
-      if ((patch.dissolveBands ?? 0) < 2) patch.dissolveBands = 2
       r.add(
-        'flatArtCleanup',
-        `Anti-aliased edges — merging rim specks below ${FLAT_ART_MIN_REGION} px² and dissolving hairline seams.`,
-        { area: FLAT_ART_MIN_REGION },
+        'flatArtRegions',
+        'Crisp flat art — growing regions from the flat interiors (no global palette) so anti-aliased edges stay clean.',
       )
     }
   }

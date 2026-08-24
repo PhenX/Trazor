@@ -41,6 +41,7 @@ import {
   quantize,
   resizeGray,
   resizeToFit,
+  segmentRegions,
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
@@ -79,6 +80,13 @@ const EDGE_PROTECT_THRESHOLD = 0.5
  * so rim mixtures cannot claim a palette entry.
  */
 const CLUSTER_EDGE_THRESHOLD = 40
+
+/**
+ * Oklab ΔE below which region-growing segmentation folds two regions into one
+ * color. Perceptual-distance gated, so it merges near-duplicates and splits of
+ * one color but never collapses genuinely different hues together.
+ */
+const SEGMENT_MERGE_THRESHOLD = 0.1
 
 /**
  * Discretize an edge hint into a protect mask at the working resolution: resize
@@ -225,6 +233,7 @@ function preKeyOf(s: VectorizeSettings): string {
 /** Settings that change the quantized + cleaned label map. */
 function palKeyOf(s: VectorizeSettings): string {
   return [
+    s.segmentation,
     s.paletteSize,
     s.autoPaletteSize,
     s.colorSpace,
@@ -432,6 +441,37 @@ async function colorPipeline(
     await run.tick()
     run.stage('segment')
     await run.tick()
+  } else if (settings.segmentation === 'regions' && settings.palette === null) {
+    // Region growing (marker-controlled watershed): no global palette, so an
+    // anti-aliased edge is split between its two neighbors instead of inventing
+    // a third rim color. `paletteSize` is a budget (soft cap), not an exact
+    // count; autoPaletteSize lets the merge thresholds decide the count.
+    const seg = segmentRegions(image, {
+      mergeThreshold: SEGMENT_MERGE_THRESHOLD,
+      minRegionArea: settings.minRegionArea,
+      maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
+      mask: opaque,
+    })
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+    labels = seg.labels
+    paletteHex = seg.paletteHex
+    paletteRgb = seg.paletteRgb
+    counts = seg.counts
+    const backgroundLabel = settings.omitBackground ? nearestPaletteLabel(image, paletteHex) : -1
+    if (backgroundLabel >= 0) {
+      const cleared = clearBorderLabel(labels, backgroundLabel)
+      counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
+    }
+    if (canCachePal) {
+      cache.palKey = palKey
+      cache.labels = labels
+      cache.paletteHex = paletteHex
+      cache.paletteRgb = paletteRgb
+      cache.counts = counts
+      cache.paletteClampedTo = paletteClampedTo
+    }
   } else {
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
