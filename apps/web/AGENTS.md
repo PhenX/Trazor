@@ -18,7 +18,9 @@ src/
   App.vue                layout grid, keyboard shortcuts, theme binding
   store/appStore.ts       the single source of truth (Pinia setup store)
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
+  worker/assist.worker.ts      installAssistWorker(self) — palette suggestion, off the main thread
   lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
+                          assistClient (main-thread handle on the assist worker),
                           overlay (per-element-kind colors/labels for the complexity overlay),
                           layers (group traced SVG geometry into color layers + contours for the layer panel),
                           releaseNotes (the user-facing changelog + its date/iteration helpers)
@@ -38,6 +40,10 @@ src/
   (matched by `error.name`, cross-realm safe) and is swallowed silently. Never call the engine on the main thread.
 - **The worker copies the pixel buffer before transferring** (`client.ts`) — the store passes `workingImage` without
   cloning and relies on that. Don't remove the copy or the caller's image detaches.
+- **Whole-image work runs in a worker, never on the main thread.** Palette suggestion (`suggestPalettes`, a full-image
+  k-means pass) goes through one `AssistClient` (`lib/assistClient.ts` + `worker/assist.worker.ts`), like vectorization
+  through `TrazorClient`. Only the cheap, sampled `analyzeImage` stays on the main thread — auto-recommend needs it
+  synchronously before the debounced trace. Anything that touches every pixel of a full-size image belongs off-thread.
 - **Settings come from `@trazor/core`.** Use `DEFAULT_SETTINGS`, `normalizeSettings`, `TARGET_PROFILES`; never
   hand-maintain a parallel list of fields or clamps.
 - **Theme-aware and responsive.** Every color is a token in `base.css` defined for both dark and default/light; respect
