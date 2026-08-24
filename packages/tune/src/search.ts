@@ -20,6 +20,7 @@ export type CandidateOrigin =
   | 'step'
   | 'recombine'
   | 'restart'
+  | 'palette'
 
 /** One settings point the search wants evaluated. */
 export interface TuneCandidate {
@@ -69,6 +70,14 @@ export interface TuneOptions {
   minFidelity?: number
   /** Extra seed points merged over the base settings (assist / profiles). */
   seeds?: readonly SeedPatch[]
+  /**
+   * Candidate fixed palettes (each a list of `#rrggbb`) the search may pin as a
+   * categorical choice — the assist palette suggestions. Color modes only, and
+   * only while the base leaves the palette automatic (a user-pinned palette is
+   * never overridden). Each is seeded in round 0; descent can then swap the
+   * incumbent between them and automatic while keeping its tuned parameters.
+   */
+  palettes?: readonly (readonly string[])[]
 }
 
 interface ParamState {
@@ -136,6 +145,11 @@ export class TuneSearch {
   private incumbent: ScoredCandidate | null = null
   private readonly paramState = new Map<TunableKey, ParamState>()
 
+  /** Categorical palette choices ([null=auto, ...suggested]); empty when disabled. */
+  private readonly paletteChoices: readonly (readonly string[] | null)[]
+  /** Palette choices already proposed as a descent swap (keyed by {@link paletteKey}). */
+  private readonly triedPalettes = new Set<string>()
+
   constructor(base: VectorizeSettings, opts: TuneOptions) {
     this.base = normalizeSettings(base)
     this.mode = this.base.mode
@@ -156,6 +170,12 @@ export class TuneSearch {
         exhausted: false,
       })
     }
+    // Suggested palettes become a categorical dimension — color mode only, and
+    // only while the base leaves the palette automatic (never override a pin).
+    this.paletteChoices =
+      this.mode === 'color' && this.base.palette === null && opts.palettes && opts.palettes.length
+        ? [null, ...opts.palettes.map((p) => [...p])]
+        : []
   }
 
   /** The next batch of novel candidates, or `[]` when the budget is spent or the search converged. */
@@ -280,6 +300,10 @@ export class TuneSearch {
     for (const seed of this.opts.seeds ?? []) {
       add({ ...this.base, ...seed.patch }, seed.origin ?? 'sample')
     }
+    // Each suggested palette, evaluated at the base parameters.
+    for (const choice of this.paletteChoices) {
+      if (choice !== null) add({ ...this.base, palette: [...choice] }, 'palette')
+    }
 
     // Latin-hypercube fill over the applicable free space.
     const specs = applicableParams(this.freeKeys, this.mode, this.base)
@@ -317,8 +341,9 @@ export class TuneSearch {
     const specs = applicableParams(this.freeKeys, this.mode, inc.settings)
     const ranked = this.rankParams(specs)
 
-    // Reserve room for a recombination and (when stalling) a restart.
-    const reserve = 1 + (this.stall > 0 ? 1 : 0)
+    // Reserve room for a recombination, a palette swap, and (when stalling) a restart.
+    const nextPalette = this.nextUntriedPalette(inc.settings)
+    const reserve = 1 + (this.stall > 0 ? 1 : 0) + (nextPalette !== undefined ? 1 : 0)
     const probeBudget = Math.max(1, Math.min(budget, this.opts.roundSize) - reserve)
 
     for (const spec of ranked) {
@@ -326,9 +351,29 @@ export class TuneSearch {
       this.probesFor(spec, inc.settings, propose)
     }
 
+    // Swap the incumbent onto the next untried palette, keeping its tuned params.
+    if (nextPalette !== undefined) {
+      this.triedPalettes.add(paletteKey(nextPalette))
+      propose(
+        { ...inc.settings, palette: nextPalette === null ? null : [...nextPalette] },
+        'palette',
+      )
+    }
     this.recombine(propose)
     if (this.stall > 0) this.restart(specs, inc.settings, propose)
     return out
+  }
+
+  /** The next palette choice not yet proposed as a swap and not the incumbent's. */
+  private nextUntriedPalette(from: VectorizeSettings): (readonly string[] | null) | undefined {
+    if (this.paletteChoices.length < 2) return undefined
+    const currentKey = paletteKey(from.palette ?? null)
+    for (const choice of this.paletteChoices) {
+      const key = paletteKey(choice)
+      if (key === currentKey || this.triedPalettes.has(key)) continue
+      return choice
+    }
+    return undefined
   }
 
   /** Emit the one-parameter moves for `spec` from the incumbent. */
@@ -379,6 +424,9 @@ export class TuneSearch {
     for (const spec of TUNABLE_PARAMS) {
       if (spec.group === group) settings[spec.key] = bs[spec.key]
     }
+    // The fixed palette rides with the palette group, so a palette-seed winner's
+    // colors can graft onto the best curve-tuned candidate.
+    if (group === 'palette') settings.palette = bs.palette
     propose(settings as unknown as VectorizeSettings, 'recombine')
   }
 
@@ -555,6 +603,11 @@ function withParam(
     return normalizeSettings({ ...settings, [spec.key]: values[idx] })
   }
   return withParamUnit(settings, spec, sample)
+}
+
+/** A stable key for a palette choice (null = automatic), for dedup and tried-tracking. */
+function paletteKey(choice: readonly string[] | null): string {
+  return choice === null ? 'auto' : choice.map((c) => c.toLowerCase()).join(',')
 }
 
 /** Pearson correlation of two equal-length series; 0 when either is constant. */

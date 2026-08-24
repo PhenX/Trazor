@@ -657,6 +657,10 @@ export const useAppStore = defineStore('app', () => {
       free: tuneFreeKeys(),
       minFidelity: tuneMinFidelity.value > 0 ? tuneMinFidelity.value : undefined,
       seeds: tuneSeeds(image),
+      // Offer the data-derived palette suggestions as categorical candidates
+      // (color mode, automatic palette only — the search guards the rest).
+      palettes:
+        settings.value.mode === 'color' ? paletteSuggestions.value.map((s) => s.colors) : [],
       onProgress: (p) => {
         if (tuneSignal !== signal) return
         tuneProgress.value = { evaluated: p.evaluated, total: p.total, converged: p.converged }

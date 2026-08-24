@@ -232,3 +232,50 @@ describe('TuneSearch rejection and Pareto', () => {
     }
   })
 })
+
+describe('TuneSearch palette candidates', () => {
+  const PAL_A = ['#000000', '#ffffff']
+  const PAL_B = ['#ff0000', '#00ff00', '#0000ff']
+
+  it('seeds each suggested palette in round 0 and can pick one as the winner', () => {
+    const base = normalizeSettings({ ...DEFAULT_SETTINGS, mode: 'color', palette: null })
+    const search = new TuneSearch(base, {
+      weights: FIDELITY_ONLY,
+      iterations: 40,
+      seed: 5,
+      roundSize: 8,
+      free: ['smoothing'],
+      palettes: [PAL_A, PAL_B],
+    })
+    // Reward exactly PAL_B; the search must surface it as the best.
+    const reward = (s: VectorizeSettings) =>
+      metrics({ meanDeltaE: (s.palette ?? []).join(',') === PAL_B.join(',') ? 0.01 : 0.2 })
+    let round = search.nextRound()
+    const seeded = round.filter((c) => c.origin === 'palette').map((c) => c.settings.palette)
+    // Both suggested palettes appear as round-0 candidates.
+    expect(seeded).toContainEqual(PAL_A)
+    expect(seeded).toContainEqual(PAL_B)
+    for (;;) {
+      if (round.length === 0) break
+      search.report(round.map((c) => ({ id: c.id, metrics: reward(c.settings) })))
+      round = search.nextRound()
+    }
+    expect(search.best()?.settings.palette).toEqual(PAL_B)
+  })
+
+  it('never overrides a user-pinned palette', () => {
+    const base = normalizeSettings({ ...DEFAULT_SETTINGS, mode: 'color', palette: PAL_A })
+    const search = new TuneSearch(base, {
+      weights: FIDELITY_ONLY,
+      iterations: 20,
+      seed: 1,
+      roundSize: 6,
+      free: ['smoothing'],
+      palettes: [PAL_B],
+    })
+    const round0 = search.nextRound()
+    // Every candidate keeps the pinned palette; no palette seed is emitted.
+    for (const c of round0) expect(c.settings.palette).toEqual(PAL_A)
+    expect(round0.some((c) => c.origin === 'palette')).toBe(false)
+  })
+})
