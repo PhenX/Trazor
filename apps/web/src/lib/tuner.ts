@@ -8,16 +8,22 @@ import { FidelityClient } from './fidelityClient'
 /** Long side (px) each candidate SVG is rasterized to for scoring. */
 const DEFAULT_SCORE_SIZE = 1024
 
+export interface TuneProgress {
+  evaluated: number
+  total: number
+  converged: boolean
+  best: ScoredCandidate | null
+  /** Every candidate scored so far (snapshot), for a live results wall. */
+  results: readonly ScoredCandidate[]
+  /** The current Pareto front (snapshot). */
+  front: readonly ScoredCandidate[]
+}
+
 export interface AutoTuneOptions extends TuneOptions {
   /** Long-side cap for the shared scoring resolution (default 1024). */
   scoreSize?: number
-  /** Called after each round with live progress and the best candidate so far. */
-  onProgress?: (progress: {
-    evaluated: number
-    total: number
-    converged: boolean
-    best: ScoredCandidate | null
-  }) => void
+  /** Called after each round with live progress, the best candidate, and results so far. */
+  onProgress?: (progress: TuneProgress) => void
 }
 
 export interface AutoTuneResult {
@@ -72,12 +78,17 @@ export async function runAutoTune(
           affinityKey: affinityKey(candidate.settings),
         })
         const metrics = await measure(result, deps.fidelity, refId, scoreW, scoreH)
-        return { id: candidate.id, metrics }
+        return { id: candidate.id, metrics, svg: result.svg }
       }),
     )
     if (signal?.cancelled) break
     search.report(scored)
-    opts.onProgress?.({ ...search.progress(), best: search.best() })
+    opts.onProgress?.({
+      ...search.progress(),
+      best: search.best(),
+      results: search.results().slice(),
+      front: search.paretoFront(),
+    })
   }
 
   return { best: search.best(), results: search.results(), front: search.paretoFront() }

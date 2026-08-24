@@ -37,12 +37,16 @@ export interface ScoredCandidate extends TuneCandidate {
   score: number
   /** Set when the candidate is excluded from winning (empty output or below the fidelity floor). */
   rejected?: 'empty' | 'fidelity-floor'
+  /** The traced SVG, carried through for the results view (opaque to the search). */
+  svg?: string
 }
 
 /** What the caller feeds back for each emitted candidate. */
 export interface CandidateResult {
   id: number
   metrics: CandidateMetrics
+  /** The traced SVG (opaque to the search); retained on the ScoredCandidate for the wall. */
+  svg?: string
 }
 
 /** An extra round-0 starting point (e.g. the assist recommendation or a profile patch). */
@@ -189,6 +193,7 @@ export class TuneSearch {
       const candidate = this.pending.get(r.id)
       if (!candidate) continue
       const scored = this.scoreOne(candidate, r.metrics, anchor)
+      if (r.svg !== undefined) scored.svg = r.svg
       this.record(scored)
 
       if (candidate.origin === 'step' && candidate.tweaked) {

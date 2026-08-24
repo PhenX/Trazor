@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 3,
+    kind: 'feature',
+    title: 'Auto-optimize your settings',
+    items: [
+      'A new Auto-optimize tool searches the settings space for you: set how much you care about fidelity, simplicity, file size, fewer colors, and cleanliness, pick an iteration budget, and it traces many candidates in parallel to find the best combination for your image. Presets seed common goals (Max fidelity, Balanced, Smallest file, Cut-ready).',
+      'Compare every candidate on one wall, sorted by any measure or filtered to the best trade-offs. Turn on Compare zoom to magnify the exact same spot across all of them at once — move the mouse to pan and scroll to zoom — then click a candidate to apply it, or revert to your original settings.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 2,
     kind: 'improvement',
     title: 'Cleaner layered vinyl',

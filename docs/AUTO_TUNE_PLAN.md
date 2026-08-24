@@ -1,9 +1,11 @@
 # Auto-optimize — design plan for the brute-force settings search
 
-**Status: design plan, not shipped behavior.** This documents the intended design of an automatic settings search
-("brute force mode"): the user states how much they care about each quality axis (fidelity, document simplicity, …) and
-an iteration budget; the studio then explores the settings space in parallel workers, smartly tweaking one parameter at
-a time, and converges on the best settings for _this_ image and _these_ priorities.
+**Status: M1 + M2 shipped; M3–M4 planned.** This documents the design of the automatic settings search ("brute force
+mode"): the user states how much they care about each quality axis (fidelity, document simplicity, …) and an iteration
+budget; the studio then explores the settings space in parallel workers, smartly tweaking one parameter at a time, and
+converges on the best settings for _this_ image and _these_ priorities. The core search (`@trazor/tune`), the worker
+pool (`TrazorPool`), the fidelity score-only path, the studio panel, and the comparison wall with the synchronized loupe
+are implemented; the milestone table below tracks what remains.
 
 The pipeline it drives is described in [`../ARCHITECTURE.md`](../ARCHITECTURE.md); the settings it tunes are
 `VectorizeSettings` ([`../packages/core/src/settings.ts`](../packages/core/src/settings.ts)); the metrics it optimizes
@@ -344,12 +346,12 @@ wires `tune` + `engine` + fidelity together.
 
 ## Milestones
 
-| #      | Milestone                                                                                                                                                                                                                                                                                              | Effort | Risk |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---- |
-| **M1** | Core: `@trazor/tune` (params, scoring, search), `TrazorPool`, fidelity score-only path; dev-only trigger                                                                                                                                                                                               | M      | Low  |
-| **M2** | Studio UI: panel, presets, progress, the comparison wall with synchronized loupe, apply/revert; i18n; release note                                                                                                                                                                                     | M      | Low  |
-| **M3** | Sharper: affinity scheduling measured + tuned, optional multi-entry `StageCache`, sensitivity-ranked probes, Pareto filter + two-up compare on the wall                                                                                                                                                | S–M    | Low  |
-| **M4** | Breadth: suggested fixed palettes as categorical candidates, structural opt-ins (curve mode / layering), constraint presets, draft-resolution pre-screen for very large images (successive halving with per-parameter px-scaling rules), optional Node CLI batch tuner on the `scripts/eval` substrate | M–L    | Med  |
+| #         | Milestone                                                                                                                                                                                                                                                                                              | Effort | Risk |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---- |
+| **M1 ✅** | Core: `@trazor/tune` (params, scoring, search), `TrazorPool`, fidelity score-only path; dev-only trigger                                                                                                                                                                                               | M      | Low  |
+| **M2 ✅** | Studio UI: panel, presets, progress, the comparison wall with synchronized loupe, apply/revert; i18n; release note                                                                                                                                                                                     | M      | Low  |
+| **M3**    | Sharper: affinity scheduling measured + tuned, optional multi-entry `StageCache`, sensitivity-ranked probes, Pareto filter + two-up compare on the wall                                                                                                                                                | S–M    | Low  |
+| **M4**    | Breadth: suggested fixed palettes as categorical candidates, structural opt-ins (curve mode / layering), constraint presets, draft-resolution pre-screen for very large images (successive halving with per-parameter px-scaling rules), optional Node CLI batch tuner on the `scripts/eval` substrate | M–L    | Med  |
 
 M1 before M2 keeps the algorithm honest: the strategy must demonstrably beat random sampling on the same budget in
 tests before it earns UI. The M4 CLI reuses the existing resvg-based eval harness, which would also let CI benchmark

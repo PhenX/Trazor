@@ -99,6 +99,32 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           {{ t('panel.autoSettings') }}
         </button>
 
+        <button
+          class="btn tune-btn"
+          :disabled="!store.hasImage"
+          :title="t('tune.openTitle')"
+          @click="store.openTune()"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+            <path
+              d="M10.2 10.2 13.5 13.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+            <path
+              d="M7 5v4M5 7h4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          {{ t('tune.open') }}
+        </button>
+
         <label class="auto-onload" :title="t('panel.applyOnLoadTitle')">
           <input
             type="checkbox"
@@ -757,6 +783,11 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
 
 .auto-btn {
   margin-top: 8px;
+  width: 100%;
+}
+
+.tune-btn {
+  margin-top: 6px;
   width: 100%;
 }
 
