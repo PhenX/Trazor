@@ -119,9 +119,9 @@ const html = `<title>Vinyl — Color Layers</title>
   <p class="sub">The same flat graphic traced through the engine. The old profile was black &amp; white, so every color
     became a single silhouette. The new profile keeps the colors, stacks them (each lower layer extends under the ones
     above, so weeded sheets stack without gaps), and wraps each stacking level in its own <code>&lt;g&gt;</code> cut
-    layer. An enclosed detail — the eye pupil — lifts onto its own top layer instead of punching a hole through the
-    sheets below, so its black shows up as a second black layer separate from the base outline. The backdrop color is
-    dropped, so there is no full backing sheet to weed.</p>
+    layer. An enclosed detail buried under two sheets — the eye pupil, beneath the blue face and the white sclera —
+    lifts onto its own top layer instead of punching a hole through both, so its black shows up as a second black layer
+    separate from the base outline. The backdrop color is dropped, so there is no full backing sheet to weed.</p>
 
   <section class="row">
     <h2>Before vs after</h2>

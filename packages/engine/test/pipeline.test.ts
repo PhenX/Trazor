@@ -556,6 +556,44 @@ describe('stacked islands on top', () => {
     for (const hex of s.palette as string[]) expect(res.svg).toContain(hex)
     expect((await vectorize(eyeIcon(), s)).svg).toBe(res.svg)
   })
+
+  it('leaves a shallow pocket (one sheet over it) as a hole rather than lifting', async () => {
+    // Black outline base + a blue field + a black dot enclosed directly in the
+    // blue. Only the blue sheet stacks over the dot (depth 1), so a single hole
+    // aligns fine — the dot is not lifted onto its own layer.
+    const dotIcon = (): RasterImage => {
+      const img = createRaster(80, 80)
+      const disk = (cx: number, cy: number, r: number, rgb: [number, number, number]): void => {
+        for (let y = 0; y < 80; y++) {
+          for (let x = 0; x < 80; x++) {
+            if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) setPixel(img, x, y, ...rgb)
+          }
+        }
+      }
+      disk(40, 40, 30, [10, 10, 10]) // black outline (base)
+      disk(40, 40, 26, [40, 110, 190]) // blue field
+      disk(40, 40, 6, [10, 10, 10]) // black dot enclosed in the blue
+      return img
+    }
+    const s = settings({
+      mode: 'color',
+      layering: 'stacked',
+      groupByColor: true,
+      preserveDetails: true,
+      palette: ['#0a0a0a', '#286ebe'],
+      optimizeSvg: false,
+    })
+    const res = await vectorize(dotIcon(), s)
+    const groups = [
+      ...res.svg.matchAll(/<g id="layer-\d+"><title>(#[0-9a-f]{6})<\/title>(.*?)<\/g>/gs),
+    ]
+    const layers = groups.map((g) => ({ color: g[1], subpaths: (g[2].match(/M/g) ?? []).length }))
+    // Two layers only — black is not lifted to a second layer.
+    expect(layers.length).toBe(2)
+    expect(layers.filter((l) => l.color === '#0a0a0a').length).toBe(1)
+    // The dot stays as a hole in the single blue sheet: field ring + dot = two subpaths.
+    expect(layers.find((l) => l.color === '#286ebe')?.subpaths).toBe(2)
+  })
 })
 
 describe('stage cache (E3)', () => {

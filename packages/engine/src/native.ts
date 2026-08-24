@@ -58,6 +58,13 @@ const QUANTIZE_SEED = 0x02f6e2b1
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
 
+/**
+ * Stacked layering lifts an enclosed pocket onto its own top layer only when at
+ * least this many sheets would otherwise stack over it (each with a hole cut for
+ * the pocket). One sheet's single hole weeds and aligns fine; two or more drift.
+ */
+const MIN_LIFT_DEPTH = 2
+
 /** Coherence relaxation strength (squared-Oklab per disagreeing neighbor) at colorCoherence 1. */
 const COHERENCE_LAMBDA = 0.03
 /** Coherence relaxation passes. */
@@ -593,22 +600,24 @@ async function colorPipeline(
     // rest stack by descending area (large fields low, small details on top).
     // Order sets only which sheet is the full base and the layer/group order —
     // never the rendered pixels, since each pixel's topmost layer is its own.
-    // Enclosed islands whose color sits below its surround in the stack (a
-    // base-colored pupil inside a lighter eye) would punch a floating hole in
-    // every layer between them. Relabel each such island into its surrounding
-    // color for the solid base layers, then repaint it on top as its own island
-    // layer. An island's mask is exactly its own pixels, so repainting covers
-    // only its color and any nested region still shows through — the rendered
-    // pixels are unchanged; only the cut layers get cleaner.
+    // An enclosed island whose color sits below its surround punches a floating
+    // hole in every layer stacked over it. Because the island is ringed by a
+    // single color, the count of those layers is exactly its stack depth below
+    // the surround: each level from just above the island up to the surround
+    // still has that ring, so each carries a hole. Lift a pocket only when two
+    // or more sheets stack over it — one sheet's single hole weeds and aligns
+    // cleanly, but two or more drift and let the middle sheets peek through.
+    // Lifting relabels the island into its surround for the solid base layers,
+    // then repaints it on top as its own island layer; its mask is exactly its
+    // own pixels, so nested regions still show through and the rendered pixels
+    // are unchanged — only the cut layers get cleaner.
     const order0 = stackingOrder(labels, counts)
     const position0 = new Int32Array(counts.length).fill(-1)
     order0.forEach((l, i) => (position0[l] = i))
-    const islands = findEnclosedComponents(labels).filter(
-      (c) =>
-        position0[c.label] >= 0 &&
-        position0[c.surround] >= 0 &&
-        position0[c.label] < position0[c.surround],
-    )
+    const islands = findEnclosedComponents(labels).filter((c) => {
+      const depth = position0[c.surround] - position0[c.label]
+      return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
+    })
 
     // The label map painted for the base layers: island pixels take their
     // surrounding label so nothing beneath them is punched out. With no islands

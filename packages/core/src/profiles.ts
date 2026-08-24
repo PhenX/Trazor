@@ -141,7 +141,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     notes: [
       'Multi-color: each stacked layer becomes its own <g> — cut it on that color of vinyl and stack the sheets.',
       'The most-outlining color is the full base sheet; the rest stack on it and extend underneath, so overlaps stay gap-free once weeded and layered.',
-      'Enclosed details (an eye pupil) lift onto their own top layer, so the sheets beneath stay whole instead of carrying a hole.',
+      'Enclosed details buried under several sheets (an eye pupil) lift onto their own top layer, so the sheets beneath stay whole instead of each carrying a hole to line up.',
       'Auto-reduce keeps the sheet count low; raise Colors if a shade you need is missing.',
       'The backdrop color is dropped (no full backing sheet) — turn off Omit background to keep it.',
       'Millimeter units at 100% scale; raise Min region to drop specks a blade cannot weed.',

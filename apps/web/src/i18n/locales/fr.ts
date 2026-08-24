@@ -595,7 +595,7 @@ export const fr: MessageSchema = {
       notes: [
         'Multicolore : chaque calque empilé devient son propre <g> — découpez-le sur ce vinyle et empilez les feuilles.',
         'La couleur qui borde le plus forme la feuille de base pleine ; les autres s’empilent dessus et s’étendent en dessous, les recouvrements restent sans jour une fois échenillés et empilés.',
-        'Les détails enfermés (une pupille) remontent sur leur propre calque du dessus, pour que les feuilles en dessous restent pleines au lieu de porter un trou.',
+        'Les détails enfermés sous plusieurs feuilles (une pupille) remontent sur leur propre calque du dessus, pour que les feuilles en dessous restent pleines au lieu de porter chacune un trou à aligner.',
         'La réduction auto limite le nombre de feuilles ; augmentez Couleurs s’il manque une nuance.',
         'La couleur de fond est supprimée (pas de feuille de support pleine) — désactivez Omettre le fond pour la garder.',
         'Unités en millimètres à l’échelle 100 % ; augmentez Région min pour éliminer les points qu’une lame ne peut écheniller.',
