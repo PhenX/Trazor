@@ -25,6 +25,9 @@ const ty = ref(0)
 const splitFrac = ref(0.5)
 const checker = ref(true)
 const showNodes = ref(false)
+// True while an active pan drag is moving the view — lets the overlay freeze to
+// a cheap translated bitmap on dense traces instead of re-stroking each frame.
+const panning = ref(false)
 let hasUserTransformed = false
 let resizeObserver: ResizeObserver | null = null
 
@@ -277,6 +280,7 @@ function onPointerMove(event: PointerEvent): void {
     return
   }
   if (drag.moved) {
+    panning.value = true
     tx.value = drag.startTx + dx
     ty.value = drag.startTy + dy
     hasUserTransformed = true
@@ -287,6 +291,7 @@ function onPointerUp(event: PointerEvent): void {
   if (!drag || event.pointerId !== drag.pointerId) return
   const finished = drag
   drag = null
+  panning.value = false
   if (finished.divider || finished.moved || finished.pointLabel === null) return
   const img = image.value
   if (!img || !docW.value) return
@@ -573,6 +578,7 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
         :doc-h="docH"
         :clip-x="overlayClipX"
         :dark="store.theme === 'dark'"
+        :panning="panning"
       />
 
       <!-- Split divider (screen space) -->

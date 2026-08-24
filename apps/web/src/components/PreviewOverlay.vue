@@ -23,6 +23,15 @@ import { SHAPE_KIND_TOKEN } from '../lib/overlay'
  * fixed pixel size. Points are in viewBox units (== document px); the document
  * is placed at `translate(tx, ty) scale(scale)`, so a point maps to screen as
  * `tx + x * scale`, `ty + y * scale`.
+ *
+ * Dense traces (many anchor marks) take one more shortcut while a pan drag is
+ * live: re-stroking tens of thousands of segments every frame can still stutter,
+ * so instead of redrawing, the last crisp frame is reused as-is and the whole
+ * `<canvas>` is offset with a CSS transform matching the pan delta — an O(1)
+ * move. Geometry that scrolls in from the edge is momentarily missing; a
+ * debounced crisp redraw fills it in when the motion pauses, and a final redraw
+ * on release restores the exact picture. Sparse traces skip this and stay crisp
+ * every frame.
  */
 
 const props = defineProps<{
@@ -35,6 +44,8 @@ const props = defineProps<{
   /** Left screen edge to clip drawing from (split view); null ⇒ no clip. */
   clipX: number | null
   dark: boolean
+  /** True while an active pan drag is moving the view (enables the freeze). */
+  panning: boolean
 }>()
 
 // Constant on-screen sizing (CSS px).
@@ -47,10 +58,24 @@ const CONTROL_RADIUS = 1.6
 // anchor marks, leaving the outlines that still convey overall complexity.
 const HANDLE_LIMIT = 4000
 const NODE_LIMIT = 60000
+// Above this many anchor marks, a live pan drag freezes to a translated bitmap
+// instead of re-stroking every frame. Below it, per-frame re-stroking is cheap
+// enough to stay crisp throughout the drag.
+const FREEZE_NODE_LIMIT = 8000
+// How long the motion must settle before the frozen overlay redraws crisply
+// (filling in whatever scrolled in from the edges).
+const FREEZE_REFRESH_MS = 120
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 let observer: ResizeObserver | null = null
 let raf = 0
+// Set to true while the overlay is showing a CSS-translated stale frame during a
+// dense pan; the canvas transform is reset back to identity on the next redraw.
+let refreshTimer = 0
+// Transform baseline: the (tx, ty) the current canvas pixels were painted at, so
+// a frozen pan can offset the canvas by (tx − base) without redrawing.
+let frozenBaseTx = 0
+let frozenBaseTy = 0
 
 /**
  * Everything drawn for one element kind, in document (viewBox) coordinates, so
@@ -256,11 +281,42 @@ function schedule(): void {
   })
 }
 
+/** Whether a live pan should freeze rather than re-stroke (many anchor marks). */
+function shouldFreeze(): boolean {
+  return props.panning && nodeCount > FREEZE_NODE_LIMIT && nodeCount <= NODE_LIMIT
+}
+
+/** Offset the whole canvas by the pan delta, reusing the last crisp frame. */
+function applyFrozenOffset(): void {
+  const el = canvas.value
+  if (!el) return
+  el.style.transform = `translate(${props.tx - frozenBaseTx}px, ${props.ty - frozenBaseTy}px)`
+}
+
+/** After the motion settles, redraw crisply to fill in what scrolled in. */
+function scheduleRefresh(): void {
+  if (refreshTimer !== 0) clearTimeout(refreshTimer)
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = 0
+    schedule()
+  }, FREEZE_REFRESH_MS)
+}
+
 function draw(): void {
   const el = canvas.value
   if (!el) return
   const ctx = el.getContext('2d')
   if (!ctx) return
+
+  // A crisp frame paints at the true (tx, ty), so drop any frozen-pan offset and
+  // re-baseline: a following frozen pan measures its delta from here.
+  if (refreshTimer !== 0) {
+    clearTimeout(refreshTimer)
+    refreshTimer = 0
+  }
+  if (el.style.transform !== '') el.style.transform = ''
+  frozenBaseTx = props.tx
+  frozenBaseTy = props.ty
 
   const dpr = window.devicePixelRatio || 1
   const bw = Math.max(1, Math.round(el.clientWidth * dpr))
@@ -368,9 +424,31 @@ watch(
   { immediate: true },
 )
 
+// Zoom, resize and theme always force a crisp redraw (marks rebuild on zoom).
+watch(() => [props.scale, props.docW, props.docH, props.dark], schedule)
+
+// Pan (and the split clip, which tracks the pan). On a dense drag, reuse the last
+// frame with a cheap CSS offset and only redraw crisply once the motion settles;
+// otherwise redraw every frame. `clipX` moves in lockstep with `tx` during a pan,
+// so the frozen frame's baked clip stays aligned under the same offset.
 watch(
-  () => [props.scale, props.tx, props.ty, props.docW, props.docH, props.clipX, props.dark],
-  schedule,
+  () => [props.tx, props.ty, props.clipX],
+  () => {
+    if (shouldFreeze()) {
+      applyFrozenOffset()
+      scheduleRefresh()
+    } else {
+      schedule()
+    }
+  },
+)
+
+// Leaving a pan: settle back to a crisp, correctly-clipped frame.
+watch(
+  () => props.panning,
+  (isPanning) => {
+    if (!isPanning) schedule()
+  },
 )
 
 onMounted(() => {
@@ -383,6 +461,7 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   observer = null
   if (raf !== 0) cancelAnimationFrame(raf)
+  if (refreshTimer !== 0) clearTimeout(refreshTimer)
 })
 </script>
 
