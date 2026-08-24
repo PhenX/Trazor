@@ -13,12 +13,16 @@ import { SHAPE_KIND_TOKEN } from '../lib/overlay'
  * captures pointer events.
  *
  * The scene is parsed into per-kind buckets of document-space geometry once,
- * when the geometry changes, and reused across every pan/zoom. Outlines are
- * cached as `Path2D` and stroked under the canvas transform (never rebuilt);
- * anchor marks and handles keep a constant on-screen size, so each frame maps
- * their cached coordinates to screen space. Points are in viewBox units
- * (== document px); the document is placed at `translate(tx, ty) scale(scale)`,
- * so a point maps to screen as `tx + x * scale`, `ty + y * scale`.
+ * when the geometry changes, and reused across every pan/zoom. Everything is
+ * cached as document-space `Path2D` and drawn under the canvas transform, so a
+ * pan only re-issues a few `stroke`/`fill` calls (never a per-point rebuild).
+ * Outlines and handle lines are scale-independent, so they are built once with
+ * the scene. Anchor crosses and control-point squares must keep a constant
+ * on-screen size, so their paths are rebuilt only when the zoom changes —
+ * their extents are pre-divided by the scale so the transform renders them at a
+ * fixed pixel size. Points are in viewBox units (== document px); the document
+ * is placed at `translate(tx, ty) scale(scale)`, so a point maps to screen as
+ * `tx + x * scale`, `ty + y * scale`.
  */
 
 const props = defineProps<{
@@ -34,7 +38,7 @@ const props = defineProps<{
 }>()
 
 // Constant on-screen sizing (CSS px).
-const NODE_HALF = 3
+const NODE_HALF = 2.5
 const NODE_WIDTH = 1.25
 const OUTLINE_WIDTH = 1
 const HANDLE_WIDTH = 1
@@ -50,17 +54,21 @@ let raf = 0
 
 /**
  * Everything drawn for one element kind, in document (viewBox) coordinates, so
- * it survives pan and zoom. Outlines are stroked under the canvas transform;
- * anchor/handle coordinates are flat `[x, y, …]` runs mapped to screen space
- * each frame (they keep a constant on-screen size, so they can't be baked into
- * the transform). `handleLines` holds `[ax, ay, bx, by, …]` segments.
+ * it survives pan and zoom. `outline` and `handles` are scale-independent and
+ * built once with the scene. `crosses` (anchor marks) and `dotSquares` (control
+ * points) keep a constant on-screen size, so their paths are rebuilt from the
+ * flat `anchors`/`dots` `[x, y, …]` runs whenever the zoom changes, with their
+ * extents pre-divided by the scale. All are stroked/filled under the canvas
+ * transform.
  */
 interface Bucket {
   token: string
   outline: Path2D
+  handles: Path2D
   anchors: number[]
-  handleLines: number[]
   dots: number[]
+  crosses: Path2D
+  dotSquares: Path2D
 }
 
 // Document-space scene, rebuilt only when the geometry changes — pan/zoom reuse
@@ -71,6 +79,11 @@ let nodeCount = 0
 let controlCount = 0
 let sceneW: number | null = null
 let sceneH: number | null = null
+
+// The (sx, sy) at which `crosses`/`dotSquares` were last built; 0 ⇒ not built.
+// A pan leaves these unchanged (skip the rebuild); a zoom invalidates them.
+let marksSx = 0
+let marksSy = 0
 
 // Token → resolved color, cached across frames (getComputedStyle forces a style
 // flush, so it must stay out of the draw loop). Re-resolved when the theme flips.
@@ -85,13 +98,23 @@ function buildScene(geo: SvgGeometry | null): void {
   sceneW = geo?.width ?? null
   sceneH = geo?.height ?? null
   resolvedColors = null
+  marksSx = 0
+  marksSy = 0
   if (!geo || geo.shapes.length === 0) return
 
   const byToken = new Map<string, Bucket>()
   const bucketFor = (token: string): Bucket => {
     let b = byToken.get(token)
     if (b === undefined) {
-      b = { token, outline: new Path2D(), anchors: [], handleLines: [], dots: [] }
+      b = {
+        token,
+        outline: new Path2D(),
+        handles: new Path2D(),
+        anchors: [],
+        dots: [],
+        crosses: new Path2D(),
+        dotSquares: new Path2D(),
+      }
       byToken.set(token, b)
     }
     return b
@@ -129,7 +152,11 @@ function buildScene(geo: SvgGeometry | null): void {
           break
         case 'Q':
           if (withHandles) {
-            b.handleLines.push(cx, cy, cmd.x1, cmd.y1, cmd.x, cmd.y, cmd.x1, cmd.y1)
+            // Handle lines run between fixed document points, so bake them in now.
+            b.handles.moveTo(cx, cy)
+            b.handles.lineTo(cmd.x1, cmd.y1)
+            b.handles.moveTo(cmd.x, cmd.y)
+            b.handles.lineTo(cmd.x1, cmd.y1)
             b.dots.push(cmd.x1, cmd.y1)
           }
           if (withNodes) b.anchors.push(cmd.x, cmd.y)
@@ -138,7 +165,10 @@ function buildScene(geo: SvgGeometry | null): void {
           break
         case 'C':
           if (withHandles) {
-            b.handleLines.push(cx, cy, cmd.x1, cmd.y1, cmd.x, cmd.y, cmd.x2, cmd.y2)
+            b.handles.moveTo(cx, cy)
+            b.handles.lineTo(cmd.x1, cmd.y1)
+            b.handles.moveTo(cmd.x, cmd.y)
+            b.handles.lineTo(cmd.x2, cmd.y2)
             b.dots.push(cmd.x1, cmd.y1, cmd.x2, cmd.y2)
           }
           if (withNodes) b.anchors.push(cmd.x, cmd.y)
@@ -150,6 +180,49 @@ function buildScene(geo: SvgGeometry | null): void {
       }
     }
   }
+}
+
+/**
+ * Rebuild the constant-size marks (anchor crosses, control-point squares) in
+ * document space for the given screen scale. Their half-extents are divided by
+ * the scale so the canvas transform renders them at a fixed pixel size; called
+ * only when the zoom changes, never on a pan.
+ */
+function buildMarks(sx: number, sy: number): void {
+  const withNodes = nodeCount <= NODE_LIMIT
+  const withHandles = withNodes && controlCount > 0 && controlCount <= HANDLE_LIMIT
+  const hx = NODE_HALF / sx
+  const hy = NODE_HALF / sy
+  const rx = CONTROL_RADIUS / sx
+  const ry = CONTROL_RADIUS / sy
+  const dw = rx * 2
+  const dh = ry * 2
+  for (const b of scene) {
+    const crosses = new Path2D()
+    if (withNodes) {
+      const a = b.anchors
+      for (let i = 0; i < a.length; i += 2) {
+        const x = a[i]
+        const y = a[i + 1]
+        crosses.moveTo(x - hx, y - hy)
+        crosses.lineTo(x + hx, y + hy)
+        crosses.moveTo(x - hx, y + hy)
+        crosses.lineTo(x + hx, y - hy)
+      }
+    }
+    b.crosses = crosses
+
+    const dotSquares = new Path2D()
+    if (withHandles) {
+      const d = b.dots
+      for (let i = 0; i < d.length; i += 2) {
+        dotSquares.rect(d[i] - rx, d[i + 1] - ry, dw, dh)
+      }
+    }
+    b.dotSquares = dotSquares
+  }
+  marksSx = sx
+  marksSy = sy
 }
 
 /** Append a shape's outline to `path` in document coordinates. */
@@ -220,8 +293,12 @@ function draw(): void {
   const sx = props.scale * (props.docW > 0 ? props.docW / (sceneW || props.docW) : 1)
   const sy = props.scale * (props.docH > 0 ? props.docH / (sceneH || props.docH) : 1)
 
-  // Clip to the SVG side of a split. Set in device space so it holds across the
-  // world/screen transform switches below.
+  // Constant-size marks are pre-scaled, so they only need rebuilding when the
+  // zoom changes; a pan reuses them untouched.
+  if (sx !== marksSx || sy !== marksSy) buildMarks(sx || 1, sy || 1)
+
+  // Clip to the SVG side of a split. Set in device space (identity transform)
+  // so it holds once the world transform is installed below.
   const clipX = props.clipX
   if (clipX !== null) {
     ctx.save()
@@ -233,74 +310,48 @@ function draw(): void {
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
 
-  // Outlines (bottom layer): cached document-space paths stroked under the
-  // pan/zoom transform, so they are never rebuilt on pan or zoom. The line width
-  // is pre-divided by the scale to stay a constant OUTLINE_WIDTH on screen.
+  // Everything is document-space Path2D drawn under the pan/zoom transform, so a
+  // pan only re-issues these stroke/fill calls. Line widths and mark extents are
+  // pre-divided by the scale to keep a constant on-screen size.
+  const wsx = sx || 1
   ctx.setTransform(sx * dpr, 0, 0, sy * dpr, tx * dpr, ty * dpr)
+
+  const showNodes = nodeCount <= NODE_LIMIT
+  const showHandles = showNodes && controlCount > 0 && controlCount <= HANDLE_LIMIT
+
+  // Outlines (bottom layer).
   ctx.globalAlpha = 0.85
-  ctx.lineWidth = OUTLINE_WIDTH / (sx || 1)
+  ctx.lineWidth = OUTLINE_WIDTH / wsx
   for (const b of scene) {
     ctx.strokeStyle = colorOf(b.token)
     ctx.stroke(b.outline)
   }
 
-  // Marks and handles keep a constant on-screen size, so they are placed in
-  // screen space each frame from the cached document-space coordinates.
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-  const showNodes = nodeCount <= NODE_LIMIT
-  const showHandles = showNodes && controlCount > 0 && controlCount <= HANDLE_LIMIT
-
   // Bézier handles: lines to each control point, then a small square on it.
   if (showHandles) {
-    const side = CONTROL_RADIUS * 2
     for (const b of scene) {
       const color = colorOf(b.token)
-      const lines = new Path2D()
-      const hl = b.handleLines
-      for (let i = 0; i < hl.length; i += 4) {
-        lines.moveTo(tx + hl[i] * sx, ty + hl[i + 1] * sy)
-        lines.lineTo(tx + hl[i + 2] * sx, ty + hl[i + 3] * sy)
-      }
       ctx.strokeStyle = color
       ctx.globalAlpha = 0.4
-      ctx.lineWidth = HANDLE_WIDTH
-      ctx.stroke(lines)
+      ctx.lineWidth = HANDLE_WIDTH / wsx
+      ctx.stroke(b.handles)
       ctx.fillStyle = color
       ctx.globalAlpha = 0.6
-      const dots = b.dots
-      for (let i = 0; i < dots.length; i += 2) {
-        ctx.fillRect(
-          tx + dots[i] * sx - CONTROL_RADIUS,
-          ty + dots[i + 1] * sy - CONTROL_RADIUS,
-          side,
-          side,
-        )
-      }
+      ctx.fill(b.dotSquares)
     }
   }
 
   // Anchor marks — small crosses on top, haloed so they read over any fill.
   if (showNodes) {
     const halo = props.dark ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.55)'
+    ctx.globalAlpha = 1
     for (const b of scene) {
-      const marks = new Path2D()
-      const a = b.anchors
-      for (let i = 0; i < a.length; i += 2) {
-        const x = tx + a[i] * sx
-        const y = ty + a[i + 1] * sy
-        marks.moveTo(x - NODE_HALF, y - NODE_HALF)
-        marks.lineTo(x + NODE_HALF, y + NODE_HALF)
-        marks.moveTo(x - NODE_HALF, y + NODE_HALF)
-        marks.lineTo(x + NODE_HALF, y - NODE_HALF)
-      }
-      ctx.globalAlpha = 1
       ctx.strokeStyle = halo
-      ctx.lineWidth = NODE_WIDTH + 1.5
-      ctx.stroke(marks)
+      ctx.lineWidth = (NODE_WIDTH + 1.5) / wsx
+      ctx.stroke(b.crosses)
       ctx.strokeStyle = colorOf(b.token)
-      ctx.lineWidth = NODE_WIDTH
-      ctx.stroke(marks)
+      ctx.lineWidth = NODE_WIDTH / wsx
+      ctx.stroke(b.crosses)
     }
   }
 

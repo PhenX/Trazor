@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 6,
+    kind: 'improvement',
+    title: 'Smoother "Show path & nodes" overlay',
+    items: [
+      'Panning with the path-and-nodes overlay on is now smooth, even on dense traces. The anchor marks and control handles are built once and only recomputed when you zoom, instead of on every drag.',
+      'The anchor crosses are a touch smaller, so the geometry underneath is easier to read.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 5,
     kind: 'feature',
     title: 'Auto-optimize your settings',
