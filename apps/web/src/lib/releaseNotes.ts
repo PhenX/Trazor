@@ -37,6 +37,15 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 3,
+    kind: 'feature',
+    title: 'Flatten shading before tracing',
+    items: [
+      'A new “Flatten shading” slider in Preprocessing evens out smooth lightness shading — a 3D render’s highlight, a soft shadow, an uneven scan — before tracing, so a shaded region traces as one flat color instead of a stack of concentric tone bands. It keeps each color’s hue and the crisp edges between colors; only the lightness gradient is removed. Leave it off for flat art that has no shading.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 2,
     kind: 'improvement',
     title: 'Cleaner layered vinyl',

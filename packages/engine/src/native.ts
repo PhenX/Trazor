@@ -33,6 +33,7 @@ import {
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
+  flattenIllumination,
   flattenImage,
   gaussianBlur,
   medianFilter,
@@ -215,6 +216,7 @@ function preKeyOf(s: VectorizeSettings): string {
     s.maxDimension,
     s.denoise,
     s.blurRadius,
+    s.flattenShading,
     s.background,
     s.backgroundColor,
     s.alphaThreshold,
@@ -272,6 +274,9 @@ export async function vectorize(
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
     if (settings.blurRadius > 0) img = gaussianBlur(img, settings.blurRadius)
+    if (settings.flattenShading > 0) {
+      img = flattenIllumination(img, { strength: settings.flattenShading })
+    }
     run.progress(0.7)
     const flat = flattenImage(img, settings)
     img = flat.image

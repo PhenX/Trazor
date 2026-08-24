@@ -107,6 +107,11 @@ export const fr: MessageSchema = {
       label: 'Flou',
       hint: 'Rayon de pré-flou gaussien (px). Aide les photos bruitées, nuit au trait net.',
     },
+    flattenShading: {
+      label: 'Aplatir l’ombrage',
+      hint: 'Supprime l’ombrage lumineux progressif d’abord, pour que les dégradés se vectorisent en aplats plutôt qu’en bandes de tons. Préserve la teinte et les bords nets.',
+      zero: 'désactivé',
+    },
     background: {
       label: 'Arrière-plan',
       hint: 'Traitement des pixels transparents',

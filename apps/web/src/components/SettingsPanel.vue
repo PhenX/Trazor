@@ -183,6 +183,17 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :hint="t('settings.blur.hint')"
           @update:model-value="set('blurRadius', $event)"
         />
+        <SliderRow
+          :label="t('settings.flattenShading.label')"
+          :model-value="s.flattenShading"
+          :min="0"
+          :max="1"
+          :step="0.05"
+          :default-value="D.flattenShading"
+          :zero-label="t('settings.flattenShading.zero')"
+          :hint="t('settings.flattenShading.hint')"
+          @update:model-value="set('flattenShading', $event)"
+        />
         <SelectRow
           :label="t('settings.background.label')"
           :model-value="s.background"

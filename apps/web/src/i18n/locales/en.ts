@@ -106,6 +106,11 @@ export const en = {
       label: 'Blur',
       hint: 'Gaussian pre-blur radius (px). Helps noisy photos, hurts crisp art.',
     },
+    flattenShading: {
+      label: 'Flatten shading',
+      hint: 'Remove smooth lightness shading first, so gradients trace as flat color instead of tone bands. Keeps hue and hard edges.',
+      zero: 'off',
+    },
     background: {
       label: 'Background',
       hint: 'How transparent pixels are handled',

@@ -670,3 +670,34 @@ describe('stage cache (E3)', () => {
     expect(cachedGray.svg).toBe(freshGray.svg)
   })
 })
+
+describe('flattenShading setting', () => {
+  /** A single hue under a smooth vertical brightness ramp (pure shading). */
+  function shadedField(): RasterImage {
+    const img = createRaster(64, 64)
+    for (let y = 0; y < 64; y++) {
+      const f = 0.4 + (0.55 * y) / 63
+      for (let x = 0; x < 64; x++) {
+        setPixel(img, x, y, Math.round(230 * f), Math.round(180 * f), Math.round(40 * f))
+      }
+    }
+    return img
+  }
+
+  const base = (): VectorizeSettings =>
+    normalizeSettings({ mode: 'color', paletteSize: 32, autoPaletteSize: true, minRegionArea: 16 })
+
+  it('is a no-op at 0 (identical to leaving it off)', async () => {
+    const img = shadedField()
+    const off = await vectorize(img, base())
+    const zero = await vectorize(img, normalizeSettings({ ...base(), flattenShading: 0 }))
+    expect(zero.svg).toBe(off.svg)
+  })
+
+  it('collapses a shaded gradient to fewer colors when enabled', async () => {
+    const img = shadedField()
+    const off = await vectorize(img, base())
+    const on = await vectorize(img, normalizeSettings({ ...base(), flattenShading: 1 }))
+    expect(on.stats.colorCount).toBeLessThan(off.stats.colorCount)
+  })
+})

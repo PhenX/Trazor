@@ -45,6 +45,14 @@ export interface VectorizeSettings {
   denoise: DenoiseMode
   /** Gaussian pre-blur radius in px (0 disables). Helps noisy photos, hurts crisp art. */
   blurRadius: number
+  /**
+   * Remove smooth lightness shading before tracing (0-1, 0 disables). A
+   * single-scale Retinex flat-field on Oklab L: a gradient that would otherwise
+   * quantize into concentric tone bands collapses to one flat color. 1 divides
+   * the shading out fully; lower values blend toward the original. Edge-aware,
+   * so hard color edges are preserved (only lightness is flattened, not hue).
+   */
+  flattenShading: number
   background: BackgroundMode
   /** Used when `background` is `custom`. */
   backgroundColor: string
@@ -161,6 +169,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   maxDimension: 1600,
   denoise: 'none',
   blurRadius: 0,
+  flattenShading: 0,
   background: 'auto',
   backgroundColor: '#ffffff',
   alphaThreshold: 8,
@@ -217,6 +226,7 @@ export function normalizeSettings(
   const s: VectorizeSettings = { ...base, ...patch }
   s.maxDimension = s.maxDimension === 0 ? 0 : clampInt(s.maxDimension, 64, 8192)
   s.blurRadius = clamp(s.blurRadius, 0, 10)
+  s.flattenShading = clamp(s.flattenShading, 0, 1)
   s.alphaThreshold = clampInt(s.alphaThreshold, 0, 255)
   s.paletteSize = clampInt(s.paletteSize, 2, 64)
   s.quantizeQuality = clampInt(s.quantizeQuality, 1, 10)
