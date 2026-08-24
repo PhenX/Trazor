@@ -10,20 +10,26 @@
  * fill. Estimating the gradient and dividing it out collapses the region back
  * to a single tone the quantizer keeps as one color.
  *
- * The illumination estimate is a large-radius blur of L (approximated by three
- * box-blur passes, so cost is independent of radius); the correction divides
- * each pixel's L by that estimate, renormalized to the image's mean L. Chroma
- * (Oklab a, b) is left untouched, so hue and saturation are preserved and only
- * lightness is flattened — a colored region stays its color, just evenly lit.
+ * The correction divides each pixel's L by a low-frequency illumination estimate,
+ * renormalized to the image's mean L. Chroma (Oklab a, b) is left untouched, so
+ * hue and saturation are preserved and only lightness is flattened — a colored
+ * region stays its color, just evenly lit.
  *
- * This is the multiplicative reflectance × illumination model: it removes soft,
- * smooth shading well, but a hard cast-shadow edge is low-frequency to the blur
- * and will leave a residual halo. It is a preprocessing aid for smoothly shaded
- * color art, not a physical relighting.
+ * Two estimators:
+ * - **edge-aware** (default): a self-guided filter, so the estimate follows the
+ *   smooth shading *within* a region but does not bleed across a hard color edge.
+ *   This is what keeps a division from ringing a bright/dark halo around every
+ *   region boundary — the failure mode of a plain low-pass on flat-color art.
+ * - **plain**: three box-blur passes ≈ a wide Gaussian. Cheaper and smoother, but
+ *   halos at hard edges; fine for a single smoothly-shaded field.
+ *
+ * This is the multiplicative reflectance × illumination model: it removes soft
+ * smooth shading well; a hard *cast shadow* (a real lightness edge with no color
+ * change) is indistinguishable from shading and is flattened along with it.
  *
  * Land & McCann 1971 (Retinex theory of lightness); single-scale form after
  * Jobson, Rahman & Woodell 1997 ("Properties and performance of a center/surround
- * retinex").
+ * retinex"); the edge-aware estimate is the guided filter of He, Sun & Tang 2013.
  */
 import { cloneRaster, linearToSrgb } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
@@ -43,10 +49,24 @@ export interface FlattenIlluminationOptions {
    * blending toward the original. Default `1`.
    */
   strength?: number
+  /**
+   * Use the edge-aware (guided-filter) illumination estimate, which stops the
+   * division from ringing halos at hard color edges. Default `true`. Set `false`
+   * for the cheaper plain-blur estimate (good only for a single shaded field).
+   */
+  edgeAware?: boolean
+  /**
+   * Oklab-L contrast (edge-aware estimator only) below which local variation is
+   * treated as shading to smooth, and above which it is treated as a color edge
+   * to keep. In L units, ~[0.02, 0.15]. Lower ⇒ preserves fainter edges (flattens
+   * less); higher ⇒ smooths across them. Default `0.06`.
+   */
+  edgeThreshold?: number
 }
 
 const DEFAULT_SCALE = 0.12
 const DEFAULT_STRENGTH = 1
+const DEFAULT_EDGE_THRESHOLD = 0.06
 /** Floor on the illumination estimate so near-black pixels never divide by ~0. */
 const ILLUM_EPS = 1e-3
 
@@ -112,6 +132,64 @@ function boxBlurPass(
   }
 }
 
+/** One separable box mean of a single-channel field → a fresh array. */
+function boxMean(src: Float32Array, w: number, h: number, r: number): Float32Array {
+  const dst = new Float32Array(src.length)
+  boxBlurPass(src, dst, new Float32Array(src.length), w, h, r)
+  return dst
+}
+
+/**
+ * Edge-aware illumination estimate: the self-guided filter (He, Sun & Tang 2013)
+ * with guide = input = L. Inside a region it returns the local mean (smoothing
+ * shading); across an edge whose local variance exceeds `eps` it returns L
+ * (preserving the edge), so dividing it out leaves no cross-boundary halo.
+ */
+function guidedIllumination(
+  light: Float32Array,
+  w: number,
+  h: number,
+  r: number,
+  eps: number,
+): Float32Array {
+  const n = light.length
+  const mean = boxMean(light, w, h, r)
+  const sq = new Float32Array(n)
+  for (let i = 0; i < n; i++) sq[i] = light[i] * light[i]
+  const corr = boxMean(sq, w, h, r)
+  const aCoef = new Float32Array(n)
+  const bCoef = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    const m = mean[i]
+    const varI = corr[i] - m * m
+    const a = varI > 0 ? varI / (varI + eps) : 0
+    aCoef[i] = a
+    bCoef[i] = m * (1 - a)
+  }
+  const meanA = boxMean(aCoef, w, h, r)
+  const meanB = boxMean(bCoef, w, h, r)
+  const out = meanA
+  for (let i = 0; i < n; i++) out[i] = meanA[i] * light[i] + meanB[i]
+  return out
+}
+
+/** Plain wide-Gaussian estimate: three box-blur passes over L in place-ish. */
+function blurIllumination(light: Float32Array, w: number, h: number, r: number): Float32Array {
+  const n = light.length
+  let a: Float32Array = light
+  let b: Float32Array = new Float32Array(n)
+  const scratch = new Float32Array(n)
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurPass(a, b, scratch, w, h, r)
+    const swap = a
+    a = b
+    b = swap
+  }
+  // `light` is the caller's buffer; after an odd/even number of swaps the result
+  // may alias it, so copy into a dedicated array the caller owns.
+  return a === light ? light.slice() : a
+}
+
 /**
  * Flatten smooth lightness shading out of an image ahead of quantization.
  *
@@ -138,19 +216,12 @@ export function flattenIllumination(
   }
   meanL /= n
 
-  // Low-frequency illumination estimate: three box-blur passes ≈ a wide
-  // Gaussian, cost independent of the (large) radius.
+  // Low-frequency illumination estimate; cost independent of the (large) radius.
   const radius = Math.max(1, Math.round(scale * Math.max(w, h)))
-  let a = light
-  let b = new Float32Array(n)
-  const scratch = new Float32Array(n)
-  for (let pass = 0; pass < 3; pass++) {
-    boxBlurPass(a, b, scratch, w, h, radius)
-    const swap = a
-    a = b
-    b = swap
-  }
-  const illum = a // final estimate (never the caller's `light` after 3 swaps)
+  const edgeAware = opts.edgeAware ?? true
+  const illum = edgeAware
+    ? guidedIllumination(light, w, h, radius, (opts.edgeThreshold ?? DEFAULT_EDGE_THRESHOLD) ** 2)
+    : blurIllumination(light, w, h, radius)
 
   const out = new Uint8ClampedArray(data.length)
   const full = strength === 1

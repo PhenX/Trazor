@@ -90,6 +90,34 @@ describe('flattenIllumination', () => {
     for (let p = 3; p < flat.data.length; p += 4) expect(flat.data[p]).toBe(128)
   })
 
+  it('edge-aware estimate rings far less at a hard edge than a plain blur', () => {
+    // Two flat gray regions, a hard vertical edge, no shading. A plain low-pass
+    // bleeds the two lightnesses across the seam and the division rings a
+    // bright/dark halo there; the guided estimate keeps the edge, so the output
+    // stays close to flat.
+    const img = rasterOf(64, 64, (x) => (x < 32 ? [70, 70, 70, 255] : [200, 200, 200, 255]))
+    const range = (im: { data: Uint8ClampedArray }): number => {
+      let lo = Infinity
+      let hi = -Infinity
+      for (let p = 0; p < im.data.length; p += 4) {
+        const L = rgbToOklab(im.data[p] / 255, im.data[p + 1] / 255, im.data[p + 2] / 255)[0]
+        if (L < lo) lo = L
+        if (L > hi) hi = L
+      }
+      return hi - lo
+    }
+    const edgeAware = range(flattenIllumination(img, { scale: 0.12, edgeAware: true }))
+    const plain = range(flattenIllumination(img, { scale: 0.12, edgeAware: false }))
+    expect(edgeAware).toBeLessThan(plain * 0.5)
+  })
+
+  it('plain-blur estimator still flattens a gradient', () => {
+    const img = shadedColumn(64, 64, [190, 70, 45])
+    const before = lStats(img)
+    const after = lStats(flattenIllumination(img, { scale: 0.12, strength: 1, edgeAware: false }))
+    expect(after.std).toBeLessThan(before.std * 0.3)
+  })
+
   it('is deterministic', () => {
     const img = shadedColumn(40, 30, [160, 90, 200])
     const a = flattenIllumination(img, { scale: 0.15, strength: 0.8 })

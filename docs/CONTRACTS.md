@@ -104,12 +104,15 @@ export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
 
 // illumination.ts — single-scale Retinex flat-field on Oklab L (chroma untouched)
 export interface FlattenIlluminationOptions {
-  scale?: number // blur radius as a fraction of max(w,h), (0,1]; default 0.12
+  scale?: number // estimate radius as a fraction of max(w,h), (0,1]; default 0.12
   strength?: number // 0 = no-op clone, 1 = full division; default 1
+  edgeAware?: boolean // guided-filter estimate (no halos at color edges); default true
+  edgeThreshold?: number // edge-aware only: Oklab-L contrast kept as an edge; default 0.06
 }
 // Divides the low-frequency lightness field out of L so smooth shading collapses
 // to a flat tone the quantizer keeps as one color. New image; alpha copied;
-// deterministic. Rings a halo at hard color edges (multiplicative model).
+// deterministic. Edge-aware (default) keeps hard color edges; the plain-blur
+// estimate (edgeAware:false) is cheaper but rings halos at them.
 export function flattenIllumination(
   image: RasterImage,
   opts?: FlattenIlluminationOptions,

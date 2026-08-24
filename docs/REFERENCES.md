@@ -82,6 +82,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   wide blur of Oklab L and divided out (renormalized to the mean), so smooth
   shading collapses to a flat tone before quantization
   (`packages/raster/src/illumination.ts`).
+- **Kaiming He, Jian Sun & Xiaoou Tang, “Guided Image Filtering”, _IEEE Trans.
+  PAMI_ 35(6), 2013, pp. 1397–1409** (doi:10.1109/TPAMI.2012.213). The
+  edge-aware (default) illumination estimator above: a self-guided linear filter
+  (guide = input = L) whose local ridge-regression coefficients, box-averaged
+  via summed windows, follow the shading inside a region but hold at hard color
+  edges — so dividing the estimate out leaves no cross-boundary halo
+  (`packages/raster/src/illumination.ts`).
 
 ## Local ML models (packages/ml)
 
