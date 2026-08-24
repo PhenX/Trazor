@@ -74,10 +74,12 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   _ICCV_ 1998.** Edge-preserving denoise option
   (`packages/raster/src/filters.ts`).
 - **Edwin H. Land & John J. McCann, “Lightness and Retinex Theory”, _J. Optical
-  Society of America_ 61(1), 1971**, single-scale center/surround form after
-  **Daniel J. Jobson, Zia-ur Rahman & Glenn A. Woodell, “Properties and
-  performance of a center/surround retinex”, _IEEE Trans. Image Processing_ 6(3), 1997.** Illumination flattening: the low-frequency lightness field is estimated
-  by a wide blur of Oklab L and divided out (renormalized to the mean), so smooth
+  Society of America_ 61(1), 1971, pp. 1–11** (doi:10.1364/JOSA.61.000001),
+  single-scale center/surround form after **Daniel J. Jobson, Zia-ur Rahman &
+  Glenn A. Woodell, “Properties and performance of a center/surround retinex”,
+  _IEEE Trans. Image Processing_ 6(3), 1997, pp. 451–462** (doi:10.1109/83.557356).
+  Illumination flattening: the low-frequency lightness field is estimated by a
+  wide blur of Oklab L and divided out (renormalized to the mean), so smooth
   shading collapses to a flat tone before quantization
   (`packages/raster/src/illumination.ts`).
 
