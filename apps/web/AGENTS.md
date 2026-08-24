@@ -18,7 +18,11 @@ src/
   App.vue                layout grid, keyboard shortcuts, theme binding
   store/appStore.ts       the single source of truth (Pinia setup store)
   worker/vectorize.worker.ts   installWorkerHandler(self) — the engine, off the main thread
-  lib/                    decode (image → RasterImage), download/copy, fidelity scoring, samples, format helpers,
+  worker/assist.worker.ts      installAssistWorker(self) — palette suggestion, off the main thread
+  worker/fidelity.worker.ts    installFidelityWorker(self) — the ΔE fidelity pass, off the main thread
+  lib/                    decode (image → RasterImage), download/copy, samples, format helpers,
+                          fidelity (rasterize on the main thread; score via the fidelity worker),
+                          assistClient / fidelityClient (main-thread handles on those workers),
                           overlay (per-element-kind colors/labels for the complexity overlay),
                           layers (group traced SVG geometry into color layers + contours for the layer panel),
                           releaseNotes (the user-facing changelog + its date/iteration helpers)
@@ -38,6 +42,13 @@ src/
   (matched by `error.name`, cross-realm safe) and is swallowed silently. Never call the engine on the main thread.
 - **The worker copies the pixel buffer before transferring** (`client.ts`) — the store passes `workingImage` without
   cloning and relies on that. Don't remove the copy or the caller's image detaches.
+- **Whole-image work runs in a worker, never on the main thread.** Palette suggestion (`suggestPalettes`, a full-image
+  k-means pass) goes through one `AssistClient`; the fidelity ΔE pass (two Oklab conversions per pixel + heatmap) goes
+  through one `FidelityClient` — each its own worker, so they run in parallel with each other and the trace. Only work
+  that _must_ touch the DOM stays on the main thread: fidelity's SVG/source rasterization (`createImageBitmap` can't
+  rasterize SVG reliably across browsers) hands the two RGBA rasters to the worker for the per-pixel pass. The cheap,
+  sampled `analyzeImage` also stays on the main thread — auto-recommend needs it synchronously before the debounced
+  trace. Anything else that touches every pixel of a full-size image belongs off-thread.
 - **Settings come from `@trazor/core`.** Use `DEFAULT_SETTINGS`, `normalizeSettings`, `TARGET_PROFILES`; never
   hand-maintain a parallel list of fields or clamps.
 - **Theme-aware and responsive.** Every color is a token in `base.css` defined for both dark and default/light; respect

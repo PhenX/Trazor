@@ -36,6 +36,16 @@ export interface ReleaseNote {
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    date: '2026-08-24',
+    iteration: 1,
+    kind: 'fix',
+    title: 'A smoother, more responsive studio',
+    items: [
+      'Opening a photo no longer freezes the studio while palette suggestions are prepared — that work now happens in the background, so the interface stays responsive.',
+      'Scoring how closely a trace matches the original (the fidelity score and Difference view) also runs in the background now, so adjusting settings on large images stays smooth.',
+    ],
+  },
+  {
     date: '2026-08-23',
     iteration: 6,
     kind: 'improvement',

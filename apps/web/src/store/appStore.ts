@@ -16,7 +16,7 @@ import type {
   VectorizeResult,
   VectorizeSettings,
 } from '@trazor/core'
-import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
+import { analyzeImage, recommendSettings } from '@trazor/assist'
 import type { ImageAnalysis, PaletteSuggestion, RationaleKey } from '@trazor/assist'
 import { TrazorClient } from '@trazor/engine'
 import { extractGeometry } from '@trazor/svg'
@@ -26,9 +26,11 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { applyLocale, pickInitialLocale, translate as t } from '../i18n'
 import type { LocaleCode } from '../i18n'
+import { AssistClient } from '../lib/assistClient'
 import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
+import { FidelityClient } from '../lib/fidelityClient'
 import { buildLayers } from '../lib/layers'
 import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
@@ -108,15 +110,6 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** Run work off the critical path (idle callback when available). */
-function deferToIdle(fn: () => void): void {
-  if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(() => fn(), { timeout: 1500 })
-  } else {
-    setTimeout(fn, 0)
-  }
-}
-
 function mlPhaseInfo(p: MlProgress): { progress: number | null; phase: string } {
   if (p.phase === 'download') {
     const frac = p.total > 0 ? (p.loaded / p.total) * 0.85 : null
@@ -191,6 +184,8 @@ export const useAppStore = defineStore('app', () => {
 
   // Non-reactive machinery
   let client: TrazorClient | null = null
+  let assistClient: AssistClient | null = null
+  let fidelityClient: FidelityClient | null = null
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
@@ -403,9 +398,17 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // -------------------------- Palette suggestions ------------------------
-  // Derived from image stats by @trazor/assist. Recomputed (deferred, so
-  // first paint isn't blocked) whenever the working image changes; cached per
-  // image so restoring the original is instant.
+  // Derived from image stats by @trazor/assist. Computed in a worker (a
+  // full-image k-means pass) whenever the working image changes, so loading an
+  // image never blocks the UI thread; cached per image so restoring the
+  // original is instant.
+  function getAssistClient(): AssistClient {
+    assistClient ??= new AssistClient(
+      () => new Worker(new URL('../worker/assist.worker.ts', import.meta.url), { type: 'module' }),
+    )
+    return assistClient
+  }
+
   function refreshPaletteSuggestions(image: RasterImage): void {
     const cached = suggestionCache.get(image)
     if (cached) {
@@ -414,19 +417,20 @@ export const useAppStore = defineStore('app', () => {
       return
     }
     paletteSuggestionsPending.value = true
-    deferToIdle(() => {
-      // The image may have been replaced while we waited.
-      if (workingImage.value !== image) return
-      try {
-        const suggestions = suggestPalettes(image, getAnalysis(image))
-        suggestionCache.set(image, suggestions)
-        paletteSuggestions.value = suggestions
-      } catch {
-        paletteSuggestions.value = []
-      } finally {
-        paletteSuggestionsPending.value = false
-      }
-    })
+    void computePaletteSuggestions(image)
+  }
+
+  async function computePaletteSuggestions(image: RasterImage): Promise<void> {
+    try {
+      const suggestions = await getAssistClient().suggestPalettes(image, getAnalysis(image))
+      suggestionCache.set(image, suggestions)
+      // The image may have been replaced while the worker ran.
+      if (workingImage.value === image) paletteSuggestions.value = suggestions
+    } catch {
+      if (workingImage.value === image) paletteSuggestions.value = []
+    } finally {
+      if (workingImage.value === image) paletteSuggestionsPending.value = false
+    }
   }
 
   watch(workingImage, (image) => {
@@ -478,6 +482,14 @@ export const useAppStore = defineStore('app', () => {
     return client
   }
 
+  function getFidelityClient(): FidelityClient {
+    fidelityClient ??= new FidelityClient(
+      () =>
+        new Worker(new URL('../worker/fidelity.worker.ts', import.meta.url), { type: 'module' }),
+    )
+    return fidelityClient
+  }
+
   async function doRun(): Promise<void> {
     const image = workingImage.value
     if (!image) return
@@ -503,7 +515,7 @@ export const useAppStore = defineStore('app', () => {
       busy.value = false
       progress.value = null
       try {
-        const report = await computeFidelity(image, res)
+        const report = await computeFidelity(image, res, getFidelityClient())
         if (runId === runCounter) fidelity.value = report
       } catch {
         if (runId === runCounter) fidelity.value = null
