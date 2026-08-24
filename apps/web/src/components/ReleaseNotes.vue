@@ -9,6 +9,7 @@ import {
   type ReleaseNoteKind,
 } from '../lib/releaseNotes'
 import { useAppStore } from '../store/appStore'
+import { RELEASE_ILLUSTRATIONS } from './illustrations'
 
 const store = useAppStore()
 const { t } = useI18n()
@@ -114,6 +115,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <h3 class="rn-note-title">{{ note.title }}</h3>
+          <div v-if="note.illustration" class="rn-art">
+            <component :is="RELEASE_ILLUSTRATIONS[note.illustration]" />
+          </div>
           <ul class="rn-items">
             <li v-for="(item, j) in note.items" :key="`${releaseId(note)}:${j}`">{{ item }}</li>
           </ul>
@@ -250,6 +254,20 @@ onBeforeUnmount(() => {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-1);
+}
+
+.rn-art {
+  margin: 2px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg-2);
+}
+
+.rn-art :deep(svg) {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .rn-items {

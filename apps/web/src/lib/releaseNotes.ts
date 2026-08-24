@@ -12,6 +12,17 @@ import { i18n } from '../i18n'
 
 export type ReleaseNoteKind = 'feature' | 'improvement' | 'fix'
 
+/**
+ * Id of a decorative illustration shown alongside a note. Each id maps to a
+ * self-contained, theme-aware inline-SVG component in
+ * `components/illustrations/` (see its `index.ts`). Illustrations are optional
+ * and purely decorative — the `items` copy remains the full description — so
+ * they carry no text and are marked `aria-hidden`. Add one only to notes whose
+ * change is genuinely visual (a vectorization improvement, an illustrable
+ * feature); leave it off for the rest.
+ */
+export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect' | 'layered-vinyl'
+
 export interface ReleaseNote {
   /** Publication date, ISO `YYYY-MM-DD`. */
   date: string
@@ -27,6 +38,8 @@ export interface ReleaseNote {
   title: string
   /** One plain-language line per change — no jargon. */
   items: string[]
+  /** Optional decorative illustration shown above the items. */
+  illustration?: ReleaseIllustration
 }
 
 /**
@@ -37,9 +50,19 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 6,
+    kind: 'improvement',
+    title: 'Illustrated release notes',
+    items: [
+      "The What's new panel now shows a small illustration on the notes about how tracing looks and works — cleaner edges, sharper auto-detect, layered vinyl and the new Auto-optimize — so you can see the change at a glance before reading it.",
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 5,
     kind: 'feature',
     title: 'Auto-optimize your settings',
+    illustration: 'auto-optimize',
     items: [
       'A new Auto-optimize tool searches the settings space for you: set how much you care about fidelity, simplicity, file size, fewer colors, and cleanliness, pick an iteration budget, and it traces many candidates in parallel to find the best combination for your image. Presets seed common goals (Max fidelity, Balanced, Smallest file, Cut-ready).',
       'Compare every candidate on one wall, sorted by any measure or filtered to the best trade-offs. Turn on Compare zoom to magnify the exact same spot across all of them — and against the original — at once, or open any candidate side by side with the source and step through the rest with the arrow keys. Then apply the one you like, or revert to your original settings.',
@@ -51,6 +74,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 4,
     kind: 'feature',
     title: 'Cleaner edges for flat art and line art',
+    illustration: 'clean-edges',
     items: [
       'A new region-growing segmentation traces cartoons, logos and clip art far more faithfully. Instead of matching every pixel to one global palette — which turned the soft edge between two colors into a hairline rim of a third color — it grows each color region outward from its flat interior, so an anti-aliased edge is split cleanly between its two real neighbors. No more rim halos or speckled outlines, and the linework stays smooth.',
       'Auto-detect switches to it automatically for crisp flat art; you can also pick it under Segmentation → Region growing, or keep Global palette for photos and gradients.',
@@ -61,6 +85,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 3,
     kind: 'improvement',
     title: 'Sharper auto-detect for clean artwork',
+    illustration: 'auto-detect',
     items: [
       'Crisp cartoons, logos and clip art are no longer mistaken for photographs. The soft anti-aliased edges of clean art used to read as photographic texture, which picked the wrong profile — posterizing, over-smoothing, or even dropping all color and tracing in grayscale. Auto-detect now recognizes the large flat areas that only clean art has and keeps it as a faithful color illustration.',
       'A vivid subject on a big black or white background stays in color. The background no longer dilutes the color measurement enough to flip the image to grayscale.',
@@ -72,6 +97,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 2,
     kind: 'improvement',
     title: 'Cleaner layered vinyl',
+    illustration: 'layered-vinyl',
     items: [
       'In stacked color mode, the color that outlines the most — the black lines in a cartoon, the backdrop in a flat design — now forms the full base layer at the bottom of the stack, so it reads through the sheets stacked on top of it the way layered vinyl is built. The traced picture looks identical; only which color is the full backing sheet changes.',
       'An enclosed detail like an eye pupil, when it is buried under two or more sheets, now lifts onto its own top cut layer, so the sheets beneath it stay whole instead of each carrying a hole you would have to weed and line up (a detail with just one sheet over it keeps its single hole). Grouped stacked output groups by cut layer rather than by color, so an outline color that reappears as one of these top details stays a separate, correctly ordered layer.',
