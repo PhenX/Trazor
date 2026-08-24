@@ -32,8 +32,8 @@ export interface ParamSpec {
 /** Keys of `VectorizeSettings` the search is allowed to touch. */
 export type TunableKey = Exclude<
   keyof VectorizeSettings,
-  // Never searched: identity of the output, or cosmetic/physical fields the
-  // objectives can't legitimately trade (see docs/AUTO_TUNE_PLAN.md).
+  // Never searched: identity of the output (mode), or cosmetic/physical fields
+  // the objectives can't legitimately trade (units, title, gap-fill, …).
   | 'mode'
   | 'maxDimension'
   | 'background'

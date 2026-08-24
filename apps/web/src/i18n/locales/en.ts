@@ -474,7 +474,8 @@ export const en = {
     explorePreprocess: 'Explore preprocessing',
     explorePreprocessHint: 'Also vary blur and denoise — slower, recomputes each candidate',
     exploreStructural: 'Explore structure',
-    exploreStructuralHint: 'Also try polygon vs spline and stacked vs cutout',
+    exploreStructuralHint:
+      'Also try polygon vs spline, stacked vs cutout, and the segmentation method',
     start: 'Start search',
     stop: 'Stop',
     running: 'Searching…',

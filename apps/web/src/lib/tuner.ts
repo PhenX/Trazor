@@ -1,12 +1,25 @@
+import { normalizeSettings } from '@trazor/core'
 import type { RasterImage, VectorizeResult, VectorizeSettings } from '@trazor/core'
 import { TrazorPool } from '@trazor/engine'
-import { TuneSearch } from '@trazor/tune'
-import type { CandidateMetrics, ScoredCandidate, TuneOptions } from '@trazor/tune'
+import { isEmptyResult, scaleSettingsForResolution, scoreCandidate, TuneSearch } from '@trazor/tune'
+import type { CandidateMetrics, ScoredCandidate, TuneOptions, TuneWeights } from '@trazor/tune'
 import { create2dCanvas } from './decode'
 import { FidelityClient } from './fidelityClient'
 
 /** Long side (px) each candidate SVG is rasterized to for scoring. */
 const DEFAULT_SCORE_SIZE = 1024
+
+/**
+ * Above this effective trace long side (px), the search runs at a reduced draft
+ * resolution and re-traces only its best candidates at full resolution — a
+ * successive-halving pre-screen that keeps a 4096² search from tracing every
+ * probe at full cost.
+ */
+const DRAFT_TRIGGER_LONG = 1500
+/** Long side (px) the draft pre-screen traces at. */
+const DRAFT_LONG = 1000
+/** How many top candidates (by draft score) get the full-resolution re-trace. */
+const REFINE_TOP_K = 6
 
 export interface TuneProgress {
   evaluated: number
@@ -41,8 +54,9 @@ export interface TuneSignal {
  * Drive a settings search to completion: for each candidate the search proposes,
  * trace it in the worker pool, rasterize the SVG at the shared score size on the
  * main thread, score it against the source (score-only, off-thread), and feed
- * the metrics back. Deterministic given the same inputs and browser; see
- * docs/AUTO_TUNE_PLAN.md.
+ * the metrics back. Deterministic given the same inputs and browser. For a large
+ * image it pre-screens at a draft resolution and re-traces the best candidates at
+ * full size (see refineAtFullResolution).
  */
 export async function runAutoTune(
   image: RasterImage,
@@ -61,7 +75,17 @@ export async function runAutoTune(
   const refId = 1
   deps.fidelity.setReference(refId, scoreW, scoreH, referenceRaster(image, scoreW, scoreH))
 
-  const search = new TuneSearch(base, opts)
+  // Draft pre-screen: a large image searches at a reduced trace resolution, then
+  // re-traces only its best candidates at full resolution (successive halving).
+  const userMax = base.maxDimension
+  const fullTraceLong = userMax === 0 ? long : Math.min(long, userMax)
+  const draft = fullTraceLong > DRAFT_TRIGGER_LONG
+  const factorUp = fullTraceLong / DRAFT_LONG
+  const searchBase = draft
+    ? { ...scaleSettingsForResolution(base, 1 / factorUp), maxDimension: DRAFT_LONG }
+    : base
+
+  const search = new TuneSearch(searchBase, opts)
 
   for (;;) {
     if (signal?.cancelled) break
@@ -91,7 +115,128 @@ export async function runAutoTune(
     })
   }
 
-  return { best: search.best(), results: search.results(), front: search.paretoFront() }
+  const draftResult: AutoTuneResult = {
+    best: search.best(),
+    results: search.results(),
+    front: search.paretoFront(),
+  }
+  if (!draft || signal?.cancelled) return draftResult
+
+  return refineAtFullResolution(image, draftResult, {
+    factorUp,
+    maxDimension: userMax,
+    weights: opts.weights,
+    minFidelity: opts.minFidelity,
+    deps,
+    refId,
+    scoreW,
+    scoreH,
+    onProgress: opts.onProgress,
+  })
+}
+
+interface RefineContext {
+  factorUp: number
+  maxDimension: number
+  weights: TuneWeights
+  minFidelity?: number
+  deps: { pool: TrazorPool; fidelity: FidelityClient }
+  refId: number
+  scoreW: number
+  scoreH: number
+  onProgress?: (progress: TuneProgress) => void
+}
+
+/**
+ * Re-trace the draft search's best candidates at full resolution and pick the
+ * winner from those accurate scores. Every candidate's settings are scaled back
+ * up so applying any of them re-traces at full resolution; the top-K (plus the
+ * baseline anchor) also get a real full-resolution trace + score.
+ */
+async function refineAtFullResolution(
+  image: RasterImage,
+  draft: AutoTuneResult,
+  ctx: RefineContext,
+): Promise<AutoTuneResult> {
+  const toFull = (s: VectorizeSettings): VectorizeSettings =>
+    normalizeSettings({
+      ...scaleSettingsForResolution(s, ctx.factorUp),
+      maxDimension: ctx.maxDimension,
+    })
+
+  // The baseline anchors the "fewer is better" utilities and must be measured at
+  // full resolution too, so the refined scores share one honest anchor.
+  const baseline = draft.results.find((c) => c.origin === 'baseline') ?? null
+  const ranked = draft.results.filter((c) => !c.rejected).toSorted((a, b) => b.score - a.score)
+  const refineSet: ScoredCandidate[] = []
+  const ids = new Set<number>()
+  if (baseline) {
+    refineSet.push(baseline)
+    ids.add(baseline.id)
+  }
+  for (const c of ranked) {
+    if (ids.has(c.id)) continue
+    refineSet.push(c)
+    ids.add(c.id)
+    if (refineSet.length >= REFINE_TOP_K + 1) break
+  }
+
+  const traced = await Promise.all(
+    refineSet.map(async (c) => {
+      const settings = toFull(c.settings)
+      const result = await ctx.deps.pool.run(image, settings, {
+        affinityKey: affinityKey(settings),
+      })
+      const metrics = await measure(result, ctx.deps.fidelity, ctx.refId, ctx.scoreW, ctx.scoreH)
+      return { src: c, settings, svg: result.svg, metrics }
+    }),
+  )
+
+  const fullBaseline =
+    traced.find((t) => t.src.id === baseline?.id)?.metrics ?? traced[0]?.metrics ?? null
+  const refinedById = new Map<number, ScoredCandidate>()
+  for (const t of traced) {
+    const empty = isEmptyResult(t.metrics)
+    const { score, utilities } = fullBaseline
+      ? scoreCandidate(t.metrics, fullBaseline, ctx.weights)
+      : { score: 0, utilities: t.src.utilities }
+    let rejected: ScoredCandidate['rejected']
+    if (empty) rejected = 'empty'
+    else if (ctx.minFidelity !== undefined && utilities.fidelity < ctx.minFidelity) {
+      rejected = 'fidelity-floor'
+    }
+    refinedById.set(t.src.id, {
+      ...t.src,
+      settings: t.settings,
+      svg: t.svg,
+      metrics: t.metrics,
+      score,
+      utilities,
+      rejected,
+    })
+  }
+
+  // Full-res refined tiles replace their draft twins; the rest keep the draft
+  // preview but carry full-res settings so applying them traces at full size.
+  const mapOne = (c: ScoredCandidate): ScoredCandidate =>
+    refinedById.get(c.id) ?? { ...c, settings: toFull(c.settings) }
+  const results = draft.results.map(mapOne)
+  const front = draft.front.map(mapOne)
+  // The winner comes only from the full-resolution set (comparable scores).
+  let best: ScoredCandidate | null = null
+  for (const c of refinedById.values()) {
+    if (c.rejected) continue
+    if (!best || c.score > best.score) best = c
+  }
+  ctx.onProgress?.({
+    evaluated: draft.results.length,
+    total: draft.results.length,
+    converged: true,
+    best,
+    results,
+    front,
+  })
+  return { best: best ?? draft.best, results, front }
 }
 
 /** Trace metrics + the fidelity ΔE (recovered from the score-only pass) for one result. */

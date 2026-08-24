@@ -38,8 +38,8 @@ core ─┬─ raster ─┐
 `raster + trace + svg`. `apps/web` depends on `engine`, `core`, `ml`, `assist`, `tune`. There are no cycles; keep it that way.
 
 `tune` is the settings search: it never traces — the app runs each candidate through the `engine` worker pool
-(`TrazorPool`), scores it, and feeds metrics back — so `tune` stays a pure, DOM-free strategy. See
-[`docs/AUTO_TUNE_PLAN.md`](docs/AUTO_TUNE_PLAN.md).
+(`TrazorPool`), scores it, and feeds metrics back — so `tune` stays a pure, DOM-free strategy. Its API surface is in
+[`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
 ## The pipeline
 
@@ -99,7 +99,7 @@ decode (app)
 - **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring
   (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
   round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; the app pairs it with the
-  engine's `TrazorPool` to trace and score candidates. See [`docs/AUTO_TUNE_PLAN.md`](docs/AUTO_TUNE_PLAN.md).
+  engine's `TrazorPool` to trace and score candidates. Exact API: [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`apps/web`** — see [`apps/web/AGENTS.md`](apps/web/AGENTS.md).
 
 ## Cross-cutting invariants

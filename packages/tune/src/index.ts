@@ -17,6 +17,7 @@ export {
   scoreCandidate,
 } from './score'
 export type { ObjectiveId, TuneWeights, CandidateMetrics } from './score'
+export { scaleSettingsForResolution } from './resolution'
 export { TuneSearch, latinHypercube } from './search'
 export type {
   CandidateOrigin,

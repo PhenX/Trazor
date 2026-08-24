@@ -489,7 +489,8 @@ export const fr: MessageSchema = {
     explorePreprocessHint:
       'Faire aussi varier le flou et le débruitage — plus lent, recalcule chaque candidat',
     exploreStructural: 'Explorer la structure',
-    exploreStructuralHint: 'Essayer aussi polygone/spline et empilé/découpe',
+    exploreStructuralHint:
+      'Essayer aussi polygone/spline, empilé/découpe et la méthode de segmentation',
     start: 'Lancer la recherche',
     stop: 'Arrêter',
     running: 'Recherche…',

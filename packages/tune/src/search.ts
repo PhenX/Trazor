@@ -113,10 +113,10 @@ const PARAM_ORDER = new Map<TunableKey, number>(TUNABLE_PARAMS.map((p, i) => [p.
  * via `report()`. The strategy is pure (no worker/timing coupling) and seeded,
  * so the same inputs reproduce the same candidate sequence and winner.
  *
- * Round 0 seeds (baseline + caller seeds + Latin-hypercube fill); later rounds
- * run adaptive coordinate descent over the incumbent — probe one parameter at a
- * time, expand the step on success and shrink it on failure, with recombination
- * and, on stagnation, a seeded restart. See docs/AUTO_TUNE_PLAN.md.
+ * Round 0 seeds (baseline + caller seeds + suggested palettes + Latin-hypercube
+ * fill); later rounds run adaptive coordinate descent over the incumbent — probe
+ * one parameter at a time, expand the step on success and shrink it on failure,
+ * with a palette swap, recombination, and, on stagnation, a seeded restart.
  */
 export class TuneSearch {
   private readonly base: VectorizeSettings

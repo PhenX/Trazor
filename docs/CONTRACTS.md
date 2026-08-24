@@ -635,9 +635,20 @@ export class TrazorPool {
 
 ## @trazor/tune
 
-The automatic settings search (docs/AUTO_TUNE_PLAN.md). Pure TypeScript, depends
-only on `@trazor/core`, no DOM — the caller (the app) traces candidates and feeds
-metrics back, so the strategy is deterministic and unit-testable in Node.
+The automatic settings search (the "Auto-optimize" studio tool). Pure
+TypeScript, depends only on `@trazor/core`, no DOM — the caller (the app) traces
+candidates in a worker pool and feeds metrics back, so the strategy is
+deterministic and unit-testable in Node. Determinism is two-tier, like the ML
+stages: the trace of any settings is byte-identical everywhere, but the fidelity
+_scores_ depend on the browser's SVG rasterizer, so the chosen winner can differ
+across browsers (the same standing as the fidelity score in the stats bar).
+
+The search runs round-based: round 0 seeds (baseline + assist/profile seeds +
+each suggested palette + a Latin-hypercube fill), then adaptive coordinate
+descent over the incumbent — probe one parameter at a time, expand the step on
+success and shrink on failure, with a palette swap, recombination, and (on
+stagnation) a seeded restart. Descent order is seeded from per-parameter
+sensitivity measured across the seed round.
 
 ```ts
 // score.ts — objectives mapped to 0..1 utilities.
@@ -687,16 +698,26 @@ export function toUnit(spec: ParamSpec, value: number): number // value → [0,1
 export function fromUnit(spec: ParamSpec, unit: number): number // [0,1] → valid value
 export function settingsKey(s: VectorizeSettings): string // canonical dedup key (normalized)
 
+// resolution.ts — px-scaling for the draft pre-screen (large-image search).
+// Scale a settings object's resolution-dependent fields for a trace whose long
+// side changes by `factor`: pixel lengths (blur/radius/prune/tolerances) ×factor,
+// the area threshold minRegionArea ×factor²; angles, levels, counts, ratios,
+// enums and booleans untouched. Re-normalized. Lets a search run at a cheap draft
+// resolution and re-trace the winners at full size with equivalent parameters.
+export function scaleSettingsForResolution(settings: VectorizeSettings, factor: number): VectorizeSettings
+
 // search.ts — the deterministic, round-based state machine.
-export type CandidateOrigin = 'baseline' | 'assist' | 'profile' | 'sample' | 'step' | 'recombine' | 'restart'
+export type CandidateOrigin =
+  'baseline' | 'assist' | 'profile' | 'sample' | 'step' | 'recombine' | 'restart' | 'palette'
 export interface TuneCandidate { id: number; settings: VectorizeSettings; origin: CandidateOrigin; tweaked?: TunableKey }
 export interface ScoredCandidate extends TuneCandidate {
   metrics: CandidateMetrics
   utilities: Record<ObjectiveId, number>
   score: number
   rejected?: 'empty' | 'fidelity-floor'
+  svg?: string // the traced SVG, carried through for the results wall (opaque to the search)
 }
-export interface CandidateResult { id: number; metrics: CandidateMetrics }
+export interface CandidateResult { id: number; metrics: CandidateMetrics; svg?: string }
 export interface SeedPatch { patch: Partial<VectorizeSettings>; origin?: CandidateOrigin }
 export interface TuneOptions {
   weights: TuneWeights
@@ -706,6 +727,7 @@ export interface TuneOptions {
   free?: readonly TunableKey[] // defaults to DEFAULT_FREE
   minFidelity?: number // reject candidates below this fidelity utility
   seeds?: readonly SeedPatch[] // extra round-0 starts (assist / profiles)
+  palettes?: readonly (readonly string[])[] // suggested fixed palettes as a categorical choice (color mode)
 }
 export class TuneSearch {
   constructor(base: VectorizeSettings, opts: TuneOptions)

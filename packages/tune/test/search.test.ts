@@ -263,6 +263,29 @@ describe('TuneSearch palette candidates', () => {
     expect(search.best()?.settings.palette).toEqual(PAL_B)
   })
 
+  it('explores an opt-in enum parameter (segmentation) when listed as free', () => {
+    const base = normalizeSettings({ ...DEFAULT_SETTINGS, mode: 'color', segmentation: 'quantize' })
+    const search = new TuneSearch(base, {
+      weights: FIDELITY_ONLY,
+      iterations: 40,
+      seed: 3,
+      roundSize: 8,
+      free: ['smoothing', 'segmentation'],
+    })
+    // Reward the region-growing segmentation; the search must try and keep it.
+    const reward = (s: VectorizeSettings) =>
+      metrics({ meanDeltaE: s.segmentation === 'regions' ? 0.02 : 0.2 })
+    let round = search.nextRound()
+    for (;;) {
+      if (round.length === 0) break
+      search.report(round.map((c) => ({ id: c.id, metrics: reward(c.settings) })))
+      round = search.nextRound()
+    }
+    const tweakedSeg = search.results().some((c) => c.tweaked === 'segmentation')
+    expect(tweakedSeg).toBe(true)
+    expect(search.best()?.settings.segmentation).toBe('regions')
+  })
+
   it('never overrides a user-pinned palette', () => {
     const base = normalizeSettings({ ...DEFAULT_SETTINGS, mode: 'color', palette: PAL_A })
     const search = new TuneSearch(base, {
