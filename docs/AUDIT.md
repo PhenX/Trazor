@@ -284,8 +284,9 @@ pool (navigator.hardwareConcurrency-capped) on the layer/chain granularity would
   insertion into sorted position (toggles per row are tiny) avoids the allocation churn on speckly masks.
 - `analyzeSvg` regex-parses the multi-MB string the serializer just built, to recover counts the shape model
   already knows. Compute stats during serialization; keep `analyzeSvg` for foreign SVGs.
-- `fidelity.ts` runs 2× full-image `rgbToOklab` on the main thread (chunked); move to the worker and reuse
-  the engine's Oklab buffer for the reference side.
+- `fidelity.ts` rasterizes on the main thread (DOM-bound) and runs the 2× full-image `rgbToOklab` ΔE pass in
+  `worker/fidelity.worker.ts`. Remaining: reuse the engine's Oklab buffer for the reference side instead of
+  reconverting it.
 - The `fit` stage exists in `STAGE_BUDGET` (0.06) but every pipeline calls `run.stage('fit'); run.progress(1)`
   — it never contains work, so the progress bar jumps and the stage timing is always 0. Fold it into `trace`
   or move open-path fitting under it.

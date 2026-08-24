@@ -30,6 +30,7 @@ import { AssistClient } from '../lib/assistClient'
 import { decodeBlob } from '../lib/decode'
 import { computeFidelity } from '../lib/fidelity'
 import type { FidelityReport } from '../lib/fidelity'
+import { FidelityClient } from '../lib/fidelityClient'
 import { buildLayers } from '../lib/layers'
 import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
@@ -184,6 +185,7 @@ export const useAppStore = defineStore('app', () => {
   // Non-reactive machinery
   let client: TrazorClient | null = null
   let assistClient: AssistClient | null = null
+  let fidelityClient: FidelityClient | null = null
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
@@ -480,6 +482,14 @@ export const useAppStore = defineStore('app', () => {
     return client
   }
 
+  function getFidelityClient(): FidelityClient {
+    fidelityClient ??= new FidelityClient(
+      () =>
+        new Worker(new URL('../worker/fidelity.worker.ts', import.meta.url), { type: 'module' }),
+    )
+    return fidelityClient
+  }
+
   async function doRun(): Promise<void> {
     const image = workingImage.value
     if (!image) return
@@ -505,7 +515,7 @@ export const useAppStore = defineStore('app', () => {
       busy.value = false
       progress.value = null
       try {
-        const report = await computeFidelity(image, res)
+        const report = await computeFidelity(image, res, getFidelityClient())
         if (runId === runCounter) fidelity.value = report
       } catch {
         if (runId === runCounter) fidelity.value = null
