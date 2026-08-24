@@ -593,8 +593,9 @@ export const fr: MessageSchema = {
       label: 'Découpe vinyle',
       tagline: 'Fichier de découpe en tons directs par calque, une feuille par couleur',
       notes: [
-        'Multicolore : chaque couleur devient son propre calque <g> — découpez-la sur ce vinyle et empilez les feuilles.',
-        'Les calques empilés s’étendent sous ceux du dessus, les recouvrements restent sans jour une fois échenillés et empilés.',
+        'Multicolore : chaque calque empilé devient son propre <g> — découpez-le sur ce vinyle et empilez les feuilles.',
+        'La couleur qui borde le plus forme la feuille de base pleine ; les autres s’empilent dessus et s’étendent en dessous, les recouvrements restent sans jour une fois échenillés et empilés.',
+        'Les détails enfermés (une pupille) remontent sur leur propre calque du dessus, pour que les feuilles en dessous restent pleines au lieu de porter un trou.',
         'La réduction auto limite le nombre de feuilles ; augmentez Couleurs s’il manque une nuance.',
         'La couleur de fond est supprimée (pas de feuille de support pleine) — désactivez Omettre le fond pour la garder.',
         'Unités en millimètres à l’échelle 100 % ; augmentez Région min pour éliminer les points qu’une lame ne peut écheniller.',

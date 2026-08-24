@@ -502,6 +502,62 @@ describe('stacked base layer', () => {
   })
 })
 
+/**
+ * An eye on a transparent field: a black-outlined blue face with a white sclera
+ * and a black pupil enclosed in it. The pupil shares the outline's black, so
+ * black recurs — as the full base and as an island lifted on top.
+ */
+function eyeIcon(): RasterImage {
+  const img = createRaster(80, 80)
+  const disk = (cx: number, cy: number, r: number, rgb: [number, number, number]): void => {
+    for (let y = 0; y < 80; y++) {
+      for (let x = 0; x < 80; x++) {
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) setPixel(img, x, y, ...rgb)
+      }
+    }
+  }
+  disk(40, 40, 30, [10, 10, 10]) // black outline
+  disk(40, 40, 26, [40, 110, 190]) // blue face
+  disk(40, 34, 12, [235, 235, 235]) // white sclera
+  disk(40, 34, 5, [10, 10, 10]) // black pupil, enclosed in the sclera
+  return img
+}
+
+describe('stacked islands on top', () => {
+  it('lifts an enclosed pupil onto its own top layer, leaving the layers below solid', async () => {
+    // Fixed palette so the pupil and outline share one exact black.
+    const s = settings({
+      mode: 'color',
+      layering: 'stacked',
+      groupByColor: true,
+      preserveDetails: true,
+      palette: ['#0a0a0a', '#286ebe', '#ebebeb'],
+      optimizeSvg: false,
+    })
+    const res = await vectorize(eyeIcon(), s)
+    const groups = [
+      ...res.svg.matchAll(/<g id="layer-\d+"><title>(#[0-9a-f]{6})<\/title>(.*?)<\/g>/gs),
+    ]
+    const layers = groups.map((g) => ({ color: g[1], subpaths: (g[2].match(/M/g) ?? []).length }))
+    const black = '#0a0a0a'
+    // Grouped by layer, not color: four layers from three colors, because black
+    // is both the base and the pupil island — one merged black layer would sink
+    // the pupil to the bottom and render it wrong.
+    expect(layers.length).toBe(4)
+    expect(layers.filter((l) => l.color === black).length).toBe(2)
+    // Base black is painted first; the pupil island is the last (top) layer.
+    expect(layers[0].color).toBe(black)
+    expect(layers[layers.length - 1].color).toBe(black)
+    // The blue face and white sclera below the pupil stay solid — one subpath
+    // each, with no floating pupil hole punched through them.
+    expect(layers.find((l) => l.color === '#286ebe')?.subpaths).toBe(1)
+    expect(layers.find((l) => l.color === '#ebebeb')?.subpaths).toBe(1)
+    // Every color still renders; the result is deterministic.
+    for (const hex of s.palette as string[]) expect(res.svg).toContain(hex)
+    expect((await vectorize(eyeIcon(), s)).svg).toBe(res.svg)
+  })
+})
+
 describe('stage cache (E3)', () => {
   // A colorful scene so the palette/segment stages do real work worth caching.
   function scene(): RasterImage {

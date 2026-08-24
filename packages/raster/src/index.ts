@@ -23,10 +23,11 @@ export {
   clearBorderLabel,
   dissolveThinBands,
   extractLabelMask,
+  findEnclosedComponents,
   maskArea,
   mergeSmallRegions,
   smoothLabelsSpatial,
 } from './regions'
-export type { MergeOptions } from './regions'
+export type { EnclosedComponent, MergeOptions } from './regions'
 export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'

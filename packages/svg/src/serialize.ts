@@ -23,6 +23,13 @@ export interface SvgShape {
   strokeLinecap?: 'butt' | 'round' | 'square'
   strokeLinejoin?: 'miter' | 'round' | 'bevel'
   id?: string
+  /**
+   * Stacking layer this shape belongs to (paint order). Shapes sharing a value
+   * form one cut layer under `groupByLayer` — used by stacked color output,
+   * where a color can recur at different heights (a base outline and a pupil
+   * island on top) and so must stay separate layers, not one merged color.
+   */
+  layerId?: number
 }
 
 export interface SvgDocument {
@@ -62,6 +69,14 @@ export interface SerializeOptions {
    * safe for a disjoint partition (cutout) or one-run-per-color paint order
    * (stacked). Default false. */
   groupByColor?: boolean
+  /**
+   * Wrap each stacking layer (a run of shapes sharing `layerId`) in its own
+   * `<g>`, in paint order, each `<title>`d with its color. Unlike
+   * `groupByColor` this keeps a color that recurs at different heights (a base
+   * outline and a pupil island above it) as separate, correctly ordered layers
+   * — the cut order for stacked vinyl. Takes precedence over `groupByColor`.
+   * Default false. */
+  groupByLayer?: boolean
 }
 
 /** Stable marker emitted right after the opening tag. */
@@ -202,11 +217,14 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   if (doc.desc !== undefined && doc.desc !== '') {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
   }
-  if (opts.groupByColor === true) {
-    // One <g> per paint color (first-appearance order); its same-paint shapes
-    // fold into a single <path>. Pretty mode indents each layer's children.
+  if (opts.groupByLayer === true || opts.groupByColor === true) {
+    // One <g> per layer: by paint order (runs sharing `layerId`) for
+    // groupByLayer, else one per paint color (first-appearance order). Each
+    // group's shapes fold into a single <path>; pretty mode indents them.
+    const groups =
+      opts.groupByLayer === true ? groupShapesByLayer(doc.shapes) : groupShapesByColor(doc.shapes)
     let layer = 0
-    for (const group of groupShapesByColor(doc.shapes)) {
+    for (const group of groups) {
       const body = foldShapes(group.shapes, precision, optimize, roundPrimitives)
       if (body.length === 0) continue
       layer++
@@ -266,6 +284,11 @@ function foldShapes(
   return out
 }
 
+/** Paint key of a shape — its fill, or its stroke when there is no fill. */
+function paintKeyOf(shape: SvgShape): string {
+  return shape.fill !== undefined && shape.fill !== 'none' ? shape.fill : (shape.stroke ?? '')
+}
+
 /**
  * Partition shapes into one bucket per paint color — the fill, or the stroke
  * when there is no fill — keeping the order in which each color first appears.
@@ -274,8 +297,7 @@ function groupShapesByColor(shapes: readonly SvgShape[]): { key: string; shapes:
   const groups: { key: string; shapes: SvgShape[] }[] = []
   const byKey = new Map<string, SvgShape[]>()
   for (const shape of shapes) {
-    const key =
-      shape.fill !== undefined && shape.fill !== 'none' ? shape.fill : (shape.stroke ?? '')
+    const key = paintKeyOf(shape)
     let bucket = byKey.get(key)
     if (bucket === undefined) {
       bucket = []
@@ -283,6 +305,26 @@ function groupShapesByColor(shapes: readonly SvgShape[]): { key: string; shapes:
       groups.push({ key, shapes: bucket })
     }
     bucket.push(shape)
+  }
+  return groups
+}
+
+/**
+ * Partition shapes into runs sharing `layerId`, preserving paint order — one
+ * group per stacking layer, keyed by the run's paint color. A shape with no
+ * `layerId` forms its own run, so mixed input still serializes sanely.
+ */
+function groupShapesByLayer(shapes: readonly SvgShape[]): { key: string; shapes: SvgShape[] }[] {
+  const groups: { key: string; shapes: SvgShape[] }[] = []
+  let current: { shapes: SvgShape[]; id: number | undefined } | null = null
+  for (const shape of shapes) {
+    const id = shape.layerId
+    if (current === null || id === undefined || id !== current.id) {
+      current = { shapes: [shape], id }
+      groups.push({ key: paintKeyOf(shape), shapes: current.shapes })
+    } else {
+      current.shapes.push(shape)
+    }
   }
   return groups
 }

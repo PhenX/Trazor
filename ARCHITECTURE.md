@@ -58,6 +58,11 @@ decode (app)
   total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
   standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
   on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
+  A region fully enclosed by one other color whose own color sits lower in the stack (a base-colored pupil inside an
+  eye) is relabeled into its surround for the solid base layers, then repainted on top as its own island layer — so the
+  layers below stay whole instead of carrying a floating hole. Because a color can then recur (base outline + pupil
+  island), grouped stacked output groups by paint **layer**, not by color, so the two stay separate, correctly-ordered
+  cut layers.
 - **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
   reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
   [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).

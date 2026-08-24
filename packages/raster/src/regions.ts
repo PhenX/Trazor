@@ -356,6 +356,103 @@ export function clearBorderLabel(labels: LabelMap, label: number): number {
   return cleared
 }
 
+export interface EnclosedComponent {
+  /** The component's own label. */
+  label: number
+  /** The single label that fully surrounds it. */
+  surround: number
+  /** Pixel indices (row-major) belonging to the component. */
+  pixels: Int32Array
+}
+
+/**
+ * 4-connected components fully enclosed by a single other label: every neighbor
+ * outside the component carries that one label, and the component touches
+ * neither the image border nor an unlabeled (-1) pixel. These are "islands" — a
+ * pupil inside an eye, a dot inside a field. A connective outline network is not
+ * enclosed (it borders many labels, and usually the exterior), so it is never
+ * returned. Components come back in row-major discovery order (deterministic).
+ */
+export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[] {
+  const { width: w, height: h, data } = labels
+  const n = w * h
+  const visited = new Uint8Array(n)
+  const stack = new Int32Array(n)
+  const scratch = new Int32Array(n)
+  const out: EnclosedComponent[] = []
+  for (let seed = 0; seed < n; seed++) {
+    if (visited[seed] === 1 || data[seed] < 0) continue
+    const lab = data[seed]
+    let sp = 0
+    let cp = 0
+    stack[sp++] = seed
+    visited[seed] = 1
+    let enclosed = true
+    let surround = -2 // -2 = no differing neighbor label seen yet
+    while (sp > 0) {
+      const p = stack[--sp]
+      scratch[cp++] = p
+      const x = p - ((p / w) | 0) * w
+      // Each of the 4 sides: same label ⇒ grow the component; otherwise it is an
+      // outside face — the image border, the exterior (-1), or a neighbor label.
+      // A border/exterior face, or a second distinct neighbor label, breaks
+      // enclosure; the flood still finishes so the component is fully marked.
+      if (x === 0) enclosed = false
+      else {
+        const q = p - 1
+        if (data[q] === lab) {
+          if (visited[q] === 0) {
+            visited[q] = 1
+            stack[sp++] = q
+          }
+        } else if (data[q] < 0) enclosed = false
+        else if (surround === -2) surround = data[q]
+        else if (surround !== data[q]) enclosed = false
+      }
+      if (x === w - 1) enclosed = false
+      else {
+        const q = p + 1
+        if (data[q] === lab) {
+          if (visited[q] === 0) {
+            visited[q] = 1
+            stack[sp++] = q
+          }
+        } else if (data[q] < 0) enclosed = false
+        else if (surround === -2) surround = data[q]
+        else if (surround !== data[q]) enclosed = false
+      }
+      if (p < w) enclosed = false
+      else {
+        const q = p - w
+        if (data[q] === lab) {
+          if (visited[q] === 0) {
+            visited[q] = 1
+            stack[sp++] = q
+          }
+        } else if (data[q] < 0) enclosed = false
+        else if (surround === -2) surround = data[q]
+        else if (surround !== data[q]) enclosed = false
+      }
+      if (p >= n - w) enclosed = false
+      else {
+        const q = p + w
+        if (data[q] === lab) {
+          if (visited[q] === 0) {
+            visited[q] = 1
+            stack[sp++] = q
+          }
+        } else if (data[q] < 0) enclosed = false
+        else if (surround === -2) surround = data[q]
+        else if (surround !== data[q]) enclosed = false
+      }
+    }
+    if (enclosed && surround >= 0) {
+      out.push({ label: lab, surround, pixels: scratch.slice(0, cp) })
+    }
+  }
+  return out
+}
+
 /** 1 where `labels.data[i] === label`, else 0. */
 export function extractLabelMask(labels: LabelMap, label: number): BinaryMask {
   const { width, height, data } = labels

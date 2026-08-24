@@ -4,6 +4,7 @@ import {
   clearBorderLabel,
   dissolveThinBands,
   extractLabelMask,
+  findEnclosedComponents,
   maskArea,
   mergeSmallRegions,
   smoothLabelsSpatial,
@@ -322,5 +323,69 @@ describe('extractLabelMask / maskArea', () => {
   it('counts foreground pixels', () => {
     expect(maskArea(maskOf(5, 5, (x, y) => x === y))).toBe(5)
     expect(maskArea(maskOf(3, 3, () => false))).toBe(0)
+  })
+})
+
+describe('findEnclosedComponents', () => {
+  it('returns only the innermost island — its container borders two labels', () => {
+    // label 2 (center) inside a label 1 field inside label 0 (background/border).
+    const rows = [
+      [0, 0, 0, 0, 0, 0, 0],
+      [0, 1, 1, 1, 1, 1, 0],
+      [0, 1, 1, 1, 1, 1, 0],
+      [0, 1, 1, 2, 1, 1, 0],
+      [0, 1, 1, 1, 1, 1, 0],
+      [0, 1, 1, 1, 1, 1, 0],
+      [0, 0, 0, 0, 0, 0, 0],
+    ]
+    const labels = labelMap(7, 7, rows, 3)
+    const found = findEnclosedComponents(labels)
+    // The label 1 field borders both label 0 (outside) and label 2 (its own
+    // island), so it is not single-surround enclosed; only label 2 is. Label 0
+    // touches the border. So just the pupil comes back, surrounded by label 1.
+    expect(found.map((c) => [c.label, c.surround, c.pixels.length])).toEqual([[2, 1, 1]])
+  })
+
+  it('finds several leaf islands, each with its surround, in row-major order', () => {
+    const rows = [
+      [0, 0, 0, 0, 0, 0],
+      [0, 1, 1, 0, 0, 0],
+      [0, 1, 1, 0, 0, 0],
+      [0, 0, 0, 2, 2, 0],
+      [0, 0, 0, 2, 2, 0],
+      [0, 0, 0, 0, 0, 0],
+    ]
+    const labels = labelMap(6, 6, rows, 3)
+    expect(
+      findEnclosedComponents(labels).map((c) => [c.label, c.surround, c.pixels.length]),
+    ).toEqual([
+      [1, 0, 4],
+      [2, 0, 4],
+    ])
+  })
+
+  it('does not enclose a region bordered by two different labels', () => {
+    const rows = [
+      [0, 0, 0, 0, 0],
+      [0, 1, 1, 2, 0],
+      [0, 1, 1, 2, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+    ]
+    const labels = labelMap(5, 5, rows, 3)
+    // label 1 touches 0 and 2; label 2 touches 1 and 0 — neither is enclosed.
+    expect(findEnclosedComponents(labels)).toEqual([])
+  })
+
+  it('does not enclose a region that touches the unlabeled exterior', () => {
+    const rows = [
+      [-1, -1, -1, -1, -1],
+      [-1, 1, 1, 1, -1],
+      [-1, 1, 1, 1, -1],
+      [-1, 1, 1, 1, -1],
+      [-1, -1, -1, -1, -1],
+    ]
+    const labels = labelMap(5, 5, rows, 2)
+    expect(findEnclosedComponents(labels)).toEqual([])
   })
 })
