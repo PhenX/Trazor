@@ -1,6 +1,6 @@
 # Auto-optimize — design plan for the brute-force settings search
 
-**Status: M1 + M2 shipped; M3–M4 planned.** This documents the design of the automatic settings search ("brute force
+**Status: M1–M3 shipped; M4 planned.** This documents the design of the automatic settings search ("brute force
 mode"): the user states how much they care about each quality axis (fidelity, document simplicity, …) and an iteration
 budget; the studio then explores the settings space in parallel workers, smartly tweaking one parameter at a time, and
 converges on the best settings for _this_ image and _these_ priorities. The core search (`@trazor/tune`), the worker
@@ -350,7 +350,7 @@ wires `tune` + `engine` + fidelity together.
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---- |
 | **M1 ✅** | Core: `@trazor/tune` (params, scoring, search), `TrazorPool`, fidelity score-only path; dev-only trigger                                                                                                                                                                                               | M      | Low  |
 | **M2 ✅** | Studio UI: panel, presets, progress, the comparison wall with synchronized loupe, apply/revert; i18n; release note                                                                                                                                                                                     | M      | Low  |
-| **M3**    | Sharper: affinity scheduling measured + tuned, optional multi-entry `StageCache`, sensitivity-ranked probes, Pareto filter + two-up compare on the wall                                                                                                                                                | S–M    | Low  |
+| **M3 ✅** | Sharper: multi-entry `StageCache` (palette LRU) with hit/miss stats, sensitivity-ranked probes, Pareto filter + two-up compare inspector on the wall                                                                                                                                                   | S–M    | Low  |
 | **M4**    | Breadth: suggested fixed palettes as categorical candidates, structural opt-ins (curve mode / layering), constraint presets, draft-resolution pre-screen for very large images (successive halving with per-parameter px-scaling rules), optional Node CLI batch tuner on the `scripts/eval` substrate | M–L    | Med  |
 
 M1 before M2 keeps the algorithm honest: the strategy must demonstrably beat random sampling on the same budget in

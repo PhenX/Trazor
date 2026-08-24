@@ -37,6 +37,16 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 4,
+    kind: 'improvement',
+    title: 'Compare candidates side by side',
+    items: [
+      'Click any candidate on the auto-optimize wall to open it side by side with the original, step through the rest with the arrow keys, and apply the one you like — the same compare-zoom magnifier works here too, so you can check fine detail against the source.',
+      'Auto-optimize searches are faster: each worker now keeps several recent palettes warm instead of one, so revisiting a palette while tuning no longer recomputes it, and the search spends its budget on the settings that actually move the result.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 3,
     kind: 'feature',
     title: 'Auto-optimize your settings',

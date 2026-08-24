@@ -558,10 +558,18 @@ export function vectorize(
   // disabled while an edge hint is present. Omit for a stateless run.
   opts?: { imageId?: number; cache?: StageCache },
 ): Promise<VectorizeResult>
-// StageCache is an opaque worker-owned holder (preprocessed image + labels +
-// palette, keyed internally by imageId + settings slices). Instantiate as `{}`.
+// StageCache is an opaque worker-owned holder: one preprocessed-image entry plus
+// a small LRU of palette/label entries (keyed internally by imageId + settings
+// slices), so alternating palettes on one worker stay warm. Instantiate as `{}`.
+// `stats` exposes hit/miss counters for measuring cache/affinity effectiveness.
 export interface StageCache {
-  /* engine-internal fields */
+  /* engine-internal fields */ stats?: StageCacheStats
+}
+export interface StageCacheStats {
+  preHits: number
+  preMisses: number
+  palHits: number
+  palMisses: number
 }
 
 // pool.ts — a fixed worker pool for throughput work (the settings search).

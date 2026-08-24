@@ -92,6 +92,8 @@ const STEP_SHRINK = 0.5
 const GAIN_EMA = 0.5
 const STALL_LIMIT = 3
 const EXPLORE_COEF = 0.02
+/** Scales a seed-round sensitivity (|correlation|, 0..1) into an initial priority. */
+const SENSITIVITY_SCALE = 0.05
 
 /** Deterministic index for stable priority tiebreaks. */
 const PARAM_ORDER = new Map<TunableKey, number>(TUNABLE_PARAMS.map((p, i) => [p.key, i]))
@@ -213,7 +215,12 @@ export class TuneSearch {
     this.adaptSteps(probedSeen, probedImproved)
     this.updateIncumbent(roundBest)
     this.round++
-    if (this.phase === 'seed') this.phase = 'descend'
+    if (this.phase === 'seed') {
+      // Rank the first descent by how much each parameter moved the score across
+      // the diverse seed round, so high-impact parameters are probed first.
+      this.seedSensitivity()
+      this.phase = 'descend'
+    }
     this.pending.clear()
     this.updateConvergence()
   }
@@ -416,6 +423,32 @@ export class TuneSearch {
     return st.gain + EXPLORE_COEF * recency
   }
 
+  /**
+   * Seed each numeric parameter's initial priority from its sensitivity in the
+   * seed round: the magnitude of the correlation between the parameter's value
+   * and the achieved score across the diverse seed candidates. Discrete
+   * parameters keep gain 0 and are reached via the exploration bonus. Fully
+   * deterministic (reads the deterministic ledger).
+   */
+  private seedSensitivity(): void {
+    const scored = this.ledger.filter((c) => !c.rejected)
+    if (scored.length < 3) return
+    const specs = applicableParams(this.freeKeys, this.mode, this.incumbent?.settings ?? this.base)
+    for (const spec of specs) {
+      if (spec.kind !== 'number' && spec.kind !== 'int') continue
+      const st = this.paramState.get(spec.key)
+      if (!st) continue
+      const units: number[] = []
+      const scores: number[] = []
+      for (const c of scored) {
+        units.push(toUnit(spec, c.settings[spec.key] as number))
+        scores.push(c.score)
+      }
+      const r = Math.abs(pearson(units, scores))
+      if (Number.isFinite(r)) st.gain = SENSITIVITY_SCALE * r
+    }
+  }
+
   private adaptSteps(seen: Set<TunableKey>, improved: Map<TunableKey, boolean>): void {
     for (const key of seen) {
       const st = this.paramState.get(key)
@@ -522,6 +555,32 @@ function withParam(
     return normalizeSettings({ ...settings, [spec.key]: values[idx] })
   }
   return withParamUnit(settings, spec, sample)
+}
+
+/** Pearson correlation of two equal-length series; 0 when either is constant. */
+function pearson(x: readonly number[], y: readonly number[]): number {
+  const n = x.length
+  if (n === 0) return 0
+  let sx = 0
+  let sy = 0
+  for (let i = 0; i < n; i++) {
+    sx += x[i]
+    sy += y[i]
+  }
+  const mx = sx / n
+  const my = sy / n
+  let cov = 0
+  let vx = 0
+  let vy = 0
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - mx
+    const dy = y[i] - my
+    cov += dx * dy
+    vx += dx * dx
+    vy += dy * dy
+  }
+  const denom = Math.sqrt(vx * vy)
+  return denom === 0 ? 0 : cov / denom
 }
 
 /**

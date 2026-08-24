@@ -2,7 +2,7 @@
 import { clamp } from '@trazor/core'
 import type { RasterImage } from '@trazor/core'
 import type { ScoredCandidate } from '@trazor/tune'
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { formatBytes, formatCount } from '../lib/format'
 import { useAppStore } from '../store/appStore'
@@ -129,6 +129,54 @@ function toggleCompareZoom(): void {
 function scorePct(c: ScoredCandidate): string {
   return (c.score * 100).toFixed(0)
 }
+
+// ---- two-up inspector (candidate vs. source, shared loupe) ----
+const inspectId = ref<number | null>(null)
+const inspectIndex = computed(() =>
+  inspectId.value === null ? -1 : candidates.value.findIndex((c) => c.id === inspectId.value),
+)
+const inspected = computed(() => {
+  const i = inspectIndex.value
+  return i >= 0 ? candidates.value[i] : null
+})
+
+function openInspector(c: ScoredCandidate): void {
+  inspectId.value = c.id
+}
+function closeInspector(): void {
+  inspectId.value = null
+}
+function inspectStep(delta: number): void {
+  const i = inspectIndex.value
+  if (i < 0) return
+  const next = clamp(i + delta, 0, candidates.value.length - 1)
+  inspectId.value = candidates.value[next].id
+}
+function applyInspected(): void {
+  if (inspected.value) store.applyTuneCandidate(inspected.value)
+}
+
+function fidelityPct(c: ScoredCandidate): string {
+  return (c.utilities.fidelity * 100).toFixed(0)
+}
+
+// The inspector owns the keyboard while open: arrows step, Escape closes it
+// (capture phase, so it pre-empts the overlay's own Escape-to-close).
+function onKey(e: KeyboardEvent): void {
+  if (inspectId.value === null) return
+  if (e.key === 'Escape') {
+    e.stopPropagation()
+    closeInspector()
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault()
+    inspectStep(-1)
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault()
+    inspectStep(1)
+  }
+}
+onMounted(() => window.addEventListener('keydown', onKey, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 </script>
 
 <template>
@@ -206,10 +254,10 @@ function scorePct(c: ScoredCandidate): string {
           'is-best': c.id === store.tuneBest?.id,
         }"
         :style="{ aspectRatio: aspect }"
-        :title="t('tune.apply')"
+        :title="t('tune.inspectTitle')"
         @mousemove="onMove"
         @wheel="onWheel"
-        @click="store.applyTuneCandidate(c)"
+        @click="openInspector(c)"
       >
         <svg
           class="tw-svg"
@@ -239,11 +287,124 @@ function scorePct(c: ScoredCandidate): string {
     <div v-else class="tw-empty">
       <p>{{ store.tuneRunning ? t('tune.emptyRunning') : t('tune.emptyIdle') }}</p>
     </div>
+
+    <!-- Two-up inspector: candidate vs. source, sharing the loupe -->
+    <div v-if="inspected" class="tw-inspect" @click.self="closeInspector">
+      <div class="tw-inspect-shell card">
+        <header class="tw-inspect-head">
+          <div class="tw-inspect-meta">
+            <span class="mono tw-inspect-score">{{ scorePct(inspected) }}%</span>
+            <span class="tw-inspect-stat"
+              >{{ t('tune.obj.fidelity') }} {{ fidelityPct(inspected) }}%</span
+            >
+            <span class="tw-inspect-stat">{{
+              t('tune.tileNodes', { count: formatCount(inspected.metrics.nodeCount) })
+            }}</span>
+            <span class="tw-inspect-stat">{{
+              t('tune.tileColors', { count: inspected.metrics.colorCount })
+            }}</span>
+            <span class="tw-inspect-stat">{{ formatBytes(inspected.metrics.byteLength) }}</span>
+            <span class="tw-inspect-pos">{{
+              t('tune.position', { index: inspectIndex + 1, total: candidates.length })
+            }}</span>
+          </div>
+          <div class="tw-inspect-actions">
+            <button
+              class="tw-toggle"
+              type="button"
+              :class="{ 'is-active': compareZoom }"
+              :title="t('tune.compareZoomHint')"
+              @click="toggleCompareZoom"
+            >
+              {{ t('tune.compareZoom') }}
+              <span v-if="compareZoom" class="tw-zoom mono">{{ zoom.toFixed(1) }}×</span>
+            </button>
+            <button class="btn btn-primary btn-sm" type="button" @click="applyInspected">
+              {{ t('tune.apply') }}
+            </button>
+            <button
+              class="btn btn-ghost btn-icon"
+              type="button"
+              :aria-label="t('tune.close')"
+              @click="closeInspector"
+            >
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                <path
+                  d="M4 4l8 8M12 4l-8 8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="tw-inspect-body" :class="{ 'is-zoom': compareZoom }">
+          <button
+            class="tw-nav tw-nav-prev"
+            type="button"
+            :disabled="inspectIndex <= 0"
+            :aria-label="t('tune.prev')"
+            @click="inspectStep(-1)"
+          >
+            ‹
+          </button>
+          <figure class="tw-pane">
+            <svg
+              class="tw-svg"
+              :viewBox="viewBox(dimsFor(inspected).w, dimsFor(inspected).h)"
+              preserveAspectRatio="xMidYMid meet"
+              @mousemove="onMove"
+              @wheel="onWheel"
+            >
+              <image
+                :href="svgUrl(inspected)"
+                x="0"
+                y="0"
+                :width="dimsFor(inspected).w"
+                :height="dimsFor(inspected).h"
+              />
+            </svg>
+            <figcaption>{{ t('tune.candidate') }}</figcaption>
+          </figure>
+          <figure v-if="sourceUrl && store.workingImage" class="tw-pane">
+            <svg
+              class="tw-svg"
+              :viewBox="viewBox(store.workingImage.width, store.workingImage.height)"
+              preserveAspectRatio="xMidYMid meet"
+              @mousemove="onMove"
+              @wheel="onWheel"
+            >
+              <image
+                :href="sourceUrl"
+                x="0"
+                y="0"
+                :width="store.workingImage.width"
+                :height="store.workingImage.height"
+              />
+            </svg>
+            <figcaption>{{ t('tune.source') }}</figcaption>
+          </figure>
+          <button
+            class="tw-nav tw-nav-next"
+            type="button"
+            :disabled="inspectIndex >= candidates.length - 1"
+            :aria-label="t('tune.next')"
+            @click="inspectStep(1)"
+          >
+            ›
+          </button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .tune-wall {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -450,5 +611,140 @@ function scorePct(c: ScoredCandidate): string {
   justify-content: center;
   color: var(--text-3);
   font-size: 13px;
+}
+
+/* Two-up inspector */
+.tw-inspect {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+  backdrop-filter: blur(2px);
+  animation: tw-fade 0.12s ease;
+}
+
+.tw-inspect-shell {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  height: min(760px, 100%);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.tw-inspect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tw-inspect-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.tw-inspect-score {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.tw-inspect-pos {
+  color: var(--text-3);
+}
+
+.tw-inspect-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tw-inspect-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 12px;
+}
+
+.tw-inspect-body.is-zoom {
+  cursor: crosshair;
+}
+
+.tw-pane {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tw-pane .tw-svg {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: repeating-conic-gradient(var(--bg-2) 0% 25%, var(--bg-1) 0% 50%) 50% / 16px 16px;
+}
+
+.tw-pane figcaption {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.tw-nav {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 34px;
+  height: 60px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tw-nav:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.tw-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@keyframes tw-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .tw-inspect-body {
+    flex-direction: column;
+  }
+
+  .tw-nav {
+    display: none;
+  }
 }
 </style>

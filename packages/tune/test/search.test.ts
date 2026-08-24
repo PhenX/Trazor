@@ -27,6 +27,11 @@ function metrics(patch: Partial<CandidateMetrics>): CandidateMetrics {
   }
 }
 
+/** A monotonic score in one parameter: higher smoothing ⇒ lower ΔE ⇒ higher fidelity. */
+function bowlMetric(smoothing: number): CandidateMetrics {
+  return metrics({ meanDeltaE: 0.25 * (1 - smoothing) })
+}
+
 /**
  * A smooth quadratic bowl over two curve parameters: ΔE grows with distance
  * from an ideal (smoothing, optTolerance), so higher fidelity ⇔ closer to ideal.
@@ -79,6 +84,16 @@ describe('TuneSearch convergence', () => {
     expect(best!.score).toBeGreaterThan(0.95)
     expect(best!.settings.smoothing).toBeCloseTo(ideal.smoothing, 1)
     expect(best!.settings.optTolerance).toBeCloseTo(ideal.optTolerance, 0)
+  })
+
+  it('probes the more sensitive parameter first', () => {
+    // Only smoothing affects the score (monotonically); optTolerance is inert.
+    const search = new TuneSearch(BASE, { ...CURVE_OPTS, iterations: 60 })
+    const round0 = search.nextRound()
+    search.report(round0.map((c) => ({ id: c.id, metrics: bowlMetric(c.settings.smoothing) })))
+    const round1 = search.nextRound()
+    const firstStep = round1.find((c) => c.origin === 'step')
+    expect(firstStep?.tweaked).toBe('smoothing')
   })
 
   it('beats same-budget random sampling', () => {
