@@ -83,6 +83,19 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   _ICCV_ 1998.** Edge-preserving denoise option
   (`packages/raster/src/filters.ts`).
 
+## Settings search (packages/tune)
+
+- **Robert Hooke & T. A. Jeeves, “‘Direct Search’ Solution of Numerical and
+  Statistical Problems”, _Journal of the ACM_ 8(2), 1961.** The adaptive
+  coordinate/pattern search behind the auto-tune loop: probe one parameter at a
+  time from the incumbent, expand the step on success and contract it on failure
+  (`packages/tune/src/search.ts`).
+- **M. D. McKay, R. J. Beckman & W. J. Conover, “A Comparison of Three Methods
+  for Selecting Values of Input Variables in the Analysis of Output from a
+  Computer Code”, _Technometrics_ 21(2), 1979.** Latin-hypercube sampling used
+  to seed the search’s first round so the free parameters are exercised at
+  spread-out levels (`packages/tune/src/search.ts`).
+
 ## Local ML models (packages/ml)
 
 - **Xuebin Qin et al., “U²-Net: Going Deeper with Nested U-Structure for

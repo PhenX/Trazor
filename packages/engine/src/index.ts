@@ -1,5 +1,7 @@
 export { createNativeEngine, vectorize } from './native'
-export type { StageCache, VectorizeRunOptions } from './native'
+export type { StageCache, StageCacheStats, VectorizeRunOptions } from './native'
 export { installWorkerHandler } from './worker'
 export { TrazorClient } from './client'
+export { TrazorPool } from './pool'
+export type { PoolJobOptions } from './pool'
 export type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'

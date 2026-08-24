@@ -592,11 +592,153 @@ export function vectorize(
   // disabled while an edge hint is present. Omit for a stateless run.
   opts?: { imageId?: number; cache?: StageCache },
 ): Promise<VectorizeResult>
-// StageCache is an opaque worker-owned holder (preprocessed image + labels +
-// palette, keyed internally by imageId + settings slices). Instantiate as `{}`.
+// StageCache is an opaque worker-owned holder: one preprocessed-image entry plus
+// a small LRU of palette/label entries (keyed internally by imageId + settings
+// slices), so alternating palettes on one worker stay warm. Instantiate as `{}`.
+// `stats` exposes hit/miss counters for measuring cache/affinity effectiveness.
 export interface StageCache {
-  /* engine-internal fields */
+  /* engine-internal fields */ stats?: StageCacheStats
 }
+export interface StageCacheStats {
+  preHits: number
+  preMisses: number
+  palHits: number
+  palMisses: number
+}
+
+// pool.ts — a fixed worker pool for throughput work (the settings search).
+// Unlike TrazorClient (latest-wins), every run() is queued and resolved
+// independently; a freed worker prefers the next queued job matching its last
+// affinityKey (its StageCache stays warm), else FIFO. Each worker keeps its own
+// cache; jobs for the same image object carry a stable imageId internally.
+export interface PoolJobOptions {
+  /** Preprocess+palette settings slice — the pool routes matching jobs to a warm worker. */
+  affinityKey?: string
+  onProgress?: (stage: StageId, overall: number) => void
+  edgeHint?: GrayImage
+  coverageHint?: GrayImage
+}
+export class TrazorPool {
+  constructor(createWorker: () => Worker, size: number)
+  readonly size: number
+  /** Queue a candidate; resolves with its result, independent of other jobs. */
+  run(
+    image: RasterImage,
+    settings: VectorizeSettings,
+    opts?: PoolJobOptions,
+  ): Promise<VectorizeResult>
+  /** Reject every queued and in-flight job with CancelledError. */
+  cancelAll(): void
+  dispose(): void
+}
+```
+
+## @trazor/tune
+
+The automatic settings search (the "Auto-optimize" studio tool). Pure
+TypeScript, depends only on `@trazor/core`, no DOM — the caller (the app) traces
+candidates in a worker pool and feeds metrics back, so the strategy is
+deterministic and unit-testable in Node. Determinism is two-tier, like the ML
+stages: the trace of any settings is byte-identical everywhere, but the fidelity
+_scores_ depend on the browser's SVG rasterizer, so the chosen winner can differ
+across browsers (the same standing as the fidelity score in the stats bar).
+
+The search runs round-based: round 0 seeds (baseline + assist/profile seeds +
+each suggested palette + a Latin-hypercube fill), then adaptive coordinate
+descent over the incumbent — probe one parameter at a time, expand the step on
+success and shrink on failure, with a palette swap, recombination, and (on
+stagnation) a seeded restart. Descent order is seeded from per-parameter
+sensitivity measured across the seed round.
+
+```ts
+// score.ts — objectives mapped to 0..1 utilities.
+export type ObjectiveId = 'fidelity' | 'simplicity' | 'fileSize' | 'colorEconomy' | 'cleanliness'
+export const OBJECTIVE_IDS: readonly ObjectiveId[]
+export type TuneWeights = Record<ObjectiveId, number> // 0 = don't care; normalized internally
+export interface CandidateMetrics {
+  meanDeltaE: number // mean Oklab ΔE of the rendered SVG vs the source
+  nodeCount: number
+  pathCount: number
+  byteLength: number
+  colorCount: number
+  warnings: readonly VectorizeWarning[]
+  durationMs: number
+}
+export function fidelityUtility(meanDeltaE: number): number // clamp(1 − 4·ΔE, 0, 1)
+export function cleanlinessUtility(warnings: readonly VectorizeWarning[]): number
+export function isEmptyResult(metrics: CandidateMetrics): boolean
+export function utilitiesOf(m: CandidateMetrics, baseline: CandidateMetrics): Record<ObjectiveId, number>
+// The weight-normalized sum of the utilities. Fidelity is absolute; the
+// "fewer is better" axes anchor at 0.5 for the baseline candidate.
+export function scoreCandidate(
+  metrics: CandidateMetrics,
+  baseline: CandidateMetrics,
+  weights: TuneWeights,
+): { score: number; utilities: Record<ObjectiveId, number> }
+
+// params.ts — the tunable parameter space (metadata, not hardcoded loops).
+export interface ParamSpec {
+  key: TunableKey
+  kind: 'number' | 'int' | 'bool' | 'enum'
+  min?: number
+  max?: number
+  scale?: 'linear' | 'log' // step arithmetic domain; log needs min > 0
+  values?: readonly string[] // enum choices
+  modes?: readonly VectorizeMode[] // absent ⇒ every mode
+  group: 'preprocess' | 'palette' | 'binarize' | 'curve' | 'output' // cost tier a change invalidates
+  when?: (s: VectorizeSettings) => boolean // only meaningful under these settings
+  optIn?: boolean // held unless listed in TuneOptions.free
+}
+export type TunableKey = /* keyof VectorizeSettings minus identity/cosmetic fields */
+export const TUNABLE_PARAMS: readonly ParamSpec[]
+export const DEFAULT_FREE: readonly TunableKey[] // the non-opt-in keys
+export function specFor(key: TunableKey): ParamSpec
+export function applicableParams(keys: readonly TunableKey[], mode: VectorizeMode, s: VectorizeSettings): ParamSpec[]
+export function toUnit(spec: ParamSpec, value: number): number // value → [0,1] search coord
+export function fromUnit(spec: ParamSpec, unit: number): number // [0,1] → valid value
+export function settingsKey(s: VectorizeSettings): string // canonical dedup key (normalized)
+
+// resolution.ts — px-scaling for the draft pre-screen (large-image search).
+// Scale a settings object's resolution-dependent fields for a trace whose long
+// side changes by `factor`: pixel lengths (blur/radius/prune/tolerances) ×factor,
+// the area threshold minRegionArea ×factor²; angles, levels, counts, ratios,
+// enums and booleans untouched. Re-normalized. Lets a search run at a cheap draft
+// resolution and re-trace the winners at full size with equivalent parameters.
+export function scaleSettingsForResolution(settings: VectorizeSettings, factor: number): VectorizeSettings
+
+// search.ts — the deterministic, round-based state machine.
+export type CandidateOrigin =
+  'baseline' | 'assist' | 'profile' | 'sample' | 'step' | 'recombine' | 'restart' | 'palette'
+export interface TuneCandidate { id: number; settings: VectorizeSettings; origin: CandidateOrigin; tweaked?: TunableKey }
+export interface ScoredCandidate extends TuneCandidate {
+  metrics: CandidateMetrics
+  utilities: Record<ObjectiveId, number>
+  score: number
+  rejected?: 'empty' | 'fidelity-floor'
+  svg?: string // the traced SVG, carried through for the results wall (opaque to the search)
+}
+export interface CandidateResult { id: number; metrics: CandidateMetrics; svg?: string }
+export interface SeedPatch { patch: Partial<VectorizeSettings>; origin?: CandidateOrigin }
+export interface TuneOptions {
+  weights: TuneWeights
+  iterations: number // budget: novel candidates to evaluate
+  seed: number // whole search is deterministic in it
+  roundSize: number // candidates per round (≈ 2 × workers)
+  free?: readonly TunableKey[] // defaults to DEFAULT_FREE
+  minFidelity?: number // reject candidates below this fidelity utility
+  seeds?: readonly SeedPatch[] // extra round-0 starts (assist / profiles)
+  palettes?: readonly (readonly string[])[] // suggested fixed palettes as a categorical choice (color mode)
+}
+export class TuneSearch {
+  constructor(base: VectorizeSettings, opts: TuneOptions)
+  nextRound(): TuneCandidate[] // next novel batch; [] when spent or converged
+  report(results: readonly CandidateResult[]): void // barrier: the full emitted round
+  best(): ScoredCandidate | null
+  results(): readonly ScoredCandidate[] // every scored candidate (the comparison wall)
+  paretoFront(): readonly ScoredCandidate[] // non-dominated over fidelity/simplicity/colorEconomy
+  progress(): { evaluated: number; total: number; converged: boolean }
+}
+export function latinHypercube(n: number, dims: number, rand: () => number): number[][]
 ```
 
 ## @trazor/assist (reference — implemented by the main agent)

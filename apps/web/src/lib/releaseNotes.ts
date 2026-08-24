@@ -37,6 +37,17 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
+    iteration: 5,
+    kind: 'feature',
+    title: 'Auto-optimize your settings',
+    items: [
+      'A new Auto-optimize tool searches the settings space for you: set how much you care about fidelity, simplicity, file size, fewer colors, and cleanliness, pick an iteration budget, and it traces many candidates in parallel to find the best combination for your image. Presets seed common goals (Max fidelity, Balanced, Smallest file, Cut-ready).',
+      'Compare every candidate on one wall, sorted by any measure or filtered to the best trade-offs. Turn on Compare zoom to magnify the exact same spot across all of them — and against the original — at once, or open any candidate side by side with the source and step through the rest with the arrow keys. Then apply the one you like, or revert to your original settings.',
+      'It also tries the suggested palettes for your image, and under Advanced can explore the segmentation method, curve style, and layering. Large images stay fast: the search explores at a reduced size first, then re-traces only its best candidates at full resolution.',
+    ],
+  },
+  {
+    date: '2026-08-24',
     iteration: 4,
     kind: 'feature',
     title: 'Cleaner edges for flat art and line art',
