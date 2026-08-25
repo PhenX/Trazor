@@ -86,17 +86,42 @@ describe('mergeSmallRegions', () => {
     expect(labels.data[1 * 4 + 2]).toBe(2)
   })
 
-  it('still merges a small region the protect mask does not cover', () => {
+  it('still merges a small region the protect mask does not reach', () => {
     const rows = [
-      [0, 0, 0, 1],
-      [0, 2, 2, 1],
-      [0, 0, 0, 1],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 2, 2, 0, 1],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
     ]
-    const labels = labelMap(4, 3, rows, 3)
-    const protect = { width: 4, height: 3, data: new Uint8Array(12) }
-    protect.data[0] = 1 // marks a background pixel, not region 2
+    const labels = labelMap(6, 6, rows, 3)
+    const protect = { width: 6, height: 6, data: new Uint8Array(36) }
+    protect.data[0] = 1 // far corner: outside region 2's 8-neighborhood
     mergeSmallRegions(labels, 3, { protect })
-    expect([...labels.data]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
+    expect(labels.data[2 * 6 + 2]).toBe(0)
+    expect(labels.data[2 * 6 + 3]).toBe(0)
+  })
+
+  it('keeps an unprotected component whose 8-neighborhood reaches a protected pixel', () => {
+    // A hairline: two 1px pixels connected only diagonally (like adjacent
+    // Bresenham steps), with the protect mask marking just one of them (the
+    // stroke validation misses crossing pixels whose sides straddle a
+    // boundary). The unmarked pixel must survive via the 8-neighborhood.
+    const rows = [
+      [0, 0, 0, 0],
+      [0, 2, 0, 1],
+      [0, 0, 2, 0],
+      [0, 0, 0, 0],
+    ]
+    const labels = labelMap(4, 4, rows, 3)
+    const protect = { width: 4, height: 4, data: new Uint8Array(16) }
+    protect.data[1 * 4 + 1] = 1 // only the upper-left hairline pixel is marked
+    mergeSmallRegions(labels, 2, { protect })
+    expect(labels.data[1 * 4 + 1]).toBe(2)
+    expect(labels.data[2 * 4 + 2]).toBe(2) // diagonal neighbor of a protected pixel
+    // The isolated label-1 speck, nowhere near a protected pixel, still merges.
+    expect(labels.data[1 * 4 + 3]).toBe(0)
   })
 
   it('keeps -1 pixels and regions surrounded only by -1', () => {

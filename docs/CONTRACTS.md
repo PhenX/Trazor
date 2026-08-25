@@ -217,7 +217,9 @@ export interface MergeOptions {
   protect?: BinaryMask // 1 = keep this pixel's small region even below minArea (edge hint)
 }
 // With opts, small regions are kept instead of absorbed when high-contrast
-// (keepContrast+oklab) or on a protected edge pixel (protect).
+// (keepContrast+oklab) or when they touch the protect mask — a protected pixel
+// of their own, or one in their 8-neighborhood (so a hairline keeps the
+// crossing pixels the mask's own stroke validation could not mark).
 export function mergeSmallRegions(labels: LabelMap, minArea: number, opts?: MergeOptions): LabelMap
 // Dissolve 1px mislabeled boundary bands (an anti-aliased/JPEG rim quantized to a
 // third color) into the dominant neighbor region over `rounds` simultaneous

@@ -88,7 +88,7 @@ function colorScene(): RasterImage {
     }
   }
   drawLine(img, 130, 15, 130, 125, [90, 100, 112], 1) // darker 2px stroke
-  drawLine(img, 150, 20, 195, 65, [236, 236, 236]) // pale 1px diagonal hairline
+  drawLine(img, 30, 110, 105, 30, [236, 236, 236]) // pale 1px diagonal hairline, crossing the blob
   return img
 }
 
@@ -222,8 +222,8 @@ const html = `<title>Salience-aware simplification — keep fine edges</title>
   <p class="sub">Small regions normally merge into their surroundings during cleanup — which quietly erases thin strokes, hairlines and fine lettering, because they are too faint to pass the contrast test. The <strong>Keep fine edges</strong> toggle protects small regions that sit on the image's own strong color boundaries, using those boundaries as a salience mask: no ML model required. The pale 1px hairline below is a strong RGB edge but a weak color difference — the exact case contrast alone cannot save. The same protection is what the learned edge pre-pass provides when the on-device model is loaded; this is the classical, model-free fallback that always works.</p>
 
   <section class="row">
-    <h2>Color: pale hairline on white</h2>
-    <p>The big blob and the darker 2px stroke survive either way. The pale 1px hairline (rgb 236 on 255 — below the contrast bar, above the edge threshold) only survives with the toggle on.</p>
+    <h2>Color: pale hairline crossing a shape</h2>
+    <p>The big blob and the darker 2px stroke survive either way. The pale 1px hairline (rgb 236 on 255 — below the contrast bar, above the edge threshold) only survives with the toggle on, and stays whole where it crosses the blob: its crossing pixels are rescued by the merge's 8-neighborhood guard even though the stroke validation cannot mark them.</p>
     <div class="pair">
       ${pane('Keep fine edges — off', colorOff)}
       ${pane('Keep fine edges — on', colorOn)}

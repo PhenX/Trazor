@@ -282,6 +282,78 @@ describe('preserveSalient (classical salience protection)', () => {
     expect(analyzeSvg(on.svg).pathCount).toBe(2)
   })
 
+  it('keeps a hairline whole where it crosses another shape', async () => {
+    // Crossing pixels fail the stroke validation (their two sides straddle
+    // the blob boundary), so only the merge's 8-neighborhood guard saves them
+    // from being recolored — without it the hairline loses the crossing and
+    // the pieces beneath the blob's sheet.
+    const w = 220
+    const h = 140
+    const img = createRaster(w, h)
+    fillRaster(img, 255, 255, 255)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if ((x - 70) ** 2 + (y - 70) ** 2 <= 34 * 34) setPixel(img, x, y, 185, 190, 199)
+      }
+    }
+    // Bresenham 1px diagonal (30,110)-(105,30), crossing the blob.
+    {
+      let x = 30
+      let y = 110
+      const dx = 75
+      const dy = -80
+      let err = dx + dy
+      for (;;) {
+        setPixel(img, x, y, 236, 236, 236)
+        if (x === 105 && y === 30) break
+        const e2 = 2 * err
+        if (e2 >= dy) {
+          err += dy
+          x += 1
+        }
+        if (e2 <= dx) {
+          err += dx
+          y -= 1
+        }
+      }
+    }
+
+    const s = normalizeSettings({
+      mode: 'color',
+      maxDimension: 0,
+      segmentation: 'quantize',
+      palette: ['#ffffff', '#b9bec7', '#5a6470', '#ececec'],
+      layering: 'stacked',
+      minRegionArea: 150,
+      preserveSalient: true,
+      dissolveBands: 0,
+      colorCoherence: 0,
+      curveMode: 'spline',
+      // Absolute M/L coordinates — the bounds check below parses them naively.
+      optimizeSvg: false,
+      precision: 2,
+    })
+    const r = await vectorize(img, s)
+    // Every hairline-colored shape together must span the whole line.
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+    for (const m of r.svg.matchAll(/<path d="([^"]+)" fill="#ececec"/g)) {
+      const nums = (m[1].match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number)
+      for (let i = 0; i < nums.length; i += 2) {
+        if (nums[i] < minX) minX = nums[i]
+        if (nums[i] > maxX) maxX = nums[i]
+        if (nums[i + 1] < minY) minY = nums[i + 1]
+        if (nums[i + 1] > maxY) maxY = nums[i + 1]
+      }
+    }
+    expect(minX).toBeLessThanOrEqual(30.5)
+    expect(maxX).toBeGreaterThanOrEqual(104.5)
+    expect(minY).toBeLessThanOrEqual(30.5)
+    expect(maxY).toBeGreaterThanOrEqual(109.5)
+  })
+
   it('adds no palette entry when nothing salient is misrepresented', async () => {
     const img = rescueScene(false)
     const on = await vectorize(img, rescueSettings(true))
