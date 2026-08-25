@@ -672,10 +672,12 @@ async function colorPipeline(
     }
     run.progress(1)
   } else {
-    // Stacked: each layer covers itself plus all layers above, so lower shapes
-    // extend underneath and edges cannot crack. The most connective color — the
-    // one whose regions have the largest total perimeter, i.e. that borders the
-    // most other regions — is pinned to the bottom as the full-silhouette base,
+    // Stacked: each layer covers itself plus the sheets above that its own
+    // color actually reaches, so lower shapes extend underneath their neighbours
+    // and edges cannot crack — without dragging in far regions already covered
+    // by their own sheets (see the per-layer flood below). The most connective
+    // color — the one whose regions have the largest total perimeter, i.e. that
+    // borders the most other regions — is pinned to the bottom as the base,
     // so it reads as the outline/backdrop showing between the colors stacked on
     // top: the standard layered-vinyl build (a cartoon's black outline, a flat
     // design's background). A thin outline threading between regions outscores a
@@ -739,32 +741,84 @@ async function colorPipeline(
       if (l >= 0) bucket[cursor[l]++] = p
     }
 
-    const layerMask: BinaryMask = {
+    const unionMask: BinaryMask = {
       width: labels.width,
       height: labels.height,
       data: new Uint8Array(nPix),
     }
-    const data = layerMask.data
-    // Layer 0 is every labeled pixel (all layers stacked); higher layers peel off.
-    for (let p = 0; p < nPix; p++) data[p] = stackData[p] >= 0 ? 1 : 0
+    const union = unionMask.data
+    // Layer 0's union is every labeled pixel (all layers stacked); higher layers
+    // peel off. The union is only the running membership test for the flood
+    // below — it is never traced directly.
+    for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
+
+    // A lower layer extends under the sheets above it so their shared edges
+    // cannot crack — but only where its own color actually reaches. The raw
+    // union also drags in far regions that sit entirely above this layer and
+    // are already fully covered by their own sheets: redundant underlay this
+    // layer's color never touches, so it backs none of this layer's seams and
+    // only adds area to weed. Keep just the union components the layer's own
+    // color reaches — flood 4-connected from its pixels through the union — so
+    // those disconnected islands drop out of the cut. The region directly below
+    // a dropped island still backs it, so no seam is lost; and the base, whose
+    // color threads the whole silhouette, still floods to one full solid.
+    const cutMask: BinaryMask = {
+      width: labels.width,
+      height: labels.height,
+      data: new Uint8Array(nPix),
+    }
+    const cut = cutMask.data
+    const flood = new Int32Array(nPix)
+    const w = labels.width
 
     // Progress splits over the base layers plus the island layers on top.
     const totalLayers = order.length + islands.length
     let done = 0
     for (let i = 0; i < order.length; i++) {
-      const traced = traceMask(layerMask, {
+      const label = order[i]
+      // Seed the flood from this layer's own pixels, then grow through the
+      // union; `cut` ends up as exactly the union components its color reaches.
+      cut.fill(0)
+      let sp = 0
+      for (let k = offset[label]; k < offset[label + 1]; k++) {
+        const p = bucket[k]
+        if (cut[p] === 0) {
+          cut[p] = 1
+          flood[sp++] = p
+        }
+      }
+      while (sp > 0) {
+        const p = flood[--sp]
+        const x = p - ((p / w) | 0) * w
+        if (x > 0 && union[p - 1] === 1 && cut[p - 1] === 0) {
+          cut[p - 1] = 1
+          flood[sp++] = p - 1
+        }
+        if (x < w - 1 && union[p + 1] === 1 && cut[p + 1] === 0) {
+          cut[p + 1] = 1
+          flood[sp++] = p + 1
+        }
+        if (p >= w && union[p - w] === 1 && cut[p - w] === 0) {
+          cut[p - w] = 1
+          flood[sp++] = p - w
+        }
+        if (p < nPix - w && union[p + w] === 1 && cut[p + w] === 0) {
+          cut[p + w] = 1
+          flood[sp++] = p + w
+        }
+      }
+      const traced = traceMask(cutMask, {
         ...curveOpts,
         turnPolicy: settings.turnPolicy,
         minArea: traceMinArea,
       })
-      const fill = paletteHex[order[i]]
+      const fill = paletteHex[label]
       if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
       for (const shape of traced) {
         shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: i })
       }
-      // Remove this layer's own pixels so the next mask is the layers below it.
-      const label = order[i]
-      for (let k = offset[label]; k < offset[label + 1]; k++) data[bucket[k]] = 0
+      // Remove this layer's own pixels so the next union is the layers below it.
+      for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
       done++
       run.progress(done / totalLayers)
       // Sequential on purpose: yields the worker event loop between layers so
