@@ -55,6 +55,9 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    `optTolerance`, keeping node counts low.
 
 `curveMode` short-circuits this: `polygon` stops after step 3; `pixel` skips it entirely for exact rectilinear paths.
+_Hairline rings_ (thickness `2·area/perimeter` < 1.25 px) also take the pixel-exact path in every curve mode: the
+Selinger corridor lets an optimal-polygon chord hug one staircase chain of a ~1px band, rendering it at about half
+coverage, so thin strokes trace as the exact ring instead (`closed.ts`).
 
 ## The seam-free boundary graph (`boundary.ts`)
 

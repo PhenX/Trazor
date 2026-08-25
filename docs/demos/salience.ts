@@ -88,7 +88,7 @@ function colorScene(): RasterImage {
     }
   }
   drawLine(img, 130, 15, 130, 125, [90, 100, 112], 1) // darker 2px stroke
-  drawLine(img, 160, 15, 160, 125, [236, 236, 236]) // pale 1px hairline
+  drawLine(img, 150, 20, 195, 65, [236, 236, 236]) // pale 1px diagonal hairline
   return img
 }
 

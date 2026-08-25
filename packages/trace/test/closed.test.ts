@@ -47,6 +47,21 @@ function anchors(commands: PathCommand[]): [number, number][] {
   return out
 }
 
+/** Shoelace area of the first M/L…Z subpath (approximately the covered area). */
+function pathArea(commands: PathCommand[]): number {
+  const pts: [number, number][] = []
+  for (const c of commands) {
+    if (c.type === 'M' || c.type === 'L') pts.push([c.x, c.y])
+    if (c.type === 'Z') break
+  }
+  let s = 0
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length
+    s += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]
+  }
+  return Math.abs(s) / 2
+}
+
 describe('optimalPolyline', () => {
   it('reduces a perfect staircase diagonal to a single segment', () => {
     const pts: number[] = []
@@ -76,6 +91,20 @@ describe('optimalPolyline', () => {
 })
 
 describe('traceMask', () => {
+  it('traces a 1px diagonal band pixel-exact (full coverage)', () => {
+    // The Selinger corridor lets an optimal-polygon chord hug one staircase
+    // chain, halving coverage; hairline rings must trace the exact ring.
+    for (const curveMode of ['spline', 'polygon'] as const) {
+      const mask: BinaryMask = { width: 60, height: 60, data: new Uint8Array(60 * 60) }
+      for (let t = 0; t < 30; t++) mask.data[(50 - t) * 60 + (10 + t)] = 1
+      const shapes = traceMask(mask, { ...OPTS, curveMode })
+      expect(shapes).toHaveLength(1)
+      // The covered area must be the whole band (30 px), not a half-coverage
+      // sliver; the pixel-exact ring gives exactly 30.
+      expect(pathArea(shapes[0].commands)).toBeCloseTo(30, 1)
+    }
+  })
+
   it('traces a rectangle to four sharp corners', () => {
     const shapes = traceMask(rectMask(30, 20, 5, 5, 25, 15), OPTS)
     expect(shapes).toHaveLength(1)
