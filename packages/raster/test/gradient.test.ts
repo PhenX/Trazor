@@ -55,6 +55,32 @@ describe('fitRegionGradients', () => {
     expect(Math.abs(hi[0] - lo[0])).toBeGreaterThan(80)
   })
 
+  it('keeps a diagonal ramp diagonal on a non-square region', () => {
+    // A 3:1 image with a ramp along x+y. Deriving the direction from the raw
+    // cross-covariance would tilt it toward the wider axis (~9:1 here); the
+    // covariance-normalized gradient must stay ~45° (equal dx, dy).
+    const w = 90
+    const h = 30
+    const image = rasterOf(w, h, (x, y) => {
+      const v = Math.round(30 + ((x + y) / (w + h - 2)) * 200)
+      return [v, v, v, 255] as Rgba
+    })
+    const data = new Int32Array(w * h)
+    const step = (w + h - 2) / 8
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) data[y * w + x] = Math.min(7, Math.floor((x + y) / step))
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 8 }
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 32 })
+    const g = gradients.find((x) => x !== null)!
+    expect(g.kind).toBe('linear')
+    if (g.kind !== 'linear') return
+    const vx = g.x2 - g.x1
+    const vy = g.y2 - g.y1
+    // Equal components (±20% of the vector length) ⇒ ~45°, not axis-biased.
+    expect(Math.abs(vx - vy)).toBeLessThan(0.2 * Math.hypot(vx, vy))
+  })
+
   it('leaves two distinct flat colors alone (a step is not a ramp)', () => {
     const w = 40
     const h = 20

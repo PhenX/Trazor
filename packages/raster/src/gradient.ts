@@ -7,9 +7,10 @@
  * seam-free partition and the stacked layer build are unaffected.
  *
  * The fit is closed-form and deterministic: per-label moment sums make every
- * candidate union's linear fit O(1), the ramp direction is the leading
- * eigenvector of the position→color cross-covariance, and the stops are the
- * fitted colors at the region's projected extremes. Reference: Du et al., "Image
+ * candidate union's linear fit O(1), the ramp direction is the dominant
+ * least-squares color gradient in position space (covariance-normalized, so it
+ * is aspect-correct), and the stops are the fitted colors at the region's
+ * projected extremes. Reference: Du et al., "Image
  * Vectorization and Editing via Linear Gradient Layer Decomposition", ACM TOG
  * (SIGGRAPH) 42(4), 2023 (the linear case).
  */
@@ -56,14 +57,14 @@ interface RampFit {
   g1: [number, number, number]
   /** Mean Oklab distance of the pixels to the fitted ramp. */
   residual: number
-  /** λ1 / (λ1 + λ2) of the position→color cross-covariance; 1 = perfectly 1-D. */
+  /** λ1 / (λ1 + λ2) of the color-gradient scatter; 1 = the ramp is perfectly 1-D. */
   directionality: number
 }
 
 /**
  * Fit `color ≈ g0 + g1·(p·d)` over the pixels summarized by the moment vector at
- * `off`, choosing the position direction `d` that explains the most color
- * variation. Returns null when the region is too small or the fit is degenerate.
+ * `off`, choosing the position direction `d` of steepest color change. Returns
+ * null when the region is too small or the fit is degenerate.
  */
 function fitRamp(m: Float64Array, off: number): RampFit | null {
   const n = m[off]
@@ -71,20 +72,34 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
   const inv = 1 / n
   const mx = m[off + 1] * inv
   const my = m[off + 2] * inv
-  const mL = m[off + 6] * inv
-  const ma = m[off + 7] * inv
-  const mb = m[off + 8] * inv
 
-  // Centered position→color cross-covariance C (2×3), then C·Cᵀ (2×2 symmetric).
-  const covXL = m[off + 12] * inv - mx * mL
-  const covYL = m[off + 13] * inv - my * mL
-  const covXa = m[off + 14] * inv - mx * ma
-  const covYa = m[off + 15] * inv - my * ma
-  const covXb = m[off + 16] * inv - mx * mb
-  const covYb = m[off + 17] * inv - my * mb
-  const a00 = covXL * covXL + covXa * covXa + covXb * covXb
-  const a01 = covXL * covYL + covXa * covYa + covXb * covYb
-  const a11 = covYL * covYL + covYa * covYa + covYb * covYb
+  // Position covariance P (2×2 symmetric). Normalizing by it — the least-squares
+  // color gradient a_c = P⁻¹·q_c, not the raw cross-covariance q_c — keeps the
+  // direction aspect-correct: a diagonal ramp on a non-square region stays
+  // diagonal instead of tilting toward the axis with the larger pixel spread.
+  const Pxx = m[off + 3] * inv - mx * mx
+  const Pxy = m[off + 4] * inv - mx * my
+  const Pyy = m[off + 5] * inv - my * my
+  const detP = Pxx * Pyy - Pxy * Pxy
+  if (detP <= 1e-9) return null // collinear / zero-area spatial extent
+  const iP00 = Pyy / detP
+  const iP01 = -Pxy / detP
+  const iP11 = Pxx / detP
+
+  // Scatter of the three channels' color gradients: M = Σ_c a_c a_cᵀ (2×2).
+  let a00 = 0
+  let a01 = 0
+  let a11 = 0
+  for (let c = 0; c < 3; c++) {
+    const mc = m[off + 6 + c] * inv
+    const covXc = m[off + 12 + 2 * c] * inv - mx * mc
+    const covYc = m[off + 13 + 2 * c] * inv - my * mc
+    const ax = iP00 * covXc + iP01 * covYc
+    const ay = iP01 * covXc + iP11 * covYc
+    a00 += ax * ax
+    a01 += ax * ay
+    a11 += ay * ay
+  }
   const tr = a00 + a11
   if (tr <= 1e-12) return null
   const det = a00 * a11 - a01 * a01

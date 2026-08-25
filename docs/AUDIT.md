@@ -208,7 +208,7 @@ decomposition (SIGGRAPH 2023) is the full treatment.
 bands that lie on one Oklab ramp into a single region and paints it with a `<linearGradient>` — mesh-free
 (geometry, and the cutout seam-free partition, are untouched: only the fill changes). The fit is closed-form
 and deterministic (per-label moment sums make each candidate union's linear fit O(1); the ramp direction is
-the leading eigenvector of the position→color cross-covariance; a hard residual/directionality/color-span gate
+the dominant covariance-normalized least-squares color gradient in position space; a hard residual/directionality/color-span gate
 keeps it from firing on flat art or 2-D color fields). Paint extensions landed in `@trazor/core` (`GradientPaint`),
 `@trazor/svg` (`SvgDocument.defs`, `<defs>` serialization) and the engine (per-label paint table). Off is
 byte-identical to the flat-fill path; on by default in the Illustration and Photo profiles.

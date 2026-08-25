@@ -86,8 +86,8 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Gradient Layer Decomposition”, _ACM TOG (SIGGRAPH)_ 42(4), 2023.** Decomposing
   regions into linear-gradient layers. The linear case: posterized quantization
   bands that lie on one Oklab ramp are merged and fitted to a single
-  `<linearGradient>` — a closed-form moment fit (ramp direction = leading
-  eigenvector of the position→color cross-covariance)
+  `<linearGradient>` — a closed-form moment fit (ramp direction = the dominant
+  covariance-normalized least-squares color gradient in position space)
   (`packages/raster/src/gradient.ts`).
 
 ## Settings search (packages/tune)
