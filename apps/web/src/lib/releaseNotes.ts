@@ -50,6 +50,15 @@ export interface ReleaseNote {
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    date: '2026-08-25',
+    iteration: 1,
+    kind: 'fix',
+    title: 'Cleaner stacked cut layers',
+    items: [
+      'In stacked color mode, a lower sheet no longer carries hidden patches for far-away parts of the picture it never touches. Each sheet now extends only under the colors next to it, so a layer holds just the pieces you actually weed and stack — not stray islands buried under other sheets. The traced picture looks identical; only the cut sheets get simpler.',
+    ],
+  },
+  {
     date: '2026-08-24',
     iteration: 7,
     kind: 'improvement',

@@ -596,6 +596,62 @@ describe('stacked islands on top', () => {
   })
 })
 
+/**
+ * Two objects that share no color and no border, on a transparent field: a
+ * gray-ringed red disk on the left and a lone green square on the right, with
+ * unlabeled space between them. Nothing connects the two, so no single color
+ * legitimately backs both — the base's gray must not extend a phantom sheet
+ * under the square, the way "peaks" once buried a sun-disc underlay beneath the
+ * water at the far side of the picture.
+ */
+function twoObjects(): RasterImage {
+  const img = createRaster(80, 40) // transparent background (alpha 0)
+  const disk = (cx: number, cy: number, r: number, rgb: [number, number, number]): void => {
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 80; x++) {
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) setPixel(img, x, y, ...rgb)
+      }
+    }
+  }
+  disk(20, 20, 15, [140, 140, 140]) // gray ring — most bordering, becomes the base
+  disk(20, 20, 11, [200, 40, 40]) // red field enclosed by the gray
+  for (let y = 10; y < 30; y++) {
+    for (let x = 52; x < 72; x++) setPixel(img, x, y, 40, 160, 60) // lone green square
+  }
+  return img
+}
+
+describe('stacked drops redundant underlay', () => {
+  it('does not back a disconnected, fully-covered region the layer never touches', async () => {
+    const s = settings({
+      mode: 'color',
+      layering: 'stacked',
+      groupByColor: true,
+      optimizeSvg: false,
+      palette: ['#8c8c8c', '#c82828', '#28a03c'],
+    })
+    const res = await vectorize(twoObjects(), s)
+    const groups = [
+      ...res.svg.matchAll(/<g id="layer-\d+"><title>(#[0-9a-f]{6})<\/title>(.*?)<\/g>/gs),
+    ]
+    const layers = groups.map((g) => ({ color: g[1], subpaths: (g[2].match(/M/g) ?? []).length }))
+    // Three colors, three layers.
+    expect(layers.length).toBe(3)
+    // The gray ring is the most-bordering color, so it is painted first as the
+    // base — but only under the left object it actually threads. Its cut is one
+    // solid disk, not a disk plus a phantom square backing the far green.
+    expect(layers[0].color).toBe('#8c8c8c')
+    expect(layers[0].subpaths).toBe(1)
+    // Every layer is exactly its own connected blob: no layer drags in the other
+    // object as buried, seam-useless underlay. Full underlay would give five.
+    const totalSubpaths = layers.reduce((n, l) => n + l.subpaths, 0)
+    expect(totalSubpaths).toBe(3)
+    // Every color still renders, and the result is deterministic.
+    for (const hex of s.palette as string[]) expect(res.svg).toContain(hex)
+    expect((await vectorize(twoObjects(), s)).svg).toBe(res.svg)
+  })
+})
+
 describe('stage cache (E3)', () => {
   // A colorful scene so the palette/segment stages do real work worth caching.
   function scene(): RasterImage {
