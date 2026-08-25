@@ -12,6 +12,18 @@ import { i18n } from '../i18n'
 
 export type ReleaseNoteKind = 'feature' | 'improvement' | 'fix'
 
+/**
+ * Id of the illustration shown alongside a note. Each id maps — in
+ * `components/illustrations/` (see its `index.ts`) — to a set of real sample
+ * images: an actual before/after trace produced by Trazor from one CC0 source
+ * photo (see that folder's `LICENSES.md`), so the picture shows the exact
+ * behaviour the note describes. Illustrations are optional; add one only to a
+ * note whose change is genuinely visible in a trace, and where an honest
+ * before/after (or candidate set) can be produced. Notes whose output looks
+ * identical before and after (e.g. a layer-ordering change) get none.
+ */
+export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect'
+
 export interface ReleaseNote {
   /** Publication date, ISO `YYYY-MM-DD`. */
   date: string
@@ -27,6 +39,8 @@ export interface ReleaseNote {
   title: string
   /** One plain-language line per change — no jargon. */
   items: string[]
+  /** Optional decorative illustration shown above the items. */
+  illustration?: ReleaseIllustration
 }
 
 /**
@@ -35,6 +49,15 @@ export interface ReleaseNote {
  * strictly newest-to-oldest.
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
+  {
+    date: '2026-08-24',
+    iteration: 7,
+    kind: 'improvement',
+    title: 'Illustrated release notes',
+    items: [
+      "The What's new panel now shows real before/after samples on the notes about how tracing looks — cleaner edges, sharper auto-detect and the new Auto-optimize — each one an actual Trazor trace of the same picture, so you can see the difference at a glance before reading it.",
+    ],
+  },
   {
     date: '2026-08-24',
     iteration: 6,
@@ -52,6 +75,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 5,
     kind: 'feature',
     title: 'Auto-optimize your settings',
+    illustration: 'auto-optimize',
     items: [
       'A new Auto-optimize tool searches the settings space for you: set how much you care about fidelity, simplicity, file size, fewer colors, and cleanliness, pick an iteration budget, and it traces many candidates in parallel to find the best combination for your image. Presets seed common goals (Max fidelity, Balanced, Smallest file, Cut-ready).',
       'Compare every candidate on one wall, sorted by any measure or filtered to the best trade-offs. Turn on Compare zoom to magnify the exact same spot across all of them — and against the original — at once, or open any candidate side by side with the source and step through the rest with the arrow keys. Then apply the one you like, or revert to your original settings.',
@@ -63,6 +87,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 4,
     kind: 'feature',
     title: 'Cleaner edges for flat art and line art',
+    illustration: 'clean-edges',
     items: [
       'A new region-growing segmentation traces cartoons, logos and clip art far more faithfully. Instead of matching every pixel to one global palette — which turned the soft edge between two colors into a hairline rim of a third color — it grows each color region outward from its flat interior, so an anti-aliased edge is split cleanly between its two real neighbors. No more rim halos or speckled outlines, and the linework stays smooth.',
       'Auto-detect switches to it automatically for crisp flat art; you can also pick it under Segmentation → Region growing, or keep Global palette for photos and gradients.',
@@ -73,6 +98,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 3,
     kind: 'improvement',
     title: 'Sharper auto-detect for clean artwork',
+    illustration: 'auto-detect',
     items: [
       'Crisp cartoons, logos and clip art are no longer mistaken for photographs. The soft anti-aliased edges of clean art used to read as photographic texture, which picked the wrong profile — posterizing, over-smoothing, or even dropping all color and tracing in grayscale. Auto-detect now recognizes the large flat areas that only clean art has and keeps it as a faithful color illustration.',
       'A vivid subject on a big black or white background stays in color. The background no longer dilutes the color measurement enough to flip the image to grayscale.',
