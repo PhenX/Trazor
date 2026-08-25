@@ -1,6 +1,7 @@
 export * from './color'
 export * from './engine'
 export * from './geometry'
+export * from './paint'
 export * from './path'
 export * from './profiles'
 export * from './random'

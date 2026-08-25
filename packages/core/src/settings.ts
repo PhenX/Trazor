@@ -108,6 +108,15 @@ export interface VectorizeSettings {
   gapFill: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
   omitBackground: boolean
+  /**
+   * Detect smooth color ramps (color/grayscale modes) and paint them with a
+   * single SVG gradient instead of posterized bands: adjacent quantized slices
+   * that form one linear Oklab ramp are merged into one region filled with a
+   * `<linearGradient>`. Geometry is unchanged (mesh-free), so cutout stays
+   * seam-free. Ignored with a fixed `palette` and for single-ink (bw/centerline)
+   * modes. Off is byte-identical to the classic flat-fill path.
+   */
+  gradients: boolean
 
   // ---- Binarization (bw / centerline modes) ----
   /** 0-255, used when `thresholdMode` is `fixed`. */
@@ -195,6 +204,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   colorCoherence: 0,
   gapFill: 0,
   omitBackground: false,
+  gradients: false,
 
   threshold: 128,
   thresholdMode: 'auto',

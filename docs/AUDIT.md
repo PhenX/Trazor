@@ -195,15 +195,27 @@ polygons — good, and already ahead of most open tracers. Missing relative to t
   snap nearly-parallel tangents — the "computational geometry framework" class of cleanup.
 - **Symmetry detection** (mirror/rotational) to fit once and mirror exactly. Bigger build; highest polish.
 
-### A7 — Gradients are outside the model · **medium, strategic**
+### A7 — Gradients are outside the model · **medium, strategic** · ◐ linear case shipped
 
-Flat fills are the only paint. Photographic and soft-shaded input can only posterize, which is the main
-reason "photo" output looks stylized next to the commercial tools. The tractable first step is **linear
+Flat fills were the only paint. Photographic and soft-shaded input could only posterize, which is the main
+reason "photo" output looked stylized next to the commercial tools. The tractable first step is **linear
 gradient detection per region**: after quantization, test each large region for a linear (or radial) Oklab
 ramp (PCA of position→color residuals); if a merged super-region is better explained by one gradient than by
 its 3–6 posterized slices, emit `<linearGradient>`. Image vectorization via linear-gradient layer
-decomposition (SIGGRAPH 2023) is the full treatment. This changes the fidelity ceiling for a whole input
-class, and the settings/serializer model would need paint extensions — plan it as a feature, not a patch.
+decomposition (SIGGRAPH 2023) is the full treatment.
+
+**Shipped (linear):** the `gradients` setting (`packages/raster/src/gradient.ts`) merges adjacent posterized
+bands that lie on one Oklab ramp into a single region and paints it with a `<linearGradient>` — mesh-free
+(geometry, and the cutout seam-free partition, are untouched: only the fill changes). The fit is closed-form
+and deterministic (per-label moment sums make each candidate union's linear fit O(1); the ramp direction is
+the leading eigenvector of the position→color cross-covariance; a hard residual/directionality/color-span gate
+keeps it from firing on flat art or 2-D color fields). Paint extensions landed in `@trazor/core` (`GradientPaint`),
+`@trazor/svg` (`SvgDocument.defs`, `<defs>` serialization) and the engine (per-label paint table). Off is
+byte-identical to the flat-fill path; on by default in the Illustration and Photo profiles.
+
+**Still open:** radial gradients, multi-stop piecewise ramps, fitting a gradient to a single quantized region
+whose internal variance is a ramp (today only ≥2 merged bands qualify), and the full rate-distortion layer
+decomposition of Du et al. 2023.
 
 ### A8 — Small inputs are traced at native resolution · **medium**
 
@@ -383,6 +395,7 @@ Works consulted that are not yet in `REFERENCES.md` (they move there if/when imp
   primitive-choice reference for A5/A6.
 - **Z. Du et al., "Image Vectorization and Editing via Linear Gradient Layer Decomposition", _ACM TOG
   (SIGGRAPH)_ 42(4), 2023.** Region decomposition into linear-gradient layers — the full treatment of A7.
+  The linear case is now shipped (`packages/raster/src/gradient.ts`); moved to `REFERENCES.md`.
 - Already in `REFERENCES.md` and load-bearing here: Selinger 2003 (the chain), VTracer (the O(n) color
   framework E1 gestures at), Kopf & Lischinski 2011 (pixel-art), LIVE/DiffVG (offline refinement oracle,
   `docs/ML_STRATEGY.md`).

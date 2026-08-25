@@ -82,6 +82,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **C. Tomasi & R. Manduchi, “Bilateral Filtering for Gray and Color Images”,
   _ICCV_ 1998.** Edge-preserving denoise option
   (`packages/raster/src/filters.ts`).
+- **Z. Du, L. Zhang, et al., “Image Vectorization and Editing via Linear
+  Gradient Layer Decomposition”, _ACM TOG (SIGGRAPH)_ 42(4), 2023.** Decomposing
+  regions into linear-gradient layers. The linear case: posterized quantization
+  bands that lie on one Oklab ramp are merged and fitted to a single
+  `<linearGradient>` — a closed-form moment fit (ramp direction = leading
+  eigenvector of the position→color cross-covariance)
+  (`packages/raster/src/gradient.ts`).
 
 ## Settings search (packages/tune)
 

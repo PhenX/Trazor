@@ -64,6 +64,34 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — gradient paint model
+
+```ts
+// paint.ts — gradient fills (mesh-free: standard SVG paint servers). Coordinates
+// are user space (the viewBox pixel space the paths use), so the serializer
+// emits gradientUnits="userSpaceOnUse".
+export interface GradientStop {
+  offset: number // 0..1 along the ramp
+  color: string // '#rrggbb'
+}
+export interface LinearGradientPaint {
+  kind: 'linear'
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  stops: GradientStop[]
+}
+export interface RadialGradientPaint {
+  kind: 'radial'
+  cx: number
+  cy: number
+  r: number
+  stops: GradientStop[]
+}
+export type GradientPaint = LinearGradientPaint | RadialGradientPaint
+```
+
 ## @trazor/raster
 
 ```ts
@@ -161,6 +189,24 @@ export interface SegmentResult {
   counts: Uint32Array
 }
 export function segmentRegions(image: RasterImage, opts?: SegmentOptions): SegmentResult
+
+// gradient.ts — linear color-ramp detection (color/grayscale). Adjacent
+// quantized bands that lie on one Oklab ramp are merged into a single region
+// (mutating `labels`) and returned as a per-label gradient paint. Geometry is
+// unchanged (mesh-free) so the tracer and cutout partition are untouched; a run
+// with no detectable ramp returns all-null and leaves `labels` unchanged.
+export interface GradientOptions {
+  minArea?: number // min pixel area of a merged ramp to become a gradient (default 0)
+  oklab?: Float32Array // interleaved Oklab for `image` (w*h*3); computed if absent
+}
+export interface GradientResult {
+  gradients: (GradientPaint | null)[] // per (rewritten) label; length = labels.count
+}
+export function fitRegionGradients(
+  image: RasterImage,
+  labels: LabelMap,
+  opts?: GradientOptions,
+): GradientResult
 ```
 
 `segmentRegions` requirements (marker-controlled watershed; Meyer 1991):
@@ -294,7 +340,7 @@ line to a connected 1px path; `mergeSmallRegions` removes single-pixel speckles;
 ```ts
 export interface SvgShape {
   commands: PathCommand[] // may contain several M…Z subpaths
-  fill?: string // '#rrggbb' | 'none'
+  fill?: string // '#rrggbb' | 'none' | 'url(#id)' (a doc.defs gradient)
   fillRule?: 'nonzero' | 'evenodd'
   stroke?: string
   strokeWidth?: number
@@ -303,6 +349,8 @@ export interface SvgShape {
   id?: string
   layerId?: number // stacking layer (paint order); groups a cut layer under groupByLayer
 }
+// A gradient paint server plus the id a shape references it by (fill: 'url(#id)').
+export type SvgGradient = GradientPaint & { id: string }
 export interface SvgDocument {
   width: number // px viewBox size
   height: number
@@ -310,6 +358,7 @@ export interface SvgDocument {
   widthMm?: number // when unit 'mm'; 0/undefined ⇒ derive at 96 dpi (px / 96 * 25.4)
   title?: string
   desc?: string
+  defs?: SvgGradient[] // gradient paint servers referenced by shape fills (emitted in <defs>)
   shapes: SvgShape[]
 }
 export interface SerializeOptions {

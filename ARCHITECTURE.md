@@ -51,6 +51,7 @@ decode (app)
   → resize → denoise → flatten alpha            [raster]         preprocess
   → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
+                      gradients: merge ramp bands → linear gradient paint [raster] (opt-in)
                       stacked:  per-layer Potrace chain           trace
                       cutout:   shared boundary graph  [trace]
   → bw:               Otsu/adaptive threshold → despeckle → trace [raster+trace]
@@ -83,11 +84,13 @@ decode (app)
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
-  quantization for flat art — soft edges split between neighbors instead of inventing a rim color).
+  quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and
+  **linear-gradient detection** (`gradient.ts`) that merges posterized ramp bands into one region painted with a
+  single `<linearGradient>` — mesh-free, so the geometry (and the cutout partition) is untouched.
 - **`trace`** — the tracer. Crack-boundary decomposition, the Potrace curve chain, the seam-free boundary graph, and
   centerline extraction. Its own map: [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
-- **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes, metadata),
-  plus a regex-based `analyzeSvg` for path/node/color/byte stats.
+- **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes,
+  `<defs>` gradient paint servers, metadata), plus a regex-based `analyzeSvg` for path/node/color/byte stats.
 - **`engine`** — the four mode pipelines, stage timing + progress + cooperative cancellation, result warnings (stencil
   islands, tiny mm features, node counts), and the worker protocol: `installWorkerHandler` (worker side) +
   `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).

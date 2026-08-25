@@ -165,6 +165,10 @@ export const fr: MessageSchema = {
       label: 'Garder les détails',
       hint: 'Conserver les petits détails très contrastés (p. ex. un point de logo) au lieu de les fusionner',
     },
+    gradients: {
+      label: 'Remplissages dégradés',
+      hint: 'Peindre les dégradés de couleur avec un seul dégradé SVG au lieu de bandes posterisées (idéal pour photos, ciels, ombrages doux). Pas pour la découpe/impression en tons directs.',
+    },
     gapFill: {
       label: 'Comblement',
       hint: 'Largeur du trait de compensation des jointures fines (px) pour le rendu en découpe',
@@ -606,6 +610,11 @@ export const fr: MessageSchema = {
       label: 'médiane',
       message:
         'La médiane trace le milieu des lignes fines, mais ~{percent} % de cette image est plein — attendez-vous à un squelette, pas à des contours correspondants. Utilisez le mode N&B ou Couleur pour les formes pleines.',
+    },
+    gradientSpotColor: {
+      label: 'dégradés',
+      message:
+        '{count} remplissages dégradés ne se reproduiront pas sur les découpeuses/imprimantes en tons directs — désactivez la détection de dégradés pour ces sorties.',
     },
     modeNote: {
       label: 'note',

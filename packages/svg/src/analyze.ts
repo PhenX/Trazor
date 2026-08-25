@@ -26,6 +26,9 @@ export interface SvgAnalysis {
 function normalizeColor(raw: string): string | null {
   const c = raw.trim().toLowerCase()
   if (c === '' || c === 'none' || c === 'transparent') return null
+  // A paint-server reference (a gradient) is not a flat color — its own stop
+  // colors are counted separately.
+  if (c.startsWith('url(')) return null
   const m = /^#([0-9a-f]{3})$/.exec(c)
   if (m !== null) {
     const hex = m[1]
@@ -48,14 +51,18 @@ export function analyzeSvg(svg: string): SvgAnalysis {
     nodeCount += (quoted(m, 1).match(/[MLHVQCTSAmlhvqctsa]/g) ?? []).length
   }
 
-  // Collect paints with their source offsets so the palette keeps document order.
+  // Collect paints with their source offsets so the palette keeps document
+  // order. `stop-color` is included so a gradient's colors count (its `url(...)`
+  // reference on the shape is not a flat color and is dropped by normalizeColor).
   const found: { index: number; value: string }[] = []
-  for (const m of svg.matchAll(/(?<![\w-])(?:fill|stroke)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+  for (const m of svg.matchAll(
+    /(?<![\w-])(?:fill|stroke|stop-color)\s*=\s*(?:"([^"]*)"|'([^']*)')/g,
+  )) {
     found.push({ index: m.index ?? 0, value: quoted(m, 1) })
   }
   for (const m of svg.matchAll(/(?<![\w-])style\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
     const style = quoted(m, 1)
-    for (const decl of style.matchAll(/(?<![\w-])(?:fill|stroke)\s*:\s*([^;"']+)/g)) {
+    for (const decl of style.matchAll(/(?<![\w-])(?:fill|stroke|stop-color)\s*:\s*([^;"']+)/g)) {
       found.push({ index: (m.index ?? 0) + (decl.index ?? 0), value: decl[1] })
     }
   }

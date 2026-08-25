@@ -164,6 +164,10 @@ export const en = {
       label: 'Keep details',
       hint: 'Keep small high-contrast features (e.g. a logo dot) instead of merging them away',
     },
+    gradients: {
+      label: 'Gradient fills',
+      hint: 'Paint smooth color ramps with a single SVG gradient instead of posterized bands (best for photos, skies, soft shading). Not for spot-color cutting/printing.',
+    },
     gapFill: {
       label: 'Gap fill',
       hint: 'Hairline-seam compensation stroke width (px) for cutout rendering',
@@ -588,6 +592,11 @@ export const en = {
       label: 'centerline',
       message:
         'Centerline traces the middle of thin lines, but ~{percent}% of this image is filled — expect a skeleton, not matching outlines. Use B&W or Color mode for solid shapes.',
+    },
+    gradientSpotColor: {
+      label: 'gradients',
+      message:
+        "{count} gradient fills won't reproduce on spot-color cutters/printers — turn off gradient detection for those outputs.",
     },
     modeNote: {
       label: 'note',

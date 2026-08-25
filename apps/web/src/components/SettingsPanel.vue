@@ -407,6 +407,14 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :hint="t('settings.keepDetails.hint')"
           @update:model-value="set('preserveDetails', $event)"
         />
+        <SwitchRow
+          v-if="fixedPalette === null && s.curveMode !== 'pixel'"
+          :label="t('settings.gradients.label')"
+          :model-value="s.gradients"
+          :default-value="D.gradients"
+          :hint="t('settings.gradients.hint')"
+          @update:model-value="set('gradients', $event)"
+        />
         <SliderRow
           v-if="s.layering === 'cutout'"
           :label="t('settings.gapFill.label')"
