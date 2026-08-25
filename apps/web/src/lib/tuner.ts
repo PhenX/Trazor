@@ -282,6 +282,7 @@ function affinityKey(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.preserveSalient,
     s.dissolveBands,
     s.colorCoherence,
     s.omitBackground,

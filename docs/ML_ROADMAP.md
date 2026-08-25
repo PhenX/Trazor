@@ -242,9 +242,10 @@ browser contract (normalized in → [0,1] out) — worth it but validate at expo
   drives geometry. Largely superseded by item 3.
 - **Training-loop niceties** — cache decoded tensors / webdataset to speed epochs; optional ODS threshold sweep for the F
   metric; log the edge-pixel fraction to validate the ~5–8% assumption.
-- **Salience-aware simplification** — use the shipped edge model's output as a salience map to bias region merging and
-  curve tolerance (the CLIPasso principle without CLIP): keep perceptually important detail, drop noise. Generalizes
-  `preserveDetails` from contrast to learned salience.
+- **Salience-aware simplification** — [region half shipped as `preserveSalient`]: small regions on strong color edges
+  survive the merge — via the learned edge pre-pass when loaded, or classically from the image's own boundaries with no
+  model (color, grayscale, bw and centerline alike). The remaining piece is salience-weighted curve tolerance (looser
+  fitting in low-salience areas), which needs a per-region salience field in the tracer.
 - **Text protect mask** — a TinyUNet stage highlighting lettering, trained on font-synthesized text renders, so text
   stays crisp through quantization/thresholding. Fonts are already the top data source. Tier-2: discretized to a protect
   mask before tracing.

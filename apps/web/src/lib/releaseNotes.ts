@@ -51,6 +51,15 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-25',
+    iteration: 3,
+    kind: 'feature',
+    title: 'Keep fine edges — no model needed',
+    items: [
+      "A new Keep fine edges toggle protects thin strokes, hairlines and fine lettering from being merged away, using the picture's own strong color edges. It is the same protection the on-device edge model gives when it is loaded — now always available, offline and free.",
+    ],
+  },
+  {
+    date: '2026-08-25',
     iteration: 2,
     kind: 'improvement',
     title: 'Auto-optimize now judges shape quality too',

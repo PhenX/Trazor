@@ -92,6 +92,14 @@ export interface VectorizeSettings {
    */
   preserveDetails: boolean
   /**
+   * Keep small regions that sit on strong color boundaries (thin strokes,
+   * hairlines, fine lettering) instead of merging them away — the image's own
+   * edges act as the salience mask, no ML model needed. With an edge hint
+   * supplied, the hint already does this and the setting adds nothing.
+   * Low-contrast specks below the edge threshold still go.
+   */
+  preserveSalient: boolean
+  /**
    * Rounds of thin mislabeled-band cleanup (color/grayscale): dissolve a hairline
    * strip of a wrong color between two regions — an anti-aliased/JPEG rim quantized
    * to a third color — into the region it borders. 0 disables (byte-identical).
@@ -191,6 +199,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   layering: 'stacked',
   minRegionArea: 6,
   preserveDetails: false,
+  preserveSalient: false,
   dissolveBands: 0,
   colorCoherence: 0,
   gapFill: 0,

@@ -30,6 +30,7 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
+  dilate,
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
@@ -104,6 +105,16 @@ function edgeProtectMask(
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
   return { width, height, data }
+}
+
+/**
+ * Classical salience mask: the working image's own strong color boundaries,
+ * dilated by one pixel so a thin feature's own pixels are covered. The gradient
+ * threshold is the discretization boundary — pure integer comparison, so this is
+ * deterministic with or without an ML hint in play.
+ */
+function salienceProtectMask(image: RasterImage): BinaryMask {
+  return dilate(detectEdges(image, CLUSTER_EDGE_THRESHOLD), 1)
 }
 
 /**
@@ -290,6 +301,7 @@ function palKeyOf(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.preserveSalient,
     s.dissolveBands,
     s.colorCoherence,
     s.omitBackground,
@@ -469,8 +481,11 @@ async function colorPipeline(
   const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
   const palKey = canCachePal ? palKeyOf(settings) : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
-  // tracer's speck filter; null when no hint (and always null when caching).
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+  // tracer's speck filter; without one, `preserveSalient` derives the same mask
+  // classically from the image's own boundaries. Null when neither applies.
+  const protect =
+    edgeProtectMask(edgeHint, image.width, image.height) ??
+    (settings.preserveSalient ? salienceProtectMask(image) : null)
 
   let labels: LabelMap
   let paletteHex: string[]
@@ -571,9 +586,12 @@ async function colorPipeline(
     if (settings.dissolveBands > 0) {
       dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
     }
-    // `protect` (hoisted above) lets an edge hint keep small regions on a
-    // predicted boundary; with no hint this is byte-identical to the plain merge.
-    if (settings.preserveDetails) {
+    // `protect` (hoisted above) lets an edge hint or the classical salience mask
+    // keep small regions on a real boundary; with neither this is byte-identical
+    // to the plain merge. `preserveSalient` also keeps contrast details, so a
+    // low-contrast hairline on a strong edge survives while an isolated speck
+    // below the salience threshold still merges away.
+    if (settings.preserveDetails || settings.preserveSalient) {
       const oklab = new Float32Array(q.paletteHex.length * 3)
       for (let i = 0; i < q.paletteHex.length; i++) {
         const [L, a, b] = rgbToOklab(
@@ -928,8 +946,11 @@ async function inkPipeline(
 
   run.stage('segment')
   // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // with no hint this is byte-identical to despeckleMask.
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+  // without one, `preserveSalient` protects the image's own strong edges. Null
+  // when neither applies — byte-identical to despeckleMask.
+  const protect =
+    edgeProtectMask(edgeHint, image.width, image.height) ??
+    (settings.preserveSalient ? salienceProtectMask(image) : null)
   mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
   await run.tick()
 

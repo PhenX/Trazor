@@ -165,6 +165,10 @@ export const fr: MessageSchema = {
       label: 'Garder les détails',
       hint: 'Conserver les petits détails très contrastés (p. ex. un point de logo) au lieu de les fusionner',
     },
+    keepEdges: {
+      label: 'Garder les traits fins',
+      hint: 'Conserver les petites régions posées sur des contours marqués — traits fins, lettrage délicat — sans le modèle de contours',
+    },
     gapFill: {
       label: 'Comblement',
       hint: 'Largeur du trait de compensation des jointures fines (px) pour le rendu en découpe',

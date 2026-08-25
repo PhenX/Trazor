@@ -1,0 +1,71 @@
+<title>Evaluation Metrics — dE vs SSIM vs Hausdorff vs boundary IoU</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  :root{--bg:#eceff3;--paper:#fff;--ink:#16202b;--muted:#55636f;--line:#dde3ea;--accent:#0e7f8c;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d131a;--paper:#151d26;
+    --ink:#e6ebf1;--muted:#9aa8b4;--line:#223040;--accent:#35b7c5;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;line-height:1.5;padding:2rem 1rem 4rem}
+  .wrap{max-width:62rem;margin:0 auto}
+  h1{font-size:1.5rem;margin:0 0 .3rem}
+  .sub{color:var(--muted);margin:0 0 1.6rem;font-size:.95rem;max-width:52rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1rem}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:1rem}
+  figure{margin:0;text-align:center}
+  img{width:9rem;height:9rem;image-rendering:pixelated;border:1px solid var(--line);border-radius:8px;background:#fff}
+  figcaption{font-weight:600;margin-top:.4rem;font-size:.9rem}
+  .note{color:var(--muted);font-size:.8rem;margin:.4rem 0 .8rem;min-height:2.2em}
+  table{width:100%;border-collapse:collapse;font-size:.78rem}
+  td{padding:.28rem .2rem;border-top:1px solid var(--line)}
+  td:first-child{font-weight:600}
+  td.v{text-align:right;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600;white-space:nowrap}
+  td.d{color:var(--muted);padding-left:.5rem}
+</style>
+<div class="wrap">
+  <h1>One scene, four metrics</h1>
+  <p class="sub">The same synthetic source (a teal disc and an amber square) is compared against four reconstructions. Each metric answers a different question: <strong>mean dE</strong> asks "are the colors right?", <strong>SSIM</strong> asks "does the structure match?", <strong>Hausdorff</strong> asks "how far is the worst-placed edge?", and <strong>boundary IoU</strong> asks "do the edges agree within a small tolerance?". A shifted image is nearly perfect on dE but bad on Hausdorff; a posterized image is exactly the reverse — which is why the eval harnesses and the tune scorer report all of them, not one.</p>
+  <div class="grid">
+    <section class="card">
+    <figure><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAYAAACLz2ctAAAC9klEQVR4Ae3BsZVcxxVF0cO7OoUyGIJCo10JvAS+zdAYgowKQhIMmNQiBjN9fzfO3r/953+QSoJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEVBKgpSUZCKglQUpKIgFQWpKEhFQSoKUlF4U2sudH8PXtiai/9nzcXfObNR34MXs+biM6y5+O7MRh0PXsCai6+05uK7Mxs9T7i5NRfPtOZCz/PgptZctKy5+ObMRl/rwc2subiLNRffnNnoa4QbWXNxR2su9DXCTay5uLM1F/p84QbWXLyCNRf6XKFszcUrWXOhzxOK1ly8ojUX+hyhZM3FK1tzoZ8XpKJQsObiHay50M8JUlF4sjUX72TNhT4uPNGai3e05kIfE6SiIBWFJ1lz8c7WXOjHBakoSEXhCdZc/ArWXOjHBKkoSEVBKgpSUZCKglQUvtiai1/Jmgv9c+GLndn8Ss5s9M8FqShIRUEqClJRkIqCVBSe4MzmV3Bmox8TpKIgFYUnObN5Z2c2+nFBKgpSUXiiM5t3dGajjwlPdmbzTs5s9HFBKgoFZzbv4MxGPydIRaHkzOaVndno54WiM5tXdGajzxHKzmxeyZmNPk+4gTObV3Bmo88VbuLM5s7ObPT5wo2c2dzRmY2+xoObObP5Zs1F25mNvtaDmzqz+WbNxbOd2eg5ws2d2TzTmY2e58ELOLP5bs3FZzuzUceDF3Nm892ai486s1Hfgxd2ZvN31lyc2ejewps6s9H9BakoSEVBKgpSUZCKglQUpKIgFQWpKEhFD1T17z//xav7/Y+/+KggFQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEVBKgpSUZCKglQUpKIgFQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEVBKgpSUZCKglQUpKIHqvr9j7/4lQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVPRfwC2Hra88dl0AAAAASUVORK5CYII=" alt="Identical"><figcaption>Identical</figcaption></figure>
+    <p class="note">the reconstruction is the source</p>
+    <table>
+      <tr><td>mean dE</td><td class="v">0.0000</td><td class="d">color accuracy, lower better</td></tr>
+      <tr><td>SSIM</td><td class="v">1.000</td><td class="d">structure, 1 = identical</td></tr>
+      <tr><td>Hausdorff</td><td class="v">0.00</td><td class="d">worst edge gap in px</td></tr>
+      <tr><td>boundary IoU</td><td class="v">1.000</td><td class="d">edge agreement at 2 px, 1 = same</td></tr>
+    </table>
+  </section>
+<section class="card">
+    <figure><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAYAAACLz2ctAAAC+ElEQVR4Ae3Bu5UcRxBFwYt3xoUSYAJNg1wOpAMlwzSYQKGMILnCiiD2MzPZ3Xsjvv3zH6QmQWoUpEZBahSkRkFqFKRGQWoUpEZBahSkRkFqFKRGQWoUpEZBahSkRkFqFKRGQWoUpEZBahSkRkFqFKRG4eJGLXRcNy5g1OL/jFr8zq6J+tw4qVGLexi1eLVroue6cSKjFo80avFq10SPF05i1OKZRi30eDcObtSiy6jFi10TPcaNgxq1OIpRixe7JrqvcECjFkc0aqH7CgczanFkoxa6n3AgoxZnMGqh+wgHMWpxJqMW+rxwAKMWZzRqoc8JzUYtzmzUQh8XpEah0ajFFYxa6GOC1Cg0GbW4klELvV9oMGpxRaMWep8gNQpSo/BkoxZXNmqhtwtSoyA1Ck80avEVjFrobYLUKEiNgtQoSI2C1ChIjcKTjFp8JaMW+rPwJLsmX8muif4sSI2C1ChIjYLUKEiNgtQoPNGuyVewa6K3CVKjIDUKT7ZrcmW7Jnq7IDUKUqPQYNfkinZN9D6hya7Jleya6P2C1Cg02jW5gl0TfUyQGoVmuyZntmuijwsHsGtyRrsm+pxwELsmZ7Jros8LB7Jrcga7JrqPcDC7Jke2a6L7CQe0a3JEuya6rxsHtWvyYtSi266JHuPGwe2avBi1eLZdEz1WOIldk2faNdHj3TiRXZNXoxb3tmui57pxUrsmr0YtPmrXRH1uXMCuye+MWuya6JjCxe2a6LiC1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNbugQ/v75F2f3/ccv3itIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1ChIjYLUKEiNgtQoSI2C1OiGDuH7j198RUFqFKRGQWoUpEZBahSkRkFqFKRGQWoUpEZBahSkRkFq9C/9D4etJn8nTgAAAABJRU5ErkJggg==" alt="Shifted 2 px"><figcaption>Shifted 2 px</figcaption></figure>
+    <p class="note">a sub-pixel tracing error: colors fine, edges off</p>
+    <table>
+      <tr><td>mean dE</td><td class="v">0.0083</td><td class="d">color accuracy, lower better</td></tr>
+      <tr><td>SSIM</td><td class="v">0.902</td><td class="d">structure, 1 = identical</td></tr>
+      <tr><td>Hausdorff</td><td class="v">2.33</td><td class="d">worst edge gap in px</td></tr>
+      <tr><td>boundary IoU</td><td class="v">0.632</td><td class="d">edge agreement at 2 px, 1 = same</td></tr>
+    </table>
+  </section>
+<section class="card">
+    <figure><img src="data:image/png;base64,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" alt="Blurred"><figcaption>Blurred</figcaption></figure>
+    <p class="note">soft anti-aliased edges: edges near, structure softened</p>
+    <table>
+      <tr><td>mean dE</td><td class="v">0.0043</td><td class="d">color accuracy, lower better</td></tr>
+      <tr><td>SSIM</td><td class="v">0.974</td><td class="d">structure, 1 = identical</td></tr>
+      <tr><td>Hausdorff</td><td class="v">1.33</td><td class="d">worst edge gap in px</td></tr>
+      <tr><td>boundary IoU</td><td class="v">0.749</td><td class="d">edge agreement at 2 px, 1 = same</td></tr>
+    </table>
+  </section>
+<section class="card">
+    <figure><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAYAAACLz2ctAAAC8klEQVR4Ae3BwZEcNgIEwVLHOAETYBosgmkwAWbojg8+pRCXu9Mzy8r86+//QyoJUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEVBKgpSUZCKglQUpKIgFQWpKEhF4Zu6e6LX9+CN3T35N3dP/slYB/U9eDN3Tz7D3ZOfxjqo48EbuHvyle6e/DTWQc8TXtzdk2e6e6LnefCi7p603D35YayDvtaDF3P35FXcPflhrIO+Rnghd09e0d0TfY3wIu6evLK7J/p84QXcPXkHd0/0uULZ3ZN3cvdEnycU3T15R3dP9DlCyd2Td3b3RL8vSEWh4O7Jd3D3RL8nSEXhye6efCd3T/Rx4YnunnxHd0/0MUEqClJReJK7J9/Z3RP9uiAVBakoPMHdkz/B3RP9miAVBakoSEVBKgpSUZCKwhe7e/InuXui/y58sbEOf5KxDvrvglQUpKIgFQWpKEhFQSoKTzDW4U8w1kG/JkhFQSoKTzLW4Tsb66BfF6SiIBWFJxrr8B2NddDHhCcb6/CdjHXQxwWpKBSMdfgOxjro9wSpKJSMdXhnYx30+0LRWId3NNZBnyOUjXV4J2Md9HnCCxjr8A7GOuhzhRcx1uGVjXXQ5wsvZKzDKxrroK/x4MWMdfjh7knbWAd9rQcvaqzDD3dPnm2sg54jvLixDs801kHP8+ANjHX46e7JZxvroI4Hb2asw093Tz5qrIP6HryxsQ7/5O7JWAe9tvBNjXXQ6wtSUZCKglQUpKIgFQWpKEhFQSoKUlGQih6o6u7Juxvr8FFBKgpSUZCKglQUpKIgFQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEVBKgpSUZCKglQUpKIgFQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClJRkIqCVBSkoiAVBakoSEUPVDXW4U8WpKIgFQWpKEhFQSoKUlGQioJUFKSiIBUFqShIRUEqClLR/wBFrIet6wgKDgAAAABJRU5ErkJggg==" alt="Recolored (disc → amber)"><figcaption>Recolored (disc → amber)</figcaption></figure>
+    <p class="note">a pure palette error: colors off, every edge exactly in place</p>
+    <table>
+      <tr><td>mean dE</td><td class="v">0.0324</td><td class="d">color accuracy, lower better</td></tr>
+      <tr><td>SSIM</td><td class="v">0.981</td><td class="d">structure, 1 = identical</td></tr>
+      <tr><td>Hausdorff</td><td class="v">0.00</td><td class="d">worst edge gap in px</td></tr>
+      <tr><td>boundary IoU</td><td class="v">1.000</td><td class="d">edge agreement at 2 px, 1 = same</td></tr>
+    </table>
+  </section>
+  </div>
+</div>
