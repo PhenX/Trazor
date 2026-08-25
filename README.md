@@ -164,6 +164,8 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Gradient detection & mesh-free gradient fills for photo modes
+- Hybrid raster embed for photo regions (flat areas vectorized, high-error areas as embedded raster)
+- Public benchmark gallery vs. VTracer / Inkscape
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
 - More UI languages (English and French ship today)

@@ -47,7 +47,10 @@ without it.
 ## 1. ΔE-through-tracer evaluation & selection harness — **implemented**
 
 Shipped in [`scripts/eval`](../scripts/eval/README.md) (`trace-eval.ts`) + [`scripts/train/predict.py`](../scripts/train/predict.py),
-wired as `npm run eval:prepass`. What remains is running it on real trained checkpoints to drive item-2 selection.
+wired as `npm run eval:prepass`. What remains is running it on real trained checkpoints to drive item-2 selection,
+plus a **metric upgrade**: add SSIM (perceptual) and Hausdorff/IoU (geometric boundary error) to `scripts/eval`
+alongside Oklab ΔE, and an SSIM term to the `@trazor/tune` scorer. Boundary-position error is the quantity item 3
+claims to improve, so it must be measured directly.
 
 **Why.** [`EDGE_PREPASS.md`](EDGE_PREPASS.md) and [`CLEANUP_PREPASS.md`](CLEANUP_PREPASS.md) both prescribe selecting
 checkpoints by downstream Oklab ΔE "without regressing clean inputs," but `scripts/train/train.py` selects on val loss
@@ -223,7 +226,9 @@ browser contract (normalized in → [0,1] out) — worth it but validate at expo
   / item-5 models. Minutes-per-image, offline only.
 - **6b — in-app, bounded (later).** A few-iteration WebGPU pass polishing Bézier control points against the source,
   constrained by snapping refined coordinates to the serializer precision grid (WASM for reproducible mode). Tier-1-
-  touching and high risk — gate carefully behind reproducible mode.
+  touching and high risk — gate carefully behind reproducible mode. **Prerequisite:** the deterministic in-engine
+  rasterizer from [`../plans/vectorization-quality.md`](../plans/vectorization-quality.md) workstream E2 — without it
+  the pass cannot be scored or verified; sequence E2 first.
 
 **Docs.** `docs/REFINEMENT_PASS.md` when built.
 
@@ -237,6 +242,15 @@ browser contract (normalized in → [0,1] out) — worth it but validate at expo
   drives geometry. Largely superseded by item 3.
 - **Training-loop niceties** — cache decoded tensors / webdataset to speed epochs; optional ODS threshold sweep for the F
   metric; log the edge-pixel fraction to validate the ~5–8% assumption.
+- **Salience-aware simplification** — use the shipped edge model's output as a salience map to bias region merging and
+  curve tolerance (the CLIPasso principle without CLIP): keep perceptually important detail, drop noise. Generalizes
+  `preserveDetails` from contrast to learned salience.
+- **Text protect mask** — a TinyUNet stage highlighting lettering, trained on font-synthesized text renders, so text
+  stays crisp through quantization/thresholding. Fonts are already the top data source. Tier-2: discretized to a protect
+  mask before tracing.
+- **Technical-drawing primitive head** — Egiazarian et al. 2020-style line/arc/circle/corner classification (TinyUNet,
+  Tier-2) informing corner decisions, centerline mode, and primitive-fitting acceptance; data from fonts + procedural
+  CAD-style shapes + the public technical-drawings dataset.
 
 ## References
 
