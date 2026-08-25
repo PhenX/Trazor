@@ -51,11 +51,23 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-24',
-    iteration: 6,
+    iteration: 7,
     kind: 'improvement',
     title: 'Illustrated release notes',
     items: [
       "The What's new panel now shows real before/after samples on the notes about how tracing looks — cleaner edges, sharper auto-detect and the new Auto-optimize — each one an actual Trazor trace of the same picture, so you can see the difference at a glance before reading it.",
+    ],
+  },
+  {
+    date: '2026-08-24',
+    iteration: 6,
+    kind: 'improvement',
+    title: 'Preview overlay & compare polish',
+    items: [
+      'Panning with "Show path & nodes" on is now smooth, even on very dense traces. The anchor marks and handles are built once and only recomputed when you zoom; the densest traces reuse the last frame while you drag and redraw crisply once you stop.',
+      'The anchor crosses are a touch smaller, so the geometry underneath is easier to read.',
+      'The PNG/SVG compare divider is easier to grab — a wider catch area and a slightly bolder line.',
+      'New "Confetti" sample: a dense pattern that traces to tens of thousands of nodes, handy for seeing the overlay on heavy geometry.',
     ],
   },
   {

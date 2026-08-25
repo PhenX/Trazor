@@ -55,6 +55,7 @@ export const en = {
     ink: { label: 'Ink', tagline: 'Black & white · 960×960' },
     bloom: { label: 'Bloom', tagline: 'Illustration · 960×960' },
     mandala: { label: 'Mandala', tagline: 'Detailed B&W · 1280×1280' },
+    confetti: { label: 'Confetti', tagline: 'Dense pattern · 960×960' },
     degraded: { label: 'JPEG', tagline: 'Degraded raster · 960×960' },
   },
 
