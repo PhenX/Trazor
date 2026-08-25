@@ -94,8 +94,10 @@ export interface VectorizeSettings {
   /**
    * Keep small regions that sit on strong color boundaries (thin strokes,
    * hairlines, fine lettering) instead of merging them away — the image's own
-   * edges act as the salience mask, no ML model needed. With an edge hint
-   * supplied, the hint already does this and the setting adds nothing.
+   * edges act as the salience mask, no ML model needed. Also rescues the
+   * palette entries of such features when quantization otherwise absorbs their
+   * color (a thin stroke is nothing but boundary pixels, which clustering
+   * excludes). With an edge hint supplied, the hint's mask is used instead.
    * Low-contrast specks below the edge threshold still go.
    */
   preserveSalient: boolean

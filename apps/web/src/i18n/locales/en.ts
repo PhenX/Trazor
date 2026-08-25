@@ -166,7 +166,7 @@ export const en = {
     },
     keepEdges: {
       label: 'Keep fine edges',
-      hint: 'Keep small regions that sit on strong color edges — thin strokes, hairlines, fine lettering — without the edge model',
+      hint: 'Keep thin strokes, hairlines and fine lettering on strong color edges, and recover their colors when the palette would drop them — without the edge model',
     },
     gapFill: {
       label: 'Gap fill',

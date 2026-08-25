@@ -139,10 +139,53 @@ function inkSettings(preserveSalient: boolean): VectorizeSettings {
   })
 }
 
+/**
+ * Rescue scene: blob + a 1px hairline (#d9d9d9 — close enough to white that a
+ * k=2 palette drops its color). The hairline is all boundary pixels, which the
+ * clustering sample excludes, so without the toggle it is painted as the
+ * background and disappears; with it, its own color is rescued into the palette.
+ */
+function rescueScene(): RasterImage {
+  const img = blank(220, 140)
+  for (let y = 0; y < 140; y++) {
+    for (let x = 0; x < 220; x++) {
+      if ((x - 70) ** 2 + (y - 70) ** 2 <= 34 * 34) {
+        const i = (y * 220 + x) * 4
+        img.data[i] = 58
+        img.data[i + 1] = 68
+        img.data[i + 2] = 80
+      }
+    }
+  }
+  drawLine(img, 30, 110, 105, 30, [217, 217, 217])
+  return img
+}
+
+function rescueSettings(preserveSalient: boolean): VectorizeSettings {
+  return normalizeSettings({
+    mode: 'color',
+    maxDimension: 0,
+    segmentation: 'quantize',
+    palette: null,
+    paletteSize: 2,
+    autoPaletteSize: false,
+    layering: 'stacked',
+    minRegionArea: 0,
+    preserveSalient,
+    dissolveBands: 0,
+    colorCoherence: 0,
+    curveMode: 'spline',
+    optimizeSvg: true,
+    precision: 2,
+  })
+}
+
 const { svg: colorOff } = await vectorize(colorScene(), colorSettings(false))
 const { svg: colorOn } = await vectorize(colorScene(), colorSettings(true))
 const { svg: inkOff } = await vectorize(inkScene(), inkSettings(false))
 const { svg: inkOn } = await vectorize(inkScene(), inkSettings(true))
+const rescueOff = await vectorize(rescueScene(), rescueSettings(false))
+const rescueOn = await vectorize(rescueScene(), rescueSettings(true))
 
 function pane(title: string, svg: string): string {
   return `<figure><figcaption>${title}</figcaption><div class="frame">${svg}</div>
@@ -194,6 +237,15 @@ const html = `<title>Salience-aware simplification — keep fine edges</title>
       ${pane('Keep fine edges — on', inkOn)}
     </div>
   </section>
+
+  <section class="row">
+    <h2>Color rescue: when the palette drops the hairline's color</h2>
+    <p>With a tiny palette (k = 2) the hairline's gray never earns a palette entry — a thin stroke is nothing but boundary pixels, which clustering excludes. Without the toggle it is painted as the background and vanishes; with it, the engine rescues the hairline's own color into the palette, then protects the region.</p>
+    <div class="pair">
+      ${pane('Keep fine edges — off · 2 colors', rescueOff.svg)}
+      ${pane('Keep fine edges — on · ' + rescueOn.palette.length + ' colors', rescueOn.svg)}
+    </div>
+  </section>
 </div>`
 
 const outPath = fileURLToPath(new URL('./salience.html', import.meta.url))
@@ -208,4 +260,9 @@ console.log(
 )
 console.log(
   `ink   off ${iOff.nodeCount}n/${iOff.pathCount}p  on ${iOn.nodeCount}n/${iOn.pathCount}p`,
+)
+const rOff = analyzeSvg(rescueOff.svg)
+const rOn = analyzeSvg(rescueOn.svg)
+console.log(
+  `rescue off ${rOff.nodeCount}n/${rOff.pathCount}p (${rescueOff.palette.length} colors)  on ${rOn.nodeCount}n/${rOn.pathCount}p (${rescueOn.palette.length} colors)`,
 )

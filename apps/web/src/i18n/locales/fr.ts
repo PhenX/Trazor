@@ -167,7 +167,7 @@ export const fr: MessageSchema = {
     },
     keepEdges: {
       label: 'Garder les traits fins',
-      hint: 'Conserver les petites régions posées sur des contours marqués — traits fins, lettrage délicat — sans le modèle de contours',
+      hint: 'Conserver les traits fins, le lettrage délicat et les petites régions posées sur des contours marqués, et récupérer leurs couleurs quand la palette les perd — sans le modèle de contours',
     },
     gapFill: {
       label: 'Comblement',

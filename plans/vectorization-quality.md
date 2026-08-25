@@ -143,12 +143,20 @@ layer), and `autoK` merges perceptual near-duplicates. The only distinct case is
 a few medium regions but tiny total coverage that is also low-contrast — narrow, and risky to
 prune (could drop a meaningful accent). Not worth the complexity now.
 
-### C3 — edge/saliency-weighted quantization · DEFERRED (rationale)
+### C3 — edge/saliency-weighted quantization · ADDRESSED (behind `preserveSalient`)
 
 Weighting k-means so boundary colors are represented is a real idea, but `quantize.ts` is a
 deterministic, exactly-tested hot path (k-means++ seeding + Lloyd). Threading per-pixel edge
 weights through seeding and centroid updates is invasive for a subtle, hard-to-demonstrate
 palette shift. Revisit only with a concrete failing case and a benchmark.
+
+**Revisited:** the concrete failing case arrived — a thin feature is nothing but boundary pixels,
+which the clustering sample excludes, so a small palette drops its color and `preserveSalient`
+(protection) had no region to protect. Rather than touching `quantize.ts`, the engine now runs a
+**salient-color rescue** step behind the toggle: protected, locally-flat pixels whose own color is
+far from their assigned centroid are re-colored with their own (sub-quantized, autoK-merged)
+palette entries. Deterministic; opt-in; the full saliency-weighted seeding remains a possible
+future refinement.
 
 ### D — sub-pixel boundaries · NOT STARTED (large pilot)
 

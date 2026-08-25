@@ -125,6 +125,51 @@ function regionsSettings(preserveSalient: boolean): VectorizeSettings {
   })
 }
 
+/**
+ * Rescue scene: white background, a dark blob (owns a centroid), and a 2px
+ * light-gray stroke. With k = 2 the stroke's color has no centroid — its
+ * pixels are all boundary pixels, which the clustering sample excludes — so
+ * the stroke is labeled as the background. The rescue step must recover its
+ * color so the protect-aware merge has a region to keep.
+ */
+function rescueScene(withStroke: boolean): RasterImage {
+  const w = 64
+  const h = 32
+  const img = createRaster(w, h)
+  fillRaster(img, 255, 255, 255)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if ((x - 52.5) ** 2 + (y - 16.5) ** 2 <= 8 * 8) setPixel(img, x, y, 48, 48, 48)
+    }
+  }
+  if (withStroke) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 12; x < 14; x++) setPixel(img, x, y, 205, 205, 205)
+    }
+  }
+  return img
+}
+
+function rescueSettings(preserveSalient: boolean): VectorizeSettings {
+  return normalizeSettings({
+    mode: 'color',
+    maxDimension: 0,
+    segmentation: 'quantize',
+    palette: null,
+    paletteSize: 2,
+    autoPaletteSize: false,
+    layering: 'stacked',
+    minRegionArea: 100,
+    preserveSalient,
+    colorCoherence: 0,
+    dissolveBands: 0,
+    curveMode: 'polygon',
+    curveOptimize: false,
+    optimizeSvg: false,
+    precision: 3,
+  })
+}
+
 describe('preserveSalient (classical salience protection)', () => {
   it('keeps a low-contrast 1px stroke on a strong edge, drops the sub-threshold speck', async () => {
     const img = colorScene()
@@ -166,5 +211,29 @@ describe('preserveSalient (classical salience protection)', () => {
     const on = await vectorize(img, regionsSettings(true))
     expect(analyzeSvg(off.svg).pathCount).toBe(2)
     expect(analyzeSvg(on.svg).pathCount).toBe(3)
+  })
+
+  it('rescues the palette entry of a salient feature the small palette dropped', async () => {
+    const img = rescueScene(true)
+    const off = await vectorize(img, rescueSettings(false))
+    const on = await vectorize(img, rescueSettings(true))
+
+    // Off: the stroke shares the background color and merges away (2 colors).
+    expect(off.palette).toHaveLength(2)
+    expect(analyzeSvg(off.svg).pathCount).toBe(2)
+    // On: the stroke's color is rescued into the palette and the stroke survives.
+    expect(on.palette).toHaveLength(3)
+    expect(analyzeSvg(on.svg).pathCount).toBe(3)
+
+    // Deterministic.
+    const on2 = await vectorize(img, rescueSettings(true))
+    expect(on2.svg).toBe(on.svg)
+  })
+
+  it('adds no palette entry when nothing salient is misrepresented', async () => {
+    const img = rescueScene(false)
+    const on = await vectorize(img, rescueSettings(true))
+    expect(on.palette).toHaveLength(2)
+    expect(analyzeSvg(on.svg).pathCount).toBe(2)
   })
 })

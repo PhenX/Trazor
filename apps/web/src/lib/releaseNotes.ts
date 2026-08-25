@@ -55,7 +55,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     kind: 'feature',
     title: 'Keep fine edges — no model needed',
     items: [
-      "A new Keep fine edges toggle protects thin strokes, hairlines and fine lettering from being merged away, using the picture's own strong color edges. It is the same protection the on-device edge model gives when it is loaded — now always available, offline and free.",
+      "A new Keep fine edges toggle protects thin strokes, hairlines and fine lettering from being merged away, using the picture's own strong color edges. It also recovers the color of such features when the palette would otherwise drop them — so a faint thin line stays visible instead of silently turning into the background.",
     ],
   },
   {

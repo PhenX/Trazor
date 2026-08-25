@@ -1,10 +1,12 @@
 import {
   CancelledError,
   DEFAULT_SETTINGS,
+  deltaEOk,
   deltaEOkSq,
   hexToRgb,
   normalizeSettings,
   nowMs,
+  rgbToHex,
   rgbToOklab,
 } from '@trazor/core'
 import type {
@@ -53,12 +55,30 @@ import {
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
+import type { QuantizeResult } from '@trazor/raster'
 import type { SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
+
+/**
+ * Salient-color rescue: a protected pixel whose own color differs from its
+ * assigned centroid by more than this is a feature the palette swallowed —
+ * worth its own entry.
+ */
+const RESCUE_DE = 0.1
+/** Fewer rescued pixels than this change nothing. */
+const RESCUE_MIN_PIXELS = 8
+/** Cap on rescued palette entries per run. */
+const RESCUE_MAX_COLORS = 4
+/**
+ * A rescued pixel must be locally flat in some 4-direction (min neighbor ΔE
+ * below this): real strokes are flat along their axis, while anti-aliased rim
+ * mixtures differ in every direction and must not earn band colors.
+ */
+const RESCUE_FLAT = 0.06
 
 /**
  * Stacked layering lifts an enclosed pocket onto its own top layer only when at
@@ -581,6 +601,11 @@ async function colorPipeline(
       fixedPalette: settings.palette,
     }
     const q = quantize(image, quantOpts)
+    // With protection active, recover palette entries for salient features the
+    // clustering sample excluded (thin strokes are all boundary pixels).
+    if (settings.preserveSalient && protect && settings.palette === null) {
+      rescueSalientColors(image, q, protect, settings.colorSpace)
+    }
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
         ? q.paletteHex.length
@@ -1099,6 +1124,93 @@ function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
     out[i * 3 + 2] = b
   }
   return out
+}
+
+/**
+ * Salient-color rescue (the quantization half of `preserveSalient`). A thin
+ * feature is nothing but boundary pixels, which the clustering sample excludes
+ * — so with a small palette its color earns no centroid and the protect-aware
+ * merge has no region to keep. This re-colors protected, locally-flat pixels
+ * whose own color is far from their assigned centroid with their own (sub-
+ * quantized, autoK-merged) palette entries, so the feature survives both as a
+ * region and as a color. Mutates `q`; deterministic (fixed seed and scan order).
+ */
+function rescueSalientColors(
+  image: RasterImage,
+  q: QuantizeResult,
+  protect: BinaryMask,
+  colorSpace: 'oklab' | 'rgb',
+): void {
+  if (q.paletteHex.length >= 64) return
+  const w = image.width
+  const h = image.height
+  const n = w * h
+  const oklab = toOklabBuffer(image)
+  const pOklab = paletteToOklab(q.paletteRgb)
+  const mask = new Uint8Array(n)
+  let cnt = 0
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (protect.data[i] === 0) continue
+      const l = q.labels.data[i]
+      if (l < 0) continue
+      const o = i * 3
+      const p = l * 3
+      if (
+        deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], pOklab[p], pOklab[p + 1], pOklab[p + 2]) <=
+        RESCUE_DE
+      ) {
+        continue
+      }
+      // Locally flat in some direction: a stroke pixel has same-color neighbors
+      // along its axis; a rim mixture differs from all four.
+      let flat = false
+      const d = (j: number): number =>
+        deltaEOk(
+          oklab[o],
+          oklab[o + 1],
+          oklab[o + 2],
+          oklab[j * 3],
+          oklab[j * 3 + 1],
+          oklab[j * 3 + 2],
+        )
+      if (x > 0 && d(i - 1) <= RESCUE_FLAT) flat = true
+      else if (x < w - 1 && d(i + 1) <= RESCUE_FLAT) flat = true
+      else if (y > 0 && d(i - w) <= RESCUE_FLAT) flat = true
+      else if (y < h - 1 && d(i + w) <= RESCUE_FLAT) flat = true
+      if (!flat) continue
+      mask[i] = 1
+      cnt++
+    }
+  }
+  if (cnt < RESCUE_MIN_PIXELS) return
+  const sub = quantize(image, {
+    k: Math.min(RESCUE_MAX_COLORS, Math.max(2, cnt >> 4)),
+    colorSpace,
+    quality: 5,
+    seed: QUANTIZE_SEED,
+    mask: { width: w, height: h, data: mask },
+    autoK: true,
+  })
+  const added = sub.labels.count
+  if (added === 0) return
+  const oldCount = q.labels.count
+  const newData = new Int32Array(q.labels.data)
+  const newRgb = new Uint8Array((oldCount + added) * 3)
+  newRgb.set(q.paletteRgb)
+  for (let i = 0; i < n; i++) {
+    const l = sub.labels.data[i]
+    if (l >= 0) newData[i] = oldCount + l
+  }
+  for (let i = 0; i < added; i++) {
+    newRgb.set(sub.paletteRgb.subarray(i * 3, i * 3 + 3), (oldCount + i) * 3)
+    q.paletteHex.push(
+      rgbToHex(sub.paletteRgb[i * 3], sub.paletteRgb[i * 3 + 1], sub.paletteRgb[i * 3 + 2]),
+    )
+  }
+  q.labels = { ...q.labels, data: newData, count: oldCount + added }
+  q.paletteRgb = newRgb
 }
 
 /** Nearest palette entry to the dominant border color (for omitBackground). */
