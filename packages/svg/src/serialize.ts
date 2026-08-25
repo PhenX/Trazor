@@ -33,7 +33,10 @@ export interface SvgShape {
 }
 
 /** A gradient paint server (`@trazor/core` `GradientPaint`) plus the `id` a shape
- *  references it by (`fill="url(#id)"`). Emitted in `<defs>`. */
+ *  references it by (`fill="url(#id)"`). Emitted in `<defs>`. Ids are only
+ *  document-local (the engine assigns `g0`, `g1`, …); a standalone SVG file is
+ *  self-contained, but inlining several traced SVGs into one HTML DOM must
+ *  namespace these ids first, or every `url(#g0)` resolves to the first one. */
 export type SvgGradient = GradientPaint & { id: string }
 
 export interface SvgDocument {

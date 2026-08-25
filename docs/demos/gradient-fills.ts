@@ -1,8 +1,8 @@
 /**
- * Visual demo: gradient detection (the `gradients` setting). Traces smooth
- * color ramps with gradients off (posterized bands) and on (one
+ * Visual demo: gradient detection (the `gradients` setting). Traces shapes with
+ * smooth color ramps with gradients off (posterized bands) and on (one
  * `<linearGradient>` per ramp) and writes a side-by-side HTML page next to this
- * file. A flat control mark shows that non-ramp art is left byte-identical.
+ * file. A flat control shape shows that non-ramp art is left byte-identical.
  *
  * Mesh-free: only the fill changes, so the geometry is unchanged — the "on"
  * side is far fewer shapes and smaller, with no banding.
@@ -16,7 +16,8 @@ import type { RasterImage, VectorizeResult } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 
 type Rgb = [number, number, number]
-const lerp = (a: number, b: number, t: number): number => Math.round(a + (b - a) * t)
+const lerp = (a: number, b: number, t: number): number =>
+  Math.round(a + (b - a) * Math.min(1, Math.max(0, t)))
 const mix = (a: Rgb, b: Rgb, t: number): Rgb => [
   lerp(a[0], b[0], t),
   lerp(a[1], b[1], t),
@@ -31,28 +32,37 @@ function build(w: number, h: number, px: (x: number, y: number) => Rgb): RasterI
   return img
 }
 
-const W = 168
-const H = 120
+const W = 176
+const H = 132
+const M = 16 // shape inset from the frame
+const BG: Rgb = [26, 30, 38] // dark, high-contrast against every shape (no low-contrast merges)
 
 const scenes: { name: string; note: string; image: RasterImage }[] = [
   {
-    name: 'Sky',
-    note: 'Vertical light-to-deep blue ramp — the classic posterization banding',
-    image: build(W, H, (_x, y) => mix([173, 216, 245], [30, 82, 168], y / (H - 1))),
+    name: 'Sky panel',
+    note: 'A bounded panel with a vertical light-to-deep blue ramp',
+    image: build(W, H, (x, y) => {
+      const inside = x >= M && x < W - M && y >= M && y < H - M
+      return inside ? mix([173, 216, 245], [30, 82, 168], (y - M) / (H - 2 * M - 1)) : BG
+    }),
   },
   {
-    name: 'Soft shade',
-    note: 'Diagonal warm ramp (a soft-lit surface)',
-    image: build(W, H, (x, y) => mix([250, 234, 200], [150, 96, 60], (x + y) / (W + H - 2))),
-  },
-  {
-    name: 'Flat mark (control)',
-    note: 'Two flat colors, hard edge — no ramp, so output is left byte-identical',
+    name: 'Sphere',
+    note: 'A disc with a diagonal warm ramp (lit top-left) — the ramp direction is obvious',
     image: build(W, H, (x, y) => {
       const cx = W / 2
       const cy = H / 2
-      return Math.hypot(x - cx, y - cy) < 42 ? [214, 64, 52] : [244, 240, 232]
+      const r = Math.min(W, H) / 2 - M
+      if (Math.hypot(x - cx, y - cy) > r) return BG
+      return mix([252, 236, 205], [138, 74, 40], (x - cx + (y - cy) + 2 * r) / (4 * r))
     }),
+  },
+  {
+    name: 'Flat badge (control)',
+    note: 'A flat disc, no ramp — output is left byte-identical',
+    image: build(W, H, (x, y) =>
+      Math.hypot(x - W / 2, y - H / 2) <= Math.min(W, H) / 2 - M ? [214, 64, 52] : BG,
+    ),
   },
 ]
 
@@ -67,25 +77,37 @@ const BASE = {
 
 const kb = (n: number): string => `${(n / 1024).toFixed(1)} kB`
 
-function card(label: string, sub: string, res: VectorizeResult): string {
+/**
+ * Namespace a traced SVG's gradient ids so several inlined on one HTML page do
+ * not collide (SVG paint-server ids are document-global). A standalone SVG file
+ * needs none of this — it is only for embedding many in one DOM, as here.
+ */
+function namespaceIds(svg: string, prefix: string): string {
+  return svg
+    .replace(/id="(g\d+)"/g, `id="${prefix}$1"`)
+    .replace(/url\(#(g\d+)\)/g, `url(#${prefix}$1)`)
+}
+
+function card(label: string, sub: string, res: VectorizeResult, prefix: string): string {
   return `<figure>
       <figcaption>${label} <span>${sub}</span></figcaption>
-      <div class="art">${res.svg}</div>
+      <div class="art">${namespaceIds(res.svg, prefix)}</div>
       <div class="stat">${res.stats.pathCount} paths · ${res.stats.colorCount} colors · ${kb(res.stats.byteLength)}</div>
     </figure>`
 }
 
 async function main(): Promise<void> {
   const rows: string[] = []
-  for (const scene of scenes) {
+  for (let i = 0; i < scenes.length; i++) {
+    const scene = scenes[i]
     const off = await vectorize(scene.image, normalizeSettings({ ...BASE, gradients: false }))
     const on = await vectorize(scene.image, normalizeSettings({ ...BASE, gradients: true }))
     const identical = off.svg === on.svg
     rows.push(`<section class="row">
       <div class="rowhead"><h2>${scene.name}</h2><p>${scene.note}${identical ? ' — <strong>identical output</strong>' : ''}</p></div>
       <div class="pair">
-        ${card('gradients off', 'posterized bands', off)}
-        ${card('gradients on', identical ? 'unchanged' : 'one gradient per ramp', on)}
+        ${card('gradients off', 'posterized bands', off, `r${i}a-`)}
+        ${card('gradients on', identical ? 'unchanged' : 'one gradient per ramp', on, `r${i}b-`)}
       </div>
     </section>`)
     console.log(
