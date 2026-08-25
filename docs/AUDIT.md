@@ -209,17 +209,20 @@ posterized bands that lie on one Oklab ramp into a single region and paints it w
 `<radialGradient>` — mesh-free (geometry, and the cutout seam-free partition, are untouched: only the fill
 changes). The fits are closed-form and deterministic (per-label moment sums make each candidate union's fit
 O(1)): linear direction is the dominant covariance-normalized least-squares color gradient in position space;
-the radial center falls out of the per-channel isotropic-quadratic (r²) coefficients as `c = −½·ΣA·B / ΣA²`,
-with a pixel pass fitting color against the true radius. Growth runs in two phases sharing one claim map —
-linear first, radial on the leftovers — so linear output is independent of the radial detector. Hard
+the radial center falls out of the per-channel isotropic-quadratic (r²) coefficients as `c = −½·ΣA·B / ΣA²`.
+Stops come from a binned color-vs-scalar profile simplified by Douglas–Peucker, so a ramp that curves in Oklab
+(most sRGB ramps do) follows its true perceptual path with a few stops instead of one chord; a within-bin
+spread test and a hard-jump test gate out 2-D fields and edges. Growth runs in two phases sharing one claim
+map — linear first, radial on the leftovers — so linear output is independent of the radial detector. Hard
 residual / directionality / center-sanity / color-span gates keep both from firing on flat art or 2-D color
 fields. Paint extensions landed in `@trazor/core` (`GradientPaint`), `@trazor/svg` (`SvgDocument.defs`,
 `<defs>` serialization) and the engine (per-label paint table). Off is byte-identical to the flat-fill path;
 on by default in the Illustration and Photo profiles.
 
-**Still open:** multi-stop piecewise ramps (2 stops today, so a non-linear ramp is approximated), fitting a
-gradient to a single quantized region whose internal variance is a ramp (today only ≥2 merged bands qualify),
-elliptical/`gradientTransform` radials, and the full rate-distortion layer decomposition of Du et al. 2023.
+**Still open:** fitting a gradient to a single quantized region whose internal variance is a ramp (today only
+≥2 merged bands qualify), one-gradient capture of a sharply-bent ramp (greedy growth splits it into straight
+segments at the bend), elliptical/`gradientTransform` radials, and the full rate-distortion layer decomposition
+of Du et al. 2023.
 
 ### A8 — Small inputs are traced at native resolution · **medium**
 

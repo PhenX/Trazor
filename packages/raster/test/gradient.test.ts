@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LabelMap } from '@trazor/core'
-import { hexToRgb } from '@trazor/core'
+import { hexToRgb, oklabToRgb } from '@trazor/core'
 import { fitRegionGradients } from '../src/index'
 import { rasterOf } from './helpers'
 import type { Rgba } from './helpers'
@@ -45,10 +45,14 @@ describe('fitRegionGradients', () => {
     // The ramp runs along x, so the gradient axis is (near-)horizontal.
     expect(Math.abs(g.y2 - g.y1)).toBeLessThan(Math.abs(g.x2 - g.x1))
 
-    // Two stops spanning dark → light (grayscale, so channels stay equal).
-    expect(g.stops).toHaveLength(2)
+    // Stops span dark → light (grayscale, so channels stay equal). An sRGB-linear
+    // ramp curves in Oklab, so a few interior stops may follow it — endpoints at
+    // offset 0 and 1.
+    expect(g.stops.length).toBeGreaterThanOrEqual(2)
+    expect(g.stops[0].offset).toBe(0)
+    expect(g.stops[g.stops.length - 1].offset).toBe(1)
     const lo = hexToRgb(g.stops[0].color)!
-    const hi = hexToRgb(g.stops[1].color)!
+    const hi = hexToRgb(g.stops[g.stops.length - 1].color)!
     expect(Math.abs(lo[0] - lo[1])).toBeLessThanOrEqual(3)
     expect(Math.abs(hi[0] - hi[1])).toBeLessThanOrEqual(3)
     // The endpoints are clearly different luminances (a real ramp, not a flat).
@@ -101,6 +105,31 @@ describe('fitRegionGradients', () => {
     const { gradients } = fitRegionGradients(rampImage(w, h), labels, { minArea: w * h * 4 })
     expect(gradients.every((g) => g === null)).toBe(true)
     expect(Array.from(labels.data)).toEqual(before)
+  })
+
+  it('collapses an Oklab-straight ramp to 2 stops, keeps stops for a curved one', () => {
+    const w = 64
+    const h = 20
+    // Straight in Oklab (L interpolated linearly) ⇒ Douglas–Peucker keeps 2 stops.
+    const straight = rasterOf(w, h, (x) => {
+      const [r, g, b] = oklabToRgb(0.25 + (x / (w - 1)) * 0.55, 0, 0)
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), 255] as Rgba
+    })
+    const gs = fitRegionGradients(straight, bandLabels(w, h, 8), { minArea: 32 }).gradients.find(
+      (g) => g,
+    )
+    expect(gs?.stops).toHaveLength(2)
+
+    // A hue sweep that curves through Oklab keeps more than 2 stops.
+    const curved = rasterOf(w, h, (x) => {
+      const t = x / (w - 1)
+      const [r, g, b] = oklabToRgb(0.7, -0.1 + 0.3 * t, -0.15 + Math.sin(t * Math.PI) * 0.25)
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), 255] as Rgba
+    })
+    const gc = fitRegionGradients(curved, bandLabels(w, h, 8), { minArea: 32 }).gradients.find(
+      (g) => g,
+    )
+    expect(gc?.stops.length ?? 0).toBeGreaterThan(2)
   })
 
   it('emits a linear (not radial) gradient for a linear ramp', () => {
@@ -163,7 +192,7 @@ describe('fitRegionGradients — radial', () => {
     expect(Math.hypot(g.cx - cx, g.cy - cy)).toBeLessThan(6)
     expect(g.r).toBeGreaterThan(30)
     expect(new Set(labels.data).size).toBe(1)
-    expect(g.stops).toHaveLength(2)
+    expect(g.stops.length).toBeGreaterThanOrEqual(2)
   })
 
   it('recovers an off-center radial center', () => {

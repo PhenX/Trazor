@@ -9,11 +9,15 @@
  * The fits are closed-form and deterministic (per-label moment sums make every
  * candidate union's fit O(1)):
  * - linear: the ramp direction is the dominant least-squares color gradient in
- *   position space (covariance-normalized, so it is aspect-correct), stops are
- *   the fitted colors at the region's projected extremes;
+ *   position space (covariance-normalized, so it is aspect-correct);
  * - radial: modeling color as linear in r² makes it a quadratic in position, so
  *   the concentric center falls out of the per-channel quadratic coefficients
- *   (c = −½·ΣA·B / ΣA²); a pixel pass then fits color against the true radius.
+ *   (c = −½·ΣA·B / ΣA²).
+ *
+ * Stops come from a binned color profile along the model's scalar (projection or
+ * radius), simplified by Douglas–Peucker: a ramp that is straight in Oklab keeps
+ * 2 stops, one that curves in Oklab (which most sRGB ramps do) keeps the few it
+ * needs — up to MAX_STOPS — so the gradient follows the true perceptual path.
  *
  * Growth runs in two phases sharing one claim map: linear first, radial on the
  * leftovers — so a region a linear ramp already explains is never re-read as
@@ -43,7 +47,11 @@ export interface GradientResult {
   gradients: (GradientPaint | null)[]
 }
 
-/** Mean per-pixel Oklab distance to the ramp above which a fit is rejected. */
+/**
+ * Build-side fidelity gate: mean per-pixel Oklab distance to the (multi-stop)
+ * ramp above which a fit is rejected. Measured as within-bin color spread, so
+ * it accepts a curved 1-D ramp (the stops follow it) but rejects a 2-D field.
+ */
 const MAX_RESIDUAL = 0.03
 /** Fraction of position→color energy on the principal axis required (1-D linear ramp). */
 const MIN_DIRECTIONALITY = 0.88
@@ -51,6 +59,16 @@ const MIN_DIRECTIONALITY = 0.88
 const MIN_COLOR_SPAN = 0.06
 /** A ramp must merge at least this many quantized bands. */
 const MIN_MEMBERS = 2
+/** Bins used to sample a ramp's color profile before simplifying it to stops. */
+const BIN_COUNT = 32
+/** A populated-bin count below this is too coarse to be a ramp. */
+const MIN_POPULATED_BINS = 3
+/** Drop a stop whose color lies within this Oklab distance of its neighbors' interpolation. */
+const STOP_TOLERANCE = 0.01
+/** Maximum stops per gradient (keeps files small). */
+const MAX_STOPS = 8
+/** Reject as a hard edge (not a ramp) when one adjacent-bin jump exceeds this fraction of the whole path. */
+const STEP_JUMP_FRAC = 0.5
 /** A radial center must sit within this many position std-devs of the region centroid. */
 const CENTER_SANITY = 2.5
 /**
@@ -178,7 +196,7 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
   return { dx, dy, g0, g1, residual: Math.sqrt(rss * inv), directionality }
 }
 
-/** True when a fit is a usable linear ramp (accurate enough and directional enough). */
+/** True when a fit is a growable linear ramp (1-D and straight enough to group). */
 function isRamp(fit: RampFit | null): fit is RampFit {
   return fit !== null && fit.residual <= MAX_RESIDUAL && fit.directionality >= MIN_DIRECTIONALITY
 }
@@ -359,27 +377,32 @@ function sumMembers(m: Float64Array, members: readonly number[], out: Float64Arr
   }
 }
 
-// Per-representative accumulators gathered in the accept pixel pass.
+// Fields per profile bin: [count, ΣL, Σa, Σb, ΣLL, Σaa, Σbb].
+const BIN_FIELDS = 7
+
+/**
+ * Per-representative accumulators for the accept passes. `bins` holds, per
+ * BIN_COUNT bin along the model's scalar (projection for linear, radius for
+ * radial), the pixel count and summed + squared Oklab — a color-vs-scalar
+ * profile the build reads (and whose within-bin spread it gates on).
+ */
 interface LinearMeta {
   kind: 'linear'
-  fit: RampFit
-  /** Region centroid, so the gradient endpoints sit on the ramp axis through it. */
+  dx: number
+  dy: number
+  /** Region centroid, so the gradient axis passes through it. */
   cx: number
   cy: number
   smin: number
   smax: number
+  bins: Float64Array
 }
 interface RadialMeta {
   kind: 'radial'
   cx: number
   cy: number
   rmax: number
-  n: number
-  Sr: number
-  Srr: number
-  Sc: [number, number, number]
-  Scr: [number, number, number]
-  Scc: [number, number, number]
+  bins: Float64Array
 }
 type Meta = LinearMeta | RadialMeta
 
@@ -505,11 +528,13 @@ export function fitRegionGradients(
     for (const mem of s.members) repOf[mem] = s.rep
     meta.set(s.rep, {
       kind: 'linear',
-      fit,
+      dx: fit.dx,
+      dy: fit.dy,
       cx: sacc[1] / sacc[0],
       cy: sacc[2] / sacc[0],
       smin: Infinity,
       smax: -Infinity,
+      bins: new Float64Array(BIN_COUNT * BIN_FIELDS),
     })
   }
   for (const s of radialSupers) {
@@ -522,17 +547,31 @@ export function fitRegionGradients(
       cx: fit.cx,
       cy: fit.cy,
       rmax: 0,
-      n: 0,
-      Sr: 0,
-      Srr: 0,
-      Sc: [0, 0, 0],
-      Scr: [0, 0, 0],
-      Scc: [0, 0, 0],
+      bins: new Float64Array(BIN_COUNT * BIN_FIELDS),
     })
   }
   if (meta.size === 0) return { gradients }
 
-  // ---- one pixel pass: linear extents, radial radius/color-vs-r moments ----
+  // ---- pass A: scalar extents (linear projection / radial radius) ----
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const rep = repOf[data[y * width + x]]
+      if (rep < 0) continue
+      const info = meta.get(rep) as Meta
+      const px = x + 0.5
+      const py = y + 0.5
+      if (info.kind === 'linear') {
+        const s = info.dx * px + info.dy * py
+        if (s < info.smin) info.smin = s
+        if (s > info.smax) info.smax = s
+      } else {
+        const r = Math.hypot(px - info.cx, py - info.cy)
+        if (r > info.rmax) info.rmax = r
+      }
+    }
+  }
+
+  // ---- pass B: bin the color profile along each model's scalar ----
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const p = y * width + x
@@ -541,28 +580,32 @@ export function fitRegionGradients(
       const info = meta.get(rep) as Meta
       const px = x + 0.5
       const py = y + 0.5
+      let t: number
       if (info.kind === 'linear') {
-        const s = info.fit.dx * px + info.fit.dy * py
-        if (s < info.smin) info.smin = s
-        if (s > info.smax) info.smax = s
+        const span = info.smax - info.smin
+        t = span > 1e-9 ? (info.dx * px + info.dy * py - info.smin) / span : 0
       } else {
-        const r = Math.hypot(px - info.cx, py - info.cy)
-        if (r > info.rmax) info.rmax = r
-        const base = p * 3
-        info.n += 1
-        info.Sr += r
-        info.Srr += r * r
-        for (let c = 0; c < 3; c++) {
-          const v = ok[base + c]
-          info.Sc[c] += v
-          info.Scr[c] += v * r
-          info.Scc[c] += v * v
-        }
+        t = info.rmax > 1e-9 ? Math.hypot(px - info.cx, py - info.cy) / info.rmax : 0
       }
+      let bin = Math.floor(t * BIN_COUNT)
+      if (bin < 0) bin = 0
+      else if (bin >= BIN_COUNT) bin = BIN_COUNT - 1
+      const b = bin * BIN_FIELDS
+      const base = p * 3
+      const L = ok[base]
+      const A = ok[base + 1]
+      const Bv = ok[base + 2]
+      info.bins[b] += 1
+      info.bins[b + 1] += L
+      info.bins[b + 2] += A
+      info.bins[b + 3] += Bv
+      info.bins[b + 4] += L * L
+      info.bins[b + 5] += A * A
+      info.bins[b + 6] += Bv * Bv
     }
   }
 
-  // ---- build paints, gate on color span (and radial fit accuracy); relabel ----
+  // ---- build paints from the profiles; relabel merged bands ----
   const finalRep = new Int32Array(count).fill(-1)
   for (const [rep, info] of meta) {
     const paint = info.kind === 'linear' ? buildLinear(info) : buildRadial(info)
@@ -588,65 +631,123 @@ export function fitRegionGradients(
   return { gradients }
 }
 
-/** Build a linear gradient paint from a fitted ramp and its projected extent. */
-function buildLinear(info: LinearMeta): GradientPaint | null {
-  const span = info.smax - info.smin
-  if (!(span > 1e-6)) return null
-  const { g0, g1, dx, dy } = info.fit
-  const cLo: [number, number, number] = [
-    g0[0] + g1[0] * info.smin,
-    g0[1] + g1[1] * info.smin,
-    g0[2] + g1[2] * info.smin,
-  ]
-  const cHi: [number, number, number] = [
-    g0[0] + g1[0] * info.smax,
-    g0[1] + g1[1] * info.smax,
-    g0[2] + g1[2] * info.smax,
-  ]
-  if (deltaEOk(cLo[0], cLo[1], cLo[2], cHi[0], cHi[1], cHi[2]) < MIN_COLOR_SPAN) return null
+interface Stop {
+  offset: number
+  color: string
+}
+type Lab = [number, number, number]
 
-  // Endpoints sit on the ramp axis through the region centroid.
-  const sc = dx * info.cx + dy * info.cy
+/**
+ * Reduce a per-bin color profile to simplified gradient stops, or null when it
+ * is not a clean ramp: too few populated bins; too much within-bin color spread
+ * (a 2-D field, not a function of the scalar); one hard adjacent jump (an edge,
+ * not a ramp); or too little total color change (flat). A straight ramp collapses
+ * back to 2 stops; a curved or bent one keeps the stops it needs (≤ MAX_STOPS).
+ */
+function profileToStops(bins: Float64Array): Stop[] | null {
+  const offs: number[] = []
+  const cols: Lab[] = []
+  let totalN = 0
+  let withinVar = 0
+  for (let i = 0; i < BIN_COUNT; i++) {
+    const b = i * BIN_FIELDS
+    const cnt = bins[b]
+    if (cnt <= 0) continue
+    const inv = 1 / cnt
+    withinVar += Math.max(0, bins[b + 4] - bins[b + 1] * bins[b + 1] * inv)
+    withinVar += Math.max(0, bins[b + 5] - bins[b + 2] * bins[b + 2] * inv)
+    withinVar += Math.max(0, bins[b + 6] - bins[b + 3] * bins[b + 3] * inv)
+    totalN += cnt
+    offs.push(i / (BIN_COUNT - 1))
+    cols.push([bins[b + 1] * inv, bins[b + 2] * inv, bins[b + 3] * inv])
+  }
+  const np = offs.length
+  if (np < MIN_POPULATED_BINS || totalN <= 0) return null
+  // A 2-D field spreads color at a fixed scalar; a true ramp does not.
+  if (Math.sqrt(withinVar / totalN) > MAX_RESIDUAL) return null
+  const first = cols[0]
+  const last = cols[np - 1]
+  if (deltaEOk(first[0], first[1], first[2], last[0], last[1], last[2]) < MIN_COLOR_SPAN)
+    return null
+  // Hard-edge guard: a step concentrates the whole color change in one jump.
+  let path = 0
+  let maxJump = 0
+  for (let i = 1; i < np; i++) {
+    const d = deltaEOk(
+      cols[i - 1][0],
+      cols[i - 1][1],
+      cols[i - 1][2],
+      cols[i][0],
+      cols[i][1],
+      cols[i][2],
+    )
+    path += d
+    if (d > maxJump) maxJump = d
+  }
+  if (path <= 0 || maxJump > STEP_JUMP_FRAC * path) return null
+
+  return simplifyProfile(offs, cols).map((i) => ({
+    offset: offs[i],
+    color: oklabToHex(cols[i][0], cols[i][1], cols[i][2]),
+  }))
+}
+
+/**
+ * Douglas–Peucker in offset×Oklab: keep the endpoints, then repeatedly insert
+ * the interior bin that deviates most from the interpolation between its kept
+ * neighbors, until every deviation is within STOP_TOLERANCE or MAX_STOPS is hit.
+ */
+function simplifyProfile(offs: readonly number[], cols: readonly Lab[]): number[] {
+  const np = offs.length
+  const kept = [0, np - 1]
+  while (kept.length < MAX_STOPS) {
+    let bestDev = STOP_TOLERANCE
+    let bestIdx = -1
+    let bestPos = -1
+    for (let s = 0; s < kept.length - 1; s++) {
+      const a = kept[s]
+      const b = kept[s + 1]
+      const denom = offs[b] - offs[a]
+      for (let i = a + 1; i < b; i++) {
+        const t = denom > 1e-9 ? (offs[i] - offs[a]) / denom : 0
+        const L = cols[a][0] + (cols[b][0] - cols[a][0]) * t
+        const A = cols[a][1] + (cols[b][1] - cols[a][1]) * t
+        const Bv = cols[a][2] + (cols[b][2] - cols[a][2]) * t
+        const dev = deltaEOk(cols[i][0], cols[i][1], cols[i][2], L, A, Bv)
+        if (dev > bestDev) {
+          bestDev = dev
+          bestIdx = i
+          bestPos = s + 1
+        }
+      }
+    }
+    if (bestIdx < 0) break
+    kept.splice(bestPos, 0, bestIdx)
+  }
+  return kept
+}
+
+/** Build a linear gradient from its projected extent and binned color profile. */
+function buildLinear(info: LinearMeta): GradientPaint | null {
+  if (!(info.smax - info.smin > 1e-6)) return null
+  const stops = profileToStops(info.bins)
+  if (!stops) return null
+  const { dx, dy, cx, cy, smin, smax } = info
+  const sc = dx * cx + dy * cy
   return {
     kind: 'linear',
-    x1: info.cx + (info.smin - sc) * dx,
-    y1: info.cy + (info.smin - sc) * dy,
-    x2: info.cx + (info.smax - sc) * dx,
-    y2: info.cy + (info.smax - sc) * dy,
-    stops: [
-      { offset: 0, color: oklabToHex(cLo[0], cLo[1], cLo[2]) },
-      { offset: 1, color: oklabToHex(cHi[0], cHi[1], cHi[2]) },
-    ],
+    x1: cx + (smin - sc) * dx,
+    y1: cy + (smin - sc) * dy,
+    x2: cx + (smax - sc) * dx,
+    y2: cy + (smax - sc) * dy,
+    stops,
   }
 }
 
-/** Build a radial gradient paint from the color-vs-radius fit gathered per pixel. */
+/** Build a radial gradient from its recovered center/radius and binned profile. */
 function buildRadial(info: RadialMeta): GradientPaint | null {
-  const n = info.n
-  if (n < 3 || !(info.rmax > 1e-6)) return null
-  const det = n * info.Srr - info.Sr * info.Sr
-  if (Math.abs(det) < 1e-9) return null
-  const idet = 1 / det
-  const c0: [number, number, number] = [0, 0, 0]
-  const c1: [number, number, number] = [0, 0, 0]
-  let rss = 0
-  for (let c = 0; c < 3; c++) {
-    const p = (info.Srr * info.Sc[c] - info.Sr * info.Scr[c]) * idet
-    const q = (n * info.Scr[c] - info.Sr * info.Sc[c]) * idet
-    c0[c] = p
-    c1[c] = p + q * info.rmax
-    rss += Math.max(0, info.Scc[c] - (p * info.Sc[c] + q * info.Scr[c]))
-  }
-  if (Math.sqrt(rss / n) > MAX_RESIDUAL) return null
-  if (deltaEOk(c0[0], c0[1], c0[2], c1[0], c1[1], c1[2]) < MIN_COLOR_SPAN) return null
-  return {
-    kind: 'radial',
-    cx: info.cx,
-    cy: info.cy,
-    r: info.rmax,
-    stops: [
-      { offset: 0, color: oklabToHex(c0[0], c0[1], c0[2]) },
-      { offset: 1, color: oklabToHex(c1[0], c1[1], c1[2]) },
-    ],
-  }
+  if (!(info.rmax > 1e-6)) return null
+  const stops = profileToStops(info.bins)
+  if (!stops) return null
+  return { kind: 'radial', cx: info.cx, cy: info.cy, r: info.rmax, stops }
 }

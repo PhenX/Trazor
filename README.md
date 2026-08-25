@@ -168,7 +168,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
-- Gradient detection: multi-stop / piecewise ramps (linear and radial ramps ship today)
+- Gradient detection: single-region ramps and elliptical radials (linear, radial and multi-stop ship today)
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
 - More UI languages (English and French ship today)

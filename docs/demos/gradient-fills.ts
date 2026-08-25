@@ -58,6 +58,19 @@ const scenes: { name: string; note: string; image: RasterImage }[] = [
     }),
   },
   {
+    name: 'Sunset',
+    note: 'A warm vertical sweep that bends through Oklab — one gradient, several stops',
+    image: build(W, H, (x, y) => {
+      const inside = x >= M && x < W - M && y >= M && y < H - M
+      if (!inside) return BG
+      const t = (y - M) / (H - 2 * M - 1)
+      const top: Rgb = [252, 226, 150]
+      const mid: Rgb = [236, 138, 74]
+      const bot: Rgb = [150, 42, 66]
+      return t < 0.5 ? mix(top, mid, t * 2) : mix(mid, bot, (t - 0.5) * 2)
+    }),
+  },
+  {
     name: 'Orb',
     note: 'A disc shaded outward from a bright center — detected as a radial gradient',
     image: build(W, H, (x, y) => {
