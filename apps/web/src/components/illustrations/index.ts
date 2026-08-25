@@ -20,6 +20,8 @@ import autoOptimize3 from '../../assets/release/auto-optimize-3.png'
 import autoOptimize4 from '../../assets/release/auto-optimize-4.png'
 import autoOptimize5 from '../../assets/release/auto-optimize-5.png'
 import autoOptimize6 from '../../assets/release/auto-optimize-6.png'
+import gradientsBefore from '../../assets/release/gradients-before.png'
+import gradientsAfter from '../../assets/release/gradients-after.png'
 
 /** Two traces of one picture, shown side by side. */
 export interface CompareFigure {
@@ -40,6 +42,7 @@ export type ReleaseFigureData = CompareFigure | WallFigure
 export const RELEASE_ILLUSTRATIONS: Record<ReleaseIllustration, ReleaseFigureData> = {
   'clean-edges': { kind: 'compare', before: cleanEdgesBefore, after: cleanEdgesAfter },
   'auto-detect': { kind: 'compare', before: autoDetectBefore, after: autoDetectAfter },
+  gradients: { kind: 'compare', before: gradientsBefore, after: gradientsAfter },
   'auto-optimize': {
     kind: 'wall',
     images: [
