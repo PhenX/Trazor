@@ -74,11 +74,18 @@ const RESCUE_MIN_PIXELS = 8
 /** Cap on rescued palette entries per run. */
 const RESCUE_MAX_COLORS = 4
 /**
- * A rescued pixel must be locally flat in some 4-direction (min neighbor ΔE
- * below this): real strokes are flat along their axis, while anti-aliased rim
- * mixtures differ in every direction and must not earn band colors.
+ * A rescued pixel must be flat along some direction (min 8-neighbor ΔE below
+ * this): real strokes continue along their axis (diagonal hairlines included),
+ * while isolated specks have no same-color neighbor at all.
  */
 const RESCUE_FLAT = 0.06
+/**
+ * The two pixels across the flat axis must be similar to each other (ΔE ≤
+ * this): a stroke separates one surrounding color from itself, while an
+ * anti-aliased rim separates two distinct regions and must not earn a band
+ * color.
+ */
+const RESCUE_SIDES = 0.15
 
 /**
  * Stacked layering lifts an enclosed pocket onto its own top layer only when at
@@ -1163,23 +1170,73 @@ function rescueSalientColors(
       ) {
         continue
       }
-      // Locally flat in some direction: a stroke pixel has same-color neighbors
-      // along its axis; a rim mixture differs from all four.
-      let flat = false
-      const d = (j: number): number =>
-        deltaEOk(
-          oklab[o],
-          oklab[o + 1],
-          oklab[o + 2],
-          oklab[j * 3],
-          oklab[j * 3 + 1],
-          oklab[j * 3 + 2],
+      // Flat along some direction (8-neighborhood): a stroke pixel has
+      // same-color neighbors along its axis — a 1px diagonal hairline's axis
+      // runs diagonally, so 4-neighbors alone would miss it.
+      let axisX = 0
+      let axisY = 0
+      let best = Infinity
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          const j = ny * w + nx
+          const dd = deltaEOk(
+            oklab[o],
+            oklab[o + 1],
+            oklab[o + 2],
+            oklab[j * 3],
+            oklab[j * 3 + 1],
+            oklab[j * 3 + 2],
+          )
+          if (dd < best) {
+            best = dd
+            axisX = dx
+            axisY = dy
+          }
+        }
+      }
+      if (best > RESCUE_FLAT) continue
+      // The pair across the axis, walking over same-colored stroke pixels (a
+      // 2px stroke's immediate neighbor is still the stroke): a stroke's two
+      // sides are the same surrounding color; a rim's sides are the two
+      // distinct regions it separates. Off-image sides pass — can't tell.
+      const sidePos = (dx: number, dy: number): number => {
+        let px = x + dx
+        let py = y + dy
+        for (let step = 0; step < 3; step++) {
+          if (px < 0 || py < 0 || px >= w || py >= h) return -1
+          const j = (py * w + px) * 3
+          const dd = deltaEOk(
+            oklab[o],
+            oklab[o + 1],
+            oklab[o + 2],
+            oklab[j],
+            oklab[j + 1],
+            oklab[j + 2],
+          )
+          if (dd > RESCUE_FLAT) break
+          px += dx
+          py += dy
+        }
+        if (px < 0 || py < 0 || px >= w || py >= h) return -1
+        return (py * w + px) * 3
+      }
+      const s = sidePos(-axisY, axisX)
+      const t = sidePos(axisY, -axisX)
+      if (s >= 0 && t >= 0) {
+        const dSides = deltaEOk(
+          oklab[s],
+          oklab[s + 1],
+          oklab[s + 2],
+          oklab[t],
+          oklab[t + 1],
+          oklab[t + 2],
         )
-      if (x > 0 && d(i - 1) <= RESCUE_FLAT) flat = true
-      else if (x < w - 1 && d(i + 1) <= RESCUE_FLAT) flat = true
-      else if (y > 0 && d(i - w) <= RESCUE_FLAT) flat = true
-      else if (y < h - 1 && d(i + w) <= RESCUE_FLAT) flat = true
-      if (!flat) continue
+        if (dSides > RESCUE_SIDES) continue
+      }
       mask[i] = 1
       cnt++
     }

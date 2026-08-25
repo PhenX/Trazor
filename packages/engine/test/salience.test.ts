@@ -230,6 +230,22 @@ describe('preserveSalient (classical salience protection)', () => {
     expect(on2.svg).toBe(on.svg)
   })
 
+  it('rescues a 1px diagonal hairline as one continuous stroke', async () => {
+    // A diagonal 1px line's axis runs diagonally — the flatness gate must scan
+    // the 8-neighborhood, or the line is rescued only in fragments.
+    const img = rescueScene(true)
+    for (let y = 0; y < 32; y++) {
+      for (let x = 12; x < 14; x++) setPixel(img, x, y, 255, 255, 255)
+    }
+    for (let t = 0; t < 29; t++) setPixel(img, 8 + t, 30 - t, 205, 205, 205)
+    const on = await vectorize(img, rescueSettings(true))
+    expect(on.palette).toHaveLength(3)
+    expect(analyzeSvg(on.svg).pathCount).toBe(3)
+    // One subpath per shape: background, blob, stroke — a fragmented stroke
+    // would emit extra M commands.
+    expect((on.svg.match(/M\s+-?\d/g) ?? []).length).toBe(3)
+  })
+
   it('adds no palette entry when nothing salient is misrepresented', async () => {
     const img = rescueScene(false)
     const on = await vectorize(img, rescueSettings(true))

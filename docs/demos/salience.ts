@@ -140,10 +140,11 @@ function inkSettings(preserveSalient: boolean): VectorizeSettings {
 }
 
 /**
- * Rescue scene: blob + a 1px hairline (#d9d9d9 — close enough to white that a
- * k=2 palette drops its color). The hairline is all boundary pixels, which the
- * clustering sample excludes, so without the toggle it is painted as the
- * background and disappears; with it, its own color is rescued into the palette.
+ * Rescue scene: blob + a 1px vertical hairline (#d9d9d9 — close enough to white
+ * that a k=2 palette drops its color). The hairline is all boundary pixels,
+ * which the clustering sample excludes, so without the toggle it is painted as
+ * the background and disappears; with it, its own color is rescued into the
+ * palette.
  */
 function rescueScene(): RasterImage {
   const img = blank(220, 140)
@@ -157,7 +158,7 @@ function rescueScene(): RasterImage {
       }
     }
   }
-  drawLine(img, 30, 110, 105, 30, [217, 217, 217])
+  drawLine(img, 150, 10, 150, 130, [217, 217, 217])
   return img
 }
 
