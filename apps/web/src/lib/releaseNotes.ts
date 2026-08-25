@@ -13,15 +13,16 @@ import { i18n } from '../i18n'
 export type ReleaseNoteKind = 'feature' | 'improvement' | 'fix'
 
 /**
- * Id of a decorative illustration shown alongside a note. Each id maps to a
- * self-contained, theme-aware inline-SVG component in
- * `components/illustrations/` (see its `index.ts`). Illustrations are optional
- * and purely decorative — the `items` copy remains the full description — so
- * they carry no text and are marked `aria-hidden`. Add one only to notes whose
- * change is genuinely visual (a vectorization improvement, an illustrable
- * feature); leave it off for the rest.
+ * Id of the illustration shown alongside a note. Each id maps — in
+ * `components/illustrations/` (see its `index.ts`) — to a set of real sample
+ * images: an actual before/after trace produced by Trazor from one CC0 source
+ * photo (see that folder's `LICENSES.md`), so the picture shows the exact
+ * behaviour the note describes. Illustrations are optional; add one only to a
+ * note whose change is genuinely visible in a trace, and where an honest
+ * before/after (or candidate set) can be produced. Notes whose output looks
+ * identical before and after (e.g. a layer-ordering change) get none.
  */
-export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect' | 'layered-vinyl'
+export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect'
 
 export interface ReleaseNote {
   /** Publication date, ISO `YYYY-MM-DD`. */
@@ -54,7 +55,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     kind: 'improvement',
     title: 'Illustrated release notes',
     items: [
-      "The What's new panel now shows a small illustration on the notes about how tracing looks and works — cleaner edges, sharper auto-detect, layered vinyl and the new Auto-optimize — so you can see the change at a glance before reading it.",
+      "The What's new panel now shows real before/after samples on the notes about how tracing looks — cleaner edges, sharper auto-detect and the new Auto-optimize — each one an actual Trazor trace of the same picture, so you can see the difference at a glance before reading it.",
     ],
   },
   {
@@ -97,7 +98,6 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     iteration: 2,
     kind: 'improvement',
     title: 'Cleaner layered vinyl',
-    illustration: 'layered-vinyl',
     items: [
       'In stacked color mode, the color that outlines the most — the black lines in a cartoon, the backdrop in a flat design — now forms the full base layer at the bottom of the stack, so it reads through the sheets stacked on top of it the way layered vinyl is built. The traced picture looks identical; only which color is the full backing sheet changes.',
       'An enclosed detail like an eye pupil, when it is buried under two or more sheets, now lifts onto its own top cut layer, so the sheets beneath it stay whole instead of each carrying a hole you would have to weed and line up (a detail with just one sheet over it keeps its single hole). Grouped stacked output groups by cut layer rather than by color, so an outline color that reappears as one of these top details stays a separate, correctly ordered layer.',
