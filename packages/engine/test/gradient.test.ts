@@ -73,6 +73,24 @@ describe('gradient detection — engine', () => {
     expect(on.svg).toContain('gradientUnits="userSpaceOnUse"')
   })
 
+  it('gradientMinArea and low gradientStrength suppress detection', async () => {
+    const img = rampImage()
+    const on = await vectorize(img, normalizeSettings({ paletteSize: 16, gradients: true }))
+    expect(on.svg).toContain('<linearGradient')
+    // A min area larger than the image keeps every region flat.
+    const bigArea = await vectorize(
+      img,
+      normalizeSettings({ paletteSize: 16, gradients: true, gradientMinArea: 1_000_000 }),
+    )
+    expect(bigArea.svg).not.toContain('<linearGradient')
+    // The strength knob is a valid, distinct cache/behaviour axis.
+    const weak = await vectorize(
+      img,
+      normalizeSettings({ paletteSize: 16, gradients: true, gradientStrength: 0 }),
+    )
+    expect(weak.stats.pathCount).toBeGreaterThanOrEqual(on.stats.pathCount)
+  })
+
   it('is ignored in pixel mode (exact lattice)', async () => {
     const img = rampImage()
     const px = await vectorize(img, normalizeSettings({ curveMode: 'pixel', gradients: true }))

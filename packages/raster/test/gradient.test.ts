@@ -97,6 +97,24 @@ describe('fitRegionGradients', () => {
     expect(Array.from(labels.data)).toEqual(before)
   })
 
+  it('a high minColorSpan keeps a low-contrast ramp flat', () => {
+    // A gentle ramp (small total color change): accepted by default, rejected
+    // once the required color span exceeds it.
+    const w = 60
+    const h = 20
+    const gentle = rasterOf(w, h, (x) => {
+      const v = Math.round(120 + (x / (w - 1)) * 40) // ~40 levels ≈ small Oklab span
+      return [v, v, v, 255] as Rgba
+    })
+    const lax = fitRegionGradients(gentle, bandLabels(w, h, 6), { minArea: 32 })
+    expect(lax.gradients.some((g) => g !== null)).toBe(true)
+    const strict = fitRegionGradients(gentle, bandLabels(w, h, 6), {
+      minArea: 32,
+      minColorSpan: 0.3,
+    })
+    expect(strict.gradients.every((g) => g === null)).toBe(true)
+  })
+
   it('does not gradient a ramp below the minimum area', () => {
     const w = 60
     const h = 20

@@ -169,6 +169,15 @@ export const fr: MessageSchema = {
       label: 'Remplissages dégradés',
       hint: 'Peindre les dégradés de couleur avec un seul dégradé SVG au lieu de bandes posterisées (idéal pour photos, ciels, ombrages doux). Pas pour la découpe/impression en tons directs.',
     },
+    gradientStrength: {
+      label: 'Force des dégradés',
+      hint: 'Avec quelle facilité les régions deviennent des dégradés. Plus bas ne garde que les rampes nettes et contrastées (les formes plates restent plates) ; plus haut en capte de plus subtiles — augmentez pour en avoir plus, baissez si des zones plates deviennent des dégradés par erreur.',
+    },
+    gradientMinArea: {
+      label: 'Aire min. des dégradés',
+      hint: 'Les régions plus petites que ceci (px) restent plates. Auto en dérive un seuil depuis Région min ; augmentez pour limiter les dégradés aux grandes zones lisses.',
+      zero: 'auto',
+    },
     gapFill: {
       label: 'Comblement',
       hint: 'Largeur du trait de compensation des jointures fines (px) pour le rendu en découpe',

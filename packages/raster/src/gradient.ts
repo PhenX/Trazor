@@ -34,6 +34,17 @@ import { toOklabBuffer } from './convert'
 export interface GradientOptions {
   /** Minimum pixel area of a merged ramp for it to become a gradient. Default 0. */
   minArea?: number
+  /**
+   * Max mean-Oklab fit error a ramp may have (growth + build). Lower = stricter,
+   * so flat objects and messy regions are not merged into a gradient. Default
+   * {@link MAX_RESIDUAL}.
+   */
+  maxResidual?: number
+  /**
+   * Minimum total Oklab color change a region must span to become a gradient.
+   * Higher = only strong ramps qualify. Default {@link MIN_COLOR_SPAN}.
+   */
+  minColorSpan?: number
   /** Interleaved Oklab buffer for `image` (length w*h*3); computed if absent. */
   oklab?: Float32Array
 }
@@ -197,8 +208,8 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
 }
 
 /** True when a fit is a growable linear ramp (1-D and straight enough to group). */
-function isRamp(fit: RampFit | null): fit is RampFit {
-  return fit !== null && fit.residual <= MAX_RESIDUAL && fit.directionality >= MIN_DIRECTIONALITY
+function isRamp(fit: RampFit | null, maxResidual: number): fit is RampFit {
+  return fit !== null && fit.residual <= maxResidual && fit.directionality >= MIN_DIRECTIONALITY
 }
 
 /**
@@ -424,6 +435,8 @@ export function fitRegionGradients(
   if (count < MIN_MEMBERS) return { gradients }
 
   const minArea = opts?.minArea ?? 0
+  const maxResidual = opts?.maxResidual ?? MAX_RESIDUAL
+  const minColorSpan = opts?.minColorSpan ?? MIN_COLOR_SPAN
   const ok = opts?.oklab ?? toOklabBuffer(image)
 
   // ---- per-label moment sums (one pass) ----
@@ -509,7 +522,7 @@ export function fitRegionGradients(
   const claimed = new Int32Array(count).fill(-1)
   const linearSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
     const f = fitRamp(t, 0)
-    return isRamp(f) ? f.residual : Infinity
+    return isRamp(f, maxResidual) ? f.residual : Infinity
   })
   const radialSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
     const f = fitRadial(t, 0)
@@ -524,7 +537,7 @@ export function fitRegionGradients(
   for (const s of linearSupers) {
     sumMembers(m, s.members, sacc)
     const fit = fitRamp(sacc, 0)
-    if (!isRamp(fit)) continue
+    if (!isRamp(fit, maxResidual)) continue
     for (const mem of s.members) repOf[mem] = s.rep
     meta.set(s.rep, {
       kind: 'linear',
@@ -608,7 +621,10 @@ export function fitRegionGradients(
   // ---- build paints from the profiles; relabel merged bands ----
   const finalRep = new Int32Array(count).fill(-1)
   for (const [rep, info] of meta) {
-    const paint = info.kind === 'linear' ? buildLinear(info) : buildRadial(info)
+    const paint =
+      info.kind === 'linear'
+        ? buildLinear(info, maxResidual, minColorSpan)
+        : buildRadial(info, maxResidual, minColorSpan)
     if (!paint) continue
     gradients[rep] = paint
     finalRep[rep] = rep
@@ -644,7 +660,11 @@ type Lab = [number, number, number]
  * not a ramp); or too little total color change (flat). A straight ramp collapses
  * back to 2 stops; a curved or bent one keeps the stops it needs (≤ MAX_STOPS).
  */
-function profileToStops(bins: Float64Array): Stop[] | null {
+function profileToStops(
+  bins: Float64Array,
+  maxResidual: number,
+  minColorSpan: number,
+): Stop[] | null {
   const offs: number[] = []
   const cols: Lab[] = []
   let totalN = 0
@@ -664,11 +684,10 @@ function profileToStops(bins: Float64Array): Stop[] | null {
   const np = offs.length
   if (np < MIN_POPULATED_BINS || totalN <= 0) return null
   // A 2-D field spreads color at a fixed scalar; a true ramp does not.
-  if (Math.sqrt(withinVar / totalN) > MAX_RESIDUAL) return null
+  if (Math.sqrt(withinVar / totalN) > maxResidual) return null
   const first = cols[0]
   const last = cols[np - 1]
-  if (deltaEOk(first[0], first[1], first[2], last[0], last[1], last[2]) < MIN_COLOR_SPAN)
-    return null
+  if (deltaEOk(first[0], first[1], first[2], last[0], last[1], last[2]) < minColorSpan) return null
   // Hard-edge guard: a step concentrates the whole color change in one jump.
   let path = 0
   let maxJump = 0
@@ -728,9 +747,13 @@ function simplifyProfile(offs: readonly number[], cols: readonly Lab[]): number[
 }
 
 /** Build a linear gradient from its projected extent and binned color profile. */
-function buildLinear(info: LinearMeta): GradientPaint | null {
+function buildLinear(
+  info: LinearMeta,
+  maxResidual: number,
+  minColorSpan: number,
+): GradientPaint | null {
   if (!(info.smax - info.smin > 1e-6)) return null
-  const stops = profileToStops(info.bins)
+  const stops = profileToStops(info.bins, maxResidual, minColorSpan)
   if (!stops) return null
   const { dx, dy, cx, cy, smin, smax } = info
   const sc = dx * cx + dy * cy
@@ -745,9 +768,13 @@ function buildLinear(info: LinearMeta): GradientPaint | null {
 }
 
 /** Build a radial gradient from its recovered center/radius and binned profile. */
-function buildRadial(info: RadialMeta): GradientPaint | null {
+function buildRadial(
+  info: RadialMeta,
+  maxResidual: number,
+  minColorSpan: number,
+): GradientPaint | null {
   if (!(info.rmax > 1e-6)) return null
-  const stops = profileToStops(info.bins)
+  const stops = profileToStops(info.bins, maxResidual, minColorSpan)
   if (!stops) return null
   return { kind: 'radial', cx: info.cx, cy: info.cy, r: info.rmax, stops }
 }

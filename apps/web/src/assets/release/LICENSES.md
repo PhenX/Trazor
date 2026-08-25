@@ -28,12 +28,12 @@ All PNGs below were rendered by tracing the source SVG through `@trazor/engine`
 and rasterising the resulting SVG. They are derivatives of the sources above and
 carry no additional restrictions.
 
-| File(s)                                            | Note                       | How it was traced                                                                                             |
-| -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `clean-edges-before.png` / `clean-edges-after.png` | Cleaner edges for flat art | `segmentation: 'quantize'` (global palette) vs `'regions'` (region growing)                                   |
-| `auto-detect-before.png` / `auto-detect-after.png` | Sharper auto-detect        | `mode: 'grayscale'` vs `mode: 'color'`                                                                        |
-| `auto-optimize-1.png` … `auto-optimize-6.png`      | Auto-optimize              | six candidates at different `paletteSize` / `segmentation` / `mode`; `auto-optimize-5.png` is the chosen one  |
-| `gradients-before.png` / `gradients-after.png`     | Gradient fills             | `_source-twilight.svg`, Photo profile + `layering: 'cutout'`, `paletteSize: 18`, `gradients: false` vs `true` |
+| File(s)                                            | Note                       | How it was traced                                                                                                                                                   |
+| -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clean-edges-before.png` / `clean-edges-after.png` | Cleaner edges for flat art | `segmentation: 'quantize'` (global palette) vs `'regions'` (region growing)                                                                                         |
+| `auto-detect-before.png` / `auto-detect-after.png` | Sharper auto-detect        | `mode: 'grayscale'` vs `mode: 'color'`                                                                                                                              |
+| `auto-optimize-1.png` … `auto-optimize-6.png`      | Auto-optimize              | six candidates at different `paletteSize` / `segmentation` / `mode`; `auto-optimize-5.png` is the chosen one                                                        |
+| `gradients-before.png` / `gradients-after.png`     | Gradient fills             | `_source-twilight.svg`, Photo profile + `layering: 'cutout'`, `paletteSize: 18`, `gradientStrength: 0.35` (keeps the flat hills flat), `gradients: false` vs `true` |
 
 To regenerate, re-trace the source SVG with the settings above (see the note's
 `items` for the user-facing description).

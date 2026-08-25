@@ -118,6 +118,20 @@ export interface VectorizeSettings {
    * modes. Off is byte-identical to the classic flat-fill path.
    */
   gradients: boolean
+  /**
+   * How eagerly regions merge into gradients (0-1; only when `gradients`). Low
+   * keeps only clean, high-contrast ramps — flat objects and subtle areas stay
+   * flat, so fewer regions become gradients; high accepts looser, lower-contrast
+   * ramps, so more do. Balances the fit tolerance against the minimum color
+   * difference a region must span to qualify. 0.5 is the neutral default.
+   */
+  gradientStrength: number
+  /**
+   * Minimum region area (px) to become a gradient (only when `gradients`). 0
+   * uses an automatic floor derived from `minRegionArea`; raise it to keep small
+   * regions flat and limit gradients to large smooth areas.
+   */
+  gradientMinArea: number
 
   // ---- Binarization (bw / centerline modes) ----
   /** 0-255, used when `thresholdMode` is `fixed`. */
@@ -206,6 +220,8 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   gapFill: 0,
   omitBackground: false,
   gradients: false,
+  gradientStrength: 0.5,
+  gradientMinArea: 0,
 
   threshold: 128,
   thresholdMode: 'auto',
@@ -268,6 +284,8 @@ export function normalizeSettings(
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)
+  s.gradientStrength = clamp(s.gradientStrength, 0, 1)
+  s.gradientMinArea = clampInt(s.gradientMinArea, 0, 1_000_000)
   s.gapFill = clamp(s.gapFill, 0, 2)
   s.threshold = clampInt(s.threshold, 0, 255)
   s.adaptiveRadius = clampInt(s.adaptiveRadius, 2, 128)

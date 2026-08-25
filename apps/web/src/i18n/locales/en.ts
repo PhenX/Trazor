@@ -168,6 +168,15 @@ export const en = {
       label: 'Gradient fills',
       hint: 'Paint smooth color ramps with a single SVG gradient instead of posterized bands (best for photos, skies, soft shading). Not for spot-color cutting/printing.',
     },
+    gradientStrength: {
+      label: 'Gradient strength',
+      hint: 'How eagerly regions become gradients. Lower keeps only clean, high-contrast ramps (flat shapes stay flat); higher catches subtler ones — raise it for more, lower it if flat areas get gradients by mistake.',
+    },
+    gradientMinArea: {
+      label: 'Gradient min area',
+      hint: 'Regions smaller than this (px) stay flat. Auto derives a floor from Min region; raise it to limit gradients to large smooth areas.',
+      zero: 'auto',
+    },
     gapFill: {
       label: 'Gap fill',
       hint: 'Hairline-seam compensation stroke width (px) for cutout rendering',
