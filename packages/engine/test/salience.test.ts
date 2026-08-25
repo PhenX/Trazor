@@ -170,6 +170,31 @@ function rescueSettings(preserveSalient: boolean): VectorizeSettings {
   })
 }
 
+/**
+ * Ramp scene: a gray disc with a ~10px linear anti-aliased ramp up to white.
+ * The ramp pixels are flat along the ring and their walked sides stay inside
+ * the ramp (steps of ~13 levels), so they must still be rejected — rescuing a
+ * ramp into its own band color is exactly the triangle/band glitch.
+ */
+function rampScene(): RasterImage {
+  const w = 64
+  const h = 32
+  const img = createRaster(w, h)
+  fillRaster(img, 255, 255, 255)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = Math.hypot(x - 32, y - 16)
+      if (d <= 10) {
+        setPixel(img, x, y, 127, 127, 127)
+      } else if (d < 20) {
+        const g = Math.min(255, Math.round(127 + 13 * (d - 10)))
+        setPixel(img, x, y, g, g, g)
+      }
+    }
+  }
+  return img
+}
+
 describe('preserveSalient (classical salience protection)', () => {
   it('keeps a low-contrast 1px stroke on a strong edge, drops the sub-threshold speck', async () => {
     const img = colorScene()
@@ -244,6 +269,17 @@ describe('preserveSalient (classical salience protection)', () => {
     // One subpath per shape: background, blob, stroke — a fragmented stroke
     // would emit extra M commands.
     expect((on.svg.match(/M\s+-?\d/g) ?? []).length).toBe(3)
+  })
+
+  it('does not rescue a wide anti-aliased ramp into band colors', async () => {
+    // The ramp around the disc is a rim, not a stroke: its two sides are the
+    // disc and the background. It must neither earn a rescued palette entry
+    // nor survive as a band region — otherwise real images grow triangles
+    // around every shape.
+    const img = rampScene()
+    const on = await vectorize(img, rescueSettings(true))
+    expect(on.palette).toHaveLength(2)
+    expect(analyzeSvg(on.svg).pathCount).toBe(2)
   })
 
   it('adds no palette entry when nothing salient is misrepresented', async () => {

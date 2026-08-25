@@ -32,7 +32,6 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
-  dilate,
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
@@ -74,18 +73,18 @@ const RESCUE_MIN_PIXELS = 8
 /** Cap on rescued palette entries per run. */
 const RESCUE_MAX_COLORS = 4
 /**
- * A rescued pixel must be flat along some direction (min 8-neighbor ΔE below
+ * A stroke pixel must be flat along some direction (min 8-neighbor ΔE below
  * this): real strokes continue along their axis (diagonal hairlines included),
  * while isolated specks have no same-color neighbor at all.
  */
-const RESCUE_FLAT = 0.06
+const STROKE_FLAT = 0.06
 /**
  * The two pixels across the flat axis must be similar to each other (ΔE ≤
- * this): a stroke separates one surrounding color from itself, while an
- * anti-aliased rim separates two distinct regions and must not earn a band
- * color.
+ * this, walking over same-colored stroke pixels): a stroke separates one
+ * surrounding color from itself, while an anti-aliased rim separates two
+ * distinct regions and must not earn a band color or protect its band.
  */
-const RESCUE_SIDES = 0.15
+const STROKE_SIDES = 0.08
 
 /**
  * Stacked layering lifts an enclosed pocket onto its own top layer only when at
@@ -135,13 +134,81 @@ function edgeProtectMask(
 }
 
 /**
- * Classical salience mask: the working image's own strong color boundaries,
- * dilated by one pixel so a thin feature's own pixels are covered. The gradient
- * threshold is the discretization boundary — pure integer comparison, so this is
- * deterministic with or without an ML hint in play.
+ * Validated classical stroke protection — the mask `preserveSalient` acts on.
+ * The image's own strong color boundaries, narrowed to pixels that look like a
+ * thin stroke: flat along some 8-direction axis, with similar colors across
+ * that axis (walking over same-colored stroke pixels). A raw dilated edge mask
+ * is far too noisy on real (anti-aliased, JPEG) images: it covers every rim
+ * band, whose protection is what turns those bands into persistent triangles
+ * and notches traced region outlines. A rim's two sides are the distinct
+ * regions it separates, so it fails the across-axis test and drops out.
  */
-function salienceProtectMask(image: RasterImage): BinaryMask {
-  return dilate(detectEdges(image, CLUSTER_EDGE_THRESHOLD), 1)
+function strokeProtectMask(image: RasterImage): BinaryMask {
+  const { width: w, height: h } = image
+  const n = w * h
+  const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+  const oklab = toOklabBuffer(image)
+  const out = new Uint8Array(n)
+  const deAt = (o: number, j: number): number =>
+    deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], oklab[j * 3], oklab[j * 3 + 1], oklab[j * 3 + 2])
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (edges.data[i] === 0) continue
+      const o = i * 3
+      // The flattest 8-direction axis — a 1px diagonal hairline's axis runs
+      // diagonally, so 4-neighbors alone would miss it.
+      let axisX = 0
+      let axisY = 0
+      let best = Infinity
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          const dd = deAt(o, ny * w + nx)
+          if (dd < best) {
+            best = dd
+            axisX = dx
+            axisY = dy
+          }
+        }
+      }
+      if (best > STROKE_FLAT) continue
+      // The pair across the axis: a stroke's two sides are the same
+      // surrounding color; a rim's sides are the two distinct regions it
+      // separates. Off-image sides pass — can't tell.
+      const sidePos = (dx: number, dy: number): number => {
+        let px = x + dx
+        let py = y + dy
+        for (let step = 0; step < 3; step++) {
+          if (px < 0 || py < 0 || px >= w || py >= h) return -1
+          const j = py * w + px
+          if (deAt(o, j) > STROKE_FLAT) break
+          px += dx
+          py += dy
+        }
+        if (px < 0 || py < 0 || px >= w || py >= h) return -1
+        return (py * w + px) * 3
+      }
+      const s = sidePos(-axisY, axisX)
+      const t = sidePos(axisY, -axisX)
+      if (s >= 0 && t >= 0) {
+        const dSides = deltaEOk(
+          oklab[s],
+          oklab[s + 1],
+          oklab[s + 2],
+          oklab[t],
+          oklab[t + 1],
+          oklab[t + 2],
+        )
+        if (dSides > STROKE_SIDES) continue
+      }
+      out[i] = 1
+    }
+  }
+  return { width: w, height: h, data: out }
 }
 
 /** Palette RGB (count×3 bytes) → interleaved Oklab (count×3 floats). */
@@ -521,10 +588,10 @@ async function colorPipeline(
   const palKey = canCachePal ? palKeyOf(settings) : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
   // tracer's speck filter; without one, `preserveSalient` derives the same mask
-  // classically from the image's own boundaries. Null when neither applies.
-  const protect =
-    edgeProtectMask(edgeHint, image.width, image.height) ??
-    (settings.preserveSalient ? salienceProtectMask(image) : null)
+  // classically — stroke-validated, so anti-aliased rims don't protect their
+  // bands. Null when neither applies.
+  const strokeProtect = settings.preserveSalient && !edgeHint ? strokeProtectMask(image) : null
+  const protect = edgeProtectMask(edgeHint, image.width, image.height) ?? strokeProtect
 
   let labels: LabelMap
   let paletteHex: string[]
@@ -609,9 +676,10 @@ async function colorPipeline(
     }
     const q = quantize(image, quantOpts)
     // With protection active, recover palette entries for salient features the
-    // clustering sample excluded (thin strokes are all boundary pixels).
-    if (settings.preserveSalient && protect && settings.palette === null) {
-      rescueSalientColors(image, q, protect, settings.colorSpace)
+    // clustering sample excluded (thin strokes are all boundary pixels). The
+    // rescue mask is the stroke-validated protect mask — rims stay out.
+    if (settings.preserveSalient && strokeProtect && settings.palette === null) {
+      rescueSalientColors(image, q, strokeProtect, settings.colorSpace)
     }
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
@@ -989,11 +1057,12 @@ async function inkPipeline(
 
   run.stage('segment')
   // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // without one, `preserveSalient` protects the image's own strong edges. Null
-  // when neither applies — byte-identical to despeckleMask.
+  // without one, `preserveSalient` protects stroke-validated pixels of the
+  // image's own strong edges. Null when neither applies — byte-identical to
+  // despeckleMask.
   const protect =
     edgeProtectMask(edgeHint, image.width, image.height) ??
-    (settings.preserveSalient ? salienceProtectMask(image) : null)
+    (settings.preserveSalient ? strokeProtectMask(image) : null)
   mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
   await run.tick()
 
@@ -1137,10 +1206,11 @@ function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
  * Salient-color rescue (the quantization half of `preserveSalient`). A thin
  * feature is nothing but boundary pixels, which the clustering sample excludes
  * — so with a small palette its color earns no centroid and the protect-aware
- * merge has no region to keep. This re-colors protected, locally-flat pixels
- * whose own color is far from their assigned centroid with their own (sub-
- * quantized, autoK-merged) palette entries, so the feature survives both as a
- * region and as a color. Mutates `q`; deterministic (fixed seed and scan order).
+ * merge has no region to keep. This re-colors stroke-validated pixels (the
+ * `protect` mask is already stroke-validated) whose own color is far from
+ * their assigned centroid with their own (sub-quantized, autoK-merged) palette
+ * entries, so the feature survives both as a region and as a color. Mutates
+ * `q`; deterministic (fixed seed and scan order).
  */
 function rescueSalientColors(
   image: RasterImage,
@@ -1156,90 +1226,20 @@ function rescueSalientColors(
   const pOklab = paletteToOklab(q.paletteRgb)
   const mask = new Uint8Array(n)
   let cnt = 0
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x
-      if (protect.data[i] === 0) continue
-      const l = q.labels.data[i]
-      if (l < 0) continue
-      const o = i * 3
-      const p = l * 3
-      if (
-        deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], pOklab[p], pOklab[p + 1], pOklab[p + 2]) <=
-        RESCUE_DE
-      ) {
-        continue
-      }
-      // Flat along some direction (8-neighborhood): a stroke pixel has
-      // same-color neighbors along its axis — a 1px diagonal hairline's axis
-      // runs diagonally, so 4-neighbors alone would miss it.
-      let axisX = 0
-      let axisY = 0
-      let best = Infinity
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue
-          const nx = x + dx
-          const ny = y + dy
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
-          const j = ny * w + nx
-          const dd = deltaEOk(
-            oklab[o],
-            oklab[o + 1],
-            oklab[o + 2],
-            oklab[j * 3],
-            oklab[j * 3 + 1],
-            oklab[j * 3 + 2],
-          )
-          if (dd < best) {
-            best = dd
-            axisX = dx
-            axisY = dy
-          }
-        }
-      }
-      if (best > RESCUE_FLAT) continue
-      // The pair across the axis, walking over same-colored stroke pixels (a
-      // 2px stroke's immediate neighbor is still the stroke): a stroke's two
-      // sides are the same surrounding color; a rim's sides are the two
-      // distinct regions it separates. Off-image sides pass — can't tell.
-      const sidePos = (dx: number, dy: number): number => {
-        let px = x + dx
-        let py = y + dy
-        for (let step = 0; step < 3; step++) {
-          if (px < 0 || py < 0 || px >= w || py >= h) return -1
-          const j = (py * w + px) * 3
-          const dd = deltaEOk(
-            oklab[o],
-            oklab[o + 1],
-            oklab[o + 2],
-            oklab[j],
-            oklab[j + 1],
-            oklab[j + 2],
-          )
-          if (dd > RESCUE_FLAT) break
-          px += dx
-          py += dy
-        }
-        if (px < 0 || py < 0 || px >= w || py >= h) return -1
-        return (py * w + px) * 3
-      }
-      const s = sidePos(-axisY, axisX)
-      const t = sidePos(axisY, -axisX)
-      if (s >= 0 && t >= 0) {
-        const dSides = deltaEOk(
-          oklab[s],
-          oklab[s + 1],
-          oklab[s + 2],
-          oklab[t],
-          oklab[t + 1],
-          oklab[t + 2],
-        )
-        if (dSides > RESCUE_SIDES) continue
-      }
-      mask[i] = 1
-      cnt++
+  for (let i = 0; i < n; i++) {
+    if (protect.data[i] === 0) continue
+    const l = q.labels.data[i]
+    if (l < 0) continue
+    const o = i * 3
+    const p = l * 3
+    if (
+      deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], pOklab[p], pOklab[p + 1], pOklab[p + 2]) <=
+      RESCUE_DE
+    ) {
+      continue
     }
+    mask[i] = 1
+    cnt++
   }
   if (cnt < RESCUE_MIN_PIXELS) return
   const sub = quantize(image, {
