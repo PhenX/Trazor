@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 360" width="560" height="360">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20347e"/>
+      <stop offset="0.5" stop-color="#4f7fb4"/>
+      <stop offset="1" stop-color="#a9d6e0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- one big narrow-gamut sky ramp owns the whole palette -->
+  <rect x="0" y="0" width="560" height="360" fill="url(#sky)"/>
+  <!-- flat layered hill silhouettes (legitimately flat, so identical off and on) -->
+  <path d="M0 360 L0 300 C 120 276 210 292 300 286 C 392 280 470 292 560 282 L560 360 Z" fill="#20406a"/>
+  <path d="M0 360 L0 330 C 150 312 250 324 340 320 C 430 316 500 326 560 320 L560 360 Z" fill="#152a49"/>
+</svg>
