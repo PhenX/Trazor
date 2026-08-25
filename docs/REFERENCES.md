@@ -33,7 +33,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Gunilla Borgefors, “Distance transformations in digital images”, _Computer
   Vision, Graphics, and Image Processing_ 34, 1986.** 3-4 chamfer distance
   transform used to estimate stroke width for centerline output
-  (`packages/raster/src/thin.ts`).
+  (`packages/raster/src/thin.ts`) and for the distance side of the boundary
+  Hausdorff metric (`packages/raster/src/metrics.ts`).
+- **Zhou Wang, Alan C. Bovik, Hamid R. Sheikh & Eero P. Simoncelli, “Image
+  quality assessment: From error visibility to structural similarity”, _IEEE
+  Trans. Image Processing_ 13(4), 2004.** Windowed SSIM on luminance with an
+  11×11 Gaussian (σ = 1.5); the perceptual metric shared by the eval harnesses
+  and the tune fidelity blend (`packages/raster/src/metrics.ts`).
 
 ## Shape fitting (packages/svg)
 

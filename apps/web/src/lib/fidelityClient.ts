@@ -11,6 +11,7 @@ export interface ScoredDifference {
 interface RawResult {
   score: number
   diff?: RasterImage
+  ssim?: number
 }
 
 interface PendingJob {
@@ -87,20 +88,20 @@ export class FidelityClient {
 
   /**
    * Score a rendered raster against a stored reference (from {@link setReference}),
-   * returning just the mean-ΔE similarity — no heatmap allocation. For the
-   * settings search. The rendered buffer is transferred.
+   * returning the mean-ΔE similarity plus the structural SSIM — no heatmap
+   * allocation. For the settings search. The rendered buffer is transferred.
    */
   scoreAgainst(
     refId: number,
     width: number,
     height: number,
     rendered: Uint8ClampedArray<ArrayBuffer>,
-  ): Promise<number> {
+  ): Promise<{ score: number; ssim: number }> {
     const worker = this.ensureWorker()
     const id = this.nextId++
-    return new Promise<number>((resolve, reject) => {
+    return new Promise<{ score: number; ssim: number }>((resolve, reject) => {
       this.jobs.set(id, {
-        resolve: (r) => resolve(r.score),
+        resolve: (r) => resolve({ score: r.score, ssim: r.ssim ?? 0 }),
         reject,
       })
       const msg: FidelityInMessage = {
@@ -151,6 +152,7 @@ export class FidelityClient {
         diff: msg.diff
           ? { width: msg.width, height: msg.height, data: new Uint8ClampedArray(msg.diff) }
           : undefined,
+        ssim: msg.ssim,
       })
     } else {
       job.reject(new Error(msg.message))

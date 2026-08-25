@@ -239,7 +239,7 @@ async function refineAtFullResolution(
   return { best: best ?? draft.best, results, front }
 }
 
-/** Trace metrics + the fidelity ΔE (recovered from the score-only pass) for one result. */
+/** Trace metrics + the fidelity pass (mean ΔE + structural SSIM) for one result. */
 async function measure(
   result: VectorizeResult,
   fidelity: FidelityClient,
@@ -248,11 +248,13 @@ async function measure(
   scoreH: number,
 ): Promise<CandidateMetrics> {
   const rendered = await rasterizeSvg(result.svg, scoreW, scoreH)
-  const score = await fidelity.scoreAgainst(refId, scoreW, scoreH, rendered)
+  const { score, ssim } = await fidelity.scoreAgainst(refId, scoreW, scoreH, rendered)
   return {
     // scoreAgainst returns the clamped fidelity score (1 − 4·ΔE); invert it back
-    // to a mean ΔE, which the tune scoring maps through the same clamp.
+    // to a mean ΔE, which the tune scoring maps through the same clamp (blended
+    // with the structural SSIM).
     meanDeltaE: (1 - score) / 4,
+    ssim,
     nodeCount: result.stats.nodeCount,
     pathCount: result.stats.pathCount,
     byteLength: result.stats.byteLength,

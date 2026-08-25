@@ -33,3 +33,4 @@ export {
 export type { EnclosedComponent, MergeOptions } from './regions'
 export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'
+export { boundaryIoU, hausdorff, ssim } from './metrics'

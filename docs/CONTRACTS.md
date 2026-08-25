@@ -281,6 +281,24 @@ export function zhangSuenThin(mask: BinaryMask): BinaryMask // classic two-pass 
 export function chamferDistance(mask: BinaryMask): Float32Array // 3-4 chamfer / 3 ⇒ ~px to background, 0 outside
 // Median of 2 × chamferDistance over skeleton pixels; 1 if skeleton empty.
 export function estimateStrokeWidth(mask: BinaryMask, skeleton: BinaryMask): number
+
+// metrics.ts — deterministic render-vs-source metrics (no ML, no wall-clock);
+// shared by the eval harnesses (Node) and the app's fidelity worker.
+// Windowed SSIM (Wang et al. 2004) on BT.601 luminance, Gaussian 11×11 (σ=1.5),
+// C1/C2 at L=1; equal-sized RGBA rasters, alpha ignored (composite first).
+export function ssim(a: RasterImage, b: RasterImage): number // −1..1, 1 = identical
+// Symmetric Hausdorff distance (px) between the two images' L1-RGB-gradient
+// boundary masks (detectEdges, threshold 48 default). Infinity when exactly one
+// side has edges; 0 when neither does.
+export function hausdorff(a: RasterImage, b: RasterImage, edgeThreshold?: number): number
+// IoU of the two boundary masks dilated by `tolerance` px (default 2):
+// boundary agreement at a small tolerance (1 = coincide, 0 = disjoint).
+export function boundaryIoU(
+  a: RasterImage,
+  b: RasterImage,
+  edgeThreshold?: number,
+  tolerance?: number,
+): number
 ```
 
 Test expectations (non-exhaustive): quantize on a two-color image returns the
@@ -657,6 +675,7 @@ export const OBJECTIVE_IDS: readonly ObjectiveId[]
 export type TuneWeights = Record<ObjectiveId, number> // 0 = don't care; normalized internally
 export interface CandidateMetrics {
   meanDeltaE: number // mean Oklab ΔE of the rendered SVG vs the source
+  ssim?: number // windowed SSIM (Wang et al. 2004), −1..1; blends into fidelity when present
   nodeCount: number
   pathCount: number
   byteLength: number
@@ -664,7 +683,9 @@ export interface CandidateMetrics {
   warnings: readonly VectorizeWarning[]
   durationMs: number
 }
-export function fidelityUtility(meanDeltaE: number): number // clamp(1 − 4·ΔE, 0, 1)
+// 1 − 4·ΔE clamped. With ssim: 0.7·(1 − 4·ΔE) + 0.3·((ssim + 1) / 2), so
+// structure votes alongside color distance; absent ssim ⇒ pure ΔE.
+export function fidelityUtility(meanDeltaE: number, ssim?: number): number
 export function cleanlinessUtility(warnings: readonly VectorizeWarning[]): number
 export function isEmptyResult(metrics: CandidateMetrics): boolean
 export function utilitiesOf(m: CandidateMetrics, baseline: CandidateMetrics): Record<ObjectiveId, number>

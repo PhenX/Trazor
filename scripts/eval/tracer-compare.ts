@@ -169,6 +169,9 @@ interface TraceResult {
   edgeDE: number
   p95: number
   spurious: number
+  ssim: number
+  hausdorff: number
+  boundaryIoU: number
   nodes: number
   bytes: number
   ms: number
@@ -179,7 +182,7 @@ interface TraceResult {
 function fidelity(
   svg: string,
   srcWhite: RasterImage,
-): { dE: number; edgeDE: number; p95: number; spurious: number; nodes: number; bytes: number } {
+): TraceResult & { nodes: number; bytes: number } {
   const render = rasterizeSvg(svg, srcWhite.width)
   const ref = resampleNearest(srcWhite, render.width, render.height)
   const q = qualityStats(render, ref)
@@ -188,6 +191,9 @@ function fidelity(
     edgeDE: q.edge,
     p95: q.p95,
     spurious: q.spurious,
+    ssim: q.ssim,
+    hausdorff: q.hausdorff,
+    boundaryIoU: q.boundaryIoU,
     nodes: analyzeSvg(svg).nodeCount,
     bytes: Buffer.byteLength(svg, 'utf8'),
   }
@@ -261,6 +267,11 @@ function fmt(n: number, d = 4): string {
   return n.toFixed(d)
 }
 
+/** Hausdorff may be Infinity (no edges on one side) — show it, don't print 3e8. */
+function fmtHd(n: number): string {
+  return Number.isFinite(n) ? fmt(n, 2) : '∞'
+}
+
 /** Aggregate mean ΔE / nodes / bytes / ms over a set of rows for one tracer. */
 function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
   const got = rows.map(pick).filter((t): t is TraceResult => t !== null)
@@ -271,6 +282,9 @@ function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
     edgeDE: mean((t) => t.edgeDE),
     p95: mean((t) => t.p95),
     spurious: mean((t) => t.spurious),
+    ssim: mean((t) => t.ssim),
+    hausdorff: mean((t) => t.hausdorff),
+    boundaryIoU: mean((t) => t.boundaryIoU),
     nodes: mean((t) => t.nodes),
     bytes: mean((t) => t.bytes),
     ms: mean((t) => t.ms),
@@ -345,11 +359,14 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
       const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
         `  ${fam.padEnd(12)} ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}` +
-          `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
+          `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   SSIM T ${fmt(t.ssim, 3)} V ${fmt(v.ssim, 3)}` +
+          `   HD T ${fmtHd(t.hausdorff)} V ${fmtHd(v.hausdorff)}   bIoU T ${fmt(t.boundaryIoU, 3)} V ${fmt(v.boundaryIoU, 3)}` +
+          `   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
       )
     } else {
       console.log(
-        `  ${fam.padEnd(12)} ΔE  T ${fmt(t.dE)}   nodes ${Math.round(t.nodes)}   ms ${Math.round(t.ms)}`,
+        `  ${fam.padEnd(12)} ΔE  T ${fmt(t.dE)}   SSIM ${fmt(t.ssim, 3)}   HD ${fmtHd(t.hausdorff)}   bIoU ${fmt(t.boundaryIoU, 3)}` +
+          `   nodes ${Math.round(t.nodes)}   ms ${Math.round(t.ms)}`,
       )
     }
   }
@@ -494,6 +511,8 @@ async function main(): Promise<void> {
       console.log(
         `\n  overall  ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
           `spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   p95 T ${fmt(t.p95)} V ${fmt(v.p95)}   ` +
+          `SSIM T ${fmt(t.ssim, 3)} V ${fmt(v.ssim, 3)}   HD T ${fmtHd(t.hausdorff)} V ${fmtHd(v.hausdorff)}   ` +
+          `bIoU T ${fmt(t.boundaryIoU, 3)} V ${fmt(v.boundaryIoU, 3)}   ` +
           `score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
       )
     }
@@ -518,6 +537,9 @@ async function main(): Promise<void> {
         edgeDE: r.trazor.edgeDE,
         p95: r.trazor.p95,
         spurious: r.trazor.spurious,
+        ssim: r.trazor.ssim,
+        hausdorff: r.trazor.hausdorff,
+        boundaryIoU: r.trazor.boundaryIoU,
         nodes: r.trazor.nodes,
         bytes: r.trazor.bytes,
         ms: r.trazor.ms,
@@ -528,6 +550,9 @@ async function main(): Promise<void> {
             edgeDE: r.vtracer.edgeDE,
             p95: r.vtracer.p95,
             spurious: r.vtracer.spurious,
+            ssim: r.vtracer.ssim,
+            hausdorff: r.vtracer.hausdorff,
+            boundaryIoU: r.vtracer.boundaryIoU,
             nodes: r.vtracer.nodes,
             bytes: r.vtracer.bytes,
             ms: r.vtracer.ms,

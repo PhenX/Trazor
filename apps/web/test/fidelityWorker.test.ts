@@ -237,8 +237,8 @@ describe('FidelityClient', () => {
     expect(scoreMsg.heatmap).toBe(false)
     expect(fake.posted[1].transfer).toEqual([scoreMsg.rendered])
 
-    fake.reply({ type: 'result', id: scoreMsg.id, score: 0.82, width: w, height: h })
-    expect(await promise).toBe(0.82)
+    fake.reply({ type: 'result', id: scoreMsg.id, score: 0.82, width: w, height: h, ssim: 0.94 })
+    expect(await promise).toEqual({ score: 0.82, ssim: 0.94 })
   })
 
   it('rejects when the worker reports an error', async () => {

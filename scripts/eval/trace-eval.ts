@@ -41,7 +41,7 @@ import type {
   VectorizeSettings,
 } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
-import { meanDeltaE, rasterizeSvg, readRgba, score } from './lib'
+import { qualityStats, rasterizeSvg, readRgba, score } from './lib'
 
 type Task = 'edge' | 'cleanup' | 'field'
 
@@ -109,6 +109,9 @@ function readHint(path: string): GrayImage {
 
 interface Trace {
   dE: number
+  ssim: number
+  hausdorff: number
+  boundaryIoU: number
   nodes: number
 }
 
@@ -120,7 +123,14 @@ async function trace(
 ): Promise<Trace> {
   const result = await vectorize(image, settings, ctx)
   const raster = rasterizeSvg(result.svg, clean.width)
-  return { dE: meanDeltaE(raster, clean), nodes: result.stats.nodeCount }
+  const q = qualityStats(raster, clean)
+  return {
+    dE: q.mean,
+    ssim: q.ssim,
+    hausdorff: q.hausdorff,
+    boundaryIoU: q.boundaryIoU,
+    nodes: result.stats.nodeCount,
+  }
 }
 
 /**
@@ -144,15 +154,39 @@ interface Acc {
   n: number
   dEoff: number
   dEon: number
+  ssimOff: number
+  ssimOn: number
+  hdOff: number
+  hdOn: number
+  ioUOff: number
+  ioUOn: number
   nodesOff: number
   nodesOn: number
 }
-const emptyAcc = (): Acc => ({ n: 0, dEoff: 0, dEon: 0, nodesOff: 0, nodesOn: 0 })
+const emptyAcc = (): Acc => ({
+  n: 0,
+  dEoff: 0,
+  dEon: 0,
+  ssimOff: 0,
+  ssimOn: 0,
+  hdOff: 0,
+  hdOn: 0,
+  ioUOff: 0,
+  ioUOn: 0,
+  nodesOff: 0,
+  nodesOn: 0,
+})
 
 function add(acc: Acc, off: Trace, on: Trace): void {
   acc.n++
   acc.dEoff += off.dE
   acc.dEon += on.dE
+  acc.ssimOff += off.ssim
+  acc.ssimOn += on.ssim
+  acc.hdOff += off.hausdorff
+  acc.hdOn += on.hausdorff
+  acc.ioUOff += off.boundaryIoU
+  acc.ioUOn += on.boundaryIoU
   acc.nodesOff += off.nodes
   acc.nodesOn += on.nodes
 }
@@ -165,6 +199,12 @@ interface BucketReport {
   improvement: number
   scoreOff: number
   scoreOn: number
+  ssimOff: number
+  ssimOn: number
+  hdOff: number
+  hdOn: number
+  ioUOff: number
+  ioUOn: number
   nodesOff: number
   nodesOn: number
 }
@@ -181,9 +221,20 @@ function summarize(bucket: string, acc: Acc): BucketReport | null {
     improvement: deltaEOff - deltaEOn, // >0 = pre-pass helps
     scoreOff: score(deltaEOff),
     scoreOn: score(deltaEOn),
+    ssimOff: acc.ssimOff / acc.n,
+    ssimOn: acc.ssimOn / acc.n,
+    hdOff: acc.hdOff / acc.n,
+    hdOn: acc.hdOn / acc.n,
+    ioUOff: acc.ioUOff / acc.n,
+    ioUOn: acc.ioUOn / acc.n,
     nodesOff: Math.round(acc.nodesOff / acc.n),
     nodesOn: Math.round(acc.nodesOn / acc.n),
   }
+}
+
+/** Hausdorff averages may be Infinity (no edges on one side) — show it. */
+function fmtHd(n: number): string {
+  return Number.isFinite(n) ? n.toFixed(2) : '∞'
 }
 
 function fmtRow(r: BucketReport): string[] {
@@ -195,6 +246,12 @@ function fmtRow(r: BucketReport): string[] {
     (r.improvement >= 0 ? '+' : '') + r.improvement.toFixed(4),
     r.scoreOff.toFixed(3),
     r.scoreOn.toFixed(3),
+    r.ssimOff.toFixed(3),
+    r.ssimOn.toFixed(3),
+    fmtHd(r.hdOff),
+    fmtHd(r.hdOn),
+    r.ioUOff.toFixed(3),
+    r.ioUOn.toFixed(3),
     String(r.nodesOff),
     String(r.nodesOn),
   ]
@@ -210,6 +267,12 @@ function printReport(rows: BucketReport[], task: string, mode: string): void {
     'ΔΔE',
     'score off',
     'score on',
+    'SSIM off',
+    'SSIM on',
+    'HD off',
+    'HD on',
+    'bIoU off',
+    'bIoU on',
     'nodes off',
     'nodes on',
   ]

@@ -51,6 +51,15 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-25',
+    iteration: 2,
+    kind: 'improvement',
+    title: 'Auto-optimize now judges shape quality too',
+    items: [
+      "Auto-optimize's fidelity score now also weighs how well the traced shapes match the picture's structure, not just its colors — so it favors results that keep edges crisp over ones that get the palette right but blur the outlines.",
+    ],
+  },
+  {
+    date: '2026-08-25',
     iteration: 1,
     kind: 'fix',
     title: 'Cleaner stacked cut layers',

@@ -19,6 +19,13 @@ export type TuneWeights = Record<ObjectiveId, number>
 export interface CandidateMetrics {
   /** Mean Oklab ΔE between the rendered SVG and the source (lower is better). */
   meanDeltaE: number
+  /**
+   * Windowed SSIM (Wang et al. 2004) of the rendered SVG vs the source,
+   * −1..1, higher = structurally closer. Optional: when present it blends
+   * into the fidelity utility so perception (structure) votes alongside
+   * color distance; absent ⇒ the utility is pure ΔE.
+   */
+  ssim?: number
   nodeCount: number
   pathCount: number
   byteLength: number
@@ -36,9 +43,17 @@ const WARNING_PENALTY: Partial<Record<WarningCode, number>> = {
   'centerline-input': 0.1,
 }
 
-/** Fidelity: the app's own score, 1 − 4·ΔE clamped — an absolute anchor, not relative to the baseline. */
-export function fidelityUtility(meanDeltaE: number): number {
-  return clamp(1 - 4 * meanDeltaE, 0, 1)
+/**
+ * Fidelity: the app's own score, 1 − 4·ΔE clamped — an absolute anchor, not
+ * relative to the baseline. With a structural SSIM the two are blended
+ * (0.7 color, 0.3 structure), so a candidate that matches the palette but
+ * blurs edges scores below one that keeps the shapes crisp.
+ */
+export function fidelityUtility(meanDeltaE: number, ssim?: number): number {
+  const dE = clamp(1 - 4 * meanDeltaE, 0, 1)
+  if (ssim === undefined) return dE
+  const perceptual = clamp((ssim + 1) / 2, 0, 1) // −1..1 → 0..1
+  return 0.7 * dE + 0.3 * perceptual
 }
 
 /**
@@ -81,7 +96,7 @@ export function utilitiesOf(
   baseline: CandidateMetrics,
 ): Record<ObjectiveId, number> {
   return {
-    fidelity: fidelityUtility(metrics.meanDeltaE),
+    fidelity: fidelityUtility(metrics.meanDeltaE, metrics.ssim),
     simplicity: fewerIsBetter(metrics.nodeCount, baseline.nodeCount),
     fileSize: fewerIsBetter(metrics.byteLength, baseline.byteLength),
     colorEconomy: fewerIsBetter(metrics.colorCount, baseline.colorCount, 1),
