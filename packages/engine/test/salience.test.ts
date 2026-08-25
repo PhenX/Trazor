@@ -87,6 +87,44 @@ function maxX(svg: string): number {
   return max
 }
 
+/**
+ * Regions-path scene: a 3px light-gray stroke — wide enough to seed a region in
+ * marker-controlled watershed, small enough (96 px) to fall below the size
+ * merge, and distinct enough (dE ≈ 0.17) to survive the 0.1 threshold fold.
+ */
+function regionsScene(): RasterImage {
+  const w = 64
+  const h = 32
+  const img = createRaster(w, h)
+  fillRaster(img, 255, 255, 255)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if ((x - 16.5) ** 2 + (y - 16.5) ** 2 <= 10 * 10) setPixel(img, x, y, 127, 127, 127)
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 40; x < 43; x++) setPixel(img, x, y, 205, 205, 205)
+  }
+  return img
+}
+
+function regionsSettings(preserveSalient: boolean): VectorizeSettings {
+  return normalizeSettings({
+    mode: 'color',
+    maxDimension: 0,
+    segmentation: 'regions',
+    palette: null,
+    paletteSize: 8,
+    layering: 'stacked',
+    minRegionArea: 100,
+    preserveSalient,
+    curveMode: 'polygon',
+    curveOptimize: false,
+    optimizeSvg: false,
+    precision: 3,
+  })
+}
+
 describe('preserveSalient (classical salience protection)', () => {
   it('keeps a low-contrast 1px stroke on a strong edge, drops the sub-threshold speck', async () => {
     const img = colorScene()
@@ -118,5 +156,15 @@ describe('preserveSalient (classical salience protection)', () => {
     expect(maxX(off.svg)).toBeCloseTo(8, 5)
     // On: the hairline survives to its right edge x=21.
     expect(maxX(on.svg)).toBeCloseTo(21, 5)
+  })
+
+  it('protects thin features on the region-growing segmentation path too', async () => {
+    // The regions branch previously dropped small regions inside
+    // segmentRegions before any protect mask could run.
+    const img = regionsScene()
+    const off = await vectorize(img, regionsSettings(false))
+    const on = await vectorize(img, regionsSettings(true))
+    expect(analyzeSvg(off.svg).pathCount).toBe(2)
+    expect(analyzeSvg(on.svg).pathCount).toBe(3)
   })
 })

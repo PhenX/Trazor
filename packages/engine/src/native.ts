@@ -117,6 +117,18 @@ function salienceProtectMask(image: RasterImage): BinaryMask {
   return dilate(detectEdges(image, CLUSTER_EDGE_THRESHOLD), 1)
 }
 
+/** Palette RGB (count×3 bytes) → interleaved Oklab (count×3 floats). */
+function paletteOklabOf(rgb: Uint8Array): Float32Array {
+  const oklab = new Float32Array(rgb.length)
+  for (let i = 0; i < rgb.length; i += 3) {
+    const [L, a, b] = rgbToOklab(rgb[i] / 255, rgb[i + 1] / 255, rgb[i + 2] / 255)
+    oklab[i] = L
+    oklab[i + 1] = a
+    oklab[i + 2] = b
+  }
+  return oklab
+}
+
 /**
  * Learned coverage hint ([0,1] GrayImage, 0.5 = boundary) → a signed coverage
  * field ([-0.5, 0.5]) at the working resolution, quantized to 1/256 steps. The
@@ -513,13 +525,23 @@ async function colorPipeline(
     // anti-aliased edge is split between its two neighbors instead of inventing
     // a third rim color. `paletteSize` is a budget (soft cap), not an exact
     // count; autoPaletteSize lets the merge thresholds decide the count.
+    // When a protect mask or detail preservation applies, the size merge must
+    // happen HERE (protect-aware), so segmentRegions is told not to drop small
+    // regions itself — otherwise they would be gone before protection runs.
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
-      minRegionArea: settings.minRegionArea,
+      minRegionArea: protect || settings.preserveDetails ? 0 : settings.minRegionArea,
       maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
       mask: opaque,
     })
     await run.tick()
+    if (protect || settings.preserveDetails) {
+      mergeSmallRegions(seg.labels, settings.minRegionArea, {
+        oklab: paletteOklabOf(seg.paletteRgb),
+        keepContrast: DETAIL_CONTRAST,
+        protect: protect ?? undefined,
+      })
+    }
     run.stage('segment')
     await run.tick()
     labels = seg.labels
@@ -592,19 +614,8 @@ async function colorPipeline(
     // low-contrast hairline on a strong edge survives while an isolated speck
     // below the salience threshold still merges away.
     if (settings.preserveDetails || settings.preserveSalient) {
-      const oklab = new Float32Array(q.paletteHex.length * 3)
-      for (let i = 0; i < q.paletteHex.length; i++) {
-        const [L, a, b] = rgbToOklab(
-          q.paletteRgb[i * 3] / 255,
-          q.paletteRgb[i * 3 + 1] / 255,
-          q.paletteRgb[i * 3 + 2] / 255,
-        )
-        oklab[i * 3] = L
-        oklab[i * 3 + 1] = a
-        oklab[i * 3 + 2] = b
-      }
       mergeSmallRegions(q.labels, settings.minRegionArea, {
-        oklab,
+        oklab: paletteOklabOf(q.paletteRgb),
         keepContrast: DETAIL_CONTRAST,
         protect: protect ?? undefined,
       })
