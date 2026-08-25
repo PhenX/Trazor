@@ -111,8 +111,9 @@ export interface VectorizeSettings {
   /**
    * Detect smooth color ramps (color/grayscale modes) and paint them with a
    * single SVG gradient instead of posterized bands: adjacent quantized slices
-   * that form one linear Oklab ramp are merged into one region filled with a
-   * `<linearGradient>`. Geometry is unchanged (mesh-free), so cutout stays
+   * that form one Oklab ramp are merged into one region filled with a
+   * `<linearGradient>` (straight ramps) or `<radialGradient>` (concentric ramps
+   * — vignettes, spotlights). Geometry is unchanged (mesh-free), so cutout stays
    * seam-free. Ignored with a fixed `palette` and for single-ink (bw/centerline)
    * modes. Off is byte-identical to the classic flat-fill path.
    */

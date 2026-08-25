@@ -103,6 +103,13 @@ describe('fitRegionGradients', () => {
     expect(Array.from(labels.data)).toEqual(before)
   })
 
+  it('emits a linear (not radial) gradient for a linear ramp', () => {
+    const w = 60
+    const h = 20
+    const { gradients } = fitRegionGradients(rampImage(w, h), bandLabels(w, h, 6), { minArea: 32 })
+    expect(gradients.find((g) => g !== null)?.kind).toBe('linear')
+  })
+
   it('is deterministic', () => {
     const w = 60
     const h = 20
@@ -110,6 +117,76 @@ describe('fitRegionGradients', () => {
     const b = bandLabels(w, h, 6)
     const ra = fitRegionGradients(rampImage(w, h), a, { minArea: 32 })
     const rb = fitRegionGradients(rampImage(w, h), b, { minArea: 32 })
+    expect(JSON.stringify(rb.gradients)).toBe(JSON.stringify(ra.gradients))
+    expect(Array.from(b.data)).toEqual(Array.from(a.data))
+  })
+})
+
+/** A concentric grayscale ramp (dark center → light edge) about (cx, cy). */
+function radialImage(w: number, h: number, cx: number, cy: number, maxR: number) {
+  return rasterOf(w, h, (x, y) => {
+    const t = Math.min(1, Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / maxR)
+    const v = Math.round(40 + t * 190)
+    return [v, v, v, 255] as Rgba
+  })
+}
+
+/** Posterize the distance from (cx, cy) into `rings` concentric bands. */
+function ringLabels(w: number, h: number, cx: number, cy: number, maxR: number, rings: number) {
+  const data = new Int32Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const t = Math.min(0.999, Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / maxR)
+      data[y * w + x] = Math.min(rings - 1, Math.floor(t * rings))
+    }
+  }
+  return { width: w, height: h, data, count: rings }
+}
+
+describe('fitRegionGradients — radial', () => {
+  it('merges concentric bands into one radial gradient centered on the ramp', () => {
+    const w = 100
+    const h = 100
+    const cx = 50
+    const cy = 50
+    const maxR = 72 // covers the corners, so the ramp is radial across the whole frame
+    const image = radialImage(w, h, cx, cy, maxR)
+    const labels = ringLabels(w, h, cx, cy, maxR, 7)
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 64 })
+
+    const found = gradients.filter((g) => g !== null)
+    expect(found).toHaveLength(1)
+    const g = found[0]!
+    expect(g.kind).toBe('radial')
+    if (g.kind !== 'radial') return
+    // Center recovered near the true center; rings merged into one region.
+    expect(Math.hypot(g.cx - cx, g.cy - cy)).toBeLessThan(6)
+    expect(g.r).toBeGreaterThan(30)
+    expect(new Set(labels.data).size).toBe(1)
+    expect(g.stops).toHaveLength(2)
+  })
+
+  it('recovers an off-center radial center', () => {
+    const w = 120
+    const h = 90
+    const cx = 40
+    const cy = 34
+    const maxR = 100 // covers the far corner (~98px away)
+    const labels = ringLabels(w, h, cx, cy, maxR, 8)
+    const { gradients } = fitRegionGradients(radialImage(w, h, cx, cy, maxR), labels, {
+      minArea: 64,
+    })
+    const g = gradients.find((x) => x !== null)
+    expect(g?.kind).toBe('radial')
+    if (g?.kind !== 'radial') return
+    expect(Math.hypot(g.cx - cx, g.cy - cy)).toBeLessThan(8)
+  })
+
+  it('is deterministic', () => {
+    const a = ringLabels(100, 100, 50, 50, 52, 7)
+    const b = ringLabels(100, 100, 50, 50, 52, 7)
+    const ra = fitRegionGradients(radialImage(100, 100, 50, 50, 52), a, { minArea: 64 })
+    const rb = fitRegionGradients(radialImage(100, 100, 50, 50, 52), b, { minArea: 64 })
     expect(JSON.stringify(rb.gradients)).toBe(JSON.stringify(ra.gradients))
     expect(Array.from(b.data)).toEqual(Array.from(a.data))
   })

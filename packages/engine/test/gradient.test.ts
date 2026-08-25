@@ -16,6 +16,21 @@ function rampImage(w = 96, h = 48): RasterImage {
   return img
 }
 
+/** A concentric grayscale ramp (dark center → light edge). */
+function radialImage(w = 96, h = 96): RasterImage {
+  const img = createRaster(w, h)
+  const cx = w / 2
+  const cy = h / 2
+  const maxR = Math.hypot(cx, cy)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = Math.round(30 + (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / maxR) * 200)
+      setPixel(img, x, y, v, v, v)
+    }
+  }
+  return img
+}
+
 /** A hard-edged red square on white — two flat colors, no ramp. */
 function flatImage(w = 60, h = 60): RasterImage {
   const img = createRaster(w, h)
@@ -47,6 +62,15 @@ describe('gradient detection — engine', () => {
     expect(on.palette.length).toBeGreaterThan(0)
     // Output is still valid, analyzable SVG.
     expect(analyzeSvg(on.svg).width).toBe(img.width)
+  })
+
+  it('paints a concentric ramp with a radial gradient', async () => {
+    const on = await vectorize(
+      radialImage(),
+      normalizeSettings({ paletteSize: 16, gradients: true }),
+    )
+    expect(on.svg).toContain('<radialGradient')
+    expect(on.svg).toContain('gradientUnits="userSpaceOnUse"')
   })
 
   it('is ignored in pixel mode (exact lattice)', async () => {

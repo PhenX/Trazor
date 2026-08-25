@@ -190,11 +190,12 @@ export interface SegmentResult {
 }
 export function segmentRegions(image: RasterImage, opts?: SegmentOptions): SegmentResult
 
-// gradient.ts — linear color-ramp detection (color/grayscale). Adjacent
-// quantized bands that lie on one Oklab ramp are merged into a single region
-// (mutating `labels`) and returned as a per-label gradient paint. Geometry is
-// unchanged (mesh-free) so the tracer and cutout partition are untouched; a run
-// with no detectable ramp returns all-null and leaves `labels` unchanged.
+// gradient.ts — linear + radial color-ramp detection (color/grayscale).
+// Adjacent quantized bands that lie on one Oklab ramp are merged into a single
+// region (mutating `labels`) and returned as a per-label gradient paint (linear
+// for straight ramps, radial for concentric ones). Geometry is unchanged
+// (mesh-free) so the tracer and cutout partition are untouched; a run with no
+// detectable ramp returns all-null and leaves `labels` unchanged.
 export interface GradientOptions {
   minArea?: number // min pixel area of a merged ramp to become a gradient (default 0)
   oklab?: Float32Array // interleaved Oklab for `image` (w*h*3); computed if absent

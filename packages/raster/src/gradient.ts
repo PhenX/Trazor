@@ -1,18 +1,26 @@
 /**
  * Gradient detection: find posterized color ramps and describe them as single
- * linear gradients. After quantization has split a smooth ramp into several
- * adjacent flat bands, this merges the bands that lie on one linear Oklab ramp
- * into a single region and returns a `<linearGradient>` paint for it. Geometry
- * is untouched (mesh-free) — only the fill changes — so the tracer, the cutout
- * seam-free partition and the stacked layer build are unaffected.
+ * SVG gradients. After quantization has split a smooth ramp into several adjacent
+ * flat bands, this merges the bands that form one ramp — linear or radial — into
+ * a single region and returns a gradient paint for it. Geometry is untouched
+ * (mesh-free) — only the fill changes — so the tracer, the cutout seam-free
+ * partition and the stacked layer build are unaffected.
  *
- * The fit is closed-form and deterministic: per-label moment sums make every
- * candidate union's linear fit O(1), the ramp direction is the dominant
- * least-squares color gradient in position space (covariance-normalized, so it
- * is aspect-correct), and the stops are the fitted colors at the region's
- * projected extremes. Reference: Du et al., "Image
- * Vectorization and Editing via Linear Gradient Layer Decomposition", ACM TOG
- * (SIGGRAPH) 42(4), 2023 (the linear case).
+ * The fits are closed-form and deterministic (per-label moment sums make every
+ * candidate union's fit O(1)):
+ * - linear: the ramp direction is the dominant least-squares color gradient in
+ *   position space (covariance-normalized, so it is aspect-correct), stops are
+ *   the fitted colors at the region's projected extremes;
+ * - radial: modeling color as linear in r² makes it a quadratic in position, so
+ *   the concentric center falls out of the per-channel quadratic coefficients
+ *   (c = −½·ΣA·B / ΣA²); a pixel pass then fits color against the true radius.
+ *
+ * Growth runs in two phases sharing one claim map: linear first, radial on the
+ * leftovers — so a region a linear ramp already explains is never re-read as
+ * radial, and the linear output is independent of the radial detector.
+ *
+ * Reference: Du et al., "Image Vectorization and Editing via Linear Gradient
+ * Layer Decomposition", ACM TOG (SIGGRAPH) 42(4), 2023.
  */
 
 import { deltaEOk, oklabToHex } from '@trazor/core'
@@ -37,17 +45,30 @@ export interface GradientResult {
 
 /** Mean per-pixel Oklab distance to the ramp above which a fit is rejected. */
 const MAX_RESIDUAL = 0.03
-/** Fraction of position→color energy on the principal axis required (1-D ramp). */
+/** Fraction of position→color energy on the principal axis required (1-D linear ramp). */
 const MIN_DIRECTIONALITY = 0.88
 /** Total Oklab distance across the ramp below which the region is treated as flat. */
 const MIN_COLOR_SPAN = 0.06
 /** A ramp must merge at least this many quantized bands. */
 const MIN_MEMBERS = 2
+/** A radial center must sit within this many position std-devs of the region centroid. */
+const CENTER_SANITY = 2.5
+/**
+ * Fraction of a region's color variance the radial r²-model may leave
+ * unexplained and still be grouped as one radial. This proxy only groups rings
+ * and locates the center; a true radial ramp is linear in r (not r²), so the r²
+ * model misfits by a roughly constant *fraction* (≈4% on a clean disc)
+ * independent of the ramp's steepness — hence a fraction, not an absolute
+ * residual. The accurate color-vs-true-radius fit in {@link buildRadial} (gated
+ * at MAX_RESIDUAL) is what actually decides whether a radial ships.
+ */
+const RADIAL_MAX_UNEXPLAINED = 0.15
 
 // Moment layout per label (Σ over the label's pixels; positions are pixel centers).
-// 0:n 1:Σx 2:Σy 3:Σxx 4:Σxy 5:Σyy 6:ΣL 7:Σa 8:Σb 9:ΣLL 10:Σaa 11:Σbb
+//  0:n 1:Σx 2:Σy 3:Σxx 4:Σxy 5:Σyy 6:ΣL 7:Σa 8:Σb 9:ΣLL 10:Σaa 11:Σbb
 // 12:ΣLx 13:ΣLy 14:Σax 15:Σay 16:Σbx 17:Σby
-const NM = 18
+// 18:Σx³ 19:Σx²y 20:Σxy² 21:Σy³ 22:Σx⁴ 23:Σx²y² 24:Σy⁴   25:ΣLu 26:Σau 27:Σbu  (u = x²+y²)
+const NM = 28
 
 /** A linear ramp fitted from a moment vector: direction, per-channel line, error. */
 interface RampFit {
@@ -59,6 +80,14 @@ interface RampFit {
   residual: number
   /** λ1 / (λ1 + λ2) of the color-gradient scatter; 1 = the ramp is perfectly 1-D. */
   directionality: number
+}
+
+/** A radial ramp's recovered center and the r²-model's unexplained-variance fraction. */
+interface RadialFit {
+  cx: number
+  cy: number
+  /** Fraction of the region's color variance the r² model leaves unexplained. */
+  misfit: number
 }
 
 /**
@@ -137,7 +166,6 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
   const g0: [number, number, number] = [0, 0, 0]
   const g1: [number, number, number] = [0, 0, 0]
   let rss = 0
-  // Channel c: Σc at m[off+6+c], Σc·x at m[off+12+2c], Σc·y at m[off+13+2c], Σc² at m[off+9+c].
   for (let c = 0; c < 3; c++) {
     const Sc = m[off + 6 + c]
     const Scs = dx * m[off + 12 + 2 * c] + dy * m[off + 13 + 2 * c]
@@ -150,16 +178,216 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
   return { dx, dy, g0, g1, residual: Math.sqrt(rss * inv), directionality }
 }
 
-/** True when a fit is a usable ramp (accurate enough and directional enough). */
+/** True when a fit is a usable linear ramp (accurate enough and directional enough). */
 function isRamp(fit: RampFit | null): fit is RampFit {
   return fit !== null && fit.residual <= MAX_RESIDUAL && fit.directionality >= MIN_DIRECTIONALITY
 }
 
 /**
- * Detect linear color ramps in a cleaned label map. Adjacent quantized bands
- * that lie on one Oklab ramp are relabeled into a single representative label
- * (mutating `labels`), and the returned `gradients[rep]` holds that region's
- * `<linearGradient>`. Bands that do not form a ramp are left untouched, so a run
+ * Solve a 4×4 system `A·x = b` for three right-hand sides at once (Gauss-Jordan
+ * with partial pivoting). `a` is row-major length 16; each `rhs[c]` is length 4.
+ * Returns the three solution vectors, or null when the matrix is near-singular.
+ */
+function solve4(a: readonly number[], rhs: readonly number[][]): number[][] | null {
+  const A = a.slice()
+  const B = [rhs[0].slice(), rhs[1].slice(), rhs[2].slice()]
+  for (let col = 0; col < 4; col++) {
+    let piv = col
+    let max = Math.abs(A[col * 4 + col])
+    for (let r = col + 1; r < 4; r++) {
+      const v = Math.abs(A[r * 4 + col])
+      if (v > max) {
+        max = v
+        piv = r
+      }
+    }
+    if (max < 1e-12) return null
+    if (piv !== col) {
+      for (let k = 0; k < 4; k++) {
+        const t = A[col * 4 + k]
+        A[col * 4 + k] = A[piv * 4 + k]
+        A[piv * 4 + k] = t
+      }
+      for (let c = 0; c < 3; c++) {
+        const t = B[c][col]
+        B[c][col] = B[c][piv]
+        B[c][piv] = t
+      }
+    }
+    const d = A[col * 4 + col]
+    for (let k = 0; k < 4; k++) A[col * 4 + k] /= d
+    for (let c = 0; c < 3; c++) B[c][col] /= d
+    for (let r = 0; r < 4; r++) {
+      if (r === col) continue
+      const f = A[r * 4 + col]
+      if (f === 0) continue
+      for (let k = 0; k < 4; k++) A[r * 4 + k] -= f * A[col * 4 + k]
+      for (let c = 0; c < 3; c++) B[c][r] -= f * B[c][col]
+    }
+  }
+  return B
+}
+
+/**
+ * Fit an isotropic quadratic `color ≈ A·(x²+y²) + Bx·x + By·y + C` per channel
+ * over the moment vector at `off`. Modeling color as linear in r² makes it a
+ * quadratic in position, so the concentric center is `c = −½·ΣA·B / ΣA²` (a
+ * least-squares combination over channels). Returns the center and the model's
+ * moment residual, or null when there is no curvature or the center is not near
+ * the region (i.e. the ramp is not actually radial).
+ */
+function fitRadial(m: Float64Array, off: number): RadialFit | null {
+  const n = m[off]
+  if (n < 6) return null
+  const inv = 1 / n
+  const Sx = m[off + 1]
+  const Sy = m[off + 2]
+  const Sxx = m[off + 3]
+  const Sxy = m[off + 4]
+  const Syy = m[off + 5]
+  const Su = Sxx + Syy
+  const Suu = m[off + 22] + 2 * m[off + 23] + m[off + 24]
+  const Sux = m[off + 18] + m[off + 20]
+  const Suy = m[off + 19] + m[off + 21]
+  // Design matrix over basis {u, x, y, 1}, u = x²+y² (row-major, symmetric).
+  const M4 = [Suu, Sux, Suy, Su, Sux, Sxx, Sxy, Sx, Suy, Sxy, Syy, Sy, Su, Sx, Sy, n]
+  const rhs = [
+    [m[off + 25], m[off + 12], m[off + 13], m[off + 6]],
+    [m[off + 26], m[off + 14], m[off + 15], m[off + 7]],
+    [m[off + 27], m[off + 16], m[off + 17], m[off + 8]],
+  ]
+  const sol = solve4(M4, rhs)
+  if (!sol) return null
+
+  let sumA2 = 0
+  let sABx = 0
+  let sABy = 0
+  let rss = 0
+  let totalVar = 0
+  for (let c = 0; c < 3; c++) {
+    const [A, Bx, By, C] = sol[c]
+    sumA2 += A * A
+    sABx += A * Bx
+    sABy += A * By
+    const r = rhs[c]
+    const Sc = m[off + 6 + c]
+    const Scc = m[off + 9 + c]
+    rss += Math.max(0, Scc - (A * r[0] + Bx * r[1] + By * r[2] + C * r[3]))
+    totalVar += Scc - Sc * Sc * inv
+  }
+  if (sumA2 < 1e-12) return null // no curvature ⇒ planar, not radial
+  if (totalVar < 1e-9) return null // flat ⇒ not a ramp
+
+  const cx = -sABx / (2 * sumA2)
+  const cy = -sABy / (2 * sumA2)
+  const mx = Sx * inv
+  const my = Sy * inv
+  const stdX = Math.sqrt(Math.max(Sxx * inv - mx * mx, 1e-9))
+  const stdY = Math.sqrt(Math.max(Syy * inv - my * my, 1e-9))
+  if (Math.abs(cx - mx) > CENTER_SANITY * stdX + 1) return null
+  if (Math.abs(cy - my) > CENTER_SANITY * stdY + 1) return null
+  return { cx, cy, misfit: rss / totalVar }
+}
+
+/** True when a radial r²-model fit is close enough to group rings and trust its center. */
+function isRadial(fit: RadialFit | null): fit is RadialFit {
+  return fit !== null && fit.misfit <= RADIAL_MAX_UNEXPLAINED
+}
+
+interface Super {
+  members: number[]
+  rep: number
+}
+
+/**
+ * Greedily grow ramps: seed by descending area, then repeatedly add the adjacent
+ * unclaimed band that keeps the union the tightest ramp under `accept` (which
+ * returns a residual, or Infinity to reject). Members of an accepted super
+ * (≥ MIN_MEMBERS, ≥ minArea) are marked in the shared `claimed` map; a failed
+ * attempt claims nothing, leaving its labels for the next seed or phase.
+ */
+function growRamps(
+  m: Float64Array,
+  adj: readonly number[][],
+  seeds: readonly number[],
+  claimed: Int32Array,
+  minArea: number,
+  accept: (trial: Float64Array) => number,
+): Super[] {
+  const supers: Super[] = []
+  const acc = new Float64Array(NM)
+  const trial = new Float64Array(NM)
+  for (const seed of seeds) {
+    if (claimed[seed] >= 0) continue
+    for (let j = 0; j < NM; j++) acc[j] = m[seed * NM + j]
+    const members = [seed]
+    const local = new Set<number>([seed])
+    for (;;) {
+      let best = -1
+      let bestResidual = Infinity
+      for (const mem of members) {
+        for (const nb of adj[mem]) {
+          if (claimed[nb] >= 0 || local.has(nb)) continue
+          for (let j = 0; j < NM; j++) trial[j] = acc[j] + m[nb * NM + j]
+          const res = accept(trial)
+          if (res < bestResidual) {
+            bestResidual = res
+            best = nb
+          }
+        }
+      }
+      if (best < 0) break
+      for (let j = 0; j < NM; j++) acc[j] += m[best * NM + j]
+      members.push(best)
+      local.add(best)
+    }
+    if (members.length < MIN_MEMBERS || acc[0] < minArea) continue
+    let rep = members[0]
+    for (const mem of members) if (mem < rep) rep = mem
+    for (const mem of members) claimed[mem] = 1
+    supers.push({ members: members.slice(), rep })
+  }
+  return supers
+}
+
+/** Sum the members' moment rows into `out` (length NM). */
+function sumMembers(m: Float64Array, members: readonly number[], out: Float64Array): void {
+  out.fill(0)
+  for (const mem of members) {
+    const o = mem * NM
+    for (let j = 0; j < NM; j++) out[j] += m[o + j]
+  }
+}
+
+// Per-representative accumulators gathered in the accept pixel pass.
+interface LinearMeta {
+  kind: 'linear'
+  fit: RampFit
+  /** Region centroid, so the gradient endpoints sit on the ramp axis through it. */
+  cx: number
+  cy: number
+  smin: number
+  smax: number
+}
+interface RadialMeta {
+  kind: 'radial'
+  cx: number
+  cy: number
+  rmax: number
+  n: number
+  Sr: number
+  Srr: number
+  Sc: [number, number, number]
+  Scr: [number, number, number]
+  Scc: [number, number, number]
+}
+type Meta = LinearMeta | RadialMeta
+
+/**
+ * Detect linear and radial color ramps in a cleaned label map. Adjacent
+ * quantized bands that form one ramp are relabeled into a single representative
+ * label (mutating `labels`), and the returned `gradients[rep]` holds that
+ * region's gradient. Bands that do not form a ramp are left untouched, so a run
  * with no detectable ramp returns all-`null` and leaves `labels` unchanged.
  */
 export function fitRegionGradients(
@@ -186,6 +414,9 @@ export function fitRegionGradients(
       counts[l]++
       const cx = x + 0.5
       const cy = y + 0.5
+      const x2 = cx * cx
+      const y2 = cy * cy
+      const u = x2 + y2
       const base = p * 3
       const L = ok[base]
       const A = ok[base + 1]
@@ -194,9 +425,9 @@ export function fitRegionGradients(
       m[o] += 1
       m[o + 1] += cx
       m[o + 2] += cy
-      m[o + 3] += cx * cx
+      m[o + 3] += x2
       m[o + 4] += cx * cy
-      m[o + 5] += cy * cy
+      m[o + 5] += y2
       m[o + 6] += L
       m[o + 7] += A
       m[o + 8] += B
@@ -209,6 +440,16 @@ export function fitRegionGradients(
       m[o + 15] += A * cy
       m[o + 16] += B * cx
       m[o + 17] += B * cy
+      m[o + 18] += x2 * cx
+      m[o + 19] += x2 * cy
+      m[o + 20] += cx * y2
+      m[o + 21] += y2 * cy
+      m[o + 22] += x2 * x2
+      m[o + 23] += x2 * y2
+      m[o + 24] += y2 * y2
+      m[o + 25] += L * u
+      m[o + 26] += A * u
+      m[o + 27] += B * u
     }
   }
 
@@ -237,127 +478,106 @@ export function fitRegionGradients(
   }
   const adj: number[][] = adjSets.map((s) => [...s].toSorted((a, b) => a - b))
 
-  // ---- greedy ramp growth: largest band first, add the adjacent band that
-  // keeps the union the tightest ramp (moment-only O(1) trials) ----
   const seeds: number[] = []
   for (let l = 0; l < count; l++) if (counts[l] > 0) seeds.push(l)
   seeds.sort((a, b) => counts[b] - counts[a] || a - b)
 
-  const taken = new Int32Array(count).fill(-1)
-  const supers: { members: number[]; rep: number; fit: RampFit }[] = []
-  const acc = new Float64Array(NM)
-  const trial = new Float64Array(NM)
+  // ---- two-phase growth: linear first, radial on the leftovers ----
+  const claimed = new Int32Array(count).fill(-1)
+  const linearSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
+    const f = fitRamp(t, 0)
+    return isRamp(f) ? f.residual : Infinity
+  })
+  const radialSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
+    const f = fitRadial(t, 0)
+    return isRadial(f) ? f.misfit : Infinity
+  })
+  if (linearSupers.length === 0 && radialSupers.length === 0) return { gradients }
 
-  for (const seed of seeds) {
-    if (taken[seed] >= 0) continue
-    for (let j = 0; j < NM; j++) acc[j] = m[seed * NM + j]
-    const members = [seed]
-    taken[seed] = 1
-
-    for (;;) {
-      let best = -1
-      let bestResidual = Infinity
-      const seen = new Set<number>()
-      for (const mem of members) {
-        for (const nb of adj[mem]) {
-          if (taken[nb] >= 0 || seen.has(nb)) continue
-          seen.add(nb)
-          for (let j = 0; j < NM; j++) trial[j] = acc[j] + m[nb * NM + j]
-          const f = fitRamp(trial, 0)
-          if (isRamp(f) && f.residual < bestResidual) {
-            bestResidual = f.residual
-            best = nb
-          }
-        }
-      }
-      if (best < 0) break
-      for (let j = 0; j < NM; j++) acc[j] += m[best * NM + j]
-      members.push(best)
-      taken[best] = 1
-    }
-
-    if (members.length < MIN_MEMBERS) continue
-    if (acc[0] < minArea) continue
-    const fit = fitRamp(acc, 0)
-    if (!isRamp(fit)) continue
-    let rep = members[0]
-    for (const mem of members) if (mem < rep) rep = mem
-    supers.push({ members: members.slice(), rep, fit })
-  }
-
-  if (supers.length === 0) return { gradients }
-
-  // ---- projected extent per candidate ramp (one pass, no relabel yet) ----
+  // ---- set up per-rep accumulators, decide model per super ----
   const repOf = new Int32Array(count).fill(-1)
-  const meta = new Map<number, { fit: RampFit; smin: number; smax: number }>()
-  for (const s of supers) {
+  const meta = new Map<number, Meta>()
+  const sacc = new Float64Array(NM)
+  for (const s of linearSupers) {
+    sumMembers(m, s.members, sacc)
+    const fit = fitRamp(sacc, 0)
+    if (!isRamp(fit)) continue
     for (const mem of s.members) repOf[mem] = s.rep
-    meta.set(s.rep, { fit: s.fit, smin: Infinity, smax: -Infinity })
+    meta.set(s.rep, {
+      kind: 'linear',
+      fit,
+      cx: sacc[1] / sacc[0],
+      cy: sacc[2] / sacc[0],
+      smin: Infinity,
+      smax: -Infinity,
+    })
   }
+  for (const s of radialSupers) {
+    sumMembers(m, s.members, sacc)
+    const fit = fitRadial(sacc, 0)
+    if (!isRadial(fit)) continue
+    for (const mem of s.members) repOf[mem] = s.rep
+    meta.set(s.rep, {
+      kind: 'radial',
+      cx: fit.cx,
+      cy: fit.cy,
+      rmax: 0,
+      n: 0,
+      Sr: 0,
+      Srr: 0,
+      Sc: [0, 0, 0],
+      Scr: [0, 0, 0],
+      Scc: [0, 0, 0],
+    })
+  }
+  if (meta.size === 0) return { gradients }
+
+  // ---- one pixel pass: linear extents, radial radius/color-vs-r moments ----
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const rep = repOf[data[y * width + x]]
+      const p = y * width + x
+      const rep = repOf[data[p]]
       if (rep < 0) continue
-      const info = meta.get(rep) as { fit: RampFit; smin: number; smax: number }
-      const s = info.fit.dx * (x + 0.5) + info.fit.dy * (y + 0.5)
-      if (s < info.smin) info.smin = s
-      if (s > info.smax) info.smax = s
+      const info = meta.get(rep) as Meta
+      const px = x + 0.5
+      const py = y + 0.5
+      if (info.kind === 'linear') {
+        const s = info.fit.dx * px + info.fit.dy * py
+        if (s < info.smin) info.smin = s
+        if (s > info.smax) info.smax = s
+      } else {
+        const r = Math.hypot(px - info.cx, py - info.cy)
+        if (r > info.rmax) info.rmax = r
+        const base = p * 3
+        info.n += 1
+        info.Sr += r
+        info.Srr += r * r
+        for (let c = 0; c < 3; c++) {
+          const v = ok[base + c]
+          info.Sc[c] += v
+          info.Scr[c] += v * r
+          info.Scc[c] += v * v
+        }
+      }
     }
   }
 
-  // ---- accept ramps with a real color span; build paints; relabel accepted ----
+  // ---- build paints, gate on color span (and radial fit accuracy); relabel ----
   const finalRep = new Int32Array(count).fill(-1)
-  for (const s of supers) {
-    const info = meta.get(s.rep) as { fit: RampFit; smin: number; smax: number }
-    const span = info.smax - info.smin
-    if (!(span > 1e-6)) continue
-    const { g0, g1, dx, dy } = info.fit
-    const cLo: [number, number, number] = [
-      g0[0] + g1[0] * info.smin,
-      g0[1] + g1[1] * info.smin,
-      g0[2] + g1[2] * info.smin,
-    ]
-    const cHi: [number, number, number] = [
-      g0[0] + g1[0] * info.smax,
-      g0[1] + g1[1] * info.smax,
-      g0[2] + g1[2] * info.smax,
-    ]
-    if (deltaEOk(cLo[0], cLo[1], cLo[2], cHi[0], cHi[1], cHi[2]) < MIN_COLOR_SPAN) continue
-
-    // Centroid of the ramp, from the members' moments (`acc` was reused by later
-    // seeds and no longer holds this super's sums).
-    let sn = 0
-    let sx = 0
-    let sy = 0
-    for (const mem of s.members) {
-      sn += m[mem * NM]
-      sx += m[mem * NM + 1]
-      sy += m[mem * NM + 2]
-    }
-    const cx = sx / sn
-    const cy = sy / sn
-    const sc = dx * cx + dy * cy
-    const x1 = cx + (info.smin - sc) * dx
-    const y1 = cy + (info.smin - sc) * dy
-    const x2 = cx + (info.smax - sc) * dx
-    const y2 = cy + (info.smax - sc) * dy
-    gradients[s.rep] = {
-      kind: 'linear',
-      x1,
-      y1,
-      x2,
-      y2,
-      stops: [
-        { offset: 0, color: oklabToHex(cLo[0], cLo[1], cLo[2]) },
-        { offset: 1, color: oklabToHex(cHi[0], cHi[1], cHi[2]) },
-      ],
-    }
+  for (const [rep, info] of meta) {
+    const paint = info.kind === 'linear' ? buildLinear(info) : buildRadial(info)
+    if (!paint) continue
+    gradients[rep] = paint
+    finalRep[rep] = rep
+  }
+  // Members share their rep's finalRep flag.
+  for (const s of [...linearSupers, ...radialSupers]) {
+    if (finalRep[s.rep] < 0) continue
     for (const mem of s.members) finalRep[mem] = s.rep
   }
 
-  // Relabel merged bands to their representative so the tracer sees one region.
   let any = false
-  for (let l = 0; l < count; l++) if (finalRep[l] >= 0) any = true
+  for (let l = 0; l < count; l++) if (finalRep[l] >= 0 && l !== finalRep[l]) any = true
   if (any) {
     for (let p = 0; p < data.length; p++) {
       const l = data[p]
@@ -366,4 +586,67 @@ export function fitRegionGradients(
   }
 
   return { gradients }
+}
+
+/** Build a linear gradient paint from a fitted ramp and its projected extent. */
+function buildLinear(info: LinearMeta): GradientPaint | null {
+  const span = info.smax - info.smin
+  if (!(span > 1e-6)) return null
+  const { g0, g1, dx, dy } = info.fit
+  const cLo: [number, number, number] = [
+    g0[0] + g1[0] * info.smin,
+    g0[1] + g1[1] * info.smin,
+    g0[2] + g1[2] * info.smin,
+  ]
+  const cHi: [number, number, number] = [
+    g0[0] + g1[0] * info.smax,
+    g0[1] + g1[1] * info.smax,
+    g0[2] + g1[2] * info.smax,
+  ]
+  if (deltaEOk(cLo[0], cLo[1], cLo[2], cHi[0], cHi[1], cHi[2]) < MIN_COLOR_SPAN) return null
+
+  // Endpoints sit on the ramp axis through the region centroid.
+  const sc = dx * info.cx + dy * info.cy
+  return {
+    kind: 'linear',
+    x1: info.cx + (info.smin - sc) * dx,
+    y1: info.cy + (info.smin - sc) * dy,
+    x2: info.cx + (info.smax - sc) * dx,
+    y2: info.cy + (info.smax - sc) * dy,
+    stops: [
+      { offset: 0, color: oklabToHex(cLo[0], cLo[1], cLo[2]) },
+      { offset: 1, color: oklabToHex(cHi[0], cHi[1], cHi[2]) },
+    ],
+  }
+}
+
+/** Build a radial gradient paint from the color-vs-radius fit gathered per pixel. */
+function buildRadial(info: RadialMeta): GradientPaint | null {
+  const n = info.n
+  if (n < 3 || !(info.rmax > 1e-6)) return null
+  const det = n * info.Srr - info.Sr * info.Sr
+  if (Math.abs(det) < 1e-9) return null
+  const idet = 1 / det
+  const c0: [number, number, number] = [0, 0, 0]
+  const c1: [number, number, number] = [0, 0, 0]
+  let rss = 0
+  for (let c = 0; c < 3; c++) {
+    const p = (info.Srr * info.Sc[c] - info.Sr * info.Scr[c]) * idet
+    const q = (n * info.Scr[c] - info.Sr * info.Sc[c]) * idet
+    c0[c] = p
+    c1[c] = p + q * info.rmax
+    rss += Math.max(0, info.Scc[c] - (p * info.Sc[c] + q * info.Scr[c]))
+  }
+  if (Math.sqrt(rss / n) > MAX_RESIDUAL) return null
+  if (deltaEOk(c0[0], c0[1], c0[2], c1[0], c1[1], c1[2]) < MIN_COLOR_SPAN) return null
+  return {
+    kind: 'radial',
+    cx: info.cx,
+    cy: info.cy,
+    r: info.rmax,
+    stops: [
+      { offset: 0, color: oklabToHex(c0[0], c0[1], c0[2]) },
+      { offset: 1, color: oklabToHex(c1[0], c1[1], c1[2]) },
+    ],
+  }
 }

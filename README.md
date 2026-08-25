@@ -50,10 +50,11 @@ On top of that, three things most tracers don't do:
   data-derived suggestions_ — Exact, Balanced, Bold, Rich, Vivid, Muted,
   Duotone, Mono — or edit any palette color in place (spot colors, brand
   colors).
-- **Gradient fills**: smooth color ramps (skies, soft shading) are detected and
-  painted with a single SVG `<linearGradient>` instead of posterized bands —
-  mesh-free (geometry unchanged, cutout stays seam-free), fewer shapes, no
-  banding. On by default in the Illustration and Photo profiles.
+- **Gradient fills**: smooth color ramps (skies, soft shading, spotlights) are
+  detected and painted with a single SVG `<linearGradient>`/`<radialGradient>`
+  instead of posterized bands — mesh-free (geometry unchanged, cutout stays
+  seam-free), fewer shapes, no banding. On by default in the Illustration and
+  Photo profiles.
 - **Target profiles** with machine-aware defaults and practical notes:
   Illustration, Photo/Poster, Logo, Screen print, Pixel art, Ink sketch,
   **Vinyl cutter** (layered spot color — one `<g>` sheet per color, mm units),
@@ -167,7 +168,7 @@ samples, saves the SVGs to `e2e-artifacts/` and refreshes `docs/screenshot.png`.
 
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
-- Gradient detection: radial gradients and multi-stop ramps (linear ramps ship today)
+- Gradient detection: multi-stop / piecewise ramps (linear and radial ramps ship today)
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
 - More UI languages (English and French ship today)

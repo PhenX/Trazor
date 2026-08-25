@@ -58,6 +58,15 @@ const scenes: { name: string; note: string; image: RasterImage }[] = [
     }),
   },
   {
+    name: 'Orb',
+    note: 'A disc shaded outward from a bright center — detected as a radial gradient',
+    image: build(W, H, (x, y) => {
+      const r = Math.min(W, H) / 2 - M
+      const d = Math.hypot(x - W / 2, y - H / 2)
+      return d > r ? BG : mix([228, 244, 236], [22, 96, 88], d / r)
+    }),
+  },
+  {
     name: 'Flat badge (control)',
     note: 'A flat disc, no ramp — output is left byte-identical',
     image: build(W, H, (x, y) =>
@@ -144,7 +153,7 @@ async function main(): Promise<void> {
 </style>
 <div class="wrap">
   <h1>Gradient fills — before / after</h1>
-  <p class="sub">Smooth color ramps normally posterize into a stack of flat bands. With gradient detection on, adjacent bands that lie on one Oklab ramp are merged into a single region painted with a standard <code>&lt;linearGradient&gt;</code> — mesh-free, so the geometry is unchanged: fewer shapes, smaller files, no banding. Flat art with no ramp is left exactly as before.</p>
+  <p class="sub">Smooth color ramps normally posterize into a stack of flat bands. With gradient detection on, adjacent bands that lie on one Oklab ramp — linear or radial — are merged into a single region painted with a standard <code>&lt;linearGradient&gt;</code> or <code>&lt;radialGradient&gt;</code> — mesh-free, so the geometry is unchanged: fewer shapes, smaller files, no banding. Flat art with no ramp is left exactly as before.</p>
   ${rows.join('\n')}
 </div>`
 
