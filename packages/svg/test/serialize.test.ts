@@ -89,6 +89,17 @@ describe('buildPathData', () => {
 })
 
 describe('serializeSvg', () => {
+  it('emits a background image as the first child', () => {
+    const doc = goldenDoc()
+    doc.image = { width: 24, height: 24, dataUri: 'data:image/png;base64,QUJD' }
+    const svg = serializeSvg(doc, { precision: 2 })
+    expect(svg).toContain(
+      '<image x="0" y="0" width="24" height="24" href="data:image/png;base64,QUJD"/>',
+    )
+    // Painted before every shape (first child after the comment).
+    expect(svg.indexOf('<image')).toBeLessThan(svg.indexOf('<path'))
+  })
+
   it('produces the golden compact document', () => {
     const svg = serializeSvg(goldenDoc(), { precision: 2 })
     expect(svg).toBe(

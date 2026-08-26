@@ -42,6 +42,12 @@ export interface SvgDocument {
   title?: string
   desc?: string
   shapes: SvgShape[]
+  /**
+   * A raster painted beneath every shape (the hybrid output mode: flat areas
+   * stay vectorized, the non-flat source is embedded). Serialized as the first
+   * child `<image>`; undefined ⇒ no image.
+   */
+  image?: { width: number; height: number; dataUri: string }
 }
 
 export interface SerializeOptions {
@@ -211,6 +217,14 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
     ` width="${widthAttr}" height="${heightAttr}">`
 
   const children: string[] = [METADATA_COMMENT]
+  if (doc.image !== undefined) {
+    children.push(
+      `<image x="0" y="0" width="${formatNumber(doc.image.width, 0)}" height="${formatNumber(
+        doc.image.height,
+        0,
+      )}" href="${assertAttrSafe(doc.image.dataUri, 'image href')}"/>`,
+    )
+  }
   if (doc.title !== undefined && doc.title !== '') {
     children.push(`<title>${xmlEscape(doc.title)}</title>`)
   }

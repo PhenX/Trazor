@@ -675,6 +675,14 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :hint="t('settings.islandCheck.hint')"
           @update:model-value="set('detectIslands', $event)"
         />
+        <SwitchRow
+          v-if="s.mode !== 'bw' && s.mode !== 'centerline'"
+          :label="t('settings.hybrid.label')"
+          :model-value="s.hybridEmbed"
+          :default-value="D.hybridEmbed"
+          :hint="t('settings.hybrid.hint')"
+          @update:model-value="set('hybridEmbed', $event)"
+        />
       </section>
     </div>
   </aside>

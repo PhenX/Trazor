@@ -180,6 +180,13 @@ export interface VectorizeSettings {
   svgTitle: string
   /** Warn about enclosed islands that would fall out of a physical stencil. */
   detectIslands: boolean
+  /**
+   * Hybrid output (color/grayscale, stacked layering): flat areas stay
+   * vectorized, and the working raster is embedded underneath so non-flat
+   * areas (gradients, textures, photo detail) render exactly. Ignored for
+   * cutout layering and ink modes.
+   */
+  hybridEmbed: boolean
 }
 
 export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
@@ -233,6 +240,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   widthMm: 0,
   svgTitle: '',
   detectIslands: false,
+  hybridEmbed: false,
 } satisfies VectorizeSettings)
 
 /**

@@ -30,8 +30,10 @@ import {
   borderDominantColor,
   chamferDistance,
   clearBorderLabel,
-  detectEdges,
+  despeckleMask,
   despeckleMaskGuided,
+  detectEdges,
+  dilate,
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
@@ -53,7 +55,7 @@ import {
 } from '@trazor/raster'
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
-import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
+import { analyzeSvg, encodePngDataUri, fitArcs, serializeSvg } from '@trazor/svg'
 import type { QuantizeResult } from '@trazor/raster'
 import type { SvgShape } from '@trazor/svg'
 
@@ -98,6 +100,49 @@ const COHERENCE_LAMBDA = 0.03
 /** Coherence relaxation passes. */
 const COHERENCE_ROUNDS = 4
 
+/** Gradient below which a pixel counts as flat for the hybrid split. */
+const HYBRID_FLAT = 0.02
+/** Density window: a pixel counts as flat when ≥ 90% of its 9×9 window is. */
+const HYBRID_DENSITY_R = 4
+const HYBRID_DENSITY_NEED = Math.floor((2 * HYBRID_DENSITY_R + 1) ** 2 * 0.9) + 1
+/** Speck/hole cleaning area for the hybrid flat mask. */
+const HYBRID_CLEAN_AREA = 16
+/** Below this fraction of non-flat pixels, no image is embedded (pure vector). */
+const HYBRID_EMBED_FLOOR = 0.005
+
+/**
+ * 1-D mean of a (2R+1) window over a binary mask, along one axis — the density
+ * smoothing pass for the hybrid flat mask. Border pixels clamp.
+ */
+function flatDensityPass(
+  src: Uint8Array,
+  dst: Uint8Array,
+  w: number,
+  h: number,
+  vertical: boolean,
+): void {
+  const R = HYBRID_DENSITY_R
+  const len = vertical ? h : w
+  const lines = vertical ? w : h
+  const stepAlong = vertical ? w : 1
+  const stepLine = vertical ? 1 : w
+  for (let line = 0; line < lines; line++) {
+    const base = line * stepLine
+    let sum = 0
+    for (let t = -R; t <= R; t++) {
+      const pos = t < 0 ? 0 : t >= len ? len - 1 : t
+      sum += src[base + pos * stepAlong]
+    }
+    for (let pos = 0; pos < len; pos++) {
+      dst[base + pos * stepAlong] = sum >= HYBRID_DENSITY_NEED ? 1 : 0
+      const leave = pos - R
+      if (leave >= 0) sum -= src[base + leave * stepAlong]
+      const enter = pos + R + 1
+      if (enter < len) sum += src[base + enter * stepAlong]
+    }
+  }
+}
+
 /** Boundary-map probability above which a pixel counts as a protected edge. */
 const EDGE_PROTECT_THRESHOLD = 0.5
 
@@ -131,6 +176,42 @@ function edgeProtectMask(
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
   return { width, height, data }
+}
+
+/**
+ * The hybrid flat mask: 1 where the working image has no perceptible local
+ * contrast (max 4-neighbor Oklab ΔE below `HYBRID_FLAT`), cleaned so small
+ * non-flat specks inside flat areas are filled and isolated flat pixels in
+ * textured areas are dropped. The vector shapes are traced only over this
+ * mask; everything else is covered by the embedded raster.
+ */
+function hybridFlatMask(image: RasterImage): BinaryMask {
+  const { width: w, height: h } = image
+  const n = w * h
+  const oklab = toOklabBuffer(image)
+  const mask: BinaryMask = { width: w, height: h, data: new Uint8Array(n) }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      const o = i * 3
+      const d = (j: number): number =>
+        deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], oklab[j * 3], oklab[j * 3 + 1], oklab[j * 3 + 2])
+      let g = 0
+      if (x + 1 < w) {
+        const dd = d(i + 1)
+        if (dd > g) g = dd
+      }
+      if (y + 1 < h) {
+        const dd = d(i + w)
+        if (dd > g) g = dd
+      }
+      if (g < HYBRID_FLAT) mask.data[i] = 1
+    }
+  }
+  // Dilate one pixel so the anti-aliased rims between flat regions count as
+  // flat: the vector shapes cover them, and a purely flat scene must not
+  // embed a raster just because its shape boundaries exist.
+  return dilate(despeckleMask(mask, HYBRID_CLEAN_AREA), 1)
 }
 
 /**
@@ -471,6 +552,15 @@ export async function vectorize(
   // ---- per-mode tracing into SVG shapes ----
   const shapes: SvgShape[] = []
   let palette: string[] = []
+  // Hybrid output: flat areas vectorized, the rest embedded. The mask bounds
+  // the stacked trace; the image is added at serialization when enough of the
+  // image is non-flat for the embed to matter.
+  const hybridOn =
+    settings.hybridEmbed &&
+    (settings.mode === 'color' || settings.mode === 'grayscale') &&
+    settings.layering !== 'cutout'
+  const flatMask = hybridOn ? hybridFlatMask(image) : null
+  let hybridUri: string | undefined
 
   if (settings.mode === 'color' || settings.mode === 'grayscale') {
     await colorPipeline(
@@ -484,7 +574,15 @@ export async function vectorize(
       ctx?.edgeHint,
       cacheable ? cache : undefined,
       imageId,
+      flatMask,
     )
+    if (flatMask) {
+      let flat = 0
+      for (let p = 0; p < flatMask.data.length; p++) flat += flatMask.data[p]
+      if (flat / flatMask.data.length < 1 - HYBRID_EMBED_FLOOR) {
+        hybridUri = encodePngDataUri(image)
+      }
+    }
   } else {
     await inkPipeline(
       run,
@@ -511,6 +609,7 @@ export async function vectorize(
       widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
       title: settings.svgTitle || undefined,
       shapes,
+      image: hybridUri ? { width, height, dataUri: hybridUri } : undefined,
     },
     {
       precision: settings.precision,
@@ -579,6 +678,7 @@ async function colorPipeline(
   edgeHint: GrayImage | undefined,
   cache: StageCache | undefined,
   imageId: number | undefined,
+  flatMask: BinaryMask | null,
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
@@ -878,8 +978,16 @@ async function colorPipeline(
     const union = unionMask.data
     // Layer 0's union is every labeled pixel (all layers stacked); higher layers
     // peel off. The union is only the running membership test for the flood
-    // below — it is never traced directly.
-    for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
+    // below — it is never traced directly. With a hybrid flat mask the union is
+    // restricted to flat pixels, so the vector shapes cover only the flat areas
+    // and the embedded raster shows everywhere else.
+    if (flatMask === null) {
+      for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
+    } else {
+      for (let p = 0; p < nPix; p++) {
+        union[p] = stackData[p] >= 0 && flatMask.data[p] !== 0 ? 1 : 0
+      }
+    }
 
     // A lower layer extends under the sheets above it so their shared edges
     // cannot crack — but only where its own color actually reaches. The raw

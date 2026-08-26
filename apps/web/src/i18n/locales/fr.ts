@@ -285,6 +285,10 @@ export const fr: MessageSchema = {
       label: 'Vérif. des îlots',
       hint: 'Avertir des îlots enclavés qui tomberaient d’un pochoir physique',
     },
+    hybrid: {
+      label: 'Hybride vecteur + photo',
+      hint: 'Vectoriser les zones plates et intégrer le raster d’origine en dessous, pour que dégradés, textures et détails photo restent exacts (couleur/niveaux de gris, couches empilées)',
+    },
     centerlineNote:
       'Trace un seul trait au milieu de chaque ligne dessinée — pour le trait, l’écriture manuscrite et les traceurs à plume. Sur des formes pleines ou des photos, cela donne un squelette filiforme, sans contours correspondants ; utilisez N&B ou Couleur dans ce cas.',
   },

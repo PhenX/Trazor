@@ -284,6 +284,10 @@ export const en = {
       label: 'Island check',
       hint: 'Warn about enclosed islands that would fall out of a physical stencil',
     },
+    hybrid: {
+      label: 'Hybrid vector + photo',
+      hint: 'Vectorize the flat areas and embed the original raster underneath, so gradients, textures and photo detail render exactly (color/grayscale, stacked layers)',
+    },
     centerlineNote:
       'Traces one stroke down the middle of each drawn line — for line art, handwriting and pen plotters. On filled shapes or photos it returns a spidery skeleton, not matching outlines; use B&W or Color there.',
   },
