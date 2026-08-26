@@ -2,7 +2,7 @@ import { extractGeometry, serializeSvg } from '@trazor/svg'
 import type { SvgDocument } from '@trazor/svg'
 import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
-import { buildLayers, framingViewBox } from '../src/lib/layers'
+import { buildLayers, filterLayers, framingViewBox } from '../src/lib/layers'
 
 const tri = (ox: number): PathCommand[] => [
   { type: 'M', x: ox, y: 0 },
@@ -82,5 +82,45 @@ describe('framingViewBox', () => {
 
   it('falls back to the full document when there are no bounds', () => {
     expect(framingViewBox(null, 30, 40)).toBe('0 0 30 40')
+  })
+})
+
+describe('filterLayers', () => {
+  it('is a pass-through when nothing is removed', () => {
+    const svg = svgFrom([{ commands: tri(0), fill: '#ff0000' }])
+    expect(filterLayers(svg, new Set())).toBe(svg)
+  })
+
+  it('drops exactly the elements whose fill matches a removed key', () => {
+    const svg = svgFrom([
+      { commands: tri(0), fill: '#ff0000' },
+      { commands: tri(6), fill: '#00ff00' },
+    ])
+    const filtered = filterLayers(svg, new Set(['#ff0000']))
+    const model = buildLayers(extractGeometry(filtered))
+    expect(model.layers).toHaveLength(1)
+    expect(model.layers[0].key).toBe('#00ff00')
+  })
+
+  it('removes a stroke-only layer by its stroke key', () => {
+    const svg = svgFrom([
+      {
+        commands: [
+          { type: 'M', x: 1, y: 1 },
+          { type: 'L', x: 8, y: 8 },
+        ],
+        stroke: '#0000ff',
+      },
+    ])
+    expect(
+      buildLayers(extractGeometry(filterLayers(svg, new Set(['#0000ff'])))).layers,
+    ).toHaveLength(0)
+  })
+
+  it('matches keys case-insensitively', () => {
+    const svg = svgFrom([{ commands: tri(0), fill: '#AABBCC' }])
+    expect(
+      buildLayers(extractGeometry(filterLayers(svg, new Set(['#aabbcc'])))).layers,
+    ).toHaveLength(0)
   })
 })

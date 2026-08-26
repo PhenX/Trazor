@@ -4,7 +4,9 @@ import type { RasterImage } from '@trazor/core'
 import type { SvgElementKind, SvgGeometry } from '@trazor/svg'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { copyText } from '../lib/download'
 import { formatCount } from '../lib/format'
+import type { Layer } from '../lib/layers'
 import { SHAPE_KIND_TOKEN } from '../lib/overlay'
 import { useAppStore } from '../store/appStore'
 import PreviewOverlay from './PreviewOverlay.vue'
@@ -292,7 +294,19 @@ function onPointerUp(event: PointerEvent): void {
   const finished = drag
   drag = null
   panning.value = false
-  if (finished.divider || finished.moved || finished.pointLabel === null) return
+  if (finished.divider) {
+    pressedLayer = null
+    return
+  }
+  // A non-drag left click that landed on a traced shape opens its menu (normal
+  // mode only — magic mode never arms `pressedLayer`).
+  if (!finished.moved && event.button === 0 && pressedLayer !== null) {
+    openShapeMenu(event.clientX, event.clientY, pressedLayer)
+    pressedLayer = null
+    return
+  }
+  pressedLayer = null
+  if (finished.moved || finished.pointLabel === null) return
   const img = image.value
   if (!img || !docW.value) return
   const { x, y } = hostPos(event)
@@ -325,6 +339,105 @@ const markers = computed(() => {
     keep: p.label === 1,
   }))
 })
+
+// --------------------------- Shape interaction ---------------------------
+// A transparent hit path per color layer, laid over the SVG so hovering a shape
+// highlights it (driving the same `layerFocus` the layer panel uses — hover is
+// bidirectional), a tooltip reads out its info, and a click opens a small menu.
+// Disabled while magic-select owns the pointer.
+const shapeLayers = computed<Layer[]>(() => store.layerModel?.layers ?? [])
+const shapesInteractive = computed(
+  () => showSvg.value && !store.magicActive && shapeLayers.value.length > 0,
+)
+
+// The layer whose hit path received the pointerdown; read on pointerup to decide
+// whether a click (no drag) should open that layer's menu.
+let pressedLayer: number | null = null
+
+// Hover tooltip and click menu, both positioned in screen space at the cursor.
+const tip = ref<{ x: number; y: number; index: number } | null>(null)
+const menu = ref<{ x: number; y: number; index: number } | null>(null)
+
+const tipLayer = computed<Layer | null>(() =>
+  tip.value ? (shapeLayers.value[tip.value.index] ?? null) : null,
+)
+const menuLayer = computed<Layer | null>(() =>
+  menu.value ? (shapeLayers.value[menu.value.index] ?? null) : null,
+)
+
+function onShapeEnter(event: PointerEvent, index: number): void {
+  store.setLayerHover({ layer: index, shape: null })
+  tip.value = { x: event.clientX, y: event.clientY, index }
+}
+function onShapeMove(event: PointerEvent, index: number): void {
+  if (tip.value) {
+    tip.value = { x: event.clientX, y: event.clientY, index }
+  }
+}
+function onShapeLeave(index: number): void {
+  if (store.layerHover?.layer === index) store.setLayerHover(null)
+  if (tip.value?.index === index) tip.value = null
+}
+function onShapeDown(index: number): void {
+  pressedLayer = index
+}
+
+function openShapeMenu(x: number, y: number, index: number): void {
+  tip.value = null
+  store.setLayerHover(null)
+  menu.value = { x, y, index }
+}
+function closeShapeMenu(): void {
+  menu.value = null
+}
+
+function removeMenuLayer(): void {
+  const layer = menuLayer.value
+  if (!layer) return
+  store.removeLayer(layer.key)
+  store.notify(t('toasts.layerRemoved', { hex: layer.color }), 'success')
+  closeShapeMenu()
+}
+async function copyMenuColor(): Promise<void> {
+  const layer = menuLayer.value
+  if (!layer) return
+  const ok = await copyText(layer.color)
+  store.notify(
+    ok ? t('toasts.hexCopied', { hex: layer.color }) : t('toasts.clipboardUnavailable'),
+    ok ? 'success' : 'error',
+  )
+  closeShapeMenu()
+}
+
+// Clamp the floating tooltip/menu into the viewport (rough sizes; exact width is
+// content-driven but this keeps them off the edges).
+function clampedStyle(x: number, y: number, w: number, h: number): Record<string, string> {
+  return {
+    left: `${Math.min(x + 14, window.innerWidth - w)}px`,
+    top: `${Math.min(y + 16, window.innerHeight - h)}px`,
+  }
+}
+const tipStyle = computed(() => (tip.value ? clampedStyle(tip.value.x, tip.value.y, 190, 64) : {}))
+const menuStyle = computed(() =>
+  menu.value ? clampedStyle(menu.value.x, menu.value.y, 190, 120) : {},
+)
+
+// Tear down transient UI when interaction goes away (view change, magic mode, a
+// fresh trace that empties the layer model).
+watch(shapesInteractive, (on) => {
+  if (!on) {
+    tip.value = null
+    menu.value = null
+    pressedLayer = null
+  }
+})
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && menu.value) {
+    event.stopPropagation()
+    closeShapeMenu()
+  }
+}
 
 // ------------------------------- Drawing ---------------------------------
 function drawRaster(canvas: HTMLCanvasElement | null, raster: RasterImage | null): void {
@@ -369,11 +482,15 @@ onMounted(() => {
   })
   if (paneEl.value) resizeObserver.observe(paneEl.value)
   if (docW.value) fit()
+  // Capture phase so Escape closes the shape menu before the app's global
+  // shortcut handler sees it.
+  window.addEventListener('keydown', onWindowKeydown, true)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
+  window.removeEventListener('keydown', onWindowKeydown, true)
 })
 
 const progressLabel = computed(() => {
@@ -509,7 +626,7 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
           v-show="showSvg"
           class="layer layer-svg"
           :style="svgLayerStyle"
-          v-html="store.result?.svg ?? ''"
+          v-html="store.displaySvg ?? ''"
         />
         <svg
           v-if="showSvg && focus"
@@ -549,6 +666,29 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
             stroke-linecap="round"
           />
         </svg>
+        <!-- Interactive hit layer: one transparent path per color layer, over the
+             SVG. Hover highlights the layer (and its panel row); click opens its
+             menu. `pointer-events` live on the paths so gaps fall through. -->
+        <svg
+          v-if="shapesInteractive"
+          class="layer layer-hit"
+          :viewBox="`0 0 ${docW} ${docH}`"
+          preserveAspectRatio="none"
+          :style="svgLayerStyle"
+        >
+          <path
+            v-for="layer in shapeLayers"
+            :key="layer.key"
+            :d="layer.d"
+            fill-rule="evenodd"
+            :class="{ 'hit-stroke': layer.stroke }"
+            @pointerenter="onShapeEnter($event, layer.index)"
+            @pointermove="onShapeMove($event, layer.index)"
+            @pointerleave="onShapeLeave(layer.index)"
+            @pointerdown="onShapeDown(layer.index)"
+          />
+        </svg>
+
         <canvas v-show="showDiff" ref="diffCanvas" class="layer layer-diff pixelated" />
 
         <!-- Magic-select markers -->
@@ -626,6 +766,60 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
         </button>
       </div>
     </div>
+
+    <!-- Hover tooltip: the same info the layer panel shows for a color. -->
+    <Teleport to="body">
+      <div v-if="tipLayer && !menu" class="shape-tip card" :style="tipStyle">
+        <span class="shape-tip-swatch" :style="{ background: tipLayer.color }" />
+        <span class="shape-tip-body">
+          <span class="mono shape-tip-hex">{{ tipLayer.color }}</span>
+          <span class="shape-tip-counts">
+            {{
+              t('layers.shapesNodes', {
+                shapes: formatCount(tipLayer.shapes.length),
+                nodes: formatCount(tipLayer.nodeCount),
+              })
+            }}
+          </span>
+        </span>
+      </div>
+    </Teleport>
+
+    <!-- Click menu on a shape: remove or copy its color. -->
+    <Teleport to="body">
+      <div v-if="menuLayer" class="shape-menu-backdrop" @pointerdown="closeShapeMenu" />
+      <div v-if="menuLayer" class="shape-menu card" :style="menuStyle">
+        <div class="shape-menu-head">
+          <span class="shape-tip-swatch" :style="{ background: menuLayer.color }" />
+          <span class="mono shape-tip-hex">{{ menuLayer.color }}</span>
+        </div>
+        <button class="shape-menu-item shape-menu-danger" @click="removeMenuLayer">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path
+              d="M3 4h10M6.5 4V2.8h3V4M5 4l.6 9h4.8L11 4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          {{ t('layers.remove') }}
+        </button>
+        <button class="shape-menu-item" @click="copyMenuColor">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path
+              d="M5.5 5.5V3.5h7v7h-2M3.5 5.5h7v7h-7z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linejoin="round"
+            />
+          </svg>
+          {{ t('layers.copyColor', { hex: menuLayer.color }) }}
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -830,6 +1024,27 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   opacity: 0.95;
 }
 
+/* Interactive hit layer: transparent paths that catch hover/click per color. */
+.layer-hit {
+  z-index: 2;
+  pointer-events: none;
+  cursor: pointer;
+}
+
+.layer-hit path {
+  fill: transparent;
+  pointer-events: fill;
+}
+
+/* Centerline (stroke-only) layers have no fill area — give them a fat,
+   zoom-independent transparent stroke so the thin line is still grabbable. */
+.layer-hit path.hit-stroke {
+  stroke: transparent;
+  stroke-width: 8;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+}
+
 .marker {
   position: absolute;
   width: 16px;
@@ -983,5 +1198,105 @@ defineExpose({ setView, fit, zoom100, zoomIn, zoomOut, toggleNodes })
   font-size: 12px;
   color: var(--text-2);
   word-break: break-word;
+}
+
+/* Shape hover tooltip — follows the cursor, reads out the color's counts. */
+.shape-tip {
+  position: fixed;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+}
+
+.shape-tip-swatch {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.shape-tip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.shape-tip-hex {
+  font-size: 12px;
+  color: var(--text-1);
+  text-transform: uppercase;
+}
+
+.shape-tip-counts {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* Shape click menu — remove / copy color. */
+.shape-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+}
+
+.shape-menu {
+  position: fixed;
+  z-index: 63;
+  min-width: 168px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: var(--shadow-2);
+}
+
+.shape-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3px;
+}
+
+.shape-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  color: var(--text-1);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shape-menu-item:hover {
+  background: var(--bg-2);
+}
+
+.shape-menu-item svg {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+.shape-menu-danger {
+  color: var(--danger);
+}
+
+.shape-menu-danger svg {
+  color: var(--danger);
+}
+
+.shape-menu-danger:hover {
+  background: var(--danger-soft);
 }
 </style>

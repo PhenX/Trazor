@@ -53,7 +53,7 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-26',
-    iteration: 1,
+    iteration: 2,
     kind: 'feature',
     beta: true,
     title: 'Gradient fills (beta)',
@@ -61,6 +61,17 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     items: [
       'A new beta can paint smooth color ramps — skies, soft shading, backgrounds, spotlights, sunsets — with a single SVG gradient instead of a stack of posterized bands, so the result looks smoother and uses fewer shapes. Straight (linear) and circular (radial) ramps are recognized, and a ramp that shifts hue along the way keeps the extra color stops it needs to follow the sweep.',
       'It is still experimental and off by default: detection can be rough on some images (splitting one ramp, or turning a flat shape into a gradient). Turn on "Gradient fills" in the palette settings to try it, and check the result. Gradients stay fully editable vector output, meant for screen and print, not spot-color cutting — a note flags them when you export to a cutter-style setup.',
+    ],
+  },
+  {
+    date: '2026-08-26',
+    iteration: 1,
+    kind: 'feature',
+    title: 'Hover and edit shapes right on the preview',
+    items: [
+      'Hover a color in the preview and it lights up — with its hex and shape/node counts — and the matching row in the Layers panel highlights too, so it works both ways.',
+      'Click a color in the preview for a quick menu to remove it or copy its hex, and every Layers row now has a remove button. Removed colors drop out of the preview and the exported SVG, and one tap on Restore brings them back.',
+      'If a new trace would discard colors you removed, Trazor now asks first — so a stray settings change never wipes your edits by surprise.',
     ],
   },
   {
