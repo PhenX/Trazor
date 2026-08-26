@@ -50,7 +50,7 @@ export interface ReleaseNote {
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
-    date: '2026-08-25',
+    date: '2026-08-26',
     iteration: 1,
     kind: 'feature',
     title: 'Gradient fills',
@@ -58,6 +58,15 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     items: [
       'Color and grayscale traces can now paint smooth color ramps — skies, soft shading, backgrounds, spotlights, sunsets — with a single SVG gradient instead of a stack of posterized bands, so the result looks smoother and uses fewer shapes. Straight (linear) and circular (radial) ramps are recognized, and a ramp that shifts hue along the way keeps the extra color stops it needs to follow the sweep. Turn on "Gradient fills" in the palette settings; it is on by default in the Illustration and Photo / Poster presets.',
       'Gradients are detected automatically per region and stay fully editable vector output. They are meant for screen and print, not spot-color cutting — a note flags them when you export to a cutter-style setup.',
+    ],
+  },
+  {
+    date: '2026-08-25',
+    iteration: 1,
+    kind: 'fix',
+    title: 'Cleaner stacked cut layers',
+    items: [
+      'In stacked color mode, a lower sheet no longer carries hidden patches for far-away parts of the picture it never touches. Each sheet now extends only under the colors next to it, so a layer holds just the pieces you actually weed and stack — not stray islands buried under other sheets. The traced picture looks identical; only the cut sheets get simpler.',
     ],
   },
   {
