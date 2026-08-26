@@ -1,0 +1,8 @@
+# Normalize all text files to LF in the repository and on checkout, on every
+# platform. Without this, a contributor whose Git has core.autocrlf=true rewrites
+# line endings on checkout/commit, so files flip between LF and CRLF between
+# machines. Matches .editorconfig and .oxfmtrc.json (both end_of_line = lf).
+* text=auto eol=lf
+
+# Binary assets — Git must never apply text or EOL normalization to these.
+*.png binary

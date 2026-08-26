@@ -910,7 +910,7 @@ async function colorPipeline(
         }
         for (const p of c.pixels) arr.push(p)
       }
-      const islandColors = [...byColor.keys()].sort((a, b) => a - b)
+      const islandColors = [...byColor.keys()].toSorted((a, b) => a - b)
       const islandMask: BinaryMask = {
         width: labels.width,
         height: labels.height,

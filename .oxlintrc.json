@@ -15,5 +15,25 @@
     "unicorn/no-new-array": "off",
     "import/no-cycle": "error"
   },
+  "overrides": [
+    {
+      "files": ["**/test/**", "**/*.test.ts"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off",
+        "oxc/no-map-spread": "off",
+        "no-await-in-loop": "off",
+        "promise/always-return": "off"
+      }
+    },
+    {
+      "files": ["scripts/**", "docs/demos/**"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off",
+        "no-await-in-loop": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/generated/**", "**/*.d.ts"]
 }

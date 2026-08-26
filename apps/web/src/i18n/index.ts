@@ -64,6 +64,11 @@ export const i18n = createI18n({
   locale: pickInitialLocale(),
   fallbackLocale: DEFAULT_LOCALE,
   messages: { en, fr },
+  // Some hints name SVG elements literally (`<title>`, `<g>`); intlify's
+  // HTML-in-message guard flags those. Every message renders as text — a
+  // `:title` tooltip or `{{ t(...) }}` interpolation — and never through
+  // `v-html` (only the traced SVG output is), so the angle brackets are inert.
+  warnHtmlMessage: false,
 })
 
 /** Translate with the shared instance from non-component modules (e.g. the store). */

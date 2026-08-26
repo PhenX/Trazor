@@ -155,6 +155,14 @@ function mlPhaseInfo(p: MlProgress): { progress: number | null; phase: string } 
   return { progress: null, phase: t('ml.phaseRunning') }
 }
 
+/** Drop `mode` from a settings patch: the search never changes mode — that is
+ * the user's call — so seeds don't either. */
+function stripMode(patch: Partial<VectorizeSettings>): Partial<VectorizeSettings> {
+  const copy = { ...patch }
+  delete copy.mode
+  return copy
+}
+
 export const useAppStore = defineStore('app', () => {
   const persisted = loadPersisted()
 
@@ -654,13 +662,6 @@ export const useAppStore = defineStore('app', () => {
     return keys
   }
 
-  function stripMode(patch: Partial<VectorizeSettings>): Partial<VectorizeSettings> {
-    const copy = { ...patch }
-    // The search never changes mode — that is the user's call — so seeds don't either.
-    delete copy.mode
-    return copy
-  }
-
   /** Round-0 seed points: the assist recommendation and same-mode target profiles. */
   function tuneSeeds(image: RasterImage): SeedPatch[] {
     const seeds: SeedPatch[] = []
@@ -716,7 +717,7 @@ export const useAppStore = defineStore('app', () => {
       },
     }
     try {
-      const result = await runAutoTune(
+      const tuneResult = await runAutoTune(
         image,
         settings.value,
         opts,
@@ -724,9 +725,9 @@ export const useAppStore = defineStore('app', () => {
         signal,
       )
       if (tuneSignal !== signal) return
-      tuneResults.value = result.results
-      tuneBest.value = result.best
-      tuneFront.value = result.front
+      tuneResults.value = tuneResult.results
+      tuneBest.value = tuneResult.best
+      tuneFront.value = tuneResult.front
     } catch (e) {
       if (tuneSignal === signal && !signal.cancelled) tuneError.value = errorMessage(e)
     } finally {
