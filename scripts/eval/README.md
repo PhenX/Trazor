@@ -3,7 +3,10 @@
 The metric that actually ships. The trainer selects checkpoints on a proxy (edge BCE/Dice, cleanup PSNR), but what matters
 is the **fidelity of the traced output** — so this harness traces held-out samples through `@trazor/engine` **with and
 without** the pre-pass, rasterizes each SVG with resvg over white, and reports mean **Oklab ΔE** against the clean
-ground-truth render (the same metric as [`apps/web/src/lib/fidelity.ts`](../../apps/web/src/lib/fidelity.ts)).
+ground-truth render (the same metric as [`apps/web/src/lib/fidelity.ts`](../../apps/web/src/lib/fidelity.ts)), plus the
+**perceptual SSIM** and the **geometric boundary metrics** (symmetric Hausdorff distance and boundary IoU) from
+`@trazor/raster` — the boundary error is exactly what the signed-field pre-pass claims to improve, so it is measured
+directly.
 
 Two buckets:
 
@@ -45,14 +48,18 @@ For `cleanup`, pass `--task cleanup` to both (predictions are cleaned RGB images
 ```
 task=edge  mode=color
 
-    bucket  n  ΔE off   ΔE on      ΔΔE  score off  score on  nodes off  nodes on
-  degraded  8  0.0202   0.0181  +0.0021      0.919     0.928      19046     15220
-     clean  8  0.0039   0.0039  +0.0000      0.985     0.985        996       996
+    bucket  n  ΔE off   ΔE on      ΔΔE  score off  score on  SSIM off  SSIM on  HD off  HD on  bIoU off  bIoU on  nodes off  nodes on
+  degraded  8  0.0202   0.0181  +0.0021      0.919     0.928     0.961    0.968    4.12   3.55     0.851    0.902      19046     15220
+     clean  8  0.0039   0.0039  +0.0000      0.985     0.985     0.993    0.993    0.21   0.21     0.994    0.994        996       996
 ```
 
 - **ΔE off / on** — mean Oklab ΔE to the clean ground truth, without / with the pre-pass (lower is better).
 - **ΔΔE** — `off − on`; **positive means the pre-pass helps**.
 - **score** — the app's `1 − 4·ΔE` fidelity score.
+- **SSIM off / on** — windowed SSIM (Wang et al. 2004), higher = structurally closer (perceptual).
+- **HD off / on** — symmetric Hausdorff distance between the boundary masks, px, lower = edges closer (`∞` when one
+  side has no edges).
+- **bIoU off / on** — IoU of the 2px-dilated boundary masks, 1 = boundaries coincide.
 - **nodes** — mean node count (a pre-pass that keeps detail without raising ΔE, at fewer nodes, is a clear win).
 - A **clean-input regression** (clean-bucket ΔE rising) is flagged explicitly — pick the checkpoint that wins on
   degraded **without** regressing clean.
@@ -88,8 +95,9 @@ tracer — so "is VTracer actually better, and where?" becomes a number per imag
 each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
 reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, and a **spurious-hue**
 score — each traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam
-(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus node
-count, byte size, and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
+(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus the
+**perceptual SSIM**, the **geometric boundary metrics** (symmetric Hausdorff and boundary IoU), node count, byte size,
+and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
 global k-means on color content.
 
 It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware

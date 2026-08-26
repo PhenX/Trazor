@@ -100,6 +100,7 @@ export const TUNABLE_PARAMS: readonly ParamSpec[] = [
   },
   { key: 'minRegionArea', kind: 'int', min: 0, max: 128, modes: COLOR_MODES, group: 'palette' },
   { key: 'preserveDetails', kind: 'bool', modes: COLOR_MODES, group: 'palette' },
+  { key: 'preserveSalient', kind: 'bool', modes: COLOR_MODES, group: 'palette' },
   { key: 'dissolveBands', kind: 'int', min: 0, max: 4, modes: COLOR_MODES, group: 'palette' },
   { key: 'colorCoherence', kind: 'number', min: 0, max: 1, modes: COLOR_MODES, group: 'palette' },
   {

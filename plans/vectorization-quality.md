@@ -21,6 +21,7 @@ Branch for this work: `claude/plan-review-b49kxy`.
 | **C3 — edge/saliency-weighted quantization**     | **Assessed → deferred**        | Real but subtle; `quantize.ts` is an exactly-tested hot path, so invasive for the payoff.                                 |
 | **D — sub-pixel boundaries**                     | **Not started (large)**        | Needs a second, contour-based tracer path (marching squares → closed-polyline fit). Cutout is a separate spike.           |
 | **E — fidelity-driven refinement / auto-tuning** | **Not started (gated)**        | Blocked on building a deterministic in-engine rasterizer (its own project).                                               |
+| **F — gradient fills (photo modes)**             | **Not started**                | Per-region linear (then radial) gradient fit; biggest photo-fidelity and photo-size lever.                                |
 
 ### Measured result of A (real-browser render check, precision 2)
 
@@ -50,8 +51,10 @@ path data −35%, whole document −24% (a circle collapses to `<circle>`, −63
 - **Do not redo B.** G1 continuity and adaptive corners already hold; see the finding
   under Workstream B. `packages/trace/test/continuity.test.ts` pins it.
 - **Next best step:** if you want more quality, **D** (sub-pixel) is the biggest visual
-  win but a real pilot — start with bw/grayscale, defer cutout. Everything else is
-  marginal or gated.
+  win but a real pilot — start with bw/grayscale, defer cutout. For photos specifically,
+  **F** (gradient fills) is the bigger lever: it attacks both fidelity and the photo
+  file-size gap measured in [`docs/VTRACER_COMPARISON.md`](../docs/VTRACER_COMPARISON.md).
+  Everything else is marginal or gated.
 
 ---
 
@@ -140,12 +143,20 @@ layer), and `autoK` merges perceptual near-duplicates. The only distinct case is
 a few medium regions but tiny total coverage that is also low-contrast — narrow, and risky to
 prune (could drop a meaningful accent). Not worth the complexity now.
 
-### C3 — edge/saliency-weighted quantization · DEFERRED (rationale)
+### C3 — edge/saliency-weighted quantization · ADDRESSED (behind `preserveSalient`)
 
 Weighting k-means so boundary colors are represented is a real idea, but `quantize.ts` is a
 deterministic, exactly-tested hot path (k-means++ seeding + Lloyd). Threading per-pixel edge
 weights through seeding and centroid updates is invasive for a subtle, hard-to-demonstrate
 palette shift. Revisit only with a concrete failing case and a benchmark.
+
+**Revisited:** the concrete failing case arrived — a thin feature is nothing but boundary pixels,
+which the clustering sample excludes, so a small palette drops its color and `preserveSalient`
+(protection) had no region to protect. Rather than touching `quantize.ts`, the engine now runs a
+**salient-color rescue** step behind the toggle: protected, locally-flat pixels whose own color is
+far from their assigned centroid are re-colored with their own (sub-quantized, autoK-merged)
+palette entries. Deterministic; opt-in; the full saliency-weighted seeding remains a possible
+future refinement.
 
 ### D — sub-pixel boundaries · NOT STARTED (large pilot)
 
@@ -179,6 +190,31 @@ Pick one before starting:
 - **E2 (large):** build a deterministic pure-TS scanline rasterizer in a package so the engine
   can score and refine in the worker. Estimate and approve separately; only then are the
   refinement loop and quality slider deterministic.
+
+---
+
+### F — gradient fills for photo modes · NOT STARTED
+
+Detect linear (then radial) color ramps per region and emit `<linearGradient>` /
+`<radialGradient>` fills instead of 3–6 posterized slices — the output-side half of LIVE
+(Xu et al. 2022) and the Z. Du et al. (TOG 2023) linear-gradient layer decomposition. Motivated
+by `docs/VTRACER_COMPARISON.md`: posterizing a photo at 32 colors is inherently heavy, and
+gradient layering is the one place VTracer is genuinely more compact than Trazor.
+
+- **Design.** After label-map merge, per large region: least-squares plane fit of pixel
+  position → Oklab color (a small eigenproblem). If the residual is small and the region
+  merges the N adjacent slices of one ramp, emit a single region with the fitted linear
+  gradient; else keep the flat slices. Radial as step 2.
+- **Determinism.** Tier-1 only: closed-form fit, no ML, no wall-clock, fixed-seed PRNG only.
+- **Seam-free constraint.** Gradients are a paint/fill concern, not boundary geometry —
+  the shared boundary graph (`boundary.ts`) is untouched. Start with stacked/bw layering;
+  cutout support is a separate consideration.
+- **Pieces.** A setting (e.g. `gradientFills`, default off), a gradient paint model in the
+  serializer (`@trazor/svg`), segmentation integration in `@trazor/engine` `native.ts`, a UI
+  toggle in the Settings panel, and the `scripts/eval` photo corpus as the regression harness.
+- **Acceptance.** On the photo corpus: mean Oklab ΔE down and SVG bytes down vs. flat
+  posterization, at equal or lower node count; flat-art and line-art corpora byte-identical
+  with the setting off.
 
 ---
 

@@ -111,6 +111,14 @@ export function closedPathToCommands(
 ): PathCommand[] {
   if (opts.curveMode === 'pixel') return pixelCommands(ring)
 
+  // Hairline rings trace pixel-exact. The Selinger corridor lets an
+  // optimal-polygon chord hug one staircase chain of a ~1px band, which
+  // renders the stroke at roughly half coverage (faint, and visibly cut where
+  // it crosses other shapes). A thinness of 2·area/perimeter < 1.25px
+  // identifies those bands; the exact rectilinear ring covers them fully and
+  // costs ~2 vertices per pixel. Wider shapes keep the curve chain unchanged.
+  if (thinness(ring) < 1.25) return pixelCommands(ring)
+
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
   ext.push(ring[0], ring[1])
@@ -151,6 +159,24 @@ export function closedPathToCommands(
   )
   commands.push({ type: 'Z' })
   return commands
+}
+
+/**
+ * Thickness of the region a crack ring encloses: 2·area/perimeter, in pixels.
+ * Unit crack steps make the ring point count the perimeter; the shoelace of
+ * the closed ring is the enclosed pixel area. For a staircase band the zigzag
+ * inflates the perimeter by √2, so a 1px diagonal measures ≈0.5, a 2px one
+ * ≈0.7 — well below any solid shape (a 3×10 rectangle measures 2.3).
+ */
+function thinness(ring: FlatPoints): number {
+  const n = ring.length >> 1
+  let s = 0
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    s += ring[i * 2] * ring[j * 2 + 1] - ring[j * 2] * ring[i * 2 + 1]
+  }
+  const area = Math.abs(s) / 2
+  return n > 0 ? (2 * area) / n : 0
 }
 
 /** Exact rectilinear ring (pixel mode): collinear lattice points collapsed. */

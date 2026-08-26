@@ -1,10 +1,12 @@
 import {
   CancelledError,
   DEFAULT_SETTINGS,
+  deltaEOk,
   deltaEOkSq,
   hexToRgb,
   normalizeSettings,
   nowMs,
+  rgbToHex,
   rgbToOklab,
 } from '@trazor/core'
 import type {
@@ -52,12 +54,37 @@ import {
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
+import type { QuantizeResult } from '@trazor/raster'
 import type { SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
+
+/**
+ * Salient-color rescue: a protected pixel whose own color differs from its
+ * assigned centroid by more than this is a feature the palette swallowed —
+ * worth its own entry.
+ */
+const RESCUE_DE = 0.1
+/** Fewer rescued pixels than this change nothing. */
+const RESCUE_MIN_PIXELS = 8
+/** Cap on rescued palette entries per run. */
+const RESCUE_MAX_COLORS = 4
+/**
+ * A stroke pixel must be flat along some direction (min 8-neighbor ΔE below
+ * this): real strokes continue along their axis (diagonal hairlines included),
+ * while isolated specks have no same-color neighbor at all.
+ */
+const STROKE_FLAT = 0.06
+/**
+ * The two pixels across the flat axis must be similar to each other (ΔE ≤
+ * this, walking over same-colored stroke pixels): a stroke separates one
+ * surrounding color from itself, while an anti-aliased rim separates two
+ * distinct regions and must not earn a band color or protect its band.
+ */
+const STROKE_SIDES = 0.08
 
 /**
  * Stacked layering lifts an enclosed pocket onto its own top layer only when at
@@ -104,6 +131,96 @@ function edgeProtectMask(
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
   return { width, height, data }
+}
+
+/**
+ * Validated classical stroke protection — the mask `preserveSalient` acts on.
+ * The image's own strong color boundaries, narrowed to pixels that look like a
+ * thin stroke: flat along some 8-direction axis, with similar colors across
+ * that axis (walking over same-colored stroke pixels). A raw dilated edge mask
+ * is far too noisy on real (anti-aliased, JPEG) images: it covers every rim
+ * band, whose protection is what turns those bands into persistent triangles
+ * and notches traced region outlines. A rim's two sides are the distinct
+ * regions it separates, so it fails the across-axis test and drops out.
+ */
+function strokeProtectMask(image: RasterImage): BinaryMask {
+  const { width: w, height: h } = image
+  const n = w * h
+  const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+  const oklab = toOklabBuffer(image)
+  const out = new Uint8Array(n)
+  const deAt = (o: number, j: number): number =>
+    deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], oklab[j * 3], oklab[j * 3 + 1], oklab[j * 3 + 2])
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (edges.data[i] === 0) continue
+      const o = i * 3
+      // The flattest 8-direction axis — a 1px diagonal hairline's axis runs
+      // diagonally, so 4-neighbors alone would miss it.
+      let axisX = 0
+      let axisY = 0
+      let best = Infinity
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          const dd = deAt(o, ny * w + nx)
+          if (dd < best) {
+            best = dd
+            axisX = dx
+            axisY = dy
+          }
+        }
+      }
+      if (best > STROKE_FLAT) continue
+      // The pair across the axis: a stroke's two sides are the same
+      // surrounding color; a rim's sides are the two distinct regions it
+      // separates. Off-image sides pass — can't tell.
+      const sidePos = (dx: number, dy: number): number => {
+        let px = x + dx
+        let py = y + dy
+        for (let step = 0; step < 3; step++) {
+          if (px < 0 || py < 0 || px >= w || py >= h) return -1
+          const j = py * w + px
+          if (deAt(o, j) > STROKE_FLAT) break
+          px += dx
+          py += dy
+        }
+        if (px < 0 || py < 0 || px >= w || py >= h) return -1
+        return (py * w + px) * 3
+      }
+      const s = sidePos(-axisY, axisX)
+      const t = sidePos(axisY, -axisX)
+      if (s >= 0 && t >= 0) {
+        const dSides = deltaEOk(
+          oklab[s],
+          oklab[s + 1],
+          oklab[s + 2],
+          oklab[t],
+          oklab[t + 1],
+          oklab[t + 2],
+        )
+        if (dSides > STROKE_SIDES) continue
+      }
+      out[i] = 1
+    }
+  }
+  return { width: w, height: h, data: out }
+}
+
+/** Palette RGB (count×3 bytes) → interleaved Oklab (count×3 floats). */
+function paletteOklabOf(rgb: Uint8Array): Float32Array {
+  const oklab = new Float32Array(rgb.length)
+  for (let i = 0; i < rgb.length; i += 3) {
+    const [L, a, b] = rgbToOklab(rgb[i] / 255, rgb[i + 1] / 255, rgb[i + 2] / 255)
+    oklab[i] = L
+    oklab[i + 1] = a
+    oklab[i + 2] = b
+  }
+  return oklab
 }
 
 /**
@@ -290,6 +407,7 @@ function palKeyOf(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.preserveSalient,
     s.dissolveBands,
     s.colorCoherence,
     s.omitBackground,
@@ -469,8 +587,11 @@ async function colorPipeline(
   const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
   const palKey = canCachePal ? palKeyOf(settings) : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
-  // tracer's speck filter; null when no hint (and always null when caching).
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+  // tracer's speck filter; without one, `preserveSalient` derives the same mask
+  // classically — stroke-validated, so anti-aliased rims don't protect their
+  // bands. Null when neither applies.
+  const strokeProtect = settings.preserveSalient && !edgeHint ? strokeProtectMask(image) : null
+  const protect = edgeProtectMask(edgeHint, image.width, image.height) ?? strokeProtect
 
   let labels: LabelMap
   let paletteHex: string[]
@@ -498,13 +619,23 @@ async function colorPipeline(
     // anti-aliased edge is split between its two neighbors instead of inventing
     // a third rim color. `paletteSize` is a budget (soft cap), not an exact
     // count; autoPaletteSize lets the merge thresholds decide the count.
+    // When a protect mask or detail preservation applies, the size merge must
+    // happen HERE (protect-aware), so segmentRegions is told not to drop small
+    // regions itself — otherwise they would be gone before protection runs.
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
-      minRegionArea: settings.minRegionArea,
+      minRegionArea: protect || settings.preserveDetails ? 0 : settings.minRegionArea,
       maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
       mask: opaque,
     })
     await run.tick()
+    if (protect || settings.preserveDetails) {
+      mergeSmallRegions(seg.labels, settings.minRegionArea, {
+        oklab: paletteOklabOf(seg.paletteRgb),
+        keepContrast: DETAIL_CONTRAST,
+        protect: protect ?? undefined,
+      })
+    }
     run.stage('segment')
     await run.tick()
     labels = seg.labels
@@ -544,6 +675,12 @@ async function colorPipeline(
       fixedPalette: settings.palette,
     }
     const q = quantize(image, quantOpts)
+    // With protection active, recover palette entries for salient features the
+    // clustering sample excluded (thin strokes are all boundary pixels). The
+    // rescue mask is the stroke-validated protect mask — rims stay out.
+    if (settings.preserveSalient && strokeProtect && settings.palette === null) {
+      rescueSalientColors(image, q, strokeProtect, settings.colorSpace)
+    }
     paletteClampedTo =
       settings.autoPaletteSize && q.paletteHex.length < settings.paletteSize
         ? q.paletteHex.length
@@ -571,22 +708,14 @@ async function colorPipeline(
     if (settings.dissolveBands > 0) {
       dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
     }
-    // `protect` (hoisted above) lets an edge hint keep small regions on a
-    // predicted boundary; with no hint this is byte-identical to the plain merge.
-    if (settings.preserveDetails) {
-      const oklab = new Float32Array(q.paletteHex.length * 3)
-      for (let i = 0; i < q.paletteHex.length; i++) {
-        const [L, a, b] = rgbToOklab(
-          q.paletteRgb[i * 3] / 255,
-          q.paletteRgb[i * 3 + 1] / 255,
-          q.paletteRgb[i * 3 + 2] / 255,
-        )
-        oklab[i * 3] = L
-        oklab[i * 3 + 1] = a
-        oklab[i * 3 + 2] = b
-      }
+    // `protect` (hoisted above) lets an edge hint or the classical salience mask
+    // keep small regions on a real boundary; with neither this is byte-identical
+    // to the plain merge. `preserveSalient` also keeps contrast details, so a
+    // low-contrast hairline on a strong edge survives while an isolated speck
+    // below the salience threshold still merges away.
+    if (settings.preserveDetails || settings.preserveSalient) {
       mergeSmallRegions(q.labels, settings.minRegionArea, {
-        oklab,
+        oklab: paletteOklabOf(q.paletteRgb),
         keepContrast: DETAIL_CONTRAST,
         protect: protect ?? undefined,
       })
@@ -928,8 +1057,12 @@ async function inkPipeline(
 
   run.stage('segment')
   // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // with no hint this is byte-identical to despeckleMask.
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+  // without one, `preserveSalient` protects stroke-validated pixels of the
+  // image's own strong edges. Null when neither applies — byte-identical to
+  // despeckleMask.
+  const protect =
+    edgeProtectMask(edgeHint, image.width, image.height) ??
+    (settings.preserveSalient ? strokeProtectMask(image) : null)
   mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
   await run.tick()
 
@@ -1067,6 +1200,74 @@ function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
     out[i * 3 + 2] = b
   }
   return out
+}
+
+/**
+ * Salient-color rescue (the quantization half of `preserveSalient`). A thin
+ * feature is nothing but boundary pixels, which the clustering sample excludes
+ * — so with a small palette its color earns no centroid and the protect-aware
+ * merge has no region to keep. This re-colors stroke-validated pixels (the
+ * `protect` mask is already stroke-validated) whose own color is far from
+ * their assigned centroid with their own (sub-quantized, autoK-merged) palette
+ * entries, so the feature survives both as a region and as a color. Mutates
+ * `q`; deterministic (fixed seed and scan order).
+ */
+function rescueSalientColors(
+  image: RasterImage,
+  q: QuantizeResult,
+  protect: BinaryMask,
+  colorSpace: 'oklab' | 'rgb',
+): void {
+  if (q.paletteHex.length >= 64) return
+  const w = image.width
+  const h = image.height
+  const n = w * h
+  const oklab = toOklabBuffer(image)
+  const pOklab = paletteToOklab(q.paletteRgb)
+  const mask = new Uint8Array(n)
+  let cnt = 0
+  for (let i = 0; i < n; i++) {
+    if (protect.data[i] === 0) continue
+    const l = q.labels.data[i]
+    if (l < 0) continue
+    const o = i * 3
+    const p = l * 3
+    if (
+      deltaEOk(oklab[o], oklab[o + 1], oklab[o + 2], pOklab[p], pOklab[p + 1], pOklab[p + 2]) <=
+      RESCUE_DE
+    ) {
+      continue
+    }
+    mask[i] = 1
+    cnt++
+  }
+  if (cnt < RESCUE_MIN_PIXELS) return
+  const sub = quantize(image, {
+    k: Math.min(RESCUE_MAX_COLORS, Math.max(2, cnt >> 4)),
+    colorSpace,
+    quality: 5,
+    seed: QUANTIZE_SEED,
+    mask: { width: w, height: h, data: mask },
+    autoK: true,
+  })
+  const added = sub.labels.count
+  if (added === 0) return
+  const oldCount = q.labels.count
+  const newData = new Int32Array(q.labels.data)
+  const newRgb = new Uint8Array((oldCount + added) * 3)
+  newRgb.set(q.paletteRgb)
+  for (let i = 0; i < n; i++) {
+    const l = sub.labels.data[i]
+    if (l >= 0) newData[i] = oldCount + l
+  }
+  for (let i = 0; i < added; i++) {
+    newRgb.set(sub.paletteRgb.subarray(i * 3, i * 3 + 3), (oldCount + i) * 3)
+    q.paletteHex.push(
+      rgbToHex(sub.paletteRgb[i * 3], sub.paletteRgb[i * 3 + 1], sub.paletteRgb[i * 3 + 2]),
+    )
+  }
+  q.labels = { ...q.labels, data: newData, count: oldCount + added }
+  q.paletteRgb = newRgb
 }
 
 /** Nearest palette entry to the dominant border color (for omitBackground). */

@@ -28,9 +28,11 @@ export interface MergeOptions {
  * rounds. -1 pixels stay -1. Mutates and returns `labels`.
  *
  * With `opts`, a small component is kept (not merged) when its color differs
- * from the target label's by at least `keepContrast` in Oklab, or when any of
- * its pixels lies on the `protect` mask (a discretized edge hint), preserving
- * small high-contrast features while still clearing low-contrast noise.
+ * from the target label's by at least `keepContrast` in Oklab, or when it
+ * touches the `protect` mask (a discretized edge hint) — including a pixel
+ * whose 8-neighborhood merely reaches a protected pixel, so a hairline keeps
+ * the few crossing pixels the mask's own stroke validation could not mark
+ * (their two sides straddle a boundary). Still clears low-contrast noise.
  */
 export function mergeSmallRegions(
   labels: LabelMap,
@@ -95,8 +97,27 @@ export function mergeSmallRegions(
       let guarded = false
       for (let s = start; s < start + size; s++) {
         const p = order[s]
-        if (prot !== null && prot[p] !== 0) guarded = true
         const x = p - ((p / w) | 0) * w
+        const y = (p / w) | 0
+        if (prot !== null && !guarded) {
+          const lf = x > 0
+          const rt = x < w - 1
+          const up = y > 0
+          const dn = y < h - 1
+          if (
+            prot[p] !== 0 ||
+            (lf && prot[p - 1] !== 0) ||
+            (rt && prot[p + 1] !== 0) ||
+            (up && prot[p - w] !== 0) ||
+            (dn && prot[p + w] !== 0) ||
+            (up && lf && prot[p - w - 1] !== 0) ||
+            (up && rt && prot[p - w + 1] !== 0) ||
+            (dn && lf && prot[p + w - 1] !== 0) ||
+            (dn && rt && prot[p + w + 1] !== 0)
+          ) {
+            guarded = true
+          }
+        }
         if (x > 0 && comp[p - 1] !== id && data[p - 1] !== -1 && data[p - 1] !== lab) {
           neighborCount.set(data[p - 1], (neighborCount.get(data[p - 1]) ?? 0) + 1)
         }

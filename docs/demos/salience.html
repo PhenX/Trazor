@@ -1,0 +1,61 @@
+<title>Salience-aware simplification — keep fine edges</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+  :root{--bg:#eceff3;--paper:#fff;--ink:#16202b;--muted:#55636f;--line:#dde3ea;--accent:#0e7f8c;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d131a;--paper:#151d26;
+    --ink:#e6ebf1;--muted:#9aa8b4;--line:#223040;--accent:#35b7c5;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;line-height:1.5;padding:2rem 1rem 4rem}
+  .wrap{max-width:60rem;margin:0 auto}
+  h1{font-size:1.5rem;margin:0 0 .3rem}
+  .sub{color:var(--muted);margin:0 0 1.6rem;font-size:.95rem;max-width:52rem}
+  .row{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:1.2rem;margin-bottom:1.2rem}
+  h2{font-size:1.05rem;margin:0 0 .3rem}
+  .row p{margin:.2rem 0 1rem;color:var(--muted);font-size:.88rem}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  figure{margin:0;text-align:center}
+  figcaption{font-size:.72rem;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+  .frame{border:1px solid var(--line);border-radius:8px;padding:.5rem;background:var(--paper)}
+  .frame svg{width:100%;height:auto}
+  small{display:block;color:var(--muted);margin-top:.4rem;font-size:.78rem}
+  @media(max-width:34rem){.pair{grid-template-columns:1fr}}
+</style>
+<div class="wrap">
+  <h1>Salience-aware simplification</h1>
+  <p class="sub">Small regions normally merge into their surroundings during cleanup — which quietly erases thin strokes, hairlines and fine lettering, because they are too faint to pass the contrast test. The <strong>Keep fine edges</strong> toggle protects small regions that sit on the image's own strong color boundaries, using those boundaries as a salience mask: no ML model required. The pale 1px hairline below is a strong RGB edge but a weak color difference — the exact case contrast alone cannot save. The same protection is what the learned edge pre-pass provides when the on-device model is loaded; this is the classical, model-free fallback that always works.</p>
+
+  <section class="row">
+    <h2>Color: pale hairline crossing a shape</h2>
+    <p>The big blob and the darker 2px stroke survive either way. The pale 1px hairline (rgb 236 on 255 — below the contrast bar, above the edge threshold) only survives with the toggle on, and stays whole where it crosses the blob: its crossing pixels are rescued by the merge's 8-neighborhood guard even though the stroke validation cannot mark them.</p>
+    <div class="pair">
+      <figure><figcaption>Keep fine edges — off</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 140" width="220" height="140"><!-- Trazor: traced client-side --><path d="M 0 70 V 0 H 220 V 140 H 0 V 70 Z" fill="#ffffff" fill-rule="evenodd"/><circle cx="70.5" cy="70.5" r="33.79" fill="#b9bec7"/><path d="M 130 70.5 V 15 h 2 V 126 h-2 V 70.5 Z" fill="#5a6470" fill-rule="evenodd"/></svg></div>
+  <small>12 nodes · 3 path(s)</small></figure>
+      <figure><figcaption>Keep fine edges — on</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 140" width="220" height="140"><!-- Trazor: traced client-side --><path d="M 0 70 V 0 H 220 V 140 H 0 V 70 Z" fill="#ffffff" fill-rule="evenodd"/><circle cx="70.39" cy="70.54" r="33.87" fill="#b9bec7"/><path d="M 130 70.5 V 15 h 2 V 126 h-2 V 70.5 Z" fill="#5a6470" fill-rule="evenodd"/><path d="M 105 30 h 1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 2 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 2 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 2 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 2 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 2 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v 1 h-1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-2 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-2 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-2 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-2 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-2 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 v-1 h 1 Z" fill="#ececec" fill-rule="evenodd"/></svg></div>
+  <small>316 nodes · 4 path(s)</small></figure>
+    </div>
+  </section>
+
+  <section class="row">
+    <h2>Ink: 1px hairlines</h2>
+    <p>The same mechanism in black-and-white mode: the size-based despeckle drops the 1px hairlines unless their own edges protect them.</p>
+    <div class="pair">
+      <figure><figcaption>Keep fine edges — off</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="200" height="60"><!-- Trazor: traced client-side --><path d="M 10.15 30.5 V 10.17 h 14.7 V 50.83 h-14.7 V 30.5 Z M 90 15 h 2 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 2 v 1 h-2 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-2 Z" fill="#000000" fill-rule="evenodd"/></svg></div>
+  <small>130 nodes · 1 path(s)</small></figure>
+      <figure><figcaption>Keep fine edges — on</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="200" height="60"><!-- Trazor: traced client-side --><path d="M 10.15 30.5 V 10.17 h 14.7 V 50.83 h-14.7 V 30.5 Z M 90 15 h 2 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 3 v 1 h 2 v 1 h 3 v 1 h 2 v 1 h-2 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-3 v-1 h-3 v-1 h-2 v-1 h-2 Z" fill="#000000" fill-rule="evenodd"/><rect x="60" y="10" width="1" height="41" fill="#000000"/></svg></div>
+  <small>130 nodes · 2 path(s)</small></figure>
+    </div>
+  </section>
+
+  <section class="row">
+    <h2>Color rescue: when the palette drops the hairline's color</h2>
+    <p>With a tiny palette (k = 2) the hairline's gray never earns a palette entry — a thin stroke is nothing but boundary pixels, which clustering excludes. Without the toggle it is painted as the background and vanishes; with it, the engine rescues the hairline's own color into the palette, then protects the region.</p>
+    <div class="pair">
+      <figure><figcaption>Keep fine edges — off · 2 colors</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 140" width="220" height="140"><!-- Trazor: traced client-side --><path d="M 0 70 V 0 H 220 V 140 H 0 V 70 Z" fill="#ffffff" fill-rule="evenodd"/><circle cx="70.5" cy="70.5" r="33.79" fill="#3a4450"/></svg></div>
+  <small>6 nodes · 2 path(s)</small></figure>
+      <figure><figcaption>Keep fine edges — on · 3 colors</figcaption><div class="frame"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 140" width="220" height="140"><!-- Trazor: traced client-side --><path d="M 0 70 V 0 H 220 V 140 H 0 V 70 Z" fill="#ffffff" fill-rule="evenodd"/><circle cx="70.5" cy="70.5" r="33.79" fill="#3a4450"/><rect x="150" y="10" width="1" height="121" fill="#d9d9d9"/></svg></div>
+  <small>6 nodes · 3 path(s)</small></figure>
+    </div>
+  </section>
+</div>

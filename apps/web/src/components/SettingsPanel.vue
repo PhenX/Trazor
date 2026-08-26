@@ -407,6 +407,13 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :hint="t('settings.keepDetails.hint')"
           @update:model-value="set('preserveDetails', $event)"
         />
+        <SwitchRow
+          :label="t('settings.keepEdges.label')"
+          :model-value="s.preserveSalient"
+          :default-value="D.preserveSalient"
+          :hint="t('settings.keepEdges.hint')"
+          @update:model-value="set('preserveSalient', $event)"
+        />
         <SliderRow
           v-if="s.layering === 'cutout'"
           :label="t('settings.gapFill.label')"

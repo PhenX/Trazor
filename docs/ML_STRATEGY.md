@@ -244,3 +244,12 @@ Not-yet-shipped work that informs this strategy. When any of it becomes shipped 
 - **Su et al., "PiDiNet", ICCV 2021** / **Poma et al., "DexiNed", WACV 2020** / **Xie & Tu, "HED", ICCV 2015.** Compact
   edge-detection networks suitable for the learned edge pre-pass.
 - **"Image Vectorization: a Review", 2023.** <https://arxiv.org/abs/2306.06441> — survey situating the above.
+- **Frans et al., "CLIPasso: Semantically-Aware Object Sketching", SIGGRAPH 2022.**
+  <https://arxiv.org/abs/2203.17291> — semantic/perceptual simplification. Informs the salience-aware simplification
+  backlog item (edge-model output as salience, without CLIP).
+- **Egiazarian et al., "Deep Vectorization of Technical Drawings", ECCV 2020.**
+  <https://arxiv.org/abs/2003.05471> — primitive segmentation (lines, arcs, circles). Informs the technical-drawing
+  primitive head backlog item.
+- **Z. Du et al., "Image Vectorization and Editing via Linear Gradient Layer Decomposition", ACM TOG 42(4), 2023.** —
+  linear-gradient region decomposition; the output-side reference for gradient fills
+  ([`../plans/vectorization-quality.md`](../plans/vectorization-quality.md) workstream F).

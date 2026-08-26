@@ -51,6 +51,24 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-25',
+    iteration: 3,
+    kind: 'feature',
+    title: 'Keep fine edges — no model needed',
+    items: [
+      "A new Keep fine edges toggle protects thin strokes, hairlines and fine lettering from being merged away, using the picture's own strong color edges. It also recovers the color of such features when the palette would otherwise drop them — so a faint thin line stays visible instead of silently turning into the background.",
+    ],
+  },
+  {
+    date: '2026-08-25',
+    iteration: 2,
+    kind: 'improvement',
+    title: 'Auto-optimize now judges shape quality too',
+    items: [
+      "Auto-optimize's fidelity score now also weighs how well the traced shapes match the picture's structure, not just its colors — so it favors results that keep edges crisp over ones that get the palette right but blur the outlines.",
+    ],
+  },
+  {
+    date: '2026-08-25',
     iteration: 1,
     kind: 'fix',
     title: 'Cleaner stacked cut layers',

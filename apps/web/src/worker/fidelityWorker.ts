@@ -1,4 +1,5 @@
 import { clamp, deltaEOk, rgbToOklab } from '@trazor/core'
+import { ssim } from '@trazor/raster'
 import type { FidelityInMessage, FidelityOutMessage, FidelityWorkerScope } from './fidelityProtocol'
 
 const SAMPLE_BUDGET = 200_000
@@ -10,6 +11,8 @@ export interface DifferenceScore {
   score: number
   /** Per-pixel ΔE heatmap, RGBA (transparent where faithful); absent when not requested. */
   diff?: Uint8ClampedArray<ArrayBuffer>
+  /** Windowed SSIM (−1..1) for the score-only path; feeds the tune fidelity blend. */
+  ssim?: number
 }
 
 /**
@@ -43,7 +46,10 @@ export function scoreDifference(
       sum += deltaEOk(l1, a1, b1, l2, a2, b2)
       count++
     }
-    return { score: clamp(1 - (count > 0 ? sum / count : 0) * 4, 0, 1) }
+    // The structural term votes alongside the sampled mean ΔE in the tune
+    // scorer — computed on the full rasters (windowed, not sampled).
+    const structural = ssim({ width, height, data: a }, { width, height, data: b })
+    return { score: clamp(1 - (count > 0 ? sum / count : 0) * 4, 0, 1), ssim: structural }
   }
 
   const diffData = new Uint8ClampedArray(pixels * 4)

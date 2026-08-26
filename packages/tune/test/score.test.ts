@@ -38,6 +38,18 @@ describe('fidelityUtility', () => {
     expect(fidelityUtility(0.5)).toBe(0)
     expect(fidelityUtility(0.0625)).toBeCloseTo(0.75, 6)
   })
+
+  it('blends an SSIM term into the ΔE anchor when present', () => {
+    // ΔE 0.0625 → 0.75; SSIM 1 → 1: 0.7·0.75 + 0.3·1 = 0.825.
+    expect(fidelityUtility(0.0625, 1)).toBeCloseTo(0.825, 6)
+    // SSIM −1 → 0: pure ΔE component.
+    expect(fidelityUtility(0.0625, -1)).toBeCloseTo(0.525, 6)
+  })
+
+  it('rewards higher SSIM at equal ΔE', () => {
+    expect(fidelityUtility(0.05, 0.8)).toBeGreaterThan(fidelityUtility(0.05, 0.4))
+    expect(fidelityUtility(0.05, 0.4)).toBeGreaterThan(fidelityUtility(0.05, 0))
+  })
 })
 
 describe('utilitiesOf', () => {

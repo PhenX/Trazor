@@ -37,6 +37,8 @@ export type FidelityOutMessage =
       height: number
       /** ΔE heatmap, RGBA at result size, transferred. Absent when `heatmap` was false. */
       diff?: ArrayBuffer
+      /** Windowed SSIM (−1..1), present on the score-only path (heatmap false). */
+      ssim?: number
     }
   | { type: 'error'; id: number; message: string }
 

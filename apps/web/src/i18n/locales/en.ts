@@ -164,6 +164,10 @@ export const en = {
       label: 'Keep details',
       hint: 'Keep small high-contrast features (e.g. a logo dot) instead of merging them away',
     },
+    keepEdges: {
+      label: 'Keep fine edges',
+      hint: 'Keep thin strokes, hairlines and fine lettering on strong color edges, and recover their colors when the palette would drop them — without the edge model',
+    },
     gapFill: {
       label: 'Gap fill',
       hint: 'Hairline-seam compensation stroke width (px) for cutout rendering',

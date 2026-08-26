@@ -9,6 +9,7 @@ import { Resvg } from '@resvg/resvg-js'
 import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
 import { deltaEOk, deltaEOkSq, rgbToOklab } from '@trazor/core'
+import { boundaryIoU, hausdorff, ssim } from '@trazor/raster'
 import type { RasterImage } from '@trazor/core'
 
 /** Read a PNG or JPEG as a RasterImage (fresh Uint8ClampedArray, length w*h*4). */
@@ -102,6 +103,16 @@ export interface QualityStats {
    *  nearby in the source. A hue invented at a seam has no near-match and scores
    *  high: the band artifact the eye flags but pixel ΔE forgives. */
   spurious: number
+  /** Windowed SSIM (Wang et al. 2004) on luminance — a perceptual complement to
+   *  mean ΔE (1 = structurally identical; @trazor/raster `ssim`). */
+  ssim: number
+  /** Symmetric Hausdorff distance (px) between the two boundary masks — the
+   *  geometric "how far off are the edges" score (@trazor/raster `hausdorff`).
+   *  Infinity when exactly one side has no detectable edges. */
+  hausdorff: number
+  /** IoU of the two boundary masks dilated by 2px — boundary agreement at a
+   *  small tolerance (1 = coincide, 0 = disjoint; @trazor/raster `boundaryIoU`). */
+  boundaryIoU: number
 }
 
 /**
@@ -232,6 +243,9 @@ export function qualityStats(render: RasterImage, ref: RasterImage): QualityStat
     edge: ecount > 0 ? esum / ecount : 0,
     p95,
     spurious: scount > 0 ? ssum / scount : 0,
+    ssim: ssim(render, ref),
+    hausdorff: hausdorff(render, ref, EDGE_T),
+    boundaryIoU: boundaryIoU(render, ref, EDGE_T),
   }
 }
 
