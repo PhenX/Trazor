@@ -442,6 +442,13 @@ export const en = {
     removedCount: '{count} layer removed | {count} layers removed',
   },
 
+  retrace: {
+    title: 'Re-trace image?',
+    body: "You've removed {count} layer. Re-tracing will discard that edit and bring every color back. | You've removed {count} layers. Re-tracing will discard those edits and bring every color back.",
+    confirm: 'Re-trace',
+    cancel: 'Keep my layers',
+  },
+
   tune: {
     open: 'Auto-optimize',
     openTitle: 'Search for the best settings for this image and your priorities',

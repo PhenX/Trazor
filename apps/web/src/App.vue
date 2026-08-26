@@ -6,6 +6,7 @@ import DropZone from './components/DropZone.vue'
 import LayerPanel from './components/LayerPanel.vue'
 import PreviewViewport from './components/PreviewViewport.vue'
 import ReleaseNotes from './components/ReleaseNotes.vue'
+import RetraceDialog from './components/RetraceDialog.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatsBar from './components/StatsBar.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -208,6 +209,7 @@ onBeforeUnmount(() => {
       <TuneWall />
     </div>
     <ReleaseNotes v-if="releaseNotesOpen" @close="releaseNotesOpen = false" />
+    <RetraceDialog v-if="store.retraceConfirm" />
     <ToastHost />
   </div>
 </template>

@@ -242,6 +242,8 @@ export const useAppStore = defineStore('app', () => {
   const selectedLayer = ref<number | null>(null)
   /** Paint keys the user has hidden from the preview/export (removable, restorable). */
   const removedLayers = ref<string[]>([])
+  /** Open while a re-trace is waiting on the user to confirm discarding removed layers. */
+  const retraceConfirm = ref(false)
 
   // Non-reactive machinery
   let client: TrazorClient | null = null
@@ -342,6 +344,7 @@ export const useAppStore = defineStore('app', () => {
   function restoreLayers(): void {
     if (removedLayers.value.length === 0) return
     removedLayers.value = []
+    retraceConfirm.value = false
   }
 
   function setLayersOpen(open: boolean): void {
@@ -352,11 +355,13 @@ export const useAppStore = defineStore('app', () => {
     layersOpen.value = !layersOpen.value
   }
 
-  // A new trace invalidates layer indices — drop any hover/selection/removals.
+  // A new trace invalidates layer indices — drop any hover/selection/removals,
+  // and close a stale re-trace prompt.
   watch(result, () => {
     layerHover.value = null
     selectedLayer.value = null
     removedLayers.value = []
+    retraceConfirm.value = false
   })
 
   // ------------------------------- Toasts --------------------------------
@@ -800,18 +805,43 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  /**
+   * Start a trace, unless the user has removed layers — a re-trace rebuilds the
+   * geometry from scratch and would discard those edits, so pause and ask first
+   * (see {@link confirmRetrace} / {@link cancelRetrace}).
+   */
+  function startRun(): void {
+    if (removedLayers.value.length > 0) {
+      retraceConfirm.value = true
+      return
+    }
+    void doRun()
+  }
+
   /** Debounced re-vectorization trigger (used by the settings/image watcher). */
   function run(immediate = false): void {
     if (runTimer !== null) clearTimeout(runTimer)
     if (immediate) {
       runTimer = null
-      void doRun()
+      startRun()
       return
     }
     runTimer = setTimeout(() => {
       runTimer = null
-      void doRun()
+      startRun()
     }, RUN_DEBOUNCE_MS)
+  }
+
+  /** Proceed with the pending re-trace, discarding the removed layers. */
+  function confirmRetrace(): void {
+    retraceConfirm.value = false
+    removedLayers.value = []
+    void doRun()
+  }
+
+  /** Dismiss the prompt and keep the current result with its removed layers. */
+  function cancelRetrace(): void {
+    retraceConfirm.value = false
   }
 
   watch([workingImage, settings, edgePrepass], () => {
@@ -1106,6 +1136,7 @@ export const useAppStore = defineStore('app', () => {
     layerHover,
     selectedLayer,
     removedLayers,
+    retraceConfirm,
     tuneOpen,
     tuneRunning,
     tuneProgress,
@@ -1180,6 +1211,8 @@ export const useAppStore = defineStore('app', () => {
     toggleSelectedLayer,
     removeLayer,
     restoreLayers,
+    confirmRetrace,
+    cancelRetrace,
     setLayersOpen,
     toggleLayersOpen,
   }

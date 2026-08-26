@@ -57,6 +57,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     items: [
       'Hover a color in the preview and it lights up — with its hex and shape/node counts — and the matching row in the Layers panel highlights too, so it works both ways.',
       'Click a color in the preview for a quick menu to remove it or copy its hex, and every Layers row now has a remove button. Removed colors drop out of the preview and the exported SVG, and one tap on Restore brings them back.',
+      'If a new trace would discard colors you removed, Trazor now asks first — so a stray settings change never wipes your edits by surprise.',
     ],
   },
   {

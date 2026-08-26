@@ -456,6 +456,13 @@ export const fr: MessageSchema = {
     removedCount: '{count} calque supprimé | {count} calques supprimés',
   },
 
+  retrace: {
+    title: "Revectoriser l'image ?",
+    body: 'Vous avez supprimé {count} calque. La revectorisation annulera cette modification et rétablira toutes les couleurs. | Vous avez supprimé {count} calques. La revectorisation annulera ces modifications et rétablira toutes les couleurs.',
+    confirm: 'Revectoriser',
+    cancel: 'Conserver mes calques',
+  },
+
   tune: {
     open: 'Optimisation auto',
     openTitle: 'Rechercher les meilleurs réglages pour cette image et vos priorités',
