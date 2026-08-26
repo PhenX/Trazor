@@ -8,20 +8,36 @@
  *
  * The fits are closed-form and deterministic (per-label moment sums make every
  * candidate union's fit O(1)):
- * - linear: the ramp direction is the dominant least-squares color gradient in
- *   position space (covariance-normalized, so it is aspect-correct);
+ * - linear: the ramp direction is the leading eigenvector of the per-channel
+ *   color-gradient scatter in position space (covariance-normalized, so it is
+ *   aspect-correct); its eigenvalue ratio is the ramp's directionality (1-D-ness);
  * - radial: modeling color as linear in r² makes it a quadratic in position, so
  *   the concentric center falls out of the per-channel quadratic coefficients
  *   (c = −½·ΣA·B / ΣA²).
  *
+ * Bands are merged *agglomeratively* — repeatedly uniting the adjacent pair that
+ * scores best — rather than by growing one seed to exhaustion, so a suboptimal
+ * early union can't fragment the rest and a long multi-stop ramp is recovered
+ * whole regardless of band count. A union is accepted when it is directional (its
+ * color varies along one axis) and *monotone*: walking the member bands' mean
+ * colors in axis order, the color path neither doubles back (a reversal — a flat
+ * object continuing the ramp's axis with its own colors) nor lets one band jump
+ * far off the local trend (a foreign object wedged in). Monotonicity is
+ * curvature-agnostic, so a wide multi-stop ramp that bends through Oklab still
+ * grows whole where a straight-line error gate would split it.
+ *
  * Stops come from a binned color profile along the model's scalar (projection or
  * radius), simplified by Douglas–Peucker: a ramp that is straight in Oklab keeps
  * 2 stops, one that curves in Oklab (which most sRGB ramps do) keeps the few it
- * needs — up to MAX_STOPS — so the gradient follows the true perceptual path.
+ * needs — up to MAX_STOPS — so the gradient follows the true perceptual path. A
+ * profile ships only if it spans ≥ MIN_MEMBERS bands whose color changes steadily
+ * across the extent (not two flats meeting at a seam) with low cross-axis spread.
  *
- * Growth runs in two phases sharing one claim map: linear first, radial on the
- * leftovers — so a region a linear ramp already explains is never re-read as
- * radial, and the linear output is independent of the radial detector.
+ * Bands merge into linear candidates first; each candidate is then built as both
+ * a linear and (when it carries a curvature centre) a radial gradient, and the
+ * model whose pixels fit tighter wins — an off-centre radial reads as a linear
+ * ramp at the band-mean level, so only the pixel-level cross-axis spread tells
+ * them apart. Leftover bands the linear pass released feed a second, radial merge.
  *
  * Reference: Du et al., "Image Vectorization and Editing via Linear Gradient
  * Layer Decomposition", ACM TOG (SIGGRAPH) 42(4), 2023.
@@ -35,11 +51,13 @@ export interface GradientOptions {
   /** Minimum pixel area of a merged ramp for it to become a gradient. Default 0. */
   minArea?: number
   /**
-   * Max mean-Oklab fit error a ramp may have (growth + build). Lower = stricter,
-   * so flat objects and messy regions are not merged into a gradient. Default
-   * {@link MAX_RESIDUAL}.
+   * Max fraction of a ramp's color-path length that may run *backwards* (against
+   * the ramp's overall color direction) and still grow as one gradient. Higher =
+   * more tolerant of reversals, so more bands merge; lower keeps flat objects and
+   * reversing neighbours out. Curvature never counts as backtracking. Default
+   * {@link MAX_BACKTRACK}.
    */
-  maxResidual?: number
+  maxBacktrack?: number
   /**
    * Minimum total Oklab color change a region must span to become a gradient.
    * Higher = only strong ramps qualify. Default {@link MIN_COLOR_SPAN}.
@@ -63,13 +81,35 @@ export interface GradientResult {
  * ramp above which a fit is rejected. Measured as within-bin color spread, so
  * it accepts a curved 1-D ramp (the stops follow it) but rejects a 2-D field.
  */
-const MAX_RESIDUAL = 0.03
+const MAX_RESIDUAL = 0.045
+/**
+ * Default max fraction of a ramp's color-path length that may run backwards
+ * against its overall color direction (growth + build gate). Curvature advances
+ * the path, so a monotone curved ramp reads as 0 backtracking and grows whole; a
+ * reversal (a flat object continuing the ramp's axis with the ramp's own colors)
+ * spends much of the path going back, and is refused.
+ */
+const MAX_BACKTRACK = 0.15
+/**
+ * Max a single band's mean color may stray (over the ramp's color span) from the
+ * straight interpolation between its two projection-neighbours before it reads as
+ * a foreign object wedged into the ramp rather than part of it. Generous, because
+ * a smooth ramp's bands barely deviate while an off-ramp blob (a sun, a
+ * silhouette) strays a large fraction of the span.
+ */
+const MAX_OUTLIER = 0.35
 /** Fraction of position→color energy on the principal axis required (1-D linear ramp). */
 const MIN_DIRECTIONALITY = 0.88
 /** Total Oklab distance across the ramp below which the region is treated as flat. */
 const MIN_COLOR_SPAN = 0.06
-/** A ramp must merge at least this many quantized bands. */
-const MIN_MEMBERS = 2
+/**
+ * A ramp must merge at least this many quantized bands. Four, not two or three:
+ * a couple of adjacent flats — two silhouettes with an anti-aliased seam, a step
+ * with a transition band — make a two or three band progression that a ramp test
+ * cannot tell from the real thing. A genuine posterized ramp spans many bands, so
+ * requiring four rejects the flat-object cases while keeping any real gradient.
+ */
+const MIN_MEMBERS = 4
 /** Bins used to sample a ramp's color profile before simplifying it to stops. */
 const BIN_COUNT = 32
 /** A populated-bin count below this is too coarse to be a ramp. */
@@ -80,8 +120,25 @@ const STOP_TOLERANCE = 0.01
 const MAX_STOPS = 8
 /** Reject as a hard edge (not a ramp) when one adjacent-bin jump exceeds this fraction of the whole path. */
 const STEP_JUMP_FRAC = 0.5
-/** A radial center must sit within this many position std-devs of the region centroid. */
-const CENTER_SANITY = 2.5
+/**
+ * The offset span over which the middle 80% of a ramp's color path is traversed,
+ * as a fraction of its full offset range, must be at least this. A ramp changes
+ * color steadily across its extent; two flat regions meeting (e.g. two silhouettes
+ * with an anti-aliased seam that quantized into a thin intermediate band) put the
+ * whole change into a narrow band — a step, not a ramp — even when a hard single
+ * jump is avoided.
+ */
+const MIN_RAMP_SPREAD = 0.33
+/**
+ * A radial center must sit within this many position std-devs of the region
+ * centroid. Tight enough that a curved *linear* ramp — whose r²-model center
+ * lands well outside the band (~1.7 std) — is not mistaken for a concentric
+ * region, while a genuine radial (center inside, ≲1 std even when off-centre)
+ * still qualifies.
+ */
+const CENTER_SANITY = 1.4
+/** Ignore profile bins holding less than this fraction of the fullest bin (edge/corner noise). */
+const SPARSE_FRAC = 0.15
 /**
  * Fraction of a region's color variance the radial r²-model may leave
  * unexplained and still be grouped as one radial. This proxy only groups rings
@@ -99,14 +156,10 @@ const RADIAL_MAX_UNEXPLAINED = 0.15
 // 18:Σx³ 19:Σx²y 20:Σxy² 21:Σy³ 22:Σx⁴ 23:Σx²y² 24:Σy⁴   25:ΣLu 26:Σau 27:Σbu  (u = x²+y²)
 const NM = 28
 
-/** A linear ramp fitted from a moment vector: direction, per-channel line, error. */
+/** A linear ramp's fitted axis and how 1-D its color variation is. */
 interface RampFit {
   dx: number
   dy: number
-  g0: [number, number, number]
-  g1: [number, number, number]
-  /** Mean Oklab distance of the pixels to the fitted ramp. */
-  residual: number
   /** λ1 / (λ1 + λ2) of the color-gradient scatter; 1 = the ramp is perfectly 1-D. */
   directionality: number
 }
@@ -120,9 +173,10 @@ interface RadialFit {
 }
 
 /**
- * Fit `color ≈ g0 + g1·(p·d)` over the pixels summarized by the moment vector at
- * `off`, choosing the position direction `d` of steepest color change. Returns
- * null when the region is too small or the fit is degenerate.
+ * Recover a linear ramp's axis from the moment vector at `off`: the direction of
+ * steepest color change (leading eigenvector of the per-channel color-gradient
+ * scatter) and the scatter's eigenvalue ratio (how 1-D the color variation is).
+ * Returns null when the region is too small or the fit is degenerate.
  */
 function fitRamp(m: Float64Array, off: number): RampFit | null {
   const n = m[off]
@@ -184,32 +238,109 @@ function fitRamp(m: Float64Array, off: number): RampFit | null {
   if (dn < 1e-12) return null
   dx /= dn
   dy /= dn
-
-  // 1-D regression of each channel on the scalar s = d·p (moments only).
-  const Ss = dx * m[off + 1] + dy * m[off + 2]
-  const Sss = dx * dx * m[off + 3] + 2 * dx * dy * m[off + 4] + dy * dy * m[off + 5]
-  const det2 = n * Sss - Ss * Ss
-  if (Math.abs(det2) < 1e-9) return null
-  const idet = 1 / det2
-
-  const g0: [number, number, number] = [0, 0, 0]
-  const g1: [number, number, number] = [0, 0, 0]
-  let rss = 0
-  for (let c = 0; c < 3; c++) {
-    const Sc = m[off + 6 + c]
-    const Scs = dx * m[off + 12 + 2 * c] + dy * m[off + 13 + 2 * c]
-    const b0 = (Sss * Sc - Ss * Scs) * idet
-    const b1 = (n * Scs - Ss * Sc) * idet
-    g0[c] = b0
-    g1[c] = b1
-    rss += Math.max(0, m[off + 9 + c] - (b0 * Sc + b1 * Scs))
-  }
-  return { dx, dy, g0, g1, residual: Math.sqrt(rss * inv), directionality }
+  return { dx, dy, directionality }
 }
 
-/** True when a fit is a growable linear ramp (1-D and straight enough to group). */
-function isRamp(fit: RampFit | null, maxResidual: number): fit is RampFit {
-  return fit !== null && fit.residual <= maxResidual && fit.directionality >= MIN_DIRECTIONALITY
+/**
+ * Backtracking fraction of a color path: the share of its total step length that
+ * runs *against* the overall first→last direction. 0 for a monotone path (every
+ * step advances, however much it curves); ~0.5 for a symmetric there-and-back
+ * reversal. Returns 1 when the path has no net color change (not a ramp). Fewer
+ * than three points cannot double back, so they read as 0.
+ */
+function pathBacktrack(cols: readonly Lab[]): number {
+  if (cols.length < 3) return 0
+  const first = cols[0]
+  const last = cols[cols.length - 1]
+  let dL = last[0] - first[0]
+  let da = last[1] - first[1]
+  let db = last[2] - first[2]
+  const norm = Math.hypot(dL, da, db)
+  if (norm < 1e-6) return 1
+  dL /= norm
+  da /= norm
+  db /= norm
+  let fwd = 0
+  let back = 0
+  for (let i = 1; i < cols.length; i++) {
+    const proj =
+      (cols[i][0] - cols[i - 1][0]) * dL +
+      (cols[i][1] - cols[i - 1][1]) * da +
+      (cols[i][2] - cols[i - 1][2]) * db
+    if (proj >= 0) fwd += proj
+    else back -= proj
+  }
+  const total = fwd + back
+  return total > 1e-9 ? back / total : 0
+}
+
+/**
+ * How well a set of member labels' mean colors form one ramp when walked in order
+ * of their centroid's projection onto the ramp axis (dx, dy):
+ * - `backtrack`: fraction of the color path that runs backwards (monotonicity) —
+ *   ~0 as a curved ramp accretes bands, high when a reversing neighbor is added;
+ * - `outlier`: the largest a single band's mean color strays from the straight
+ *   interpolation between its two projection-neighbours, over the path span — ~0
+ *   along a smooth ramp, large for an off-ramp object (a bright sun, a dark
+ *   silhouette) that happens to fall inside the ramp's projection range.
+ * Backtracking catches reversals at the ends; the outlier term catches foreign
+ * bands wedged into the middle, which a monotone walk would otherwise accept.
+ */
+function rampPathFit(
+  m: Float64Array,
+  members: readonly number[],
+  candidate: number,
+  dx: number,
+  dy: number,
+): { backtrack: number; outlier: number } {
+  const pts: [number, number, Lab][] = []
+  const push = (l: number) => {
+    const o = l * NM
+    const n = m[o]
+    if (n <= 0) return
+    pts.push([
+      dx * (m[o + 1] / n) + dy * (m[o + 2] / n),
+      l,
+      [m[o + 6] / n, m[o + 7] / n, m[o + 8] / n],
+    ])
+  }
+  for (const l of members) push(l)
+  if (candidate >= 0) push(candidate)
+  // Order by axis projection; label id breaks ties so the walk is deterministic.
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1])
+  const cols = pts.map((p) => p[2])
+  const n = cols.length
+  let outlier = 0
+  if (n >= 3) {
+    const f = cols[0]
+    const l = cols[n - 1]
+    const span = Math.hypot(l[0] - f[0], l[1] - f[1], l[2] - f[2])
+    if (span > 1e-6)
+      for (let i = 1; i < n - 1; i++) {
+        const s0 = pts[i - 1][0]
+        const s2 = pts[i + 1][0]
+        const t = s2 - s0 > 1e-9 ? (pts[i][0] - s0) / (s2 - s0) : 0.5
+        const iL = cols[i - 1][0] + (cols[i + 1][0] - cols[i - 1][0]) * t
+        const iA = cols[i - 1][1] + (cols[i + 1][1] - cols[i - 1][1]) * t
+        const iB = cols[i - 1][2] + (cols[i + 1][2] - cols[i - 1][2]) * t
+        const dev = Math.hypot(cols[i][0] - iL, cols[i][1] - iA, cols[i][2] - iB) / span
+        if (dev > outlier) outlier = dev
+      }
+  }
+  return { backtrack: pathBacktrack(cols), outlier }
+}
+
+/** True when a linear fit is a growable 1-D ramp (directional, monotone, outlier-free). */
+function isRamp(
+  m: Float64Array,
+  members: readonly number[],
+  candidate: number,
+  fit: RampFit | null,
+  maxBacktrack: number,
+): fit is RampFit {
+  if (fit === null || fit.directionality < MIN_DIRECTIONALITY) return false
+  const q = rampPathFit(m, members, candidate, fit.dx, fit.dy)
+  return q.backtrack <= maxBacktrack && q.outlier <= MAX_OUTLIER
 }
 
 /**
@@ -328,12 +459,22 @@ interface Super {
   rep: number
 }
 
+interface Cluster {
+  members: number[]
+  acc: Float64Array
+  adj: Set<number> // roots of adjacent clusters
+}
+
 /**
- * Greedily grow ramps: seed by descending area, then repeatedly add the adjacent
- * unclaimed band that keeps the union the tightest ramp under `accept` (which
- * returns a residual, or Infinity to reject). Members of an accepted super
- * (≥ MIN_MEMBERS, ≥ minArea) are marked in the shared `claimed` map; a failed
- * attempt claims nothing, leaving its labels for the next seed or phase.
+ * Agglomeratively merge adjacent bands into ramps: start one cluster per
+ * unclaimed band, then repeatedly merge the adjacent pair whose union scores best
+ * under `accept` (which returns a score, or Infinity to reject), until no
+ * acceptable merge remains. Merging the globally best pair first — rather than
+ * greedily growing one seed to exhaustion — keeps a suboptimal early union from
+ * fragmenting the rest: the clean bands of one ramp coalesce before any marginal
+ * merge is considered, so a long multi-stop ramp is recovered whole regardless of
+ * band count. Surviving clusters (≥ MIN_MEMBERS, ≥ minArea) are marked in the
+ * shared `claimed` map; the rest are left for the next phase.
  */
 function growRamps(
   m: Float64Array,
@@ -341,40 +482,67 @@ function growRamps(
   seeds: readonly number[],
   claimed: Int32Array,
   minArea: number,
-  accept: (trial: Float64Array) => number,
+  accept: (trial: Float64Array, members: readonly number[]) => number,
 ): Super[] {
-  const supers: Super[] = []
-  const acc = new Float64Array(NM)
-  const trial = new Float64Array(NM)
+  const rootOf = new Map<number, number>()
+  const clusters = new Map<number, Cluster>()
   for (const seed of seeds) {
     if (claimed[seed] >= 0) continue
+    const acc = new Float64Array(NM)
     for (let j = 0; j < NM; j++) acc[j] = m[seed * NM + j]
-    const members = [seed]
-    const local = new Set<number>([seed])
-    for (;;) {
-      let best = -1
-      let bestResidual = Infinity
-      for (const mem of members) {
-        for (const nb of adj[mem]) {
-          if (claimed[nb] >= 0 || local.has(nb)) continue
-          for (let j = 0; j < NM; j++) trial[j] = acc[j] + m[nb * NM + j]
-          const res = accept(trial)
-          if (res < bestResidual) {
-            bestResidual = res
-            best = nb
-          }
+    clusters.set(seed, { members: [seed], acc, adj: new Set() })
+    rootOf.set(seed, seed)
+  }
+  for (const [root, c] of clusters)
+    for (const mem of c.members)
+      for (const nb of adj[mem]) {
+        const nr = rootOf.get(nb)
+        if (nr !== undefined && nr !== root) c.adj.add(nr)
+      }
+
+  const trial = new Float64Array(NM)
+  for (;;) {
+    let bestA = -1
+    let bestB = -1
+    let bestScore = Infinity
+    for (const [a, ca] of clusters) {
+      for (const b of ca.adj) {
+        if (b <= a) continue // each undirected pair once
+        const cb = clusters.get(b)!
+        for (let j = 0; j < NM; j++) trial[j] = ca.acc[j] + cb.acc[j]
+        const score = accept(trial, ca.members.concat(cb.members))
+        if (score < bestScore) {
+          bestScore = score
+          bestA = a
+          bestB = b
         }
       }
-      if (best < 0) break
-      for (let j = 0; j < NM; j++) acc[j] += m[best * NM + j]
-      members.push(best)
-      local.add(best)
     }
-    if (members.length < MIN_MEMBERS || acc[0] < minArea) continue
-    let rep = members[0]
-    for (const mem of members) if (mem < rep) rep = mem
-    for (const mem of members) claimed[mem] = 1
-    supers.push({ members: members.slice(), rep })
+    if (bestA < 0) break
+    // Merge the higher root into the lower so `rep` stays stable and deterministic.
+    const ca = clusters.get(bestA)!
+    const cb = clusters.get(bestB)!
+    for (let j = 0; j < NM; j++) ca.acc[j] += cb.acc[j]
+    for (const mem of cb.members) {
+      ca.members.push(mem)
+      rootOf.set(mem, bestA)
+    }
+    ca.adj.delete(bestB)
+    cb.adj.delete(bestA)
+    for (const x of cb.adj) {
+      ca.adj.add(x)
+      const cx = clusters.get(x)!
+      cx.adj.delete(bestB)
+      cx.adj.add(bestA)
+    }
+    clusters.delete(bestB)
+  }
+
+  const supers: Super[] = []
+  for (const [root, c] of clusters) {
+    if (c.members.length < MIN_MEMBERS || c.acc[0] < minArea) continue
+    for (const mem of c.members) claimed[mem] = 1
+    supers.push({ members: c.members.slice(), rep: root })
   }
   return supers
 }
@@ -435,7 +603,7 @@ export function fitRegionGradients(
   if (count < MIN_MEMBERS) return { gradients }
 
   const minArea = opts?.minArea ?? 0
-  const maxResidual = opts?.maxResidual ?? MAX_RESIDUAL
+  const maxBacktrack = opts?.maxBacktrack ?? MAX_BACKTRACK
   const minColorSpan = opts?.minColorSpan ?? MIN_COLOR_SPAN
   const ok = opts?.oklab ?? toOklabBuffer(image)
 
@@ -518,28 +686,92 @@ export function fitRegionGradients(
   for (let l = 0; l < count; l++) if (counts[l] > 0) seeds.push(l)
   seeds.sort((a, b) => counts[b] - counts[a] || a - b)
 
-  // ---- two-phase growth: linear first, radial on the leftovers ----
-  const claimed = new Int32Array(count).fill(-1)
-  const linearSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
-    const f = fitRamp(t, 0)
-    return isRamp(f, maxResidual) ? f.residual : Infinity
-  })
-  const radialSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
-    const f = fitRadial(t, 0)
-    return isRadial(f) ? f.misfit : Infinity
-  })
-  if (linearSupers.length === 0 && radialSupers.length === 0) return { gradients }
+  // ---- fill a super's per-scalar color profile (pass A: extents, pass B: bins)
+  // and build its paint; returns the paint + residual or null. Only pixels whose
+  // label maps to `rep` in `repOf` are read, so it is safe to call per phase. ----
+  const profileAndBuild = (rep: number, info: Meta): Built | null => {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (repOf[data[y * width + x]] !== rep) continue
+        const px = x + 0.5
+        const py = y + 0.5
+        if (info.kind === 'linear') {
+          const s = info.dx * px + info.dy * py
+          if (s < info.smin) info.smin = s
+          if (s > info.smax) info.smax = s
+        } else {
+          const r = Math.hypot(px - info.cx, py - info.cy)
+          if (r > info.rmax) info.rmax = r
+        }
+      }
+    }
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const p = y * width + x
+        if (repOf[data[p]] !== rep) continue
+        const px = x + 0.5
+        const py = y + 0.5
+        let t: number
+        if (info.kind === 'linear') {
+          const span = info.smax - info.smin
+          t = span > 1e-9 ? (info.dx * px + info.dy * py - info.smin) / span : 0
+        } else {
+          t = info.rmax > 1e-9 ? Math.hypot(px - info.cx, py - info.cy) / info.rmax : 0
+        }
+        let bin = Math.floor(t * BIN_COUNT)
+        if (bin < 0) bin = 0
+        else if (bin >= BIN_COUNT) bin = BIN_COUNT - 1
+        const b = bin * BIN_FIELDS
+        const base = p * 3
+        info.bins[b] += 1
+        info.bins[b + 1] += ok[base]
+        info.bins[b + 2] += ok[base + 1]
+        info.bins[b + 3] += ok[base + 2]
+        info.bins[b + 4] += ok[base] * ok[base]
+        info.bins[b + 5] += ok[base + 1] * ok[base + 1]
+        info.bins[b + 6] += ok[base + 2] * ok[base + 2]
+      }
+    }
+    return info.kind === 'linear'
+      ? buildLinear(info, minColorSpan, maxBacktrack)
+      : buildRadial(info, minColorSpan)
+  }
 
-  // ---- set up per-rep accumulators, decide model per super ----
+  // ---- two-phase growth sharing one claim map: linear first, radial on the
+  // leftovers. Directionality and monotonicity cannot tell an off-center radial
+  // (whose ring means rise monotonically toward the far edge) from a real linear
+  // ramp — only the pixel-level cross-axis spread can, and that is a build-time
+  // measurement. So a linear super that fails to build (a 2-D field masquerading
+  // as a ramp) releases its claim, handing those bands to the radial pass. ----
+  const claimed = new Int32Array(count).fill(-1)
   const repOf = new Int32Array(count).fill(-1)
-  const meta = new Map<number, Meta>()
+  const finalRep = new Int32Array(count).fill(-1)
   const sacc = new Float64Array(NM)
+
+  const linearSupers = growRamps(m, adj, seeds, claimed, minArea, (t, members) => {
+    const f = fitRamp(t, 0)
+    if (f === null || f.directionality < MIN_DIRECTIONALITY) return Infinity
+    const q = rampPathFit(m, members, -1, f.dx, f.dy)
+    return q.backtrack <= maxBacktrack && q.outlier <= MAX_OUTLIER
+      ? q.backtrack + q.outlier
+      : Infinity
+  })
   for (const s of linearSupers) {
     sumMembers(m, s.members, sacc)
     const fit = fitRamp(sacc, 0)
-    if (!isRamp(fit, maxResidual)) continue
+    if (!isRamp(m, s.members, -1, fit, maxBacktrack)) {
+      for (const mem of s.members) claimed[mem] = -1 // fit slipped; hand back
+      continue
+    }
     for (const mem of s.members) repOf[mem] = s.rep
-    meta.set(s.rep, {
+    // A concentric region reads as a linear ramp at the label-mean level (its
+    // ring means rise monotonically outward), so the linear pass reaches it
+    // first — and greedy radial growth cannot re-bootstrap it (a 2-3 band seed
+    // gives an unstable centre). So when the region also carries a radial
+    // signature, build BOTH models and keep whichever the pixels fit better
+    // (lower within-bin residual): a real ramp wins as linear, an off-centre
+    // radial wins as radial, and the choice needs no fragile threshold.
+    const lin = profileAndBuild(s.rep, {
       kind: 'linear',
       dx: fit.dx,
       dy: fit.dy,
@@ -549,92 +781,56 @@ export function fitRegionGradients(
       smax: -Infinity,
       bins: new Float64Array(BIN_COUNT * BIN_FIELDS),
     })
+    const rad = fitRadial(sacc, 0)
+    const radBuilt = isRadial(rad)
+      ? profileAndBuild(s.rep, {
+          kind: 'radial',
+          cx: rad.cx,
+          cy: rad.cy,
+          rmax: 0,
+          bins: new Float64Array(BIN_COUNT * BIN_FIELDS),
+        })
+      : null
+    const best =
+      lin && radBuilt ? (radBuilt.residual < lin.residual ? radBuilt : lin) : (lin ?? radBuilt)
+    if (best) {
+      gradients[s.rep] = best.paint
+      for (const mem of s.members) finalRep[mem] = s.rep
+    } else {
+      // Neither model fits (a 2-D field): release for the radial pass to try a
+      // different grouping of these bands.
+      for (const mem of s.members) {
+        claimed[mem] = -1
+        repOf[mem] = -1
+      }
+    }
   }
+
+  const radialSupers = growRamps(m, adj, seeds, claimed, minArea, (t) => {
+    const f = fitRadial(t, 0)
+    return isRadial(f) ? f.misfit : Infinity
+  })
   for (const s of radialSupers) {
     sumMembers(m, s.members, sacc)
     const fit = fitRadial(sacc, 0)
     if (!isRadial(fit)) continue
     for (const mem of s.members) repOf[mem] = s.rep
-    meta.set(s.rep, {
+    const built = profileAndBuild(s.rep, {
       kind: 'radial',
       cx: fit.cx,
       cy: fit.cy,
       rmax: 0,
       bins: new Float64Array(BIN_COUNT * BIN_FIELDS),
     })
-  }
-  if (meta.size === 0) return { gradients }
-
-  // ---- pass A: scalar extents (linear projection / radial radius) ----
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const rep = repOf[data[y * width + x]]
-      if (rep < 0) continue
-      const info = meta.get(rep) as Meta
-      const px = x + 0.5
-      const py = y + 0.5
-      if (info.kind === 'linear') {
-        const s = info.dx * px + info.dy * py
-        if (s < info.smin) info.smin = s
-        if (s > info.smax) info.smax = s
-      } else {
-        const r = Math.hypot(px - info.cx, py - info.cy)
-        if (r > info.rmax) info.rmax = r
-      }
+    if (built) {
+      gradients[s.rep] = built.paint
+      for (const mem of s.members) finalRep[mem] = s.rep
+    } else {
+      for (const mem of s.members) repOf[mem] = -1
     }
   }
 
-  // ---- pass B: bin the color profile along each model's scalar ----
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const p = y * width + x
-      const rep = repOf[data[p]]
-      if (rep < 0) continue
-      const info = meta.get(rep) as Meta
-      const px = x + 0.5
-      const py = y + 0.5
-      let t: number
-      if (info.kind === 'linear') {
-        const span = info.smax - info.smin
-        t = span > 1e-9 ? (info.dx * px + info.dy * py - info.smin) / span : 0
-      } else {
-        t = info.rmax > 1e-9 ? Math.hypot(px - info.cx, py - info.cy) / info.rmax : 0
-      }
-      let bin = Math.floor(t * BIN_COUNT)
-      if (bin < 0) bin = 0
-      else if (bin >= BIN_COUNT) bin = BIN_COUNT - 1
-      const b = bin * BIN_FIELDS
-      const base = p * 3
-      const L = ok[base]
-      const A = ok[base + 1]
-      const Bv = ok[base + 2]
-      info.bins[b] += 1
-      info.bins[b + 1] += L
-      info.bins[b + 2] += A
-      info.bins[b + 3] += Bv
-      info.bins[b + 4] += L * L
-      info.bins[b + 5] += A * A
-      info.bins[b + 6] += Bv * Bv
-    }
-  }
-
-  // ---- build paints from the profiles; relabel merged bands ----
-  const finalRep = new Int32Array(count).fill(-1)
-  for (const [rep, info] of meta) {
-    const paint =
-      info.kind === 'linear'
-        ? buildLinear(info, maxResidual, minColorSpan)
-        : buildRadial(info, maxResidual, minColorSpan)
-    if (!paint) continue
-    gradients[rep] = paint
-    finalRep[rep] = rep
-  }
-  // Members share their rep's finalRep flag.
-  for (const s of [...linearSupers, ...radialSupers]) {
-    if (finalRep[s.rep] < 0) continue
-    for (const mem of s.members) finalRep[mem] = s.rep
-  }
-
+  // ---- relabel merged bands onto their representative ----
   let any = false
   for (let l = 0; l < count; l++) if (finalRep[l] >= 0 && l !== finalRep[l]) any = true
   if (any) {
@@ -657,14 +853,43 @@ type Lab = [number, number, number]
  * Reduce a per-bin color profile to simplified gradient stops, or null when it
  * is not a clean ramp: too few populated bins; too much within-bin color spread
  * (a 2-D field, not a function of the scalar); one hard adjacent jump (an edge,
- * not a ramp); or too little total color change (flat). A straight ramp collapses
- * back to 2 stops; a curved or bent one keeps the stops it needs (≤ MAX_STOPS).
+ * not a ramp); a profile that doubles back on itself (a reversal, not a ramp); or
+ * too little total color change (flat). A straight ramp collapses back to 2
+ * stops; a curved or bent one keeps the stops it needs (≤ MAX_STOPS).
  */
+/** Simplified stops plus the profile's within-bin RMS (lower = color is a purer
+ *  function of this model's scalar; used to pick linear vs radial per region). */
+interface Profile {
+  stops: Stop[]
+  residual: number
+}
+
+/** Linear-interpolate the offset at which the cumulative color path first reaches `target`. */
+function offsetAtPath(offs: readonly number[], cum: readonly number[], target: number): number {
+  for (let i = 1; i < cum.length; i++) {
+    if (cum[i] >= target) {
+      const seg = cum[i] - cum[i - 1]
+      const t = seg > 1e-9 ? (target - cum[i - 1]) / seg : 0
+      return offs[i - 1] + (offs[i] - offs[i - 1]) * t
+    }
+  }
+  return offs[offs.length - 1]
+}
+
 function profileToStops(
   bins: Float64Array,
-  maxResidual: number,
   minColorSpan: number,
-): Stop[] | null {
+  maxBacktrack: number,
+): Profile | null {
+  // Sparse bins are region corners and anti-aliased boundary pixels: a handful of
+  // mixed colors that skew their bin mean and inflate the spread. Ignore any bin
+  // holding less than SPARSE_FRAC of the fullest bin, so the profile and the
+  // 2-D-field gate both read only the ramp's well-populated cross-sections.
+  let maxPop = 0
+  for (let i = 0; i < BIN_COUNT; i++)
+    if (bins[i * BIN_FIELDS] > maxPop) maxPop = bins[i * BIN_FIELDS]
+  const popFloor = maxPop * SPARSE_FRAC
+
   const offs: number[] = []
   const cols: Lab[] = []
   let totalN = 0
@@ -672,7 +897,7 @@ function profileToStops(
   for (let i = 0; i < BIN_COUNT; i++) {
     const b = i * BIN_FIELDS
     const cnt = bins[b]
-    if (cnt <= 0) continue
+    if (cnt < popFloor || cnt <= 0) continue
     const inv = 1 / cnt
     withinVar += Math.max(0, bins[b + 4] - bins[b + 1] * bins[b + 1] * inv)
     withinVar += Math.max(0, bins[b + 5] - bins[b + 2] * bins[b + 2] * inv)
@@ -684,13 +909,15 @@ function profileToStops(
   const np = offs.length
   if (np < MIN_POPULATED_BINS || totalN <= 0) return null
   // A 2-D field spreads color at a fixed scalar; a true ramp does not.
-  if (Math.sqrt(withinVar / totalN) > maxResidual) return null
+  const residual = Math.sqrt(withinVar / totalN)
+  if (residual > MAX_RESIDUAL) return null
   const first = cols[0]
   const last = cols[np - 1]
   if (deltaEOk(first[0], first[1], first[2], last[0], last[1], last[2]) < minColorSpan) return null
   // Hard-edge guard: a step concentrates the whole color change in one jump.
   let path = 0
   let maxJump = 0
+  const cum: number[] = [0]
   for (let i = 1; i < np; i++) {
     const d = deltaEOk(
       cols[i - 1][0],
@@ -702,13 +929,28 @@ function profileToStops(
     )
     path += d
     if (d > maxJump) maxJump = d
+    cum.push(path)
   }
   if (path <= 0 || maxJump > STEP_JUMP_FRAC * path) return null
+  // Ramp-spread guard: the middle 80% of the color change must be spread across
+  // the offset range, not concentrated at one seam (two flats meeting).
+  const range = offs[np - 1] - offs[0]
+  const spread = offsetAtPath(offs, cum, 0.9 * path) - offsetAtPath(offs, cum, 0.1 * path)
+  if (range < 1e-9 || spread / range < MIN_RAMP_SPREAD) return null
 
-  return simplifyProfile(offs, cols).map((i) => ({
-    offset: offs[i],
-    color: oklabToHex(cols[i][0], cols[i][1], cols[i][2]),
-  }))
+  const kept = simplifyProfile(offs, cols)
+  // Monotonicity is judged on the simplified stops, not the raw bins: Douglas–
+  // Peucker has already dropped sub-STOP_TOLERANCE wiggle, so sparse-bin noise no
+  // longer reads as a reversal, while a genuine there-and-back still does.
+  if (pathBacktrack(kept.map((i) => cols[i])) > maxBacktrack) return null
+
+  return {
+    residual,
+    stops: kept.map((i) => ({
+      offset: offs[i],
+      color: oklabToHex(cols[i][0], cols[i][1], cols[i][2]),
+    })),
+  }
 }
 
 /**
@@ -746,35 +988,40 @@ function simplifyProfile(offs: readonly number[], cols: readonly Lab[]): number[
   return kept
 }
 
+/** A built paint together with its profile residual (for linear-vs-radial choice). */
+interface Built {
+  paint: GradientPaint
+  residual: number
+}
+
 /** Build a linear gradient from its projected extent and binned color profile. */
-function buildLinear(
-  info: LinearMeta,
-  maxResidual: number,
-  minColorSpan: number,
-): GradientPaint | null {
+function buildLinear(info: LinearMeta, minColorSpan: number, maxBacktrack: number): Built | null {
   if (!(info.smax - info.smin > 1e-6)) return null
-  const stops = profileToStops(info.bins, maxResidual, minColorSpan)
-  if (!stops) return null
+  const prof = profileToStops(info.bins, minColorSpan, maxBacktrack)
+  if (!prof) return null
   const { dx, dy, cx, cy, smin, smax } = info
   const sc = dx * cx + dy * cy
   return {
-    kind: 'linear',
-    x1: cx + (smin - sc) * dx,
-    y1: cy + (smin - sc) * dy,
-    x2: cx + (smax - sc) * dx,
-    y2: cy + (smax - sc) * dy,
-    stops,
+    residual: prof.residual,
+    paint: {
+      kind: 'linear',
+      x1: cx + (smin - sc) * dx,
+      y1: cy + (smin - sc) * dy,
+      x2: cx + (smax - sc) * dx,
+      y2: cy + (smax - sc) * dy,
+      stops: prof.stops,
+    },
   }
 }
 
 /** Build a radial gradient from its recovered center/radius and binned profile. */
-function buildRadial(
-  info: RadialMeta,
-  maxResidual: number,
-  minColorSpan: number,
-): GradientPaint | null {
+function buildRadial(info: RadialMeta, minColorSpan: number): Built | null {
   if (!(info.rmax > 1e-6)) return null
-  const stops = profileToStops(info.bins, maxResidual, minColorSpan)
-  if (!stops) return null
-  return { kind: 'radial', cx: info.cx, cy: info.cy, r: info.rmax, stops }
+  // Radial profiles are monotone in radius by construction, so no backtrack gate.
+  const prof = profileToStops(info.bins, minColorSpan, 1)
+  if (!prof) return null
+  return {
+    residual: prof.residual,
+    paint: { kind: 'radial', cx: info.cx, cy: info.cy, r: info.rmax, stops: prof.stops },
+  }
 }

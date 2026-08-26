@@ -59,6 +59,75 @@ describe('fitRegionGradients', () => {
     expect(Math.abs(hi[0] - lo[0])).toBeGreaterThan(80)
   })
 
+  it('merges a sharply-bent multi-stop ramp into one gradient (no fragmenting)', () => {
+    // A vertical 3-stop sky ramp (navy → mid-blue → pale cyan) that bends in Oklab,
+    // posterized into 12 bands. Agglomerative merging + the curvature-agnostic
+    // monotonicity gate must recover it as ONE gradient — the reported "sky split
+    // into 3" regression came from greedy growth / a straight-line error gate
+    // giving up at the bend.
+    const w = 24
+    const h = 120
+    const stops: Array<[number, number, number]> = [
+      [0.28, 0.02, -0.09],
+      [0.6, -0.03, -0.05],
+      [0.86, -0.04, -0.01],
+    ]
+    const image = rasterOf(w, h, (_x, y) => {
+      const u = y / (h - 1)
+      const seg = u < 0.5 ? 0 : 1
+      const t = u < 0.5 ? u / 0.5 : (u - 0.5) / 0.5
+      const a = stops[seg]
+      const b = stops[seg + 1]
+      const [r, g, bl] = oklabToRgb(
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+      )
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(bl * 255), 255] as Rgba
+    })
+    // Posterize into 12 horizontal bands (vertical ramp ⇒ split along y).
+    const data = new Int32Array(w * h)
+    const bands = 12
+    for (let y = 0; y < h; y++) {
+      const band = Math.min(bands - 1, Math.floor((y / h) * bands))
+      for (let x = 0; x < w; x++) data[y * w + x] = band
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: bands }
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 32 })
+    const found = gradients.filter((g) => g !== null)
+    expect(found).toHaveLength(1)
+    expect(found[0]!.kind).toBe('linear')
+    // All 12 bands collapsed into one region, and the bend kept > 2 stops.
+    expect(new Set(labels.data).size).toBe(1)
+    expect(found[0]!.stops.length).toBeGreaterThan(2)
+  })
+
+  it('does not gradient two flat silhouettes with a seam (a step, not a ramp)', () => {
+    // Two flat dark bands (an upper and lower "hill") stacked vertically, with a
+    // thin anti-aliased transition band between them — three bands whose means
+    // progress monotonically, but a step, not a ramp. The ≥ MIN_MEMBERS floor and
+    // the ramp-spread gate must leave all three flat.
+    const w = 40
+    const h = 30
+    const upper: Rgba = [32, 64, 106, 255]
+    const lower: Rgba = [21, 42, 73, 255]
+    const image = rasterOf(w, h, (_x, y) => {
+      if (y < 13) return upper
+      if (y > 16) return lower
+      return [26, 53, 90, 255] as Rgba // seam average
+    })
+    const data = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      const band = y < 13 ? 0 : y > 16 ? 2 : 1
+      for (let x = 0; x < w; x++) data[y * w + x] = band
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 3 }
+    const before = Array.from(data)
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 16 })
+    expect(gradients.every((g) => g === null)).toBe(true)
+    expect(Array.from(labels.data)).toEqual(before)
+  })
+
   it('keeps a diagonal ramp diagonal on a non-square region', () => {
     // A 3:1 image with a ramp along x+y. Deriving the direction from the raw
     // cross-covariance would tilt it toward the wider axis (~9:1 here); the
@@ -138,10 +207,11 @@ describe('fitRegionGradients', () => {
     )
     expect(gs?.stops).toHaveLength(2)
 
-    // A hue sweep that curves through Oklab keeps more than 2 stops.
+    // A monotone-but-curved sweep (L eases down, a ramps up quadratically) keeps
+    // more than 2 stops. It stays monotone, so the robustness gate accepts it.
     const curved = rasterOf(w, h, (x) => {
       const t = x / (w - 1)
-      const [r, g, b] = oklabToRgb(0.7, -0.1 + 0.3 * t, -0.15 + Math.sin(t * Math.PI) * 0.25)
+      const [r, g, b] = oklabToRgb(0.85 - 0.45 * t, 0.05 + 0.22 * t * t, 0.02 + 0.05 * t)
       return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255), 255] as Rgba
     })
     const gc = fitRegionGradients(curved, bandLabels(w, h, 8), { minArea: 32 }).gradients.find(

@@ -1089,10 +1089,11 @@ function applyGradients(
       settings.gradientMinArea > 0
         ? settings.gradientMinArea
         : Math.max(GRADIENT_MIN_AREA, settings.minRegionArea),
-    // Strength dials the fit tolerance up and the required color span down, so a
-    // low value keeps only clean, high-contrast ramps (flat objects stay flat)
-    // and a high value catches subtler ones. 0.5 reproduces the neutral defaults.
-    maxResidual: 0.012 + 0.036 * s,
+    // Strength loosens the growth's backtracking ceiling and lowers the required
+    // color span together, so a low value keeps only clean, high-contrast ramps
+    // (flat objects stay flat) and a high value tolerates more reversal and
+    // catches subtler ramps. 0.5 reproduces the neutral defaults.
+    maxBacktrack: 0.06 + 0.18 * s,
     minColorSpan: 0.1 - 0.08 * s,
   })
   return gradients.some((g) => g !== null) ? gradients : undefined

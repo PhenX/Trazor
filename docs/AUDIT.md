@@ -211,18 +211,23 @@ changes). The fits are closed-form and deterministic (per-label moment sums make
 O(1)): linear direction is the dominant covariance-normalized least-squares color gradient in position space;
 the radial center falls out of the per-channel isotropic-quadratic (r²) coefficients as `c = −½·ΣA·B / ΣA²`.
 Stops come from a binned color-vs-scalar profile simplified by Douglas–Peucker, so a ramp that curves in Oklab
-(most sRGB ramps do) follows its true perceptual path with a few stops instead of one chord; a within-bin
-spread test and a hard-jump test gate out 2-D fields and edges. Growth runs in two phases sharing one claim
-map — linear first, radial on the leftovers — so linear output is independent of the radial detector. Hard
-residual / directionality / center-sanity / color-span gates keep both from firing on flat art or 2-D color
-fields. Paint extensions landed in `@trazor/core` (`GradientPaint`), `@trazor/svg` (`SvgDocument.defs`,
-`<defs>` serialization) and the engine (per-label paint table). Off is byte-identical to the flat-fill path;
-on by default in the Illustration and Photo profiles.
+(most sRGB ramps do) follows its true perceptual path with a few stops instead of one chord. Bands are merged
+**agglomeratively** (the best-scoring adjacent pair first, not one seed grown to exhaustion), so a suboptimal
+early union can't fragment the rest and a sharply-bent multi-stop ramp is captured whole regardless of band
+count. Merges are gated on directionality and _monotonicity_ — a curvature-agnostic backtracking test that
+grows a bending ramp whole yet refuses a reversal (a flat object continuing the ramp's colors), plus a
+local-outlier test that refuses a foreign band wedged in. Each linear candidate is then built as both a linear
+and (when it has a curvature center) a radial gradient, and the model whose pixels fit tighter wins, so an
+off-center radial is not mistaken for the linear ramp its band-means resemble; leftovers feed a second radial
+merge. A within-bin spread test, a hard-jump and ramp-spread test, and a ≥ 4-band floor keep two flats meeting
+at a seam (two silhouettes, a step) from reading as a ramp. Paint extensions landed in `@trazor/core`
+(`GradientPaint`), `@trazor/svg` (`SvgDocument.defs`, `<defs>` serialization) and the engine (per-label paint
+table). Off is byte-identical to the flat-fill path; on by default in the Illustration and Photo profiles.
 
-**Still open:** fitting a gradient to a single quantized region whose internal variance is a ramp (today only
-≥2 merged bands qualify), one-gradient capture of a sharply-bent ramp (greedy growth splits it into straight
-segments at the bend), elliptical/`gradientTransform` radials, and the full rate-distortion layer decomposition
-of Du et al. 2023.
+**Still open:** fitting a gradient to a single quantized region whose internal variance is a ramp (today a ramp
+must arrive pre-split into ≥ 4 adjacent bands), radial detection through an object occluding the ramp's origin
+(the visible annulus can't re-bootstrap a center), elliptical/`gradientTransform` radials, and the full
+rate-distortion layer decomposition of Du et al. 2023.
 
 ### A8 — Small inputs are traced at native resolution · **medium**
 

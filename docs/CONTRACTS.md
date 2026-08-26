@@ -198,7 +198,7 @@ export function segmentRegions(image: RasterImage, opts?: SegmentOptions): Segme
 // detectable ramp returns all-null and leaves `labels` unchanged.
 export interface GradientOptions {
   minArea?: number // min pixel area of a merged ramp to become a gradient (default 0)
-  maxResidual?: number // max mean-Oklab fit error (lower = stricter; flat objects stay flat)
+  maxBacktrack?: number // max fraction of the ramp's color path that may run backwards (lower = stricter; keeps flat/reversing neighbors out)
   minColorSpan?: number // min total Oklab color change to qualify (higher = only strong ramps)
   oklab?: Float32Array // interleaved Oklab for `image` (w*h*3); computed if absent
 }
