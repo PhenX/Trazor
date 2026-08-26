@@ -15,6 +15,11 @@ interface BoxTaps {
   stride: number
 }
 
+/** Clamp `v` to the inclusive range [0, hi]. */
+function clampTo(v: number, hi: number): number {
+  return v < 0 ? 0 : v > hi ? hi : v
+}
+
 /** Per-destination-pixel source coverage weights along one axis. */
 function buildBoxTaps(src: number, dst: number): BoxTaps {
   const scale = src / dst
@@ -140,14 +145,13 @@ export function resizeGray(image: GrayImage, width: number, height: number): Gra
   const out = new Float32Array(width * height)
   const sx = w / width
   const sy = h / height
-  const last = (v: number, hi: number): number => (v < 0 ? 0 : v > hi ? hi : v)
   for (let y = 0; y < height; y++) {
-    const fy = last((y + 0.5) * sy - 0.5, h - 1)
+    const fy = clampTo((y + 0.5) * sy - 0.5, h - 1)
     const y0 = Math.floor(fy)
     const y1 = Math.min(h - 1, y0 + 1)
     const wy = fy - y0
     for (let x = 0; x < width; x++) {
-      const fx = last((x + 0.5) * sx - 0.5, w - 1)
+      const fx = clampTo((x + 0.5) * sx - 0.5, w - 1)
       const x0 = Math.floor(fx)
       const x1 = Math.min(w - 1, x0 + 1)
       const wx = fx - x0

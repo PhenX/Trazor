@@ -370,6 +370,9 @@ function floodRegions(
   for (let p = 0; p < n; p++) {
     if (region[p] >= 0) enqueueNeighbors(p, region[p])
   }
+  // `hs` (heap size) is mutated by pop()/push() below; the linter cannot see
+  // through those closures.
+  // eslint-disable-next-line no-unmodified-loop-condition
   while (hs > 0) {
     const p = hp[0]
     const r = hr[0]
@@ -485,7 +488,7 @@ function mergeRegions(
     // Candidates ordered by ΔE, then region ids, for a deterministic sequence.
     const cand = edges
       .map(([a, b]): [number, number, number] => [a, b, meanDelta(a, b)])
-      .sort((p, q) => p[2] - q[2] || p[0] - q[0] || p[1] - q[1])
+      .toSorted((p, q) => p[2] - q[2] || p[0] - q[0] || p[1] - q[1])
     let merged = false
     for (const [a, b, d] of cand) {
       const ra = find(a)
