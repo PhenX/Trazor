@@ -238,3 +238,38 @@ export function framingViewBox(
 function round(v: number): number {
   return Math.round(v * 100) / 100
 }
+
+/** Drawable elements the serializer emits — same set {@link extractGeometry} reads. */
+const DRAWABLE_RE = /<(?:path|rect|circle|ellipse|line|polyline|polygon)\b([^>]*)>/g
+
+/** Value of a quoted `name="…"` attribute in an element's attribute text. */
+function readAttr(attrs: string, name: string): string | null {
+  const m = new RegExp(`(?<![\\w-])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attrs)
+  if (m === null) return null
+  return m[1] ?? m[2] ?? ''
+}
+
+/** The normalized paint key an element belongs to — fill, else stroke; null when unpainted. */
+function paintKeyOfAttrs(attrs: string): string | null {
+  const fill = readAttr(attrs, 'fill')
+  if (fill !== null && fill !== 'none' && fill !== 'transparent') return normalizeKey(fill)
+  const stroke = readAttr(attrs, 'stroke')
+  if (stroke !== null && stroke !== 'none' && stroke !== 'transparent') return normalizeKey(stroke)
+  return null
+}
+
+/**
+ * Drop every drawable element whose paint (fill, else stroke) matches one of the
+ * `removed` layer keys, leaving the rest of the document — and any now-empty
+ * `<g>` wrappers — untouched. Keys are the same normalized paints
+ * {@link buildLayers} groups by, so removing a `Layer.key` removes exactly that
+ * color's shapes. String-based and DOM-free, like the rest of this module; a
+ * pass-through when nothing is removed.
+ */
+export function filterLayers(svg: string, removed: ReadonlySet<string>): string {
+  if (removed.size === 0) return svg
+  return svg.replace(DRAWABLE_RE, (full, attrs: string) => {
+    const key = paintKeyOfAttrs(attrs)
+    return key !== null && removed.has(key) ? '' : full
+  })
+}

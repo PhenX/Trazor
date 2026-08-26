@@ -60,6 +60,16 @@ async function copyColor(color: string): Promise<void> {
   )
 }
 
+// --------------------------- Remove / restore ----------------------------
+function removeLayer(layer: Layer): void {
+  store.removeLayer(layer.key)
+  store.notify(t('toasts.layerRemoved', { hex: layer.color }), 'success')
+}
+function restoreLayers(): void {
+  store.restoreLayers()
+  store.notify(t('toasts.layersRestored'), 'info')
+}
+
 // --------------------------- Hover / highlight ---------------------------
 function hoverLayer(index: number): void {
   store.setLayerHover({ layer: index, shape: null })
@@ -181,6 +191,16 @@ const summary = computed(() => {
         <span class="lp-dot">·</span>
         {{ t('layers.summaryNodes', { count: summary.nodes }) }}
       </p>
+      <div v-if="store.removedLayers.length" class="lp-removed">
+        <span>{{
+          t(
+            'layers.removedCount',
+            { count: store.removedLayers.length },
+            store.removedLayers.length,
+          )
+        }}</span>
+        <button class="lp-restore" @click="restoreLayers">{{ t('layers.restore') }}</button>
+      </div>
     </header>
 
     <div v-if="!layers.length" class="lp-empty">
@@ -265,6 +285,24 @@ const summary = computed(() => {
             :aria-label="t('layers.copyColor', { hex: layer.color })"
             @click="copyColor(layer.color)"
           />
+
+          <button
+            class="lp-remove"
+            :title="t('layers.remove')"
+            :aria-label="t('layers.remove')"
+            @click="removeLayer(layer)"
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path
+                d="M3 4h10M6.5 4V2.8h3V4M5 4l.6 9h4.8L11 4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
         </div>
 
         <ul v-if="expanded.has(layer.index)" class="lp-shapes">
@@ -497,6 +535,69 @@ const summary = computed(() => {
 
 .lp-swatch:hover {
   transform: scale(1.12);
+}
+
+.lp-remove {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.lp-row:hover .lp-remove,
+.lp-remove:focus-visible {
+  opacity: 1;
+}
+
+.lp-remove:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* Coarse pointers can't hover — keep the control reachable. */
+@media (hover: none) {
+  .lp-remove {
+    opacity: 1;
+  }
+}
+
+.lp-removed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.lp-restore {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.lp-restore:hover {
+  text-decoration: underline;
 }
 
 .lp-shapes {

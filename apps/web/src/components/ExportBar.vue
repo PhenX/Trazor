@@ -9,19 +9,19 @@ const { t } = useI18n()
 const disabled = computed(() => store.result === null)
 
 function onDownload(): void {
-  if (!store.result) return
-  downloadSvg(store.result.svg, store.exportName)
+  if (!store.displaySvg) return
+  downloadSvg(store.displaySvg, store.exportName)
 }
 
 async function onCopySvg(): Promise<void> {
-  if (!store.result) return
-  const ok = await copyText(store.result.svg)
+  if (!store.displaySvg) return
+  const ok = await copyText(store.displaySvg)
   store.notify(t(ok ? 'toasts.svgCopied' : 'toasts.clipboardUnavailable'), ok ? 'success' : 'error')
 }
 
 async function onCopyDataUri(): Promise<void> {
-  if (!store.result) return
-  const ok = await copyText(svgToDataUri(store.result.svg))
+  if (!store.displaySvg) return
+  const ok = await copyText(svgToDataUri(store.displaySvg))
   store.notify(
     t(ok ? 'toasts.dataUriCopied' : 'toasts.clipboardUnavailable'),
     ok ? 'success' : 'error',

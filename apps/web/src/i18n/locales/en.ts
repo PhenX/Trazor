@@ -437,6 +437,16 @@ export const en = {
     contour: 'Contour {index}',
     shapesNodes: '{shapes} shapes · {nodes} nodes',
     contourNodes: 'Contour {index} · {nodes} nodes',
+    remove: 'Remove layer',
+    restore: 'Restore',
+    removedCount: '{count} layer removed | {count} layers removed',
+  },
+
+  retrace: {
+    title: 'Re-trace image?',
+    body: "You've removed {count} layer. Re-tracing will discard that edit and bring every color back. | You've removed {count} layers. Re-tracing will discard those edits and bring every color back.",
+    confirm: 'Re-trace',
+    cancel: 'Keep my layers',
   },
 
   tune: {
@@ -719,6 +729,8 @@ export const en = {
     modelCacheCleared: 'Model cache cleared',
     modelCacheFailed: 'Could not clear the model cache: {error}',
     hexCopied: '{hex} copied',
+    layerRemoved: '{hex} layer removed',
+    layersRestored: 'Removed layers restored',
     clipboardUnavailable: 'Clipboard unavailable',
     svgCopied: 'SVG markup copied',
     dataUriCopied: 'Data URI copied',
