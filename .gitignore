@@ -178,3 +178,6 @@ __pycache__/
 
 # Design plans and roadmaps are tracked, never ignored.
 !plans/
+
+# ML data
+data/
