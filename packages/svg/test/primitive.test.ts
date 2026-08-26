@@ -300,6 +300,27 @@ describe('detectPrimitive — regular polygons and stars (gated)', () => {
     expect(detectPrimitive(quad, 2, true)?.kind === 'polygon').toBe(false)
   })
 
+  it('does not fit a self-intersecting star to a thin rectangle stripe', () => {
+    // As the tracer emits a stripe: it starts mid-edge and drops a midpoint anchor
+    // on every straight edge, so `detectRect` (which wants exactly four anchors)
+    // passes it to the polygon fit. The polar corner search would otherwise fold
+    // this elongated shape into a bowtie star spanning far outside its own box —
+    // the bounding-box guard rejects any such degenerate fit.
+    const stripe: PathCommand[] = [
+      { type: 'M', x: 16, y: 100 },
+      { type: 'L', x: 16, y: 0 },
+      { type: 'L', x: 19, y: 0 },
+      { type: 'L', x: 22, y: 0 },
+      { type: 'L', x: 22, y: 100 },
+      { type: 'L', x: 22, y: 200 },
+      { type: 'L', x: 19, y: 200 },
+      { type: 'L', x: 16, y: 200 },
+      { type: 'L', x: 16, y: 100 },
+      { type: 'Z' },
+    ]
+    expect(detectPrimitive(stripe, 2, true)?.kind === 'polygon').toBe(false)
+  })
+
   it('emits <polygon> and is deterministic', () => {
     const cmds = regularPolygonPath(50, 50, 30, 6, 10)
     const a = serializeSvg(primitiveDoc(cmds), {

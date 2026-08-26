@@ -56,6 +56,76 @@ export interface QuantizeResult {
 /** Oklab distance below which `autoK` merges two centroids. */
 const MERGE_DIST = 0.03
 
+// ---- hue-flip guard (Oklab k-means labeling) ----
+// A diverging ramp (red→white→blue) crosses through neutral, where k-means
+// allocates one near-neutral cluster whose centroid keeps a small residual hue.
+// Because every near-neutral color sits close together in Oklab, that one
+// centroid becomes the nearest for near-neutral pixels of BOTH hues around the
+// crossover — so bluish-white pixels get labeled with a pinkish-white centroid,
+// painting an off-hue band across the opposite side. The guard re-labels such a
+// pixel to the nearest centroid that is instead neutral or hue-aligned, when one
+// is a comparably close match. It fires only for a pixel with a clear hue whose
+// nearest centroid is chromatic and points >45° away, so flat art (each region
+// near its own on-hue centroid) is untouched.
+/** Min squared chroma for a pixel's hue to be trusted (below ⇒ effectively neutral, left alone). */
+const HUE_GUARD_MIN_CHROMA2 = 0.018 * 0.018
+/** A centroid below this squared chroma is neutral: never a mismatch, always an acceptable target. */
+const HUE_GUARD_NEUTRAL_CHROMA2 = 0.012 * 0.012
+/** cos²(45°): hue vectors within 45° count as aligned. */
+const HUE_GUARD_MIN_COS2 = 0.5
+/** Max squared Oklab distance (ΔE 0.09) an alternative centroid may lie at to be taken. */
+const HUE_GUARD_MAX_D2 = 0.09 * 0.09
+
+/**
+ * If the nearest centroid mismatches a chromatic pixel's hue (>45°), return the
+ * nearest neutral-or-hue-aligned centroid within {@link HUE_GUARD_MAX_D2}; else
+ * return `best` unchanged. `cent` is the interleaved Oklab centroid buffer;
+ * `(la, aa, ba)` is the pixel's Oklab. A pure function of the pixel color and
+ * the centroids, so the per-color memo in {@link assignNearest} stays valid.
+ */
+function hueGuardLabel(
+  la: number,
+  aa: number,
+  ba: number,
+  best: number,
+  cent: Float32Array,
+  m: number,
+): number {
+  const pc2 = aa * aa + ba * ba
+  if (pc2 < HUE_GUARD_MIN_CHROMA2) return best // pixel effectively neutral
+  const bA = cent[best * 3 + 1]
+  const bB = cent[best * 3 + 2]
+  const bc2 = bA * bA + bB * bB
+  if (bc2 < HUE_GUARD_NEUTRAL_CHROMA2) return best // nearest centroid is neutral: no hue clash
+  const dotB = aa * bA + ba * bB
+  // Hue-aligned (angle ≤ 45°) ⇒ keep it.
+  if (dotB > 0 && dotB * dotB >= HUE_GUARD_MIN_COS2 * pc2 * bc2) return best
+  // Mismatch: re-pick the nearest neutral-or-aligned centroid within the cap.
+  let alt = -1
+  let altD2 = HUE_GUARD_MAX_D2
+  for (let c = 0, cc = 0; c < m; c++, cc += 3) {
+    if (c === best) continue
+    const cA = cent[cc + 1]
+    const cB = cent[cc + 2]
+    const cch2 = cA * cA + cB * cB
+    let ok = cch2 < HUE_GUARD_NEUTRAL_CHROMA2
+    if (!ok) {
+      const dot = aa * cA + ba * cB
+      ok = dot > 0 && dot * dot >= HUE_GUARD_MIN_COS2 * pc2 * cch2
+    }
+    if (!ok) continue
+    const dL = la - cent[cc]
+    const dA = aa - cA
+    const dB = ba - cB
+    const d2 = dL * dL + dA * dA + dB * dB
+    if (d2 < altD2) {
+      altD2 = d2
+      alt = c
+    }
+  }
+  return alt >= 0 ? alt : best
+}
+
 /**
  * Label every in-mask pixel with its nearest centroid; returns per-label pixel
  * counts. When `rgbSums` is given (length m*3) it accumulates the summed RGB
@@ -71,6 +141,7 @@ function assignNearest(
   mask: Uint8Array | null,
   n: number,
   rgbSums: Float64Array | null,
+  hueGuard: boolean,
 ): Uint32Array {
   const counts = new Uint32Array(m)
   // Memoize the nearest centroid per distinct RGB color: the label a color maps
@@ -102,6 +173,7 @@ function assignNearest(
             best = c
           }
         }
+        if (hueGuard) best = hueGuardLabel(x, y, z, best, cent, m)
         memo.set(key, best)
       }
       labelData[i] = best
@@ -200,7 +272,9 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
         }
       }
       const feat = useOklab ? toOklabBuffer(image) : null
-      const counts = assignNearest(labelData, cent, m, data, feat, mask, n, null)
+      // Fixed palette is an explicit, exact "nearest of these colors" contract —
+      // no hue guard (it would silently override the user's chosen mapping).
+      const counts = assignNearest(labelData, cent, m, data, feat, mask, n, null, false)
       return {
         labels: { width, height, data: labelData, count: m },
         paletteHex,
@@ -450,7 +524,10 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   // Final pass: label every in-mask pixel by nearest centroid, accumulating
   // exact per-cluster RGB sums for the output palette.
   const rgbSums = new Float64Array(k * 3)
-  let fullCounts = assignNearest(labelData, cent, k, data, feat, mask, n, rgbSums)
+  // Hue guard on for the clustering path (Oklab only; no-op when feat is null):
+  // stops a hue-biased near-neutral centroid from claiming opposite-hue pixels
+  // across a diverging ramp's crossover.
+  let fullCounts = assignNearest(labelData, cent, k, data, feat, mask, n, rgbSums, useOklab)
 
   // Drop centroids that won zero pixels so the palette only contains used colors.
   let m = 0

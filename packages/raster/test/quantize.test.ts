@@ -245,6 +245,39 @@ describe('quantize — k-means path', () => {
     expect(mismatches).toBe(0)
   })
 
+  it('does not label opposite-hue pixels across a diverging ramp (hue-flip guard)', () => {
+    // A red→white→blue horizontal ramp crosses through neutral in the middle.
+    // k-means allocates one near-neutral cluster with a small residual (pink) hue;
+    // in Oklab every near-neutral color is close, so that centroid would otherwise
+    // become the nearest for bluish-white pixels too, painting a pink band on the
+    // blue side. The guard re-labels those to a neutral/hue-aligned centroid.
+    const red = [220, 30, 40]
+    const white = [255, 255, 255]
+    const blue = [40, 60, 210]
+    const lerp = (a: number[], b: number[], t: number, i: number): number =>
+      a[i] + (b[i] - a[i]) * t
+    const img = rasterOf(240, 40, (x) => {
+      const t = x / 239
+      const c =
+        t < 0.5
+          ? [0, 1, 2].map((i) => lerp(red, white, t / 0.5, i))
+          : [0, 1, 2].map((i) => lerp(white, blue, (t - 0.5) / 0.5, i))
+      return [c[0], c[1], c[2], 255] as Rgba
+    })
+    const res = quantize(img, { ...baseOpts, k: 16, seed: 0x02f6e2b1 })
+    const pal = [...res.paletteRgb]
+    let bluishLabeledPink = 0
+    for (let i = 0; i < 240 * 40; i++) {
+      const p = i * 4
+      // A source pixel that is clearly blue (blue channel well above red)...
+      if (img.data[p + 2] <= img.data[p] + 15) continue
+      const l = res.labels.data[i]
+      // ...must not be labeled with a clearly pink/warm palette color.
+      if (pal[l * 3] > pal[l * 3 + 2] + 8) bluishLabeledPink++
+    }
+    expect(bluishLabeledPink).toBe(0)
+  })
+
   it('autoK merges centroids closer than 0.03 in Oklab', () => {
     // Six distinct colors (> k) forming two tight groups.
     const shades = [0x10, 0x12, 0x14, 0xec, 0xee, 0xf0]
