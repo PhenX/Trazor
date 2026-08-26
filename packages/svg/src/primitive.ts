@@ -429,6 +429,34 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
   if (rMax < 3) return null
   const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
 
+  // A genuine regular figure spans the same bounding box as the outline it was
+  // fit to. Reject a candidate whose extent diverges — the polar corner search
+  // can otherwise fold a thin, elongated shape into a self-intersecting star
+  // (a "bowtie") that still threads the edge-distance test.
+  const bx0 = Math.min(...pts.map((p) => p.x))
+  const bx1 = Math.max(...pts.map((p) => p.x))
+  const by0 = Math.min(...pts.map((p) => p.y))
+  const by1 = Math.max(...pts.map((p) => p.y))
+  const bboxMatches = (poly: Pt[]): boolean => {
+    let x0 = Infinity
+    let x1 = -Infinity
+    let y0 = Infinity
+    let y1 = -Infinity
+    for (const p of poly) {
+      if (p.x < x0) x0 = p.x
+      if (p.x > x1) x1 = p.x
+      if (p.y < y0) y0 = p.y
+      if (p.y > y1) y1 = p.y
+    }
+    const m = 2 * tol
+    return (
+      Math.abs(x0 - bx0) <= m &&
+      Math.abs(x1 - bx1) <= m &&
+      Math.abs(y0 - by0) <= m &&
+      Math.abs(y1 - by1) <= m
+    )
+  }
+
   // Phase from the farthest sample (a corner).
   let iMax = 0
   for (let i = 1; i < rad.length; i++) if (rad[i] > rad[iMax]) iMax = i
@@ -467,7 +495,7 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
       const edgeAng = Math.atan2(Math.abs(poly[1].y - poly[0].y), Math.abs(poly[1].x - poly[0].x))
       if (edgeAng < Math.PI / 12 || edgeAng > Math.PI / 2 - Math.PI / 12) continue
     }
-    if (outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.18)) {
+    if (bboxMatches(poly) && outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.18)) {
       return round({ kind: 'polygon', points: poly }, precision)
     }
   }
@@ -504,7 +532,7 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
         y: cy + (i % 2 === 0 ? Ro : Ri) * Math.sin(a),
       })
     }
-    if (outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.09)) {
+    if (bboxMatches(poly) && outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.09)) {
       return round({ kind: 'polygon', points: poly }, precision)
     }
   }
