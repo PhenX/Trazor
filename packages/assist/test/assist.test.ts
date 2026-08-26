@@ -3,6 +3,9 @@ import { createRaster, fillRaster, setPixel } from '@trazor/core'
 import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
 import { mulberry32 } from '@trazor/core'
 
+const lerpColor = (a: number[], b: number[], t: number) =>
+  a.map((v, i) => Math.round(v + (b[i] - v) * t))
+
 function flatLogo() {
   const img = createRaster(200, 200)
   fillRaster(img, 255, 255, 255)
@@ -189,6 +192,48 @@ function coloredOnBlack() {
   return img
 }
 
+/**
+ * A smooth red→white→blue gradient swatch centered on a large flat white field —
+ * the shape of an image a user pastes to trace. The white margin makes the flat
+ * interiors clear the flat-art threshold, but the swatch itself is *all* soft
+ * ramp (micro-gradient density at least as high as flat density), so it is a
+ * gradient, not clean flat art. It must not be routed to region growing, which
+ * would flood the whole ramp into a single mean-colored region.
+ */
+function gradientOnFlat() {
+  const w = 150
+  const h = 250
+  const img = createRaster(w, h)
+  fillRaster(img, 255, 255, 255)
+  const red = [210, 40, 40]
+  const white = [255, 255, 255]
+  const blue = [40, 60, 210]
+  const grad = (t: number) =>
+    t < 0.5 ? lerpColor(red, white, t * 2) : lerpColor(white, blue, (t - 0.5) * 2)
+  const squares = [
+    { x0: 18, y0: 12, x1: 132, y1: 118, vertical: false },
+    { x0: 18, y0: 132, x1: 132, y1: 238, vertical: true },
+  ]
+  for (const s of squares) {
+    const sw = s.x1 - s.x0
+    const sh = s.y1 - s.y0
+    const r = Math.min(sw, sh) * 0.18
+    for (let y = s.y0; y < s.y1; y++) {
+      for (let x = s.x0; x < s.x1; x++) {
+        const lx = x - s.x0
+        const ly = y - s.y0
+        const cx = Math.min(Math.max(lx, r), sw - r)
+        const cy = Math.min(Math.max(ly, r), sh - r)
+        if (Math.hypot(lx - cx, ly - cy) > r) continue
+        const t = s.vertical ? ly / (sh - 1) : lx / (sw - 1)
+        const c = grad(t)
+        setPixel(img, x, y, c[0], c[1], c[2])
+      }
+    }
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
@@ -291,6 +336,21 @@ describe('recommendSettings', () => {
     // invent a third rim color, with small rim regions folded away.
     expect(rec.patch.segmentation).toBe('regions')
     expect(rec.patch.minRegionArea ?? 0).toBeGreaterThanOrEqual(16)
+  })
+
+  it('does not route a gradient-on-flat-background to region growing (single-color collapse)', () => {
+    const a = analyzeImage(gradientOnFlat())
+    // The flat white margin clears the flat-art density threshold on its own...
+    expect(a.flatDensity).toBeGreaterThan(0.15)
+    // ...but the swatch is all soft ramp, so micro-gradient texture is not
+    // dominated by the flat interiors — the tell that separates it from real
+    // clean flat art (whose ramps sit only along edges).
+    expect(a.microGradientDensity).toBeGreaterThanOrEqual(a.flatDensity)
+    // So it must NOT be sent to region growing, which floods the ramp into one
+    // region painted the mean color. Global quantization keeps the gradient's
+    // colors as distinct posterized bands.
+    const rec = recommendSettings(a)
+    expect(rec.patch.segmentation).not.toBe('regions')
   })
 
   it('keeps a colored subject on a black backdrop in color, not grayscale', () => {

@@ -54,9 +54,20 @@ const FLAT_ART_MIN_REGION = 16
  * (many colors, dense micro-gradients), so `photoScore` alone misroutes it; the
  * flat interiors it keeps — which photos and compression noise destroy — are the
  * reliable tell. Kept in color and traced faithfully, not denoised or posterized.
+ *
+ * Two conditions, not one: the flat interiors must be large *and* must outweigh
+ * the soft-ramp texture. In genuine flat art the anti-aliased ramps sit only
+ * along edges, so `microGradientDensity` stays well below `flatDensity`. A smooth
+ * gradient painted on a flat background (a gradient swatch on white, say) also
+ * clears the flat threshold — through its background — but its colored area is
+ * *all* soft ramp, so its micro-gradient density meets or exceeds its flat
+ * density. Without the second condition such an image is treated as flat art and
+ * routed to region growing, which floods the entire ramp into one region painted
+ * a single mean color (the whole gradient collapses to its average). Requiring
+ * the flat interiors to dominate keeps gradients out of the flat-art path.
  */
 function isCleanFlatArt(a: ImageAnalysis): boolean {
-  return a.flatDensity >= FLAT_ART_MIN_DENSITY
+  return a.flatDensity >= FLAT_ART_MIN_DENSITY && a.microGradientDensity < a.flatDensity
 }
 
 /**
