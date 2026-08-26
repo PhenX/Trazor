@@ -36,6 +36,12 @@ const MODES: ReadonlyArray<{ value: VectorizeMode }> = [
 
 const fixedPalette = computed(() => s.value.palette)
 
+// Actual number of colors the last trace produced — shown against the requested
+// budget so "up to 32" never reads as "32 colors" when the image needs fewer.
+const resultColorCount = computed(() =>
+  fixedPalette.value === null ? (store.result?.palette.length ?? null) : null,
+)
+
 function isActiveSuggestion(sug: PaletteSuggestion): boolean {
   const p = fixedPalette.value
   return p !== null && p.length === sug.colors.length && p.join(',') === sug.colors.join(',')
@@ -256,7 +262,12 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           >
             <span class="pal-label">{{ t('palettes.automatic') }}</span>
             <span class="pal-meta">{{
-              t('palettes.automaticMeta', { count: s.paletteSize })
+              resultColorCount !== null
+                ? t('palettes.automaticMetaResult', {
+                    count: resultColorCount,
+                    max: s.paletteSize,
+                  })
+                : t('palettes.automaticMeta', { count: s.paletteSize })
             }}</span>
           </button>
           <button
@@ -321,7 +332,15 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           </button>
         </div>
 
-        <template v-if="fixedPalette === null">
+        <!-- Clustering controls belong to the Automatic palette. With a fixed
+             palette the engine maps every pixel to the chosen colors, so these
+             don't apply — the section stays but explains itself rather than
+             silently emptying. -->
+        <h3 class="sub-title">{{ t('settings.autoPaletteGroup') }}</h3>
+        <p v-if="fixedPalette !== null" class="mode-note">
+          {{ t('settings.fixedPaletteNote') }}
+        </p>
+        <template v-else>
           <SelectRow
             :label="t('settings.segmentation.label')"
             :model-value="s.segmentation"
@@ -349,28 +368,53 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
             :hint="t('settings.autoReduce.hint')"
             @update:model-value="set('autoPaletteSize', $event)"
           />
-          <SliderRow
-            :label="t('settings.quality.label')"
-            :model-value="s.quantizeQuality"
-            :min="1"
-            :max="10"
-            :default-value="D.quantizeQuality"
-            :hint="t('settings.quality.hint')"
-            @update:model-value="set('quantizeQuality', $event)"
-          />
-          <SelectRow
-            :label="t('settings.colorSpace.label')"
-            :model-value="s.colorSpace"
-            :options="[
-              { value: 'oklab', label: t('settings.colorSpace.oklab') },
-              { value: 'rgb', label: t('settings.colorSpace.rgb') },
-            ]"
-            :default-value="D.colorSpace"
-            :hint="t('settings.colorSpace.hint')"
-            @update:model-value="set('colorSpace', $event)"
-          />
+          <details class="advanced">
+            <summary>{{ t('panel.advanced') }}</summary>
+            <SliderRow
+              :label="t('settings.quality.label')"
+              :model-value="s.quantizeQuality"
+              :min="1"
+              :max="10"
+              :default-value="D.quantizeQuality"
+              :hint="t('settings.quality.hint')"
+              @update:model-value="set('quantizeQuality', $event)"
+            />
+            <SelectRow
+              :label="t('settings.colorSpace.label')"
+              :model-value="s.colorSpace"
+              :options="[
+                { value: 'oklab', label: t('settings.colorSpace.oklab') },
+                { value: 'rgb', label: t('settings.colorSpace.rgb') },
+              ]"
+              :default-value="D.colorSpace"
+              :hint="t('settings.colorSpace.hint')"
+              @update:model-value="set('colorSpace', $event)"
+            />
+            <SliderRow
+              :label="t('settings.dissolveBands.label')"
+              :model-value="s.dissolveBands"
+              :min="0"
+              :max="4"
+              :default-value="D.dissolveBands"
+              :zero-label="t('settings.dissolveBands.zero')"
+              :hint="t('settings.dissolveBands.hint')"
+              @update:model-value="set('dissolveBands', $event)"
+            />
+            <SliderRow
+              :label="t('settings.colorCoherence.label')"
+              :model-value="s.colorCoherence"
+              :min="0"
+              :max="1"
+              :step="0.05"
+              :default-value="D.colorCoherence"
+              :zero-label="t('settings.colorCoherence.zero')"
+              :hint="t('settings.colorCoherence.hint')"
+              @update:model-value="set('colorCoherence', $event)"
+            />
+          </details>
         </template>
 
+        <h3 class="sub-title">{{ t('settings.layersGroup') }}</h3>
         <ControlRow :label="t('settings.layering.label')" :hint="t('settings.layering.hint')">
           <div class="radio-cards">
             <button
@@ -756,6 +800,14 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+
+.sub-title {
+  margin: 8px 0 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
 }
 
 .mode-note {

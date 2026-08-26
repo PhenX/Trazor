@@ -122,6 +122,10 @@ export const en = {
       label: 'Alpha cutoff',
       hint: 'Alpha below this counts as empty',
     },
+    autoPaletteGroup: 'Automatic palette',
+    fixedPaletteNote:
+      'Fixed palette — pixels map to the colors above, so the clustering options (segmentation, color budget, quality) don’t apply. Switch to Automatic to change them.',
+    layersGroup: 'Layers & regions',
     segmentation: {
       label: 'Segmentation',
       hint: 'How pixels become flat regions. Region growing keeps anti-aliased edges of flat art clean; global palette suits photos and gradients',
@@ -129,12 +133,22 @@ export const en = {
       regions: 'Region growing',
     },
     colors: {
-      label: 'Colors',
-      hint: 'Number of output colors',
+      label: 'Max colors',
+      hint: 'Upper limit on output colors. The trace can use fewer — simple images and Auto reduce lower it; check the palette source for the count actually used.',
     },
     autoReduce: {
       label: 'Auto reduce',
       hint: 'Merge near-duplicate colors so simple art gets fewer layers',
+    },
+    dissolveBands: {
+      label: 'Dissolve bands',
+      hint: 'Rounds of cleanup that dissolve a hairline strip of a wrong color (an anti-aliased or JPEG rim) into the region it borders. 0 is off.',
+      zero: 'off',
+    },
+    colorCoherence: {
+      label: 'Color coherence',
+      hint: 'Re-assign pixels by balancing palette distance against agreement with neighbors, so a rim mixture joins a real region instead of a wrong-colored band. 0 is off.',
+      zero: 'off',
     },
     quality: {
       label: 'Quality',
@@ -309,7 +323,8 @@ export const en = {
   palettes: {
     automatic: 'Automatic',
     automaticTitle: 'Extract the palette from the image with k-means',
-    automaticMeta: 'k-means · {count} colors',
+    automaticMeta: 'k-means · up to {count} colors',
+    automaticMetaResult: 'k-means · {count} of {max} colors',
     updating: 'updating suggestions for this image…',
     addColor: 'Add a color',
     backToAuto: '× back to automatic',
@@ -335,6 +350,11 @@ export const en = {
 
   ml: {
     title: 'Local ML tools',
+    groupEdits: 'One-shot edits',
+    groupEditsHint: 'Rewrite the image once, before tracing. Undo with Restore original.',
+    groupSteps: 'Applied every trace',
+    groupStepsHint: 'Toggles that re-run automatically on each trace.',
+    cancel: 'Cancel',
     backendDetecting: 'detecting…',
     backendDetectingTitle: 'Probing WebGPU / WASM support',
     backendIdle: 'idle',
