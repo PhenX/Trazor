@@ -27,8 +27,8 @@ const { t } = useI18n()
       />
     </div>
     <div class="control-body">
-      <span v-if="badge" class="control-badge">{{ badge }}</span>
       <slot />
+      <span v-if="badge" class="control-badge">{{ badge }}</span>
     </div>
   </div>
 </template>
@@ -62,6 +62,7 @@ const { t } = useI18n()
 
 .control-badge {
   flex: 0 0 auto;
+  margin-left: auto;
   padding: 0 5px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
