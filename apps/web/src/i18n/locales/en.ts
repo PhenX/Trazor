@@ -166,7 +166,8 @@ export const en = {
     },
     gradients: {
       label: 'Gradient fills',
-      hint: 'Paint smooth color ramps with a single SVG gradient instead of posterized bands (best for photos, skies, soft shading). Not for spot-color cutting/printing.',
+      beta: 'Beta',
+      hint: 'Beta — off by default. Paint smooth color ramps with a single SVG gradient instead of posterized bands (best for photos, skies, soft shading). Detection is still rough on some images, so check the result. Not for spot-color cutting/printing.',
     },
     gradientStrength: {
       label: 'Gradient strength',
@@ -565,6 +566,7 @@ export const en = {
     title: "What's new",
     close: "Close what's new",
     new: 'New',
+    beta: 'Beta',
     feature: 'New feature',
     improvement: 'Improvement',
     fix: 'Fix',

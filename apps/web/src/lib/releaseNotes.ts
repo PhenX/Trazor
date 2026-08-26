@@ -35,6 +35,8 @@ export interface ReleaseNote {
   iteration: number
   /** Dominant category of the change; drives the tag color. */
   kind: ReleaseNoteKind
+  /** Experimental, opt-in feature: shows a "Beta" tag alongside the kind. */
+  beta?: boolean
   /** Short, plain-language headline. */
   title: string
   /** One plain-language line per change — no jargon. */
@@ -53,11 +55,12 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     date: '2026-08-26',
     iteration: 1,
     kind: 'feature',
-    title: 'Gradient fills',
+    beta: true,
+    title: 'Gradient fills (beta)',
     illustration: 'gradients',
     items: [
-      'Color and grayscale traces can now paint smooth color ramps — skies, soft shading, backgrounds, spotlights, sunsets — with a single SVG gradient instead of a stack of posterized bands, so the result looks smoother and uses fewer shapes. Straight (linear) and circular (radial) ramps are recognized, and a ramp that shifts hue along the way keeps the extra color stops it needs to follow the sweep. Turn on "Gradient fills" in the palette settings; it is on by default in the Illustration and Photo / Poster presets.',
-      'Gradients are detected automatically per region and stay fully editable vector output. They are meant for screen and print, not spot-color cutting — a note flags them when you export to a cutter-style setup.',
+      'A new beta can paint smooth color ramps — skies, soft shading, backgrounds, spotlights, sunsets — with a single SVG gradient instead of a stack of posterized bands, so the result looks smoother and uses fewer shapes. Straight (linear) and circular (radial) ramps are recognized, and a ramp that shifts hue along the way keeps the extra color stops it needs to follow the sweep.',
+      'It is still experimental and off by default: detection can be rough on some images (splitting one ramp, or turning a flat shape into a gradient). Turn on "Gradient fills" in the palette settings to try it, and check the result. Gradients stay fully editable vector output, meant for screen and print, not spot-color cutting — a note flags them when you export to a cutter-style setup.',
     ],
   },
   {

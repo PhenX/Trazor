@@ -42,7 +42,6 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       smoothing: 0.8,
       minRegionArea: 4,
       colorCoherence: 0.5,
-      gradients: true,
     },
   },
   {
@@ -63,7 +62,6 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       minRegionArea: 10,
       colorCoherence: 0.5,
       maxDimension: 1200,
-      gradients: true,
     },
   },
   {

@@ -167,7 +167,8 @@ export const fr: MessageSchema = {
     },
     gradients: {
       label: 'Remplissages dégradés',
-      hint: 'Peindre les dégradés de couleur avec un seul dégradé SVG au lieu de bandes posterisées (idéal pour photos, ciels, ombrages doux). Pas pour la découpe/impression en tons directs.',
+      beta: 'Bêta',
+      hint: 'Bêta — désactivé par défaut. Peindre les dégradés de couleur avec un seul dégradé SVG au lieu de bandes posterisées (idéal pour photos, ciels, ombrages doux). La détection reste imparfaite sur certaines images, vérifiez le résultat. Pas pour la découpe/impression en tons directs.',
     },
     gradientStrength: {
       label: 'Force des dégradés',
@@ -581,6 +582,7 @@ export const fr: MessageSchema = {
     title: 'Nouveautés',
     close: 'Fermer les nouveautés',
     new: 'Nouveau',
+    beta: 'Bêta',
     feature: 'Nouveauté',
     improvement: 'Amélioration',
     fix: 'Correctif',

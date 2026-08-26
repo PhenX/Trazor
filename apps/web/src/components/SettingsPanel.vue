@@ -410,6 +410,7 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
         <SwitchRow
           v-if="fixedPalette === null && s.curveMode !== 'pixel'"
           :label="t('settings.gradients.label')"
+          :badge="t('settings.gradients.beta')"
           :model-value="s.gradients"
           :default-value="D.gradients"
           :hint="t('settings.gradients.hint')"

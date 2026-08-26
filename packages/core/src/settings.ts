@@ -115,7 +115,9 @@ export interface VectorizeSettings {
    * `<linearGradient>` (straight ramps) or `<radialGradient>` (concentric ramps
    * — vignettes, spotlights). Geometry is unchanged (mesh-free), so cutout stays
    * seam-free. Ignored with a fixed `palette` and for single-ink (bw/centerline)
-   * modes. Off is byte-identical to the classic flat-fill path.
+   * modes. Off is byte-identical to the classic flat-fill path. Experimental
+   * (beta): off by default and enabled by no profile — detection is still rough
+   * on some images.
    */
   gradients: boolean
   /**

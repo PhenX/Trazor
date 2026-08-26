@@ -222,7 +222,9 @@ off-center radial is not mistaken for the linear ramp its band-means resemble; l
 merge. A within-bin spread test, a hard-jump and ramp-spread test, and a ≥ 4-band floor keep two flats meeting
 at a seam (two silhouettes, a step) from reading as a ramp. Paint extensions landed in `@trazor/core`
 (`GradientPaint`), `@trazor/svg` (`SvgDocument.defs`, `<defs>` serialization) and the engine (per-label paint
-table). Off is byte-identical to the flat-fill path; on by default in the Illustration and Photo profiles.
+table). Off is byte-identical to the flat-fill path. Shipped as an opt-in **beta**, off by default (no
+profile enables it), since detection is still rough on some images — the remaining failure modes are in **Still
+open** below.
 
 **Still open:** fitting a gradient to a single quantized region whose internal variance is a ramp (today a ramp
 must arrive pre-split into ≥ 4 adjacent bands), radial detection through an object occluding the ramp's origin

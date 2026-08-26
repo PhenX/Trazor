@@ -50,11 +50,12 @@ On top of that, three things most tracers don't do:
   data-derived suggestions_ — Exact, Balanced, Bold, Rich, Vivid, Muted,
   Duotone, Mono — or edit any palette color in place (spot colors, brand
   colors).
-- **Gradient fills**: smooth color ramps (skies, soft shading, spotlights) are
-  detected and painted with a single SVG `<linearGradient>`/`<radialGradient>`
-  instead of posterized bands — mesh-free (geometry unchanged, cutout stays
-  seam-free), fewer shapes, no banding. On by default in the Illustration and
-  Photo profiles.
+- **Gradient fills** _(beta, opt-in)_: smooth color ramps (skies, soft shading,
+  spotlights) are detected and painted with a single SVG
+  `<linearGradient>`/`<radialGradient>` instead of posterized bands — mesh-free
+  (geometry unchanged, cutout stays seam-free), fewer shapes, no banding.
+  Experimental and off by default; enable "Gradient fills" in the palette
+  settings.
 - **Target profiles** with machine-aware defaults and practical notes:
   Illustration, Photo/Poster, Logo, Screen print, Pixel art, Ink sketch,
   **Vinyl cutter** (layered spot color — one `<g>` sheet per color, mm units),

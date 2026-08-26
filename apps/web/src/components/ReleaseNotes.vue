@@ -110,6 +110,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="rn-meta-right">
               <span v-if="isNew(i)" class="rn-new">{{ t('release.new') }}</span>
+              <span v-if="note.beta" class="chip chip--beta">{{ t('release.beta') }}</span>
               <span class="chip" :class="KIND_CLASS[note.kind]">{{
                 t(`release.${note.kind}`)
               }}</span>
