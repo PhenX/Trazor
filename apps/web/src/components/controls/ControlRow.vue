@@ -6,6 +6,8 @@ defineProps<{
   hint?: string
   /** Show the modified dot; double-clicking the label emits reset. */
   modified?: boolean
+  /** Optional short pill after the label (e.g. "Beta"). */
+  badge?: string
 }>()
 
 const emit = defineEmits<{ reset: [] }>()
@@ -26,6 +28,7 @@ const { t } = useI18n()
     </div>
     <div class="control-body">
       <slot />
+      <span v-if="badge" class="control-badge">{{ badge }}</span>
     </div>
   </div>
 </template>
@@ -55,6 +58,21 @@ const { t } = useI18n()
 
 .is-modified .control-label {
   color: var(--text-1);
+}
+
+.control-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 15px;
 }
 
 .reset-dot {

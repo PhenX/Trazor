@@ -111,6 +111,32 @@ export const TUNABLE_PARAMS: readonly ParamSpec[] = [
     optIn: true,
   },
   { key: 'omitBackground', kind: 'bool', modes: COLOR_MODES, group: 'palette', optIn: true },
+  {
+    key: 'gradients',
+    kind: 'bool',
+    modes: COLOR_MODES,
+    group: 'palette',
+    when: autoPalette,
+  },
+  {
+    key: 'gradientStrength',
+    kind: 'number',
+    min: 0,
+    max: 1,
+    modes: COLOR_MODES,
+    group: 'palette',
+    when: (s) => s.palette === null && s.gradients,
+  },
+  {
+    key: 'gradientMinArea',
+    kind: 'int',
+    min: 0,
+    max: 4096,
+    modes: COLOR_MODES,
+    group: 'palette',
+    when: (s) => s.palette === null && s.gradients,
+    optIn: true,
+  },
 
   // ---- binarize (bw / centerline) ----
   {

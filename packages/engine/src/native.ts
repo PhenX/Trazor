@@ -10,6 +10,7 @@ import {
 import type {
   BinaryMask,
   EngineContext,
+  GradientPaint,
   GrayImage,
   LabelMap,
   RasterImage,
@@ -33,6 +34,7 @@ import {
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
+  fitRegionGradients,
   flattenImage,
   gaussianBlur,
   medianFilter,
@@ -52,7 +54,7 @@ import {
 import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
 import type { TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
-import type { SvgShape } from '@trazor/svg'
+import type { SvgGradient, SvgShape } from '@trazor/svg'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -87,6 +89,13 @@ const CLUSTER_EDGE_THRESHOLD = 40
  * one color but never collapses genuinely different hues together.
  */
 const SEGMENT_MERGE_THRESHOLD = 0.1
+
+/**
+ * Minimum pixel area of a merged ramp before it is painted as a gradient. Small
+ * regions posterize fine and a gradient there costs more than it saves; scaled
+ * up by the user's own region-size floor.
+ */
+const GRADIENT_MIN_AREA = 64
 
 /**
  * Discretize an edge hint into a protect mask at the working resolution: resize
@@ -198,6 +207,8 @@ interface PaletteEntry {
   counts: Uint32Array
   /** Palette length when autoPaletteSize clamped it, else undefined (for the warning). */
   paletteClampedTo?: number
+  /** Per-label gradient paint (label ⇒ ramp fill, or null for a flat fill); absent when gradients are off. */
+  gradients?: (GradientPaint | null)[]
 }
 
 /**
@@ -293,6 +304,10 @@ function palKeyOf(s: VectorizeSettings): string {
     s.dissolveBands,
     s.colorCoherence,
     s.omitBackground,
+    s.gradients ? 'g' : '-',
+    s.gradients ? s.gradientStrength : 0,
+    s.gradients ? s.gradientMinArea : 0,
+    s.curveMode === 'pixel' ? 'px' : '-',
   ].join('|')
 }
 
@@ -352,6 +367,7 @@ export async function vectorize(
 
   // ---- per-mode tracing into SVG shapes ----
   const shapes: SvgShape[] = []
+  const defs: SvgGradient[] = []
   let palette: string[] = []
 
   if (settings.mode === 'color' || settings.mode === 'grayscale') {
@@ -361,6 +377,7 @@ export async function vectorize(
       opaque,
       settings,
       shapes,
+      defs,
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
@@ -392,6 +409,7 @@ export async function vectorize(
       unit: settings.unit,
       widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
       title: settings.svgTitle || undefined,
+      defs: defs.length > 0 ? defs : undefined,
       shapes,
     },
     {
@@ -431,6 +449,14 @@ export async function vectorize(
   if (settings.unit === 'mm') {
     warnTinyFeatures(shapes, width, settings, warnings)
   }
+  if (defs.length > 0 && (settings.unit === 'mm' || settings.groupByColor)) {
+    warnings.push({
+      code: 'gradient-spot-color',
+      severity: 'info',
+      message: `${defs.length} gradient fill${defs.length === 1 ? '' : 's'} won't reproduce on spot-color cutters/printers — turn off gradient detection for those outputs.`,
+      params: { count: defs.length },
+    })
+  }
 
   const timings = run.finish()
   return {
@@ -456,6 +482,7 @@ async function colorPipeline(
   opaque: BinaryMask | null,
   settings: VectorizeSettings,
   shapes: SvgShape[],
+  defs: SvgGradient[],
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
@@ -477,6 +504,7 @@ async function colorPipeline(
   let paletteRgb: Uint8Array
   let counts: Uint32Array
   let paletteClampedTo: number | undefined
+  let gradients: (GradientPaint | null)[] | undefined
 
   const cached =
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
@@ -488,6 +516,7 @@ async function colorPipeline(
     paletteRgb = cached.paletteRgb
     counts = cached.counts
     paletteClampedTo = cached.paletteClampedTo
+    gradients = cached.gradients
     cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
@@ -516,8 +545,17 @@ async function colorPipeline(
       const cleared = clearBorderLabel(labels, backgroundLabel)
       counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
     }
+    gradients = applyGradients(image, labels, settings)
+    if (gradients) counts = countLabels(labels)
     if (canCachePal && palKey !== undefined) {
-      palettePut(cache!, palKey, { labels, paletteHex, paletteRgb, counts, paletteClampedTo })
+      palettePut(cache!, palKey, {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        paletteClampedTo,
+        gradients,
+      })
     }
   } else {
     if (canCachePal) cacheStats(cache!).palMisses++
@@ -610,10 +648,22 @@ async function colorPipeline(
       const cleared = clearBorderLabel(labels, backgroundLabel)
       counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
     }
+    // Merge posterized bands that form one linear ramp into a gradient region
+    // (mutates labels; relabeled bands need a fresh count). Off ⇒ undefined,
+    // byte-identical to the flat-fill path.
+    gradients = applyGradients(image, labels, settings)
+    if (gradients) counts = countLabels(labels)
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
-      palettePut(cache!, palKey, { labels, paletteHex, paletteRgb, counts, paletteClampedTo })
+      palettePut(cache!, palKey, {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        paletteClampedTo,
+        gradients,
+      })
     }
   }
 
@@ -624,6 +674,26 @@ async function colorPipeline(
       message: `Palette reduced to ${paletteClampedTo} colors (near-duplicates merged).`,
       params: { count: paletteClampedTo },
     })
+  }
+
+  // Resolve each label's paint once: a solid hex, or a gradient referenced by
+  // `url(#id)` whose <defs> entry is collected here. Ids are assigned in label
+  // order for stable, deterministic output. `paletteColorsFor` holds the flat
+  // colors each label contributes to `VectorizeResult.palette` (a gradient's
+  // stop colors, so the studio's palette still shows real swatches).
+  const fillFor: string[] = new Array(paletteHex.length)
+  const paletteColorsFor: string[][] = new Array(paletteHex.length)
+  for (let l = 0; l < paletteHex.length; l++) {
+    const g = gradients?.[l]
+    if (g) {
+      const id = `g${defs.length}`
+      defs.push({ id, ...g })
+      fillFor[l] = `url(#${id})`
+      paletteColorsFor[l] = g.stops.map((s) => s.color)
+    } else {
+      fillFor[l] = paletteHex[l]
+      paletteColorsFor[l] = [paletteHex[l]]
+    }
   }
 
   run.stage('trace')
@@ -659,8 +729,8 @@ async function colorPipeline(
     })
     regions.sort((a, b) => b.area - a.area)
     for (const region of regions) {
-      const fill = paletteHex[region.label]
-      if (!usedPalette.includes(fill)) usedPalette.push(fill)
+      const fill = fillFor[region.label]
+      addColors(usedPalette, paletteColorsFor[region.label])
       shapes.push({
         commands: region.commands,
         fill,
@@ -812,8 +882,8 @@ async function colorPipeline(
         turnPolicy: settings.turnPolicy,
         minArea: traceMinArea,
       })
-      const fill = paletteHex[label]
-      if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
+      const fill = fillFor[order[i]]
+      if (traced.length > 0) addColors(usedPalette, paletteColorsFor[order[i]])
       for (const shape of traced) {
         shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: i })
       }
@@ -855,8 +925,8 @@ async function colorPipeline(
           turnPolicy: settings.turnPolicy,
           minArea: traceMinArea,
         })
-        const fill = paletteHex[label]
-        if (traced.length > 0 && !usedPalette.includes(fill)) usedPalette.push(fill)
+        const fill = fillFor[label]
+        if (traced.length > 0) addColors(usedPalette, paletteColorsFor[label])
         for (const shape of traced) {
           shapes.push({
             commands: shape.commands,
@@ -1050,6 +1120,52 @@ function stackingOrder(labels: LabelMap, counts: Uint32Array): number[] {
     }
   }
   return order
+}
+
+/**
+ * Detect linear color ramps and merge the posterized bands that form them into
+ * gradient regions (mutating `labels`). Off for a fixed palette (the user pinned
+ * exact colors) and in pixel mode (exact lattice), and only in color/grayscale
+ * modes. Returns the per-label paint table, or undefined when it did not run
+ * (byte-identical to the flat-fill path).
+ */
+function applyGradients(
+  image: RasterImage,
+  labels: LabelMap,
+  settings: VectorizeSettings,
+): (GradientPaint | null)[] | undefined {
+  if (!settings.gradients || settings.palette !== null || settings.curveMode === 'pixel') {
+    return undefined
+  }
+  const s = settings.gradientStrength
+  const { gradients } = fitRegionGradients(image, labels, {
+    minArea:
+      settings.gradientMinArea > 0
+        ? settings.gradientMinArea
+        : Math.max(GRADIENT_MIN_AREA, settings.minRegionArea),
+    // Strength loosens the growth's backtracking ceiling and lowers the required
+    // color span together, so a low value keeps only clean, high-contrast ramps
+    // (flat objects stay flat) and a high value tolerates more reversal and
+    // catches subtler ramps. 0.5 reproduces the neutral defaults.
+    maxBacktrack: 0.06 + 0.18 * s,
+    minColorSpan: 0.1 - 0.08 * s,
+  })
+  return gradients.some((g) => g !== null) ? gradients : undefined
+}
+
+/** Recount pixels per label after a relabel (gradient merge). */
+function countLabels(labels: LabelMap): Uint32Array {
+  const counts = new Uint32Array(labels.count)
+  for (let i = 0; i < labels.data.length; i++) {
+    const l = labels.data[i]
+    if (l >= 0) counts[l]++
+  }
+  return counts
+}
+
+/** Append each color not already present (preserves first-appearance order). */
+function addColors(palette: string[], colors: readonly string[]): void {
+  for (const c of colors) if (!palette.includes(c)) palette.push(c)
 }
 
 /** Per-label palette colors as an interleaved Oklab buffer (length count*3). */

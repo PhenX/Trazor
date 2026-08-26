@@ -291,6 +291,19 @@ svg {
   color: var(--danger);
 }
 
+/* Experimental / opt-in marker: dashed accent outline sets it apart from the
+   solid semantic chips above. */
+.chip--beta {
+  background: transparent;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+  font-weight: 650;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
 .chip--btn {
   cursor: pointer;
 }

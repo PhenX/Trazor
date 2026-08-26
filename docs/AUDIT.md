@@ -195,15 +195,41 @@ polygons — good, and already ahead of most open tracers. Missing relative to t
   snap nearly-parallel tangents — the "computational geometry framework" class of cleanup.
 - **Symmetry detection** (mirror/rotational) to fit once and mirror exactly. Bigger build; highest polish.
 
-### A7 — Gradients are outside the model · **medium, strategic**
+### A7 — Gradients are outside the model · **medium, strategic** · ◐ linear case shipped
 
-Flat fills are the only paint. Photographic and soft-shaded input can only posterize, which is the main
-reason "photo" output looks stylized next to the commercial tools. The tractable first step is **linear
+Flat fills were the only paint. Photographic and soft-shaded input could only posterize, which is the main
+reason "photo" output looked stylized next to the commercial tools. The tractable first step is **linear
 gradient detection per region**: after quantization, test each large region for a linear (or radial) Oklab
 ramp (PCA of position→color residuals); if a merged super-region is better explained by one gradient than by
 its 3–6 posterized slices, emit `<linearGradient>`. Image vectorization via linear-gradient layer
-decomposition (SIGGRAPH 2023) is the full treatment. This changes the fidelity ceiling for a whole input
-class, and the settings/serializer model would need paint extensions — plan it as a feature, not a patch.
+decomposition (SIGGRAPH 2023) is the full treatment.
+
+**Shipped (linear + radial):** the `gradients` setting (`packages/raster/src/gradient.ts`) merges adjacent
+posterized bands that lie on one Oklab ramp into a single region and paints it with a `<linearGradient>` or
+`<radialGradient>` — mesh-free (geometry, and the cutout seam-free partition, are untouched: only the fill
+changes). The fits are closed-form and deterministic (per-label moment sums make each candidate union's fit
+O(1)): linear direction is the dominant covariance-normalized least-squares color gradient in position space;
+the radial center falls out of the per-channel isotropic-quadratic (r²) coefficients as `c = −½·ΣA·B / ΣA²`.
+Stops come from a binned color-vs-scalar profile simplified by Douglas–Peucker, so a ramp that curves in Oklab
+(most sRGB ramps do) follows its true perceptual path with a few stops instead of one chord. Bands are merged
+**agglomeratively** (the best-scoring adjacent pair first, not one seed grown to exhaustion), so a suboptimal
+early union can't fragment the rest and a sharply-bent multi-stop ramp is captured whole regardless of band
+count. Merges are gated on directionality and _monotonicity_ — a curvature-agnostic backtracking test that
+grows a bending ramp whole yet refuses a reversal (a flat object continuing the ramp's colors), plus a
+local-outlier test that refuses a foreign band wedged in. Each linear candidate is then built as both a linear
+and (when it has a curvature center) a radial gradient, and the model whose pixels fit tighter wins, so an
+off-center radial is not mistaken for the linear ramp its band-means resemble; leftovers feed a second radial
+merge. A within-bin spread test, a hard-jump and ramp-spread test, and a ≥ 4-band floor keep two flats meeting
+at a seam (two silhouettes, a step) from reading as a ramp. Paint extensions landed in `@trazor/core`
+(`GradientPaint`), `@trazor/svg` (`SvgDocument.defs`, `<defs>` serialization) and the engine (per-label paint
+table). Off is byte-identical to the flat-fill path. Shipped as an opt-in **beta**, off by default (no
+profile enables it), since detection is still rough on some images — the remaining failure modes are in **Still
+open** below.
+
+**Still open:** fitting a gradient to a single quantized region whose internal variance is a ramp (today a ramp
+must arrive pre-split into ≥ 4 adjacent bands), radial detection through an object occluding the ramp's origin
+(the visible annulus can't re-bootstrap a center), elliptical/`gradientTransform` radials, and the full
+rate-distortion layer decomposition of Du et al. 2023.
 
 ### A8 — Small inputs are traced at native resolution · **medium**
 
@@ -383,6 +409,7 @@ Works consulted that are not yet in `REFERENCES.md` (they move there if/when imp
   primitive-choice reference for A5/A6.
 - **Z. Du et al., "Image Vectorization and Editing via Linear Gradient Layer Decomposition", _ACM TOG
   (SIGGRAPH)_ 42(4), 2023.** Region decomposition into linear-gradient layers — the full treatment of A7.
+  The linear case is now shipped (`packages/raster/src/gradient.ts`); moved to `REFERENCES.md`.
 - Already in `REFERENCES.md` and load-bearing here: Selinger 2003 (the chain), VTracer (the O(n) color
   framework E1 gestures at), Kopf & Lischinski 2011 (pixel-art), LIVE/DiffVG (offline refinement oracle,
   `docs/ML_STRATEGY.md`).

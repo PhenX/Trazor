@@ -4,7 +4,7 @@
  * attributes.
  */
 
-import type { PathCommand } from '@trazor/core'
+import type { GradientPaint, PathCommand } from '@trazor/core'
 import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
@@ -32,6 +32,13 @@ export interface SvgShape {
   layerId?: number
 }
 
+/** A gradient paint server (`@trazor/core` `GradientPaint`) plus the `id` a shape
+ *  references it by (`fill="url(#id)"`). Emitted in `<defs>`. Ids are only
+ *  document-local (the engine assigns `g0`, `g1`, …); a standalone SVG file is
+ *  self-contained, but inlining several traced SVGs into one HTML DOM must
+ *  namespace these ids first, or every `url(#g0)` resolves to the first one. */
+export type SvgGradient = GradientPaint & { id: string }
+
 export interface SvgDocument {
   /** px viewBox size. */
   width: number
@@ -41,6 +48,8 @@ export interface SvgDocument {
   widthMm?: number
   title?: string
   desc?: string
+  /** Gradient paint servers referenced by shape fills (`fill: 'url(#id)'`). */
+  defs?: SvgGradient[]
   shapes: SvgShape[]
 }
 
@@ -148,6 +157,33 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
 }
 
 /**
+ * A gradient as its `<defs>` element. Coordinates are user space
+ * (`gradientUnits="userSpaceOnUse"`), so they share the paths' pixel space and
+ * need no per-shape normalization. Stop offsets carry their own precision (only
+ * ever 0/1 today) independent of the coordinate precision.
+ */
+function gradientElement(g: SvgGradient, precision: number): string {
+  const n = (v: number): string => formatNumber(v, precision)
+  const stops = g.stops
+    .map(
+      (s) =>
+        `<stop offset="${formatNumber(s.offset, 3)}" stop-color="${assertAttrSafe(s.color, 'stop-color')}"/>`,
+    )
+    .join('')
+  const id = xmlEscape(g.id)
+  if (g.kind === 'linear') {
+    return (
+      `<linearGradient id="${id}" gradientUnits="userSpaceOnUse"` +
+      ` x1="${n(g.x1)}" y1="${n(g.y1)}" x2="${n(g.x2)}" y2="${n(g.y2)}">${stops}</linearGradient>`
+    )
+  }
+  return (
+    `<radialGradient id="${id}" gradientUnits="userSpaceOnUse"` +
+    ` cx="${n(g.cx)}" cy="${n(g.cy)}" r="${n(g.r)}">${stops}</radialGradient>`
+  )
+}
+
+/**
  * A shape as either a finished element (primitive or an un-optimized path) or,
  * when optimizing, a path split into its `d` and paint so consecutive shapes
  * sharing the exact paint can be merged into one `<path>`.
@@ -216,6 +252,14 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
   }
   if (doc.desc !== undefined && doc.desc !== '') {
     children.push(`<desc>${xmlEscape(doc.desc)}</desc>`)
+  }
+  if (doc.defs !== undefined && doc.defs.length > 0) {
+    const body = doc.defs.map((g) => gradientElement(g, precision))
+    children.push(
+      opts.pretty === true
+        ? `<defs>\n    ${body.join('\n    ')}\n  </defs>`
+        : `<defs>${body.join('')}</defs>`,
+    )
   }
   if (opts.groupByLayer === true || opts.groupByColor === true) {
     // One <g> per layer: by paint order (runs sharing `layerId`) for

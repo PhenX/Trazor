@@ -9,8 +9,9 @@ const props = withDefaults(
     defaultValue?: boolean
     hint?: string
     disabled?: boolean
+    badge?: string
   }>(),
-  { defaultValue: undefined, hint: undefined, disabled: false },
+  { defaultValue: undefined, hint: undefined, disabled: false, badge: undefined },
 )
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; reset: [] }>()
@@ -26,7 +27,7 @@ function reset(): void {
 </script>
 
 <template>
-  <ControlRow :label="label" :hint="hint" :modified="modified" @reset="reset">
+  <ControlRow :label="label" :hint="hint" :badge="badge" :modified="modified" @reset="reset">
     <button
       class="switch"
       role="switch"

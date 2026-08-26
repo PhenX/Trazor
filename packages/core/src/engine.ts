@@ -12,6 +12,7 @@ export type WarningCode =
   | 'palette-clamped'
   | 'tiny-features'
   | 'centerline-input'
+  | 'gradient-spot-color'
   | 'mode-note'
 
 export interface VectorizeWarning {

@@ -22,7 +22,7 @@ export type ReleaseNoteKind = 'feature' | 'improvement' | 'fix'
  * before/after (or candidate set) can be produced. Notes whose output looks
  * identical before and after (e.g. a layer-ordering change) get none.
  */
-export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect'
+export type ReleaseIllustration = 'auto-optimize' | 'clean-edges' | 'auto-detect' | 'gradients'
 
 export interface ReleaseNote {
   /** Publication date, ISO `YYYY-MM-DD`. */
@@ -35,6 +35,8 @@ export interface ReleaseNote {
   iteration: number
   /** Dominant category of the change; drives the tag color. */
   kind: ReleaseNoteKind
+  /** Experimental, opt-in feature: shows a "Beta" tag alongside the kind. */
+  beta?: boolean
   /** Short, plain-language headline. */
   title: string
   /** One plain-language line per change — no jargon. */
@@ -49,6 +51,18 @@ export interface ReleaseNote {
  * strictly newest-to-oldest.
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
+  {
+    date: '2026-08-26',
+    iteration: 2,
+    kind: 'feature',
+    beta: true,
+    title: 'Gradient fills (beta)',
+    illustration: 'gradients',
+    items: [
+      'A new beta can paint smooth color ramps — skies, soft shading, backgrounds, spotlights, sunsets — with a single SVG gradient instead of a stack of posterized bands, so the result looks smoother and uses fewer shapes. Straight (linear) and circular (radial) ramps are recognized, and a ramp that shifts hue along the way keeps the extra color stops it needs to follow the sweep.',
+      'It is still experimental and off by default: detection can be rough on some images (splitting one ramp, or turning a flat shape into a gradient). Turn on "Gradient fills" in the palette settings to try it, and check the result. Gradients stay fully editable vector output, meant for screen and print, not spot-color cutting — a note flags them when you export to a cutter-style setup.',
+    ],
+  },
   {
     date: '2026-08-26',
     iteration: 1,

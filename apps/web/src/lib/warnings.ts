@@ -13,6 +13,7 @@ const WARNING_KEY: Record<WarningCode, string> = {
   'palette-clamped': 'paletteClamped',
   'tiny-features': 'tinyFeatures',
   'centerline-input': 'centerlineInput',
+  'gradient-spot-color': 'gradientSpotColor',
   'mode-note': 'modeNote',
 }
 

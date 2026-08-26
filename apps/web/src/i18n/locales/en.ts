@@ -164,6 +164,20 @@ export const en = {
       label: 'Keep details',
       hint: 'Keep small high-contrast features (e.g. a logo dot) instead of merging them away',
     },
+    gradients: {
+      label: 'Gradient fills',
+      beta: 'Beta',
+      hint: 'Beta — off by default. Paint smooth color ramps with a single SVG gradient instead of posterized bands (best for photos, skies, soft shading). Detection is still rough on some images, so check the result. Not for spot-color cutting/printing.',
+    },
+    gradientStrength: {
+      label: 'Gradient strength',
+      hint: 'How eagerly regions become gradients. Lower keeps only clean, high-contrast ramps (flat shapes stay flat); higher catches subtler ones — raise it for more, lower it if flat areas get gradients by mistake.',
+    },
+    gradientMinArea: {
+      label: 'Gradient min area',
+      hint: 'Regions smaller than this (px) stay flat. Auto derives a floor from Min region; raise it to limit gradients to large smooth areas.',
+      zero: 'auto',
+    },
     gapFill: {
       label: 'Gap fill',
       hint: 'Hairline-seam compensation stroke width (px) for cutout rendering',
@@ -562,6 +576,7 @@ export const en = {
     title: "What's new",
     close: "Close what's new",
     new: 'New',
+    beta: 'Beta',
     feature: 'New feature',
     improvement: 'Improvement',
     fix: 'Fix',
@@ -598,6 +613,11 @@ export const en = {
       label: 'centerline',
       message:
         'Centerline traces the middle of thin lines, but ~{percent}% of this image is filled — expect a skeleton, not matching outlines. Use B&W or Color mode for solid shapes.',
+    },
+    gradientSpotColor: {
+      label: 'gradients',
+      message:
+        "{count} gradient fills won't reproduce on spot-color cutters/printers — turn off gradient detection for those outputs.",
     },
     modeNote: {
       label: 'note',
