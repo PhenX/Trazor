@@ -123,6 +123,10 @@ export const fr: MessageSchema = {
       label: 'Seuil alpha',
       hint: 'Un alpha inférieur est considéré comme vide',
     },
+    autoPaletteGroup: 'Palette automatique',
+    fixedPaletteNote:
+      'Palette fixe — les pixels sont mappés sur les couleurs ci-dessus, donc les options de clustering (segmentation, budget de couleurs, qualité) ne s’appliquent pas. Repassez en Automatique pour les modifier.',
+    layersGroup: 'Calques et régions',
     segmentation: {
       label: 'Segmentation',
       hint: 'Comment les pixels deviennent des régions plates. La croissance de régions garde nets les bords anticrénelés des dessins plats ; la palette globale convient aux photos et dégradés',
@@ -130,12 +134,22 @@ export const fr: MessageSchema = {
       regions: 'Croissance de régions',
     },
     colors: {
-      label: 'Couleurs',
-      hint: 'Nombre de couleurs en sortie',
+      label: 'Couleurs max',
+      hint: 'Limite haute du nombre de couleurs en sortie. La vectorisation peut en utiliser moins — les images simples et la réduction auto l’abaissent ; le nombre réellement utilisé est indiqué dans la source de palette.',
     },
     autoReduce: {
       label: 'Réduction auto',
       hint: 'Fusionne les couleurs quasi identiques pour réduire les calques d’un dessin simple',
+    },
+    dissolveBands: {
+      label: 'Dissoudre les bandes',
+      hint: 'Passes de nettoyage qui dissolvent une fine bande d’une couleur erronée (un liseré anticrénelé ou JPEG) dans la région voisine. 0 = désactivé.',
+      zero: 'désactivé',
+    },
+    colorCoherence: {
+      label: 'Cohérence des couleurs',
+      hint: 'Réaffecte les pixels en équilibrant la distance de palette et l’accord avec les voisins, pour qu’un mélange de bord rejoigne une vraie région au lieu de créer une bande mal colorée. 0 = désactivé.',
+      zero: 'désactivé',
     },
     quality: {
       label: 'Qualité',
@@ -310,7 +324,8 @@ export const fr: MessageSchema = {
   palettes: {
     automatic: 'Automatique',
     automaticTitle: 'Extraire la palette de l’image avec k-means',
-    automaticMeta: 'k-means · {count} couleurs',
+    automaticMeta: 'k-means · jusqu’à {count} couleurs',
+    automaticMetaResult: 'k-means · {count} sur {max} couleurs',
     updating: 'mise à jour des suggestions pour cette image…',
     addColor: 'Ajouter une couleur',
     backToAuto: '× revenir à automatique',
@@ -348,6 +363,12 @@ export const fr: MessageSchema = {
 
   ml: {
     title: 'Outils ML locaux',
+    groupEdits: 'Modifications ponctuelles',
+    groupEditsHint:
+      'Réécrivent l’image une fois, avant la vectorisation. Annulez avec Restaurer l’original.',
+    groupSteps: 'Appliqués à chaque vectorisation',
+    groupStepsHint: 'Options réexécutées automatiquement à chaque vectorisation.',
+    cancel: 'Annuler',
     backendDetecting: 'détection…',
     backendDetectingTitle: 'Test de la prise en charge WebGPU / WASM',
     backendIdle: 'inactif',

@@ -53,6 +53,18 @@ export interface ReleaseNote {
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
     date: '2026-08-26',
+    iteration: 3,
+    kind: 'improvement',
+    title: 'Clearer settings and ML tools',
+    items: [
+      'The Automatic palette now shows how many colors the trace actually used, not just the limit — so "up to 32" no longer reads as 32 when the image needs fewer.',
+      'The palette controls no longer vanish when you pick a fixed palette: the clustering options are grouped under "Automatic palette" and, when a fixed palette is active, a short note explains why they don’t apply instead of leaving a gap.',
+      'The local ML tools are split into one-shot edits (remove background, clean up, magic select — they rewrite the image once) and steps applied on every trace (the edge pre-pass), and a running ML tool can now be cancelled.',
+      'Two color-cleanup options that had no control — dissolve bands and color coherence — are now reachable under the Automatic palette’s Advanced section.',
+    ],
+  },
+  {
+    date: '2026-08-26',
     iteration: 2,
     kind: 'feature',
     beta: true,

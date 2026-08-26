@@ -256,6 +256,15 @@ export const useAppStore = defineStore('app', () => {
   let runCounter = 0
   let runTimer: ReturnType<typeof setTimeout> | null = null
   let toastCounter = 0
+  // One-shot ML tools can be cancelled mid-run: each run captures a token, the
+  // Cancel action flips it, and the run checks it after every await so a
+  // superseded result is discarded and its late progress updates are ignored.
+  type MlOneShot = 'removeBg' | 'cleanup' | 'magic'
+  const mlTokens: Record<MlOneShot, { cancelled: boolean } | null> = {
+    removeBg: null,
+    cleanup: null,
+    magic: null,
+  }
   // ML instances are heavyweight; keep them outside reactivity.
   let remover: import('@trazor/ml').BackgroundRemover | null = null
   let segmenter: import('@trazor/ml').MagicSegmenter | null = null
@@ -910,27 +919,50 @@ export const useAppStore = defineStore('app', () => {
     autoOnLoad.value = on
   }
 
+  /**
+   * Cancel a running one-shot ML tool. onnxruntime inference cannot be
+   * interrupted mid-op, so this flips the run's token: the UI returns to idle at
+   * once, the model keeps computing in the background, and its result (and any
+   * late progress) is discarded instead of applied.
+   */
+  function cancelMlTool(tool: MlOneShot): void {
+    const token = mlTokens[tool]
+    if (!token) return
+    token.cancelled = true
+    mlTokens[tool] = null
+    mlState[tool] = { busy: false, progress: null, phase: '' }
+    if (tool === 'magic') cancelMagicSelect()
+  }
+
   async function removeBackground(): Promise<void> {
     const image = workingImage.value
     if (!image || mlState.removeBg.busy) return
+    const token = { cancelled: false }
+    mlTokens.removeBg = token
     mlState.removeBg = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
+      if (token.cancelled) return
       const info = mlPhaseInfo(p)
       mlState.removeBg = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
       const ml = await import('@trazor/ml')
+      if (token.cancelled) return
       remover ??= await ml.BackgroundRemover.create(onProgress)
+      if (token.cancelled) return
       const out = await remover.run(image, { onProgress })
-      // Only apply if the user hasn't swapped images mid-run.
-      if (workingImage.value === image) {
+      // Only apply if the run wasn't cancelled and the image hasn't been swapped.
+      if (!token.cancelled && workingImage.value === image) {
         workingImage.value = out.image
         notify(t('toasts.bgRemoved'), 'success')
       }
     } catch (e) {
-      notify(t('toasts.bgRemovedFailed', { error: errorMessage(e) }), 'error')
+      if (!token.cancelled) notify(t('toasts.bgRemovedFailed', { error: errorMessage(e) }), 'error')
     } finally {
-      mlState.removeBg = { busy: false, progress: null, phase: '' }
+      if (mlTokens.removeBg === token) {
+        mlTokens.removeBg = null
+        mlState.removeBg = { busy: false, progress: null, phase: '' }
+      }
     }
   }
 
@@ -944,28 +976,36 @@ export const useAppStore = defineStore('app', () => {
   async function cleanUp(): Promise<void> {
     const image = workingImage.value
     if (!image || mlState.cleanup.busy) return
+    const token = { cancelled: false }
+    mlTokens.cleanup = token
     mlState.cleanup = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
+      if (token.cancelled) return
       const info = mlPhaseInfo(p)
       mlState.cleanup = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
       const ml = await import('@trazor/ml')
+      if (token.cancelled) return
       ml.overrideModelUrl(
         'cleanup',
         new URL(`${import.meta.env.BASE_URL}models/cleanup.onnx`, location.origin).href,
       )
       cleanupModel ??= await ml.CleanupEnhancer.create({ onProgress })
+      if (token.cancelled) return
       const out = await cleanupModel.run(image, { onProgress })
-      // Only apply if the user hasn't swapped images mid-run.
-      if (workingImage.value === image) {
+      // Only apply if the run wasn't cancelled and the image hasn't been swapped.
+      if (!token.cancelled && workingImage.value === image) {
         workingImage.value = out.image
         notify(t('toasts.cleanedUp'), 'success')
       }
     } catch (e) {
-      notify(t('toasts.cleanupFailed', { error: errorMessage(e) }), 'error')
+      if (!token.cancelled) notify(t('toasts.cleanupFailed', { error: errorMessage(e) }), 'error')
     } finally {
-      mlState.cleanup = { busy: false, progress: null, phase: '' }
+      if (mlTokens.cleanup === token) {
+        mlTokens.cleanup = null
+        mlState.cleanup = { busy: false, progress: null, phase: '' }
+      }
     }
   }
 
@@ -1011,19 +1051,26 @@ export const useAppStore = defineStore('app', () => {
       cancelMagicSelect()
       return
     }
+    const token = { cancelled: false }
+    mlTokens.magic = token
     mlState.magic = { busy: true, progress: null, phase: t('ml.phasePreparing') }
     const onProgress = (p: MlProgress): void => {
+      if (token.cancelled) return
       const info = mlPhaseInfo(p)
       mlState.magic = { busy: true, progress: info.progress, phase: info.phase }
     }
     try {
       const ml = await import('@trazor/ml')
+      if (token.cancelled) return
       segmenter ??= await ml.MagicSegmenter.create(onProgress)
+      if (token.cancelled) return
       if (segmenterImage !== image) {
         await segmenter.setImage(image, onProgress)
         segmenterImage = image
       }
+      if (token.cancelled) return
       const { mask } = await segmenter.segment(magicPoints.value)
+      if (token.cancelled) return
       // Apply: zero out alpha outside the mask, keep the canvas size (no crop).
       // settings.background stays as-is: 'auto' detects the new alpha and
       // behaves like 'transparent' per the flattenImage contract.
@@ -1039,9 +1086,12 @@ export const useAppStore = defineStore('app', () => {
       }
       cancelMagicSelect()
     } catch (e) {
-      notify(t('toasts.magicFailed', { error: errorMessage(e) }), 'error')
+      if (!token.cancelled) notify(t('toasts.magicFailed', { error: errorMessage(e) }), 'error')
     } finally {
-      mlState.magic = { busy: false, progress: null, phase: '' }
+      if (mlTokens.magic === token) {
+        mlTokens.magic = null
+        mlState.magic = { busy: false, progress: null, phase: '' }
+      }
     }
   }
 
@@ -1186,6 +1236,7 @@ export const useAppStore = defineStore('app', () => {
     setAutoOnLoad,
     removeBackground,
     cleanUp,
+    cancelMlTool,
     restoreOriginal,
     toggleMagicSelect,
     cancelMagicSelect,
