@@ -437,6 +437,9 @@ export const en = {
     contour: 'Contour {index}',
     shapesNodes: '{shapes} shapes · {nodes} nodes',
     contourNodes: 'Contour {index} · {nodes} nodes',
+    remove: 'Remove layer',
+    restore: 'Restore',
+    removedCount: '{count} layer removed | {count} layers removed',
   },
 
   tune: {
@@ -719,6 +722,8 @@ export const en = {
     modelCacheCleared: 'Model cache cleared',
     modelCacheFailed: 'Could not clear the model cache: {error}',
     hexCopied: '{hex} copied',
+    layerRemoved: '{hex} layer removed',
+    layersRestored: 'Removed layers restored',
     clipboardUnavailable: 'Clipboard unavailable',
     svgCopied: 'SVG markup copied',
     dataUriCopied: 'Data URI copied',

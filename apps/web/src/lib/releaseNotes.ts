@@ -50,6 +50,16 @@ export interface ReleaseNote {
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    date: '2026-08-26',
+    iteration: 1,
+    kind: 'feature',
+    title: 'Hover and edit shapes right on the preview',
+    items: [
+      'Hover a color in the preview and it lights up — with its hex and shape/node counts — and the matching row in the Layers panel highlights too, so it works both ways.',
+      'Click a color in the preview for a quick menu to remove it or copy its hex, and every Layers row now has a remove button. Removed colors drop out of the preview and the exported SVG, and one tap on Restore brings them back.',
+    ],
+  },
+  {
     date: '2026-08-25',
     iteration: 1,
     kind: 'fix',

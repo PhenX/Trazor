@@ -37,7 +37,7 @@ import { defaultPoolSize, runAutoTune } from '../lib/tuner'
 import type { AutoTuneOptions, TuneSignal } from '../lib/tuner'
 import { DEFAULT_FREE } from '@trazor/tune'
 import type { ObjectiveId, ScoredCandidate, SeedPatch, TunableKey, TuneWeights } from '@trazor/tune'
-import { buildLayers } from '../lib/layers'
+import { buildLayers, filterLayers } from '../lib/layers'
 import type { LayerModel } from '../lib/layers'
 import { countUnseen, latestReleaseId } from '../lib/releaseNotes'
 import { getSample } from '../lib/samples'
@@ -240,6 +240,8 @@ export const useAppStore = defineStore('app', () => {
   const layerHover = ref<LayerFocus | null>(null)
   /** Pinned layer (click) — highlighted and expanded until cleared. */
   const selectedLayer = ref<number | null>(null)
+  /** Paint keys the user has hidden from the preview/export (removable, restorable). */
+  const removedLayers = ref<string[]>([])
 
   // Non-reactive machinery
   let client: TrazorClient | null = null
@@ -288,10 +290,21 @@ export const useAppStore = defineStore('app', () => {
     return `${base || 'vectorized'}.svg`
   })
 
+  // The result SVG with any user-removed color layers stripped — what the
+  // preview shows and the export writes. Everything downstream (geometry, the
+  // layer panel, highlights) reads this, so a removal propagates consistently.
+  const displaySvg = computed<string | null>(() => {
+    const res = result.value
+    if (!res) return null
+    return removedLayers.value.length > 0
+      ? filterLayers(res.svg, new Set(removedLayers.value))
+      : res.svg
+  })
+
   // Decoded result geometry, parsed once per result and shared by the layer
   // panel and the preview's complexity/highlight overlays.
   const geometry = computed<SvgGeometry | null>(() =>
-    result.value ? extractGeometry(result.value.svg) : null,
+    displaySvg.value ? extractGeometry(displaySvg.value) : null,
   )
   /** Color layers (and their contours) derived from the result. */
   const layerModel = computed<LayerModel | null>(() =>
@@ -313,6 +326,24 @@ export const useAppStore = defineStore('app', () => {
     selectedLayer.value = selectedLayer.value === index ? null : index
   }
 
+  /**
+   * Hide a color layer from the preview and export by its paint `key`. Removal
+   * renumbers the remaining layers, so any live hover/pin is dropped to avoid a
+   * stale index highlighting the wrong shape.
+   */
+  function removeLayer(key: string): void {
+    if (removedLayers.value.includes(key)) return
+    removedLayers.value = [...removedLayers.value, key]
+    layerHover.value = null
+    selectedLayer.value = null
+  }
+
+  /** Bring every removed layer back. */
+  function restoreLayers(): void {
+    if (removedLayers.value.length === 0) return
+    removedLayers.value = []
+  }
+
   function setLayersOpen(open: boolean): void {
     layersOpen.value = open
   }
@@ -321,10 +352,11 @@ export const useAppStore = defineStore('app', () => {
     layersOpen.value = !layersOpen.value
   }
 
-  // A new trace invalidates layer indices — drop any hover/selection.
+  // A new trace invalidates layer indices — drop any hover/selection/removals.
   watch(result, () => {
     layerHover.value = null
     selectedLayer.value = null
+    removedLayers.value = []
   })
 
   // ------------------------------- Toasts --------------------------------
@@ -1073,6 +1105,7 @@ export const useAppStore = defineStore('app', () => {
     layersOpen,
     layerHover,
     selectedLayer,
+    removedLayers,
     tuneOpen,
     tuneRunning,
     tuneProgress,
@@ -1093,6 +1126,7 @@ export const useAppStore = defineStore('app', () => {
     isWorkingModified,
     exportName,
     unseenReleaseCount,
+    displaySvg,
     geometry,
     layerModel,
     layerFocus,
@@ -1144,6 +1178,8 @@ export const useAppStore = defineStore('app', () => {
     setLocale,
     setLayerHover,
     toggleSelectedLayer,
+    removeLayer,
+    restoreLayers,
     setLayersOpen,
     toggleLayersOpen,
   }

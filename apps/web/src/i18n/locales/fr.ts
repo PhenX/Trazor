@@ -451,6 +451,9 @@ export const fr: MessageSchema = {
     contour: 'Contour {index}',
     shapesNodes: '{shapes} formes · {nodes} nœuds',
     contourNodes: 'Contour {index} · {nodes} nœuds',
+    remove: 'Supprimer le calque',
+    restore: 'Rétablir',
+    removedCount: '{count} calque supprimé | {count} calques supprimés',
   },
 
   tune: {
@@ -741,6 +744,8 @@ export const fr: MessageSchema = {
     modelCacheCleared: 'Cache des modèles vidé',
     modelCacheFailed: 'Impossible de vider le cache des modèles : {error}',
     hexCopied: '{hex} copié',
+    layerRemoved: 'Calque {hex} supprimé',
+    layersRestored: 'Calques supprimés rétablis',
     clipboardUnavailable: 'Presse-papiers indisponible',
     svgCopied: 'Balisage SVG copié',
     dataUriCopied: 'Data URI copié',
