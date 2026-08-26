@@ -18,7 +18,6 @@ const { t } = useI18n()
   <div class="control-row" :class="{ 'is-modified': modified }">
     <div class="control-label" :title="hint" @dblclick="emit('reset')">
       <span>{{ label }}</span>
-      <span v-if="badge" class="control-badge">{{ badge }}</span>
       <button
         v-if="modified"
         class="reset-dot"
@@ -28,6 +27,7 @@ const { t } = useI18n()
       />
     </div>
     <div class="control-body">
+      <span v-if="badge" class="control-badge">{{ badge }}</span>
       <slot />
     </div>
   </div>
