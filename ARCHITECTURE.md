@@ -20,24 +20,26 @@ packages/engine   orchestrates the above per mode; runs in a Web Worker (+ Trazo
 packages/ml       optional on-device ML that improves the input (bg removal, segment, edge pre-pass, cleanup)
 packages/assist   image statistics → recommended settings & palettes
 packages/tune     automatic settings search: weighted objectives + adaptive parameter descent (pure, no DOM)
-apps/web          Vue 3 + Pinia studio UI that drives the engine through a worker client
 ```
+
+The Trazor studio (hosted at [trazor.studio](https://trazor.studio)) is the reference consumer — a separate product,
+not part of this repository.
 
 ## Dependency direction
 
 ```
 core ─┬─ raster ─┐
-      ├─ trace  ─┼─ engine ─── apps/web
-      ├─ svg   ──┘             │
-      ├─ ml ──────────────────┤
-      ├─ assist ──────────────┤
-      └─ tune ────────────────┘
+      ├─ trace  ─┼─ engine
+      ├─ svg   ──┘
+      ├─ ml
+      ├─ assist
+      └─ tune
 ```
 
 `core` depends on nothing. `raster`, `trace`, `svg`, `ml`, `assist`, `tune` depend only on `core`. `engine` composes
-`raster + trace + svg`. `apps/web` depends on `engine`, `core`, `ml`, `assist`, `tune`. There are no cycles; keep it that way.
+`raster + trace + svg`. There are no cycles; keep it that way.
 
-`tune` is the settings search: it never traces — the app runs each candidate through the `engine` worker pool
+`tune` is the settings search: it never traces — a consumer runs each candidate through the `engine` worker pool
 (`TrazorPool`), scores it, and feeds metrics back — so `tune` stays a pure, DOM-free strategy. Its API surface is in
 [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
@@ -47,7 +49,7 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 `segment`, `trace`, `fit`, `svg`) are the progress-reporting units.
 
 ```
-decode (app)
+decode (consumer)
   → resize → denoise → flatten alpha            [raster]         preprocess
   → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
@@ -96,14 +98,13 @@ decode (app)
   `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
   `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
-  (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so the app works without it.
+  (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so a consumer works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
 - **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring
   (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
-  round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; the app pairs it with the
+  round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; a consumer pairs it with the
   engine's `TrazorPool` to trace and score candidates. Exact API: [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
-- **`apps/web`** — see [`apps/web/AGENTS.md`](apps/web/AGENTS.md).
 
 ## Cross-cutting invariants
 

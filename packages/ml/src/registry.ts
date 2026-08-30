@@ -31,15 +31,14 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
   'edge-prepass': {
     id: 'edge-prepass',
     // The project's own model, not a third-party one: it ships as a same-origin
-    // static asset of the app (apps/web/public/models/), so the browser fetches
-    // it from the very site it is served from — no CORS, no external host. This
-    // default is relative; the app resolves it against its deploy base at startup
-    // with overrideModelUrl(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`).
-    // Weights are published on the `models` GitHub Release and fetched into
-    // apps/web/public/models/ by the deploy workflow at build time — not committed
-    // to git (train per docs/EDGE_PREPASS.md). A local `npm run dev` has no weights
-    // unless you drop the .onnx in, and create() then fails soft (the fetch 404s)
-    // and the app traces exactly as it does today.
+    // static asset of the consuming app (served under `models/`), so the browser
+    // fetches it from the very site it is served from — no CORS, no external host.
+    // This default is relative; the consumer resolves it against its deploy base at
+    // startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/edge-prepass.onnx`).
+    // Weights are published on a `models` GitHub Release and fetched into the app's
+    // `models/` directory at build time — not committed to git (train per
+    // docs/EDGE_PREPASS.md). When they are absent, create() fails soft (the fetch
+    // 404s) and tracing proceeds classically.
     url: 'models/edge-prepass.onnx',
     approxBytes: 475_000,
     license: 'MIT',
@@ -49,10 +48,10 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // The project's own model (see edge-prepass above for the same-origin
     // rationale): shipped as a static app asset, resolved against the deploy base
     // at startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/cleanup.onnx`).
-    // Weights are not committed: the deploy workflow fetches them from a GitHub
-    // Release into apps/web/public/models/ at build time (train per
+    // Weights are not committed: the deploying app fetches them from a GitHub
+    // Release into its `models/` directory at build time (train per
     // docs/CLEANUP_PREPASS.md, scripts/train --task cleanup). Until a build
-    // includes them, create() fails soft and the app leaves the image untouched.
+    // includes them, create() fails soft and the working image is left untouched.
     url: 'models/cleanup.onnx',
     approxBytes: 3_000_000,
     license: 'MIT',
@@ -62,8 +61,8 @@ export const MODEL_REGISTRY: Record<ModelSpec['id'], ModelSpec> = {
     // The project's own model (see edge-prepass above for the same-origin
     // rationale): shipped as a static app asset, resolved against the deploy base
     // at startup with overrideModelUrl(`${import.meta.env.BASE_URL}models/signed-field.onnx`).
-    // Weights are not committed: the deploy workflow fetches them from a GitHub
-    // Release into apps/web/public/models/ at build time (train per
+    // Weights are not committed: the deploying app fetches them from a GitHub
+    // Release into its `models/` directory at build time (train per
     // docs/SIGNED_FIELD_PREPASS.md, scripts/train --task field). Until a build
     // includes them, create() fails soft and the tracer uses the classical field.
     url: 'models/signed-field.onnx',

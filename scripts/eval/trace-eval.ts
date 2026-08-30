@@ -7,7 +7,7 @@
  *
  * For each sample it traces through @trazor/engine, rasterizes the SVG with resvg
  * over white, and reports mean ΔE against the clean ground-truth render (the same
- * metric as apps/web/src/lib/fidelity.ts), in two buckets:
+ * metric as the studio's fidelity metric), in two buckets:
  *   - degraded — trace the degraded `input/` (does the pre-pass recover the true
  *     scene better?).
  *   - clean    — trace the clean `clean/` render (do-no-harm: the pre-pass must

@@ -30,7 +30,7 @@ function assertModelBytes(buffer: ArrayBuffer, spec: ModelSpec): void {
   if (bytes.length === 0 || bytes[i] === 0x3c) {
     throw new Error(
       `Model for ${spec.id} is not a valid ONNX file (got ${bytes.length === 0 ? 'an empty response' : 'an HTML/XML page'}) from ${spec.url} — ` +
-        `the file is likely missing (in dev, place it at apps/web/public/models/).`,
+        `the file is likely missing (serve it under the app's models/ directory).`,
     )
   }
 }
@@ -55,7 +55,7 @@ async function downloadModel(spec: ModelSpec, onProgress?: MlProgressFn): Promis
   if ((response.headers.get('Content-Type') ?? '').includes('text/html')) {
     throw new Error(
       `Model for ${spec.id} was served as HTML, not a model, from ${spec.url} — ` +
-        `the file is likely missing (in dev, place it at apps/web/public/models/).`,
+        `the file is likely missing (serve it under the app's models/ directory).`,
     )
   }
   const total = Number(response.headers.get('Content-Length') ?? '') || 0

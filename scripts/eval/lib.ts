@@ -2,7 +2,7 @@
  * Shared helpers for the eval harnesses (docs/ML_ROADMAP.md item 1 & the tracer
  * comparison). Kept dependency-light and Node-only: read a PNG, rasterize an SVG
  * with resvg over white, and score fidelity as mean Oklab ΔE — the same metric
- * the app shows (apps/web/src/lib/fidelity.ts).
+ * the app shows (the studio's fidelity metric).
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { Resvg } from '@resvg/resvg-js'
@@ -71,7 +71,7 @@ export function resampleNearest(img: RasterImage, w: number, h: number): RasterI
 
 /**
  * Mean Oklab ΔE between two equally-sized RGBA rasters, both taken as opaque over
- * white (mirrors apps/web/src/lib/fidelity.ts). Ignores alpha — callers pass
+ * white (mirrors the studio's fidelity metric). Ignores alpha — callers pass
  * images already composited over white.
  */
 export function meanDeltaE(a: RasterImage, b: RasterImage): number {
@@ -235,7 +235,7 @@ export function qualityStats(render: RasterImage, ref: RasterImage): QualityStat
   }
 }
 
-/** app score: 1 − 4·ΔE, clamped to [0,1] (apps/web/src/lib/fidelity.ts). */
+/** app score: 1 − 4·ΔE, clamped to [0,1] (the studio's fidelity metric). */
 export function score(dE: number): number {
   const s = 1 - dE * 4
   return s < 0 ? 0 : s > 1 ? 1 : s

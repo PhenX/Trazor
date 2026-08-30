@@ -151,7 +151,7 @@ function star(cx, cy, outer, inner) {
   return pts
 }
 
-// ---- Family generators (mirror apps/web/src/lib/samples.ts in spirit) --------
+// ---- Family generators (mirror the studio's sample generators in spirit) --------
 
 /** Flat, saturated badge — nested flat discs + a star. Curved edges → arc fitting. */
 function badge() {

@@ -1,4 +1,4 @@
-import type { StageId, VectorizeResult, VectorizeSettings } from '@trazor/core'
+import type { StageId, TraceStep, VectorizeResult, VectorizeSettings } from '@trazor/core'
 
 /** Messages accepted by the vectorizer worker. */
 export type WorkerInMessage =
@@ -20,12 +20,17 @@ export type WorkerInMessage =
        * cached preprocess/palette intermediates; absent disables that reuse.
        */
       imageId?: number
+      /** Opt into recording every pipeline step, streamed back as `trace-step`. */
+      trace?: boolean
+      /** Attach the raw pre-serialization geometry to the result as `document`. */
+      withDocument?: boolean
     }
   | { type: 'cancel'; id: number }
 
 /** Messages emitted by the vectorizer worker. */
 export type WorkerOutMessage =
   | { type: 'progress'; id: number; stage: StageId; overall: number }
+  | { type: 'trace-step'; id: number; step: TraceStep }
   | { type: 'result'; id: number; result: VectorizeResult }
   | { type: 'error'; id: number; message: string; cancelled: boolean }
 

@@ -87,11 +87,11 @@ Identical to the edge pre-pass, task-aware ([`export_onnx.py`](../scripts/train/
 - Export PyTorch → **ONNX**, verify torch/onnxruntime parity within tolerance, then quantize (int8/fp16).
 - Output shape is asserted `[1, 3, size, size]`.
 - **Host it as a project asset, not on a third party, and don't commit it.** `*.onnx` is git-ignored; the deploy workflow
-  fetches the weights from a **GitHub Release** (tag `models`) into `apps/web/public/models/cleanup.onnx` at build time, so
+  fetches the weights from a **GitHub Release** (tag `models`) into `public/models/cleanup.onnx` at build time, so
   Vite serves them **same-origin** (no CORS, no external host — unlike the third-party `u2netp`/SlimSAM, which keep
   fetching from their upstream mirrors) with no binary in git history. The registry points at `models/cleanup.onnx`; the
   app resolves it against its deploy base with `overrideModelUrl` and `import.meta.env.BASE_URL`. See
-  [`apps/web/public/models/README.md`](../apps/web/public/models/README.md) for the publish steps.
+  the deploying app's `models/` setup for the publish steps.
 
 ## Integration (`@trazor/ml`)
 
@@ -116,7 +116,7 @@ export class CleanupEnhancer {
 - **App wiring (implemented):** the studio's ML tools panel has a **Clean up (ML)** one-shot button (beside Remove
   background). It runs `CleanupEnhancer` on the working image and **replaces the working image** with the result, so the
   next trace — in any mode — runs on the cleaned pixels. Undo via **Restore original**. Fail-soft: with no weights at
-  `apps/web/public/models/cleanup.onnx` it toasts and leaves the image untouched.
+  `public/models/cleanup.onnx` it toasts and leaves the image untouched.
 - **Consumer:** none in the tracer — the cleaned image is just the raster the pipeline already expected, so no engine
   changes and no new determinism handling beyond the 8-bit output boundary above.
 

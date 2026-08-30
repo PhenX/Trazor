@@ -55,7 +55,7 @@ its anti-aliased edge values carry the sub-pixel boundary. Pixel-aligned by cons
   ([`../scripts/train/losses.py`](../scripts/train/losses.py)); the boundary values feed refinement, so local structure
   matters alongside absolute accuracy.
 - **Train / export:** `python scripts/train/pipeline.py --task field …` → `signed-field.onnx` (SigmoidWrapper, torch/onnx
-  parity asserted). Ships same-origin from the `models` release, like the other two.
+  parity asserted). Served same-origin under `models/` by the deploying app, like the other two.
 
 ## Integration (`@trazor/ml` → `@trazor/engine`)
 
@@ -76,7 +76,7 @@ export class FieldEnhancer {
   field derived from the (degraded) input. `TrazorClient.vectorize(image, settings, onProgress, edgeHint, coverageHint)`.
 - **Modes:** bw only (silhouette refinement). Color `cutout` uses the pairwise Oklab `ColorField` instead — a separate,
   later extension.
-- **Fail-soft:** no weights at `apps/web/public/models/signed-field.onnx` ⇒ `create()` rejects and the tracer uses the
+- **Fail-soft:** no weights at `public/models/signed-field.onnx` ⇒ `create()` rejects and the tracer uses the
   classical field.
 
 ## Status

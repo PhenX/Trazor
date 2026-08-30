@@ -55,9 +55,9 @@ def require_deps() -> None:
 
 # Default ship path per task (mirrors export_onnx.DEFAULT_OUT).
 DEFAULT_OUT = {
-    "edge": "apps/web/public/models/edge-prepass.onnx",
-    "cleanup": "apps/web/public/models/cleanup.onnx",
-    "field": "apps/web/public/models/signed-field.onnx",
+    "edge": "models/edge-prepass.onnx",
+    "cleanup": "models/cleanup.onnx",
+    "field": "models/signed-field.onnx",
 }
 
 # Fast throwaway config for --smoke: enough to run every step, small enough to

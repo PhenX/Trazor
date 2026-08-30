@@ -73,7 +73,7 @@
   <!-- offline → runtime return connector (drawn first; boxes paint over it) -->
   <path class="warm-dash" marker-end="url(#ahW)"
         d="M954,516 H1046 Q1058,516 1058,504 V163 Q1058,151 1046,151 H608"/>
-  <text class="t-small" x="862" y="140" text-anchor="middle">trained ONNX ships to apps/web/public/models/ — loaded same-origin</text>
+  <text class="t-small" x="862" y="140" text-anchor="middle">trained ONNX ships to the app's models/ — loaded same-origin</text>
 
   <!-- input -->
   <rect class="node" x="40" y="281" width="118" height="70" rx="10"/>

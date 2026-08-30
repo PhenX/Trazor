@@ -3,7 +3,7 @@
 The metric that actually ships. The trainer selects checkpoints on a proxy (edge BCE/Dice, cleanup PSNR), but what matters
 is the **fidelity of the traced output** — so this harness traces held-out samples through `@trazor/engine` **with and
 without** the pre-pass, rasterizes each SVG with resvg over white, and reports mean **Oklab ΔE** against the clean
-ground-truth render (the same metric as [`apps/web/src/lib/fidelity.ts`](../../apps/web/src/lib/fidelity.ts)).
+ground-truth render (the same metric as the studio's fidelity metric).
 
 Two buckets:
 

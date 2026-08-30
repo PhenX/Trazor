@@ -22,7 +22,25 @@ import type {
   VectorizeSettings,
   VectorizeWarning,
   TrazorEngine,
+  TraceChart,
+  TraceStep,
+  VectorDocument,
+  VectorGradient,
+  VectorShape,
 } from '@trazor/core'
+import {
+  luminanceHistogram,
+  maskFraction,
+  nodesPerColorBars,
+  nodesPerShapeHistogram,
+  nonEmptyLabelCount,
+  palettePopulationBars,
+  rasterFromImage,
+  rasterFromLabels,
+  rasterFromMask,
+  regionAreaHistogram,
+  totalNodes,
+} from './trace'
 import {
   adaptiveBinarize,
   bilateralFilter,
@@ -150,19 +168,57 @@ const STAGE_BUDGET: Record<StageId, number> = {
 }
 const STAGE_ORDER: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'svg']
 
+/** What a caller supplies to {@link Run.emitStep}; the Run fills in index/stage/timing. */
+type TraceStepInput = Pick<TraceStep, 'code' | 'label'> &
+  Partial<Pick<TraceStep, 'notes' | 'metrics' | 'rasters' | 'charts'>>
+
 class Run {
   private timings: StageTiming[] = []
   private stageStart = 0
   private currentStage: StageId | null = null
+  private stepIndex = 0
+  private lastMark = 0
 
   constructor(private ctx?: EngineContext) {}
+
+  /** True when a tracer is attached; guard snapshot work behind it. */
+  get tracing(): boolean {
+    return this.ctx?.onTrace !== undefined
+  }
 
   /** Enter a stage, closing the previous one's timing. */
   stage(stage: StageId): void {
     this.closeStage()
     this.currentStage = stage
     this.stageStart = nowMs()
+    this.lastMark = this.stageStart
     this.progress(0)
+  }
+
+  /**
+   * Record one trace step (no-op without a tracer). `build` runs only when
+   * tracing, so snapshot construction stays off the hot path; its `startMs`
+   * spans from the previous mark, so consecutive steps tile the stage's time.
+   */
+  emitStep(build: () => TraceStepInput): void {
+    const onTrace = this.ctx?.onTrace
+    if (!onTrace || !this.currentStage) return
+    const startMs = this.lastMark
+    const endMs = nowMs()
+    this.lastMark = endMs
+    const s = build()
+    onTrace({
+      index: this.stepIndex++,
+      stage: this.currentStage,
+      startMs,
+      endMs,
+      code: s.code,
+      label: s.label,
+      notes: s.notes,
+      metrics: s.metrics,
+      rasters: s.rasters,
+      charts: s.charts,
+    })
   }
 
   progress(fractionInStage: number): void {
@@ -276,6 +332,44 @@ export interface VectorizeRunOptions {
   /** Stable per-image identity (new working image ⇒ new id); enables the cache. */
   imageId?: number
   cache?: StageCache
+  /**
+   * Attach the raw pre-serialization geometry to the result as `document`, for
+   * consumers that emit alternate formats (PDF, DXF, …) without re-parsing the
+   * SVG. Off by default (a batch search never needs it); the interactive client
+   * requests it.
+   */
+  withDocument?: boolean
+}
+
+/** Build the structured document from the shapes/gradients the serializer received. */
+function buildDocument(
+  shapes: SvgShape[],
+  defs: SvgGradient[],
+  width: number,
+  height: number,
+  settings: VectorizeSettings,
+): VectorDocument {
+  const gradients: VectorGradient[] = defs.map((g) => ({
+    id: g.id,
+    kind: g.kind,
+    stops: g.stops.map((s) => ({ offset: s.offset, color: s.color })),
+  }))
+  const outShapes: VectorShape[] = shapes.map((s) => ({
+    commands: s.commands,
+    fill: s.fill,
+    fillRule: s.fillRule,
+    stroke: s.stroke,
+    strokeWidth: s.strokeWidth,
+    layerId: s.layerId,
+  }))
+  return {
+    width,
+    height,
+    unit: settings.unit,
+    widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
+    shapes: outShapes,
+    gradients: gradients.length > 0 ? gradients : undefined,
+  }
 }
 
 /** Settings that change the preprocessed working image. */
@@ -366,6 +460,35 @@ export async function vectorize(
   const { width, height } = image
   await run.tick()
 
+  if (run.tracing) {
+    run.emitStep(() => {
+      const notes: string[] = []
+      if (width !== source.width || height !== source.height) {
+        notes.push(`Resized ${source.width}×${source.height} → ${width}×${height}.`)
+      }
+      if (settings.denoise !== 'none') notes.push(`Denoise: ${settings.denoise}.`)
+      if (settings.blurRadius > 0) notes.push(`Blur radius ${settings.blurRadius}.`)
+      if (settings.mode === 'grayscale') notes.push('Desaturated for grayscale tracing.')
+      return {
+        code: 'preprocess',
+        label: 'Preprocess',
+        rasters: [
+          rasterFromImage(source, 'Source'),
+          rasterFromImage(image, settings.mode === 'grayscale' ? 'Working (gray)' : 'Working'),
+        ],
+        charts: [luminanceHistogram(image)],
+        metrics: {
+          sourceWidth: source.width,
+          sourceHeight: source.height,
+          workWidth: width,
+          workHeight: height,
+          scalePercent: Math.round((width / source.width) * 100),
+        },
+        notes: notes.length > 0 ? notes : undefined,
+      }
+    })
+  }
+
   // ---- per-mode tracing into SVG shapes ----
   const shapes: SvgShape[] = []
   const defs: SvgGradient[] = []
@@ -397,6 +520,24 @@ export async function vectorize(
       ctx?.edgeHint,
       ctx?.coverageHint,
     )
+  }
+
+  if (run.tracing) {
+    run.emitStep(() => ({
+      code: 'trace',
+      label: 'Trace & fit',
+      charts: [nodesPerColorBars(shapes)],
+      metrics: {
+        shapes: shapes.length,
+        nodes: totalNodes(shapes),
+        gradients: defs.length,
+      },
+      notes: [
+        settings.mode === 'centerline'
+          ? 'Centerline strokes fitted from the skeleton.'
+          : `Layering: ${settings.layering}; curves: ${settings.curveMode}.`,
+      ],
+    }))
   }
 
   // ---- svg ----
@@ -431,6 +572,21 @@ export async function vectorize(
   )
   run.progress(0.6)
   const analysis = analyzeSvg(svg)
+
+  if (run.tracing) {
+    run.emitStep(() => ({
+      code: 'serialize',
+      label: 'Serialize SVG',
+      charts: [nodesPerShapeHistogram(shapes)],
+      metrics: {
+        paths: analysis.pathCount,
+        nodes: analysis.nodeCount,
+        colors: analysis.colorCount,
+        bytes: analysis.byteLength,
+      },
+      notes: [settings.optimizeSvg ? 'Path optimization on.' : 'Path optimization off.'],
+    }))
+  }
 
   if (shapes.length === 0) {
     warnings.push({
@@ -474,6 +630,7 @@ export async function vectorize(
       stages: timings,
     },
     warnings,
+    document: opts?.withDocument ? buildDocument(shapes, defs, width, height, settings) : undefined,
   }
 }
 
@@ -695,6 +852,26 @@ async function colorPipeline(
       fillFor[l] = paletteHex[l]
       paletteColorsFor[l] = [paletteHex[l]]
     }
+  }
+
+  if (run.tracing) {
+    run.emitStep(() => {
+      const charts: TraceChart[] = [palettePopulationBars(paletteHex, counts)]
+      const rh = regionAreaHistogram(counts)
+      if (rh) charts.push(rh)
+      return {
+        code: 'segment',
+        label: 'Palette & regions',
+        rasters: [rasterFromLabels(labels, paletteHex, 'Label map')],
+        charts,
+        metrics: {
+          colors: paletteHex.length,
+          regions: nonEmptyLabelCount(counts),
+          gradients: gradients ? gradients.filter(Boolean).length : 0,
+        },
+        notes: [`Segmentation: ${settings.segmentation}; min region ${settings.minRegionArea}px.`],
+      }
+    })
   }
 
   run.stage('trace')
@@ -1016,6 +1193,20 @@ async function inkPipeline(
   mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
   await run.tick()
 
+  if (run.tracing) {
+    run.emitStep(() => ({
+      code: 'threshold',
+      label: 'Threshold',
+      rasters: [rasterFromMask(mask, 'Binary mask')],
+      charts: [luminanceHistogram(image)],
+      metrics: {
+        blackFraction: Math.round(maskFraction(mask) * 1000) / 1000,
+        threshold: settings.threshold,
+      },
+      notes: [`Threshold mode: ${settings.thresholdMode}${settings.invert ? ' (inverted)' : ''}.`],
+    }))
+  }
+
   run.stage('trace')
   setPalette([settings.fillColor])
 
@@ -1043,6 +1234,14 @@ async function inkPipeline(
     const skeleton = zhangSuenThin(mask)
     run.progress(0.4)
     await run.tick()
+    if (run.tracing) {
+      run.emitStep(() => ({
+        code: 'thin',
+        label: 'Skeleton',
+        rasters: [rasterFromMask(skeleton, 'Zhang–Suen skeleton')],
+        metrics: { strokePixels: Math.round(maskFraction(skeleton) * skeleton.data.length) },
+      }))
+    }
     // Distance field feeds a per-stroke width (varying line weight is kept);
     // the global estimate is the fallback and the explicit-width path.
     const useEstimate = settings.strokeWidth <= 0

@@ -2,7 +2,7 @@
 
 Produces a fixed [1,3,size,size] → [1,C,size,size] sigmoid model (C=1 edge,
 C=3 cleanup), verifies torch/onnxruntime parity, and (optionally) quantizes to
-int8. Drop the result at apps/web/public/models/<name>.onnx to ship it
+int8. Drop the result at models/<name>.onnx to ship it
 same-origin with the app:
 - edge → edge-prepass.onnx   (EdgeEnhancer, packages/ml/src/edge.ts)
 - cleanup → cleanup.onnx      (CleanupEnhancer, packages/ml/src/cleanup.ts)
@@ -21,9 +21,9 @@ from model import SigmoidWrapper, TinyUNet
 
 # Default ship path per task.
 DEFAULT_OUT = {
-    "edge": "apps/web/public/models/edge-prepass.onnx",
-    "cleanup": "apps/web/public/models/cleanup.onnx",
-    "field": "apps/web/public/models/signed-field.onnx",
+    "edge": "models/edge-prepass.onnx",
+    "cleanup": "models/cleanup.onnx",
+    "field": "models/signed-field.onnx",
 }
 DEFAULT_CHECKPOINT = {
     "edge": "scripts/train/checkpoints/edge-prepass.pt",

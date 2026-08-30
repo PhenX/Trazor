@@ -3,6 +3,7 @@ import type {
   GrayImage,
   RasterImage,
   StageId,
+  TraceStep,
   VectorizeResult,
   VectorizeSettings,
 } from '@trazor/core'
@@ -12,6 +13,7 @@ interface PendingJob {
   resolve: (r: VectorizeResult) => void
   reject: (e: Error) => void
   onProgress?: (stage: StageId, overall: number) => void
+  onTrace?: (step: TraceStep) => void
   settled: boolean
 }
 
@@ -49,13 +51,15 @@ export class TrazorClient {
     edgeHint?: GrayImage,
     // Optional learned coverage field (from FieldEnhancer), same dimensions as `image`.
     coverageHint?: GrayImage,
+    // Optional step tracer: receives a `TraceStep` per pipeline stage as it completes.
+    onTrace?: (step: TraceStep) => void,
   ): Promise<VectorizeResult> {
     this.cancelPending()
     const worker = this.ensureWorker()
     const id = this.nextId++
 
     return new Promise<VectorizeResult>((resolve, reject) => {
-      this.jobs.set(id, { resolve, reject, onProgress, settled: false })
+      this.jobs.set(id, { resolve, reject, onProgress, onTrace, settled: false })
       // Copy: transferring the original buffers would detach the caller's data.
       const buffer = image.data.slice().buffer
       const transfer: Transferable[] = [buffer]
@@ -79,6 +83,10 @@ export class TrazorClient {
         edgeHint: hint,
         coverageHint: cov,
         imageId: this.idFor(image),
+        trace: onTrace !== undefined,
+        // The interactive client always wants the raw document available for
+        // on-demand exports (the batch pool omits it to skip the extra payload).
+        withDocument: true,
       }
       worker.postMessage(msg, transfer)
     })
@@ -130,6 +138,9 @@ export class TrazorClient {
     switch (msg.type) {
       case 'progress':
         if (!job.settled) job.onProgress?.(msg.stage, msg.overall)
+        break
+      case 'trace-step':
+        if (!job.settled) job.onTrace?.(msg.step)
         break
       case 'result':
         if (!job.settled) {

@@ -123,9 +123,9 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   boundaries from a degraded raster and guides despeckle / small-region merge so
   real detail survives (`packages/ml/src/edge.ts`; spec and training in
   [`EDGE_PREPASS.md`](EDGE_PREPASS.md)). Weights: `edge-prepass.onnx` (~0.46 MB,
-  int8), fetched from this repo’s [`models` GitHub
-  Release](https://github.com/PhenX/Trazor/releases/tag/models) at deploy
-  time and served same-origin — not committed to git.
+  int8) — trained with [`scripts/train`](../scripts/train/README.md); this
+  repository ships none. The deploying app supplies them at deploy time and
+  serves them same-origin (the Trazor studio uses its own trained weights).
 - **ONNX Runtime Web** — WebGPU/WASM inference runtime, MIT.
   <https://onnxruntime.ai/>
 - **Daniel Gatis, “rembg” (software), MIT.**

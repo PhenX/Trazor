@@ -8,8 +8,7 @@ implemented — read it first) defines the shared vocabulary: `RasterImage`,
 Rules that apply to every package:
 
 - Pure TypeScript, strict mode, ESM, no runtime dependencies beyond what the
-  package.json already declares. No DOM APIs outside `@trazor/ml` and
-  `apps/web` (everything else must run in Node for tests and in workers).
+  package.json already declares. No DOM APIs outside `@trazor/ml` (everything else must run in Node for tests and in workers).
 - Determinism: identical inputs ⇒ identical outputs. Any randomness must come
   from `mulberry32` with a caller-provided or fixed seed. Never `Math.random()`.
 - Performance: hot loops over pixels use typed arrays and indices, no per-pixel
@@ -605,10 +604,12 @@ export type WorkerInMessage =
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
       coverageHint?: ArrayBuffer // optional learned coverage field ([0,1]), Float32 plane, transferred
       imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
+      trace?: boolean // opt into per-stage tracing, streamed back as `trace-step`
     }
   | { type: 'cancel'; id: number }
 export type WorkerOutMessage =
   | { type: 'progress'; id: number; stage: StageId; overall: number }
+  | { type: 'trace-step'; id: number; step: TraceStep } // one recorded pipeline step (raster snapshots transferred)
   | { type: 'result'; id: number; result: VectorizeResult }
   | { type: 'error'; id: number; message: string; cancelled: boolean }
 
@@ -626,6 +627,7 @@ export class TrazorClient {
     onProgress?: (stage: StageId, overall: number) => void,
     edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
     coverageHint?: GrayImage, // optional learned coverage field (bw sub-pixel refinement), same dimensions
+    onTrace?: (step: TraceStep) => void, // opt-in step tracer; presence requests tracing from the worker
   ): Promise<VectorizeResult>
   dispose(): void
 }
@@ -642,7 +644,11 @@ export function vectorize(
   // The worker owns a single StageCache and passes a stable imageId; reuse is
   // byte-identical to recomputation (deterministic stages, complete keys) and is
   // disabled while an edge hint is present. Omit for a stateless run.
-  opts?: { imageId?: number; cache?: StageCache },
+  // withDocument attaches the raw pre-serialization geometry to the result as
+  // `document` (a VectorDocument), so a consumer can emit alternate formats
+  // (PDF/DXF/…) from full-precision paths without re-parsing the SVG. Off by
+  // default; the interactive TrazorClient requests it, the batch pool does not.
+  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry plus
 // a small LRU of palette/label entries (keyed internally by imageId + settings
@@ -656,6 +662,71 @@ export interface StageCacheStats {
   preMisses: number
   palHits: number
   palMisses: number
+}
+
+// Raw pre-serialization geometry (@trazor/core), attached to VectorizeResult as
+// `document` when `withDocument` is set. Full-precision absolute PathCommands per
+// shape with exact paint/units — the SVG serializer is one consumer, alternate
+// exporters are others. `fill` is verbatim ('#rrggbb' | 'none' | 'url(#id)').
+export interface VectorDocument {
+  width: number
+  height: number
+  unit: 'px' | 'mm'
+  widthMm?: number
+  shapes: VectorShape[]
+  gradients?: VectorGradient[] // referenced by a shape's fill: 'url(#id)'
+}
+export interface VectorShape {
+  commands: PathCommand[]
+  fill?: string
+  fillRule?: 'nonzero' | 'evenodd'
+  stroke?: string
+  strokeWidth?: number
+  layerId?: number
+}
+export interface VectorGradient {
+  id: string
+  kind: 'linear' | 'radial'
+  stops: { offset: number; color: string }[]
+}
+
+// Opt-in step tracer (@trazor/core). Attach EngineContext.onTrace (or pass the
+// TrazorClient onTrace callback) to receive one TraceStep per stage as it
+// completes — intermediate rasters, small distributions and metrics for a
+// step-by-step inspector. Recording is side-effect-free: a traced run returns
+// byte-identical SVG to an untraced one, and costs nothing when omitted.
+export type EngineTracer = (step: TraceStep) => void
+export interface TraceStep {
+  index: number // emission order, 0-based
+  code: 'preprocess' | 'palette' | 'segment' | 'threshold' | 'thin' | 'trace' | 'serialize'
+  stage: StageId
+  label: string
+  startMs: number
+  endMs: number // endMs - startMs = the step's cost on the worker clock
+  notes?: string[]
+  metrics?: Record<string, number>
+  rasters?: TraceRaster[] // downscaled snapshots to draw (buffers transferred across the worker)
+  charts?: TraceChart[] // histograms / bar readings (the fallback when there is no image)
+}
+export interface TraceRaster {
+  kind: 'rgba' | 'gray' | 'mask' | 'labels'
+  width: number
+  height: number
+  data: Uint8ClampedArray | Uint8Array | Uint16Array // rgba: 4·w·h; gray/mask: w·h; labels: w·h + `palette`
+  palette?: string[] // for 'labels': #rrggbb per index (65535 ⇒ unlabeled)
+  caption?: string
+}
+export interface TraceChart {
+  kind: 'histogram' | 'bars'
+  label: string
+  values: number[] // histogram: bin counts over [min,max]; bars: one per bar
+  barLabels?: string[]
+  colors?: string[] // per-bar #rrggbb
+  min?: number
+  max?: number
+  xLabel?: string
+  yLabel?: string
+  log?: boolean
 }
 
 // pool.ts — a fixed worker pool for throughput work (the settings search).
