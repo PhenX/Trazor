@@ -52,4 +52,12 @@ describe('scaleSettingsForResolution', () => {
     const up = scaleSettingsForResolution(BASE, 8)
     expect(up).toEqual(normalizeSettings(up))
   })
+
+  it('scales a px trap with resolution but leaves an mm trap physical', () => {
+    const px = normalizeSettings({ ...DEFAULT_SETTINGS, unit: 'px', gapFill: 1 })
+    expect(scaleSettingsForResolution(px, 2).gapFill).toBeCloseTo(2, 5)
+
+    const mm = normalizeSettings({ ...DEFAULT_SETTINGS, unit: 'mm', gapFill: 0.2 })
+    expect(scaleSettingsForResolution(mm, 2).gapFill).toBeCloseTo(0.2, 5)
+  })
 })

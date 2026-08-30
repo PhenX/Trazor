@@ -113,6 +113,39 @@ describe('native engine pipeline', () => {
     expect(result.stats.pathCount).toBe(2)
   })
 
+  it('emits a cutout trap as a physical mm overlap, resolution-independent', async () => {
+    // 60 px wide, widthMm derived at 96 dpi ⇒ px-per-mm = 96/25.4 = 3.7795…, so a
+    // 0.2 mm trap becomes a 0.76 px same-color stroke that spreads each seam.
+    const result = await vectorize(
+      redSquareOnWhite(),
+      settings({
+        mode: 'color',
+        paletteSize: 4,
+        layering: 'cutout',
+        unit: 'mm',
+        gapFill: 0.2,
+        precision: 2,
+      }),
+    )
+    expect(result.svg).toContain('stroke-width="0.76"')
+    expect(result.svg).toMatch(/stroke="#[a-f0-9]{6}"/)
+  })
+
+  it('treats a px-unit trap as viewBox pixels (no mm conversion)', async () => {
+    const result = await vectorize(
+      redSquareOnWhite(),
+      settings({
+        mode: 'color',
+        paletteSize: 4,
+        layering: 'cutout',
+        unit: 'px',
+        gapFill: 0.2,
+        precision: 2,
+      }),
+    )
+    expect(result.svg).toContain('stroke-width="0.2"')
+  })
+
   it('is deterministic', async () => {
     const s = settings({ mode: 'color', paletteSize: 6 })
     const a = await vectorize(redSquareOnWhite(), s)

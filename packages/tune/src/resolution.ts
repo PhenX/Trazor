@@ -11,7 +11,6 @@ const LENGTH_KEYS = [
   'adaptiveRadius',
   'pruneLength',
   'strokeWidth',
-  'gapFill',
   'optTolerance',
   'fitTolerance',
   'simplifyTolerance',
@@ -37,5 +36,8 @@ export function scaleSettingsForResolution(
   const next: VectorizeSettings = { ...settings }
   for (const key of LENGTH_KEYS) next[key] = settings[key] * factor
   next.minRegionArea = Math.round(settings.minRegionArea * factor * factor)
+  // The trap width `gapFill` is a px length only in px units; an mm trap is
+  // physical (resolution-independent) and must pass through unscaled.
+  if (settings.unit !== 'mm') next.gapFill = settings.gapFill * factor
   return normalizeSettings(next)
 }

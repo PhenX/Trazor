@@ -114,6 +114,30 @@ describe('traceLabelMap', () => {
     expect(interior).toBeGreaterThan(2)
   })
 
+  it('does not shatter a smooth seam near a junction into single-edge steps', () => {
+    // A 45° diagonal seam between regions 0 and 1, under a top band (region 2)
+    // that creates real junctions. Walking the junction network marks cracks
+    // visited; `degree` must keep counting crack PRESENCE, not the marker value,
+    // or a visited crack inflates a plain degree-2 corner into a phantom
+    // junction — which cascades down the diagonal and fragments it into
+    // one-pixel chains that cannot be smoothed (a heavy staircase). Regression:
+    // the buggy trace emitted ~200 straight segments here, the correct one ~13.
+    const rows: string[] = []
+    for (let y = 0; y < 24; y++) {
+      if (y < 2) {
+        rows.push('2'.repeat(24))
+        continue
+      }
+      let s = ''
+      for (let x = 0; x < 24; x++) s += x < y ? '0' : '1'
+      rows.push(s)
+    }
+    const shapes = traceLabelMap(labelsOf(rows), OPTS)
+    const straight = shapes.reduce((n, s) => n + s.commands.filter((c) => c.type === 'L').length, 0)
+    expect(straight).toBeLessThan(40)
+    for (const s of shapes) expect(ringsClosed(s.commands)).toBe(true)
+  })
+
   it('produces a hole ring identical to the enclosed region ring', () => {
     const rows = [
       '00000000',

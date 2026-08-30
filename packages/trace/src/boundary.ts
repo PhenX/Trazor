@@ -105,8 +105,15 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
         return y > 0 ? vCrack[(y - 1) * cw + x] : 0
     }
   }
+  // Count PRESENT cracks (visited or not), never the marker value: visitCrack
+  // stamps a walked crack as 2, so summing crackAt directly would inflate a
+  // plain degree-2 corner to 3 once one side is walked — a phantom junction that
+  // shatters the rest of the seam into unsmoothable single-edge chains.
   const degree = (x: number, y: number): number =>
-    crackAt(x, y, 0) + crackAt(x, y, 1) + crackAt(x, y, 2) + crackAt(x, y, 3)
+    (crackAt(x, y, 0) !== 0 ? 1 : 0) +
+    (crackAt(x, y, 1) !== 0 ? 1 : 0) +
+    (crackAt(x, y, 2) !== 0 ? 1 : 0) +
+    (crackAt(x, y, 3) !== 0 ? 1 : 0)
 
   const visitCrack = (x: number, y: number, d: number): void => {
     // Mark the undirected crack (canonicalize direction 2→0, 3→1).

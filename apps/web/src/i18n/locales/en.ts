@@ -233,8 +233,8 @@ export const en = {
       zero: 'auto',
     },
     gapFill: {
-      label: 'Gap fill',
-      hint: 'Hairline-seam compensation stroke width (px) for cutout rendering',
+      label: 'Trap',
+      hint: 'Cutout only: overlap neighbouring colors at their shared seams so screens/sheets that misregister never reveal bare substrate. In the document unit — mm on print/cut profiles, px otherwise.',
       zero: 'off',
     },
     omitBackground: {
@@ -737,7 +737,8 @@ export const en = {
       tagline: 'Bold spot-color separation',
       notes: [
         'Each color is its own <g> layer — one screen or riso pass per color.',
-        'Use omit-background to leave paper color unprinted.',
+        'A 0.2 mm trap overlaps neighbouring colors at their shared seams, so slight screen misregistration never leaves a gap of bare substrate. Dial it to your press.',
+        'Omit-background leaves the substrate color unprinted.',
       ],
     },
     'pixel-art': {

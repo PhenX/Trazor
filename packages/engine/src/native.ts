@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS,
   deltaEOkSq,
   hexToRgb,
+  mmPerPx,
   normalizeSettings,
   nowMs,
   rgbToOklab,
@@ -728,6 +729,18 @@ async function colorPipeline(
       refineChain: settings.optimizeSvg ? (cmds) => fitArcs(cmds, settings.precision) : undefined,
     })
     regions.sort((a, b) => b.area - a.area)
+    // Trap width in viewBox px. An mm-unit output carries a physical millimetre
+    // trap: convert it through the document's mm-per-px so the overlap means the
+    // same on press at any trace resolution; a px-unit trap is already viewBox px.
+    const trapScale = mmPerPx(image.width, settings.widthMm)
+    const trapPx =
+      settings.gapFill <= 0
+        ? 0
+        : settings.unit === 'mm'
+          ? trapScale > 0
+            ? settings.gapFill / trapScale
+            : 0
+          : settings.gapFill
     for (const region of regions) {
       const fill = fillFor[region.label]
       addColors(usedPalette, paletteColorsFor[region.label])
@@ -735,8 +748,8 @@ async function colorPipeline(
         commands: region.commands,
         fill,
         fillRule: 'evenodd',
-        ...(settings.gapFill > 0
-          ? { stroke: fill, strokeWidth: settings.gapFill, strokeLinejoin: 'round' as const }
+        ...(trapPx > 0
+          ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
           : {}),
       })
     }
@@ -1245,8 +1258,7 @@ function warnTinyFeatures(
   settings: VectorizeSettings,
   warnings: VectorizeWarning[],
 ): void {
-  const widthMm = settings.widthMm > 0 ? settings.widthMm : (widthPx / 96) * 25.4
-  const mmPerPx = widthMm / widthPx
+  const mmPx = mmPerPx(widthPx, settings.widthMm)
   let minSide = Infinity
   for (const shape of shapes) {
     let minX = Infinity
@@ -1264,12 +1276,12 @@ function warnTinyFeatures(
       minSide = Math.min(minSide, Math.min(maxX - minX, maxY - minY))
     }
   }
-  if (minSide < Infinity && minSide * mmPerPx < 1) {
+  if (minSide < Infinity && minSide * mmPx < 1) {
     warnings.push({
       code: 'tiny-features',
       severity: 'warning',
-      message: `Smallest shape is ~${(minSide * mmPerPx).toFixed(2)} mm — most blades/lasers cannot cut below 1 mm cleanly.`,
-      params: { mm: (minSide * mmPerPx).toFixed(2) },
+      message: `Smallest shape is ~${(minSide * mmPx).toFixed(2)} mm — most blades/lasers cannot cut below 1 mm cleanly.`,
+      params: { mm: (minSide * mmPx).toFixed(2) },
     })
   }
 }
