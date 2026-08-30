@@ -107,11 +107,15 @@ The `scripts/` tooling (dataset generation, corpus fetch, tracer evaluation) sup
 
 ## Roadmap
 
+- Additional export emitters from the traced path model — PDF, EPS, DXF, HPGL/G-code — beside the SVG serializer,
+  so a consumer can offer non-SVG outputs without re-deriving geometry
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Semantic layering with SAM masks (object-per-layer SVG)
 - Differentiable refinement pass (WebGPU) against the source image
-- A step-tracer hook on the engine (per-stage timings/snapshots) for pipeline inspection
+
+Shipped recently: an opt-in step-tracer hook on the engine (`EngineContext.onTrace`) that streams per-stage
+snapshots and metrics for pipeline inspection — see [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
 The ML strategy behind several of these — shape/primitive fitting, semantic layering, the differentiable refinement
 pass — and how determinism is scoped so WebGPU stays allowed, is written up in [`docs/ML_STRATEGY.md`](docs/ML_STRATEGY.md).
