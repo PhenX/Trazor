@@ -644,7 +644,11 @@ export function vectorize(
   // The worker owns a single StageCache and passes a stable imageId; reuse is
   // byte-identical to recomputation (deterministic stages, complete keys) and is
   // disabled while an edge hint is present. Omit for a stateless run.
-  opts?: { imageId?: number; cache?: StageCache },
+  // withDocument attaches the raw pre-serialization geometry to the result as
+  // `document` (a VectorDocument), so a consumer can emit alternate formats
+  // (PDF/DXF/…) from full-precision paths without re-parsing the SVG. Off by
+  // default; the interactive TrazorClient requests it, the batch pool does not.
+  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry plus
 // a small LRU of palette/label entries (keyed internally by imageId + settings
@@ -658,6 +662,32 @@ export interface StageCacheStats {
   preMisses: number
   palHits: number
   palMisses: number
+}
+
+// Raw pre-serialization geometry (@trazor/core), attached to VectorizeResult as
+// `document` when `withDocument` is set. Full-precision absolute PathCommands per
+// shape with exact paint/units — the SVG serializer is one consumer, alternate
+// exporters are others. `fill` is verbatim ('#rrggbb' | 'none' | 'url(#id)').
+export interface VectorDocument {
+  width: number
+  height: number
+  unit: 'px' | 'mm'
+  widthMm?: number
+  shapes: VectorShape[]
+  gradients?: VectorGradient[] // referenced by a shape's fill: 'url(#id)'
+}
+export interface VectorShape {
+  commands: PathCommand[]
+  fill?: string
+  fillRule?: 'nonzero' | 'evenodd'
+  stroke?: string
+  strokeWidth?: number
+  layerId?: number
+}
+export interface VectorGradient {
+  id: string
+  kind: 'linear' | 'radial'
+  stops: { offset: number; color: string }[]
 }
 
 // Opt-in step tracer (@trazor/core). Attach EngineContext.onTrace (or pass the

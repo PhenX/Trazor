@@ -24,6 +24,9 @@ import type {
   TrazorEngine,
   TraceChart,
   TraceStep,
+  VectorDocument,
+  VectorGradient,
+  VectorShape,
 } from '@trazor/core'
 import {
   luminanceHistogram,
@@ -329,6 +332,44 @@ export interface VectorizeRunOptions {
   /** Stable per-image identity (new working image ⇒ new id); enables the cache. */
   imageId?: number
   cache?: StageCache
+  /**
+   * Attach the raw pre-serialization geometry to the result as `document`, for
+   * consumers that emit alternate formats (PDF, DXF, …) without re-parsing the
+   * SVG. Off by default (a batch search never needs it); the interactive client
+   * requests it.
+   */
+  withDocument?: boolean
+}
+
+/** Build the structured document from the shapes/gradients the serializer received. */
+function buildDocument(
+  shapes: SvgShape[],
+  defs: SvgGradient[],
+  width: number,
+  height: number,
+  settings: VectorizeSettings,
+): VectorDocument {
+  const gradients: VectorGradient[] = defs.map((g) => ({
+    id: g.id,
+    kind: g.kind,
+    stops: g.stops.map((s) => ({ offset: s.offset, color: s.color })),
+  }))
+  const outShapes: VectorShape[] = shapes.map((s) => ({
+    commands: s.commands,
+    fill: s.fill,
+    fillRule: s.fillRule,
+    stroke: s.stroke,
+    strokeWidth: s.strokeWidth,
+    layerId: s.layerId,
+  }))
+  return {
+    width,
+    height,
+    unit: settings.unit,
+    widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
+    shapes: outShapes,
+    gradients: gradients.length > 0 ? gradients : undefined,
+  }
 }
 
 /** Settings that change the preprocessed working image. */
@@ -589,6 +630,7 @@ export async function vectorize(
       stages: timings,
     },
     warnings,
+    document: opts?.withDocument ? buildDocument(shapes, defs, width, height, settings) : undefined,
   }
 }
 

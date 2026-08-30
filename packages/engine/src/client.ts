@@ -84,6 +84,9 @@ export class TrazorClient {
         coverageHint: cov,
         imageId: this.idFor(image),
         trace: onTrace !== undefined,
+        // The interactive client always wants the raw document available for
+        // on-demand exports (the batch pool omits it to skip the extra payload).
+        withDocument: true,
       }
       worker.postMessage(msg, transfer)
     })

@@ -22,6 +22,8 @@ export type WorkerInMessage =
       imageId?: number
       /** Opt into recording every pipeline step, streamed back as `trace-step`. */
       trace?: boolean
+      /** Attach the raw pre-serialization geometry to the result as `document`. */
+      withDocument?: boolean
     }
   | { type: 'cancel'; id: number }
 

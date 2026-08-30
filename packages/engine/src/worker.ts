@@ -37,7 +37,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
     const cov: GrayImage | undefined = coverageHint
       ? { width, height, data: new Float32Array(coverageHint) }
       : undefined
-    void run(id, image, settings, hint, cov, imageId, trace)
+    void run(id, image, settings, hint, cov, imageId, trace, msg.withDocument)
   })
 
   async function run(
@@ -48,6 +48,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
     coverageHint?: GrayImage,
     imageId?: number,
     trace?: boolean,
+    withDocument?: boolean,
   ) {
     try {
       const result = await vectorize(
@@ -70,7 +71,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
             ? (step) => post({ type: 'trace-step', id, step }, traceTransferables(step.rasters))
             : undefined,
         },
-        { imageId, cache: stageCache },
+        { imageId, cache: stageCache, withDocument },
       )
       if (cancelled.has(id)) {
         post({ type: 'error', id, message: 'cancelled', cancelled: true })

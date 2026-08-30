@@ -1,3 +1,4 @@
+import type { VectorDocument } from './document'
 import type { GrayImage, RasterImage } from './raster'
 import type { VectorizeMode, VectorizeSettings } from './settings'
 import type { EngineTracer } from './trace'
@@ -48,6 +49,12 @@ export interface VectorizeResult {
   palette: string[]
   stats: VectorizeStats
   warnings: VectorizeWarning[]
+  /**
+   * The raw pre-serialization geometry — present only when the run requested it
+   * (`VectorizeRunOptions.withDocument`). Lets a consumer emit alternate formats
+   * (PDF, DXF, …) from full-precision paths without re-parsing the SVG string.
+   */
+  document?: VectorDocument
 }
 
 export interface EngineContext {
