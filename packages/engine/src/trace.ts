@@ -10,8 +10,13 @@ import type { SvgShape } from '@trazor/svg'
  * callers guard each call behind `run.tracing`.
  */
 
-/** Longest side a snapshot is downscaled to before crossing the worker boundary. */
-export const TRACE_RASTER_MAX = 320
+/**
+ * Longest side a snapshot is downscaled to before crossing the worker boundary.
+ * The studio's timeline inspector paints these snapshots into the full preview
+ * (zoomed, over the checker), so they are kept large enough to stay sharp there;
+ * each is freshly allocated and transferred (zero-copy), and recording is opt-in.
+ */
+export const TRACE_RASTER_MAX = 1024
 
 /** Downscaled output dimensions preserving aspect, capped at `max` on the long side. */
 function fitDims(width: number, height: number, max: number): { w: number; h: number } {
