@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createRaster, fillRaster, setPixel } from '@trazor/core'
 import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
+import type { ImageAnalysis } from '@trazor/assist'
 import { mulberry32 } from '@trazor/core'
 
 const lerpColor = (a: number[], b: number[], t: number) =>
@@ -364,6 +365,52 @@ describe('recommendSettings', () => {
     expect(rec.patch.denoise).toBe('bilateral')
     expect(rec.patch.autoPaletteSize).toBe(true)
     expect(rec.patch.minRegionArea).toBeGreaterThanOrEqual(24)
+  })
+})
+
+describe('recommendSettings — region-growing gates', () => {
+  // Clean flat art with many anti-aliased colors and no gradient — the case
+  // region growing is for. Overrides flip one gate at a time.
+  const flatArt = (over: Partial<ImageAnalysis> = {}): ImageAnalysis => ({
+    width: 800,
+    height: 600,
+    pixels: 480_000,
+    hasAlpha: false,
+    distinctColors: 8000,
+    entropyBits: 9,
+    edgeDensity: 0.08,
+    microGradientDensity: 0.18,
+    flatDensity: 0.6,
+    twoToneCoverage: 0.3,
+    photoScore: 0.7,
+    pixelArtScore: 0,
+    dominantHex: ['#808080'],
+    meanLightness: 0.6,
+    contrast: 0.2,
+    colorfulness: 0.1,
+    coloredFraction: 0.5,
+    ...over,
+  })
+
+  it('grows regions for many-color, gradient-free flat art', () => {
+    expect(recommendSettings(flatArt()).patch.segmentation).toBe('regions')
+  })
+
+  it('keeps few-color flat art on quantization (no anti-aliased rims to protect)', () => {
+    // A clean logo/sprite has no rim halo, so per-pixel quantization is exact;
+    // region-mean coloring would only lose fidelity.
+    expect(recommendSettings(flatArt({ distinctColors: 40 })).patch.segmentation).not.toBe(
+      'regions',
+    )
+  })
+
+  it('keeps gradient-bearing flat art on quantization (region growing floods ramps)', () => {
+    // Still clean flat art (micro-gradient below flat density), but the gradient
+    // has no flat interior to seed a marker, so region growing would flood it
+    // into one mean color. Quantization posterizes the ramp into distinct bands.
+    const a = flatArt({ microGradientDensity: 0.3 })
+    expect(a.microGradientDensity).toBeLessThan(a.flatDensity) // still "flat art"
+    expect(recommendSettings(a).patch.segmentation).not.toBe('regions')
   })
 })
 
