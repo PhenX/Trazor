@@ -59,6 +59,7 @@ export const RELEASE_NOTES: readonly ReleaseNote[] = [
     items: [
       'A new About page explains what Trazor is, how it traces your images entirely in your browser, and who makes it — open it from the info button in the header or the link on the landing screen.',
       'If Trazor is useful to you, there’s now a “Buy me a coffee” link at the top of the landing screen and at the bottom of the settings panel to support its development. It stays free and open source, and nothing about how it works changes.',
+      'Trazor can now be installed to your home screen as an app, and links to it show a proper preview card when shared — with no change to how your images stay on your device.',
     ],
   },
   {

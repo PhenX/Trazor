@@ -23,6 +23,8 @@ export const en = {
   },
 
   header: {
+    /** Screen-reader / SEO page heading — the rendered DOM's single <h1>. */
+    srHeading: 'Trazor — free online image to SVG vectorizer',
     tagline: 'raster → SVG, entirely in your browser',
     home: 'Home',
     homeTitle: 'Back to the landing screen',
