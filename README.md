@@ -107,8 +107,6 @@ The `scripts/` tooling (dataset generation, corpus fetch, tracer evaluation) sup
 
 ## Roadmap
 
-- Additional export emitters from the traced path model — PDF, EPS, DXF, HPGL/G-code — beside the SVG serializer,
-  so a consumer can offer non-SVG outputs without re-deriving geometry
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Semantic layering with SAM masks (object-per-layer SVG)
