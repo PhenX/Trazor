@@ -1,5 +1,6 @@
 import type { GrayImage, RasterImage } from './raster'
 import type { VectorizeMode, VectorizeSettings } from './settings'
+import type { EngineTracer } from './trace'
 
 /** Pipeline stages, in execution order, used for progress reporting. */
 export const STAGE_IDS = ['preprocess', 'palette', 'segment', 'trace', 'fit', 'svg'] as const
@@ -72,6 +73,13 @@ export interface EngineContext {
    * WASM backend, like the roadmap's differentiable refinement pass.
    */
   coverageHint?: GrayImage
+  /**
+   * Opt-in step tracer. When present, the pipeline streams a {@link TraceStep}
+   * for each stage (intermediate rasters, distributions, metrics) for a
+   * step-by-step inspector. Recording is side-effect-free — a traced run returns
+   * byte-identical SVG to an untraced one — and free when absent.
+   */
+  onTrace?: EngineTracer
 }
 
 /** Thrown (and rejected with) when `shouldCancel` interrupts a run. */

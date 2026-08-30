@@ -2,6 +2,7 @@ import { CancelledError } from '@trazor/core'
 import type { GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from './native'
 import type { StageCache } from './native'
+import { traceTransferables } from './trace'
 import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'
 
 /**
@@ -28,7 +29,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
     }
     if (msg.type !== 'vectorize') return
 
-    const { id, width, height, buffer, settings, edgeHint, coverageHint, imageId } = msg
+    const { id, width, height, buffer, settings, edgeHint, coverageHint, imageId, trace } = msg
     const image: RasterImage = { width, height, data: new Uint8ClampedArray(buffer) }
     const hint: GrayImage | undefined = edgeHint
       ? { width, height, data: new Float32Array(edgeHint) }
@@ -36,7 +37,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
     const cov: GrayImage | undefined = coverageHint
       ? { width, height, data: new Float32Array(coverageHint) }
       : undefined
-    void run(id, image, settings, hint, cov, imageId)
+    void run(id, image, settings, hint, cov, imageId, trace)
   })
 
   async function run(
@@ -46,6 +47,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
     edgeHint?: GrayImage,
     coverageHint?: GrayImage,
     imageId?: number,
+    trace?: boolean,
   ) {
     try {
       const result = await vectorize(
@@ -62,6 +64,11 @@ export function installWorkerHandler(scope: WorkerScope): void {
               post({ type: 'progress', id, stage, overall })
             }
           },
+          // Stream each recorded step; transfer its raster buffers (fresh copies)
+          // so the snapshots cross to the main thread without a structured copy.
+          onTrace: trace
+            ? (step) => post({ type: 'trace-step', id, step }, traceTransferables(step.rasters))
+            : undefined,
         },
         { imageId, cache: stageCache },
       )
