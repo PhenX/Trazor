@@ -232,8 +232,8 @@ export const fr: MessageSchema = {
       zero: 'auto',
     },
     gapFill: {
-      label: 'Comblement',
-      hint: 'Largeur du trait de compensation des jointures fines (px) pour le rendu en découpe',
+      label: 'Recouvrement',
+      hint: 'Découpe uniquement : fait déborder les couleurs voisines sur leurs jointures communes pour qu’un léger décalage de repérage des écrans/feuilles ne laisse jamais voir le support nu. Dans l’unité du document — mm pour les profils impression/découpe, px sinon.',
       zero: 'désactivé',
     },
     omitBackground: {
@@ -758,7 +758,8 @@ export const fr: MessageSchema = {
       tagline: 'Séparation de tons directs marquée',
       notes: [
         'Chaque couleur est son propre calque <g> — un écran ou passage riso par couleur.',
-        'Utilisez l’omission du fond pour laisser la couleur du papier non imprimée.',
+        'Un recouvrement de 0,2 mm fait déborder les couleurs voisines sur leurs jointures communes, pour qu’un léger décalage de repérage ne laisse jamais voir le support nu. À ajuster selon votre presse.',
+        'L’omission du fond laisse la couleur du support non imprimée.',
       ],
     },
     'pixel-art': {

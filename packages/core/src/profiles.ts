@@ -89,7 +89,8 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     tagline: 'Bold spot-color separation',
     notes: [
       'Each color is its own <g> layer — one screen or riso pass per color.',
-      'Use omit-background to leave paper color unprinted.',
+      'A 0.2 mm trap overlaps neighbouring colors at their shared seams, so slight screen misregistration never leaves a gap of bare substrate. Dial it to your press.',
+      'Omit-background leaves the substrate color unprinted.',
     ],
     patch: {
       mode: 'color',
@@ -99,6 +100,9 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       smoothing: 0.85,
       minRegionArea: 24,
       omitBackground: true,
+      gapFill: 0.2,
+      unit: 'mm',
+      precision: 3,
     },
   },
   {

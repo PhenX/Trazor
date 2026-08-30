@@ -489,7 +489,7 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           :label="t('settings.gapFill.label')"
           :model-value="s.gapFill"
           :min="0"
-          :max="2"
+          :max="5"
           :step="0.05"
           :default-value="D.gapFill"
           :zero-label="t('settings.gapFill.zero')"

@@ -104,7 +104,15 @@ export interface VectorizeSettings {
    * wrong-colored band. 0 disables (byte-identical).
    */
   colorCoherence: number
-  /** Hairline-seam compensation stroke width (px) for cutout rendering; 0 disables. */
+  /**
+   * Trap (registration overlap) for cutout output: each region is spread outward
+   * along its shared seams by this much — emitted as a same-color stroke — so
+   * neighbouring colors keep butting even when screens/vinyl sheets misregister
+   * on press, instead of revealing a hairline of substrate. The width is in the
+   * document `unit`: millimetres when `unit` is `'mm'` (print/cut profiles),
+   * pixels otherwise. An mm trap is physical — it converts to the right stroke at
+   * any trace resolution. 0 disables (byte-identical). Cutout only.
+   */
   gapFill: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
   omitBackground: boolean
@@ -288,7 +296,7 @@ export function normalizeSettings(
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)
   s.gradientStrength = clamp(s.gradientStrength, 0, 1)
   s.gradientMinArea = clampInt(s.gradientMinArea, 0, 1_000_000)
-  s.gapFill = clamp(s.gapFill, 0, 2)
+  s.gapFill = clamp(s.gapFill, 0, 5)
   s.threshold = clampInt(s.threshold, 0, 255)
   s.adaptiveRadius = clampInt(s.adaptiveRadius, 2, 128)
   s.adaptiveBias = clamp(s.adaptiveBias, -64, 64)
