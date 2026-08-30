@@ -22,6 +22,7 @@ function onLocaleChange(event: Event): void {
 
 <template>
   <header class="header">
+    <h1 class="sr-only">{{ t('header.srHeading') }}</h1>
     <div class="brand">
       <svg class="glyph" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
         <path
