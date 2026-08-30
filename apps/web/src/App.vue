@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AboutDialog from './components/AboutDialog.vue'
 import AppHeader from './components/AppHeader.vue'
 import DropZone from './components/DropZone.vue'
 import LayerPanel from './components/LayerPanel.vue'
@@ -48,8 +49,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  // The release-notes overlay owns the keyboard while it is open (it handles Escape itself).
-  if (releaseNotesOpen.value) return
+  // The release-notes and about overlays own the keyboard while open (each
+  // handles Escape itself).
+  if (releaseNotesOpen.value || store.aboutOpen) return
 
   // The auto-optimize overlay owns the keyboard while open: Escape closes it,
   // and its own inputs handle the rest.
@@ -209,6 +211,7 @@ onBeforeUnmount(() => {
       <TuneWall />
     </div>
     <ReleaseNotes v-if="releaseNotesOpen" @close="releaseNotesOpen = false" />
+    <AboutDialog v-if="store.aboutOpen" />
     <RetraceDialog v-if="store.retraceConfirm" />
     <ToastHost />
   </div>

@@ -37,6 +37,44 @@ export const fr: MessageSchema = {
     github: 'Voir le code source sur GitHub',
   },
 
+  support: {
+    coffee: 'Offrez-moi un café',
+    coffeeTitle: 'Soutenir Trazor sur Buy Me a Coffee',
+    pitch: 'Trazor vous plaît ? C’est gratuit et open source.',
+    madeBy: 'Créé avec soin par PhenX',
+    about: 'À propos de Trazor',
+  },
+
+  about: {
+    title: 'À propos de Trazor',
+    open: 'À propos',
+    openTitle: 'À propos de Trazor et de son créateur',
+    close: 'Fermer À propos',
+    intro:
+      'Trazor transforme n’importe quelle image raster — photo, logo, croquis ou capture d’écran — en SVG net, éditable et découpable. Tout se passe dans votre navigateur : les images sont décodées, quantifiées et vectorisées sur votre appareil, et rien n’est jamais envoyé.',
+    privacyTag: '100 % dans votre navigateur',
+    openSourceTag: 'Gratuit et open source',
+    howTitle: 'Comment ça marche',
+    howSteps: [
+      'Déposez, collez ou parcourez pour choisir une image — ou partez d’un des exemples intégrés.',
+      'Trazor la décode et lance le vectoriseur dans un worker d’arrière-plan : il réduit l’image à une palette, fait croître des régions de couleur plates et ajuste des courbes de Bézier lisses le long de chaque bord.',
+      'Affinez le résultat avec les profils cibles — illustration, logo, découpe vinyle, traceur à plume et plus — et les réglages en direct, ou laissez l’optimisation auto trouver la meilleure combinaison.',
+      'Copiez ou téléchargez le SVG final. Pas de compte, pas d’envoi, pas de serveur — tout reste sur votre machine.',
+    ],
+    featuresTitle: 'Ce qui le distingue',
+    features: [
+      'Privé par conception — rien ne quitte votre appareil, donc ça fonctionne hors ligne et vos créations restent les vôtres.',
+      'Un vrai moteur de vectorisation — un traceur de courbes de classe Potrace avec calques en découpe sans jointure, tracé médian et palettes dérivées des données.',
+      'Pensé pour les créateurs — des profils réglés pour la sérigraphie, la découpe vinyle, la gravure laser, le traçage à la plume et les pochoirs.',
+      'ML local optionnel — la suppression du fond et la sélection par clic s’exécutent localement, et le studio reste pleinement utilisable sans eux.',
+    ],
+    makerTitle: 'À propos du créateur',
+    makerBody:
+      'Trazor est conçu et développé par PhenX — développeur et designer indépendant. Il est gratuit et open source. S’il vous a fait gagner du temps, ou si vous souhaitez simplement soutenir son développement, un café fait toute la différence.',
+    viewSource: 'Voir le code source sur GitHub',
+    thanks: 'Merci d’utiliser Trazor.',
+  },
+
   dropzone: {
     title: 'Déposez une image, collez ou parcourez',
     formats: 'PNG · JPEG · WebP · GIF · BMP · AVIF · SVG — traité localement, rien n’est envoyé',

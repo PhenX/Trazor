@@ -52,6 +52,16 @@ export interface ReleaseNote {
  */
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    date: '2026-08-30',
+    iteration: 1,
+    kind: 'feature',
+    title: 'About page and a way to support Trazor',
+    items: [
+      'A new About page explains what Trazor is, how it traces your images entirely in your browser, and who makes it — open it from the info button in the header or the link on the landing screen.',
+      'If Trazor is useful to you, there’s now a “Buy me a coffee” link at the top of the landing screen and at the bottom of the settings panel to support its development. It stays free and open source, and nothing about how it works changes.',
+    ],
+  },
+  {
     date: '2026-08-26',
     iteration: 3,
     kind: 'improvement',

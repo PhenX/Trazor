@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { acceptAttr } from '../lib/decode'
 import { SAMPLES } from '../lib/samples'
 import { useAppStore } from '../store/appStore'
+import BuyMeCoffee from './BuyMeCoffee.vue'
 
 const store = useAppStore()
 const { t } = useI18n()
@@ -177,6 +178,9 @@ defineExpose({ openPicker })
     <!-- Empty state -->
     <div v-if="!store.hasImage" class="empty">
       <div class="empty-inner">
+        <!-- Support banner sits at the very top of the landing screen. -->
+        <BuyMeCoffee variant="banner" />
+
         <button class="target" type="button" @click="openPicker">
           <svg viewBox="0 0 48 48" width="40" height="40" aria-hidden="true">
             <path
@@ -225,6 +229,14 @@ defineExpose({ openPicker })
             </button>
           </div>
         </div>
+
+        <footer class="empty-foot">
+          <button class="foot-link" type="button" @click="store.openAbout()">
+            {{ t('support.about') }}
+          </button>
+          <span class="foot-dot" aria-hidden="true">·</span>
+          <span class="foot-made">{{ t('support.madeBy') }}</span>
+        </footer>
       </div>
     </div>
 
@@ -326,6 +338,34 @@ defineExpose({ openPicker })
   align-items: center;
   gap: 12px;
   width: 100%;
+}
+
+/* Landing footer: About + attribution. */
+.empty-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.foot-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.foot-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.foot-dot {
+  color: var(--text-3);
 }
 
 .samples-title {

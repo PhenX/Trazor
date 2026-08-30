@@ -237,6 +237,8 @@ export const useAppStore = defineStore('app', () => {
   const lastSeenRelease = ref<string | null>(persisted.lastSeenRelease ?? null)
   /** Active UI language. Persisted once chosen; auto-detected on the first visit. */
   const locale = ref<LocaleCode>(persisted.locale ?? pickInitialLocale())
+  /** Whether the About overlay is open (project & maker info). Not persisted. */
+  const aboutOpen = ref(false)
 
   // ---------------------------- Layer panel ------------------------------
   // The panel opens on the right on desktop and starts closed on mobile (a
@@ -1105,6 +1107,15 @@ export const useAppStore = defineStore('app', () => {
     lastSeenRelease.value = latestReleaseId()
   }
 
+  // ------------------------------- About ---------------------------------
+  function openAbout(): void {
+    aboutOpen.value = true
+  }
+
+  function closeAbout(): void {
+    aboutOpen.value = false
+  }
+
   // ------------------------------- Theme ---------------------------------
   function toggleTheme(): void {
     theme.value = theme.value === 'dark' ? 'light' : 'dark'
@@ -1183,6 +1194,7 @@ export const useAppStore = defineStore('app', () => {
     autoOnLoad,
     lastSeenRelease,
     locale,
+    aboutOpen,
     layersOpen,
     layerHover,
     selectedLayer,
@@ -1245,6 +1257,8 @@ export const useAppStore = defineStore('app', () => {
     undoMagicPoint,
     applyMagicSelect,
     markReleasesSeen,
+    openAbout,
+    closeAbout,
     openTune,
     closeTune,
     startTune,

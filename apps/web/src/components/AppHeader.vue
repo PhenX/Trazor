@@ -130,6 +130,24 @@ function onLocaleChange(event: Event): void {
       </button>
       <button
         class="btn btn-ghost btn-icon"
+        :title="t('about.openTitle')"
+        :aria-label="t('about.open')"
+        @click="store.openAbout()"
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path
+            d="M8 7.2v4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
+          <circle cx="8" cy="4.9" r="0.95" fill="currentColor" />
+        </svg>
+      </button>
+      <button
+        class="btn btn-ghost btn-icon"
         :title="store.theme === 'dark' ? t('header.toLight') : t('header.toDark')"
         :aria-label="store.theme === 'dark' ? t('header.toLight') : t('header.toDark')"
         @click="store.toggleTheme()"
