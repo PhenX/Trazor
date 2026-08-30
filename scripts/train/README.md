@@ -14,9 +14,7 @@ Three tasks share this scaffold, selected with `--task` (one generated dataset t
 | `field`          | coverage field (1-ch)  | `field` | `signed-field.onnx` | [`SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md) |
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
-git; you generate them here and publish them to the `models` GitHub Release, from which the deploy workflow fetches them
-at build time (see [`public/models/README.md`](../../public/models/README.md)). For a purely local
-try, dropping the `.onnx` into `public/models/` also works — it's git-ignored.
+git; you generate them here; the deploying app publishes them where it fetches them at build time — the Trazor studio uses a private `models` Release — and serves them same-origin under `models/`. For a local run, drop the `.onnx` into your app's served `models/` directory (it's git-ignored).
 
 ## From scratch
 

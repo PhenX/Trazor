@@ -6,11 +6,7 @@ JPEG-crushed input. Its training data is produced by [`../scripts/dataset`](../s
 target).
 
 **Status — shipped.** The integration is implemented end to end (`@trazor/ml`'s `EdgeEnhancer`, the engine consumers,
-and the studio's **Edge pre-pass (ML)** toggle), and the trained weights are published: `edge-prepass.onnx` (~0.46 MB,
-MIT) is attached to the [`models` release](https://github.com/PhenX/Trazor/releases/tag/models). The deploy workflow
-fetches it into `public/models/` at build time, so the deployed site serves it same-origin (see
-[Export & verification](#export--verification)). Weights are not committed, so a plain `npm run dev` still runs
-weightless and fails soft until you drop the `.onnx` in locally. Below is both the design record and the shipped model's
+and the studio's **Edge pre-pass (ML)** toggle), and this repository ships **no weights**: `edge-prepass.onnx` (~0.46 MB) is produced by [`scripts/train`](../scripts/train/README.md) and supplied by the deploying app, which serves it same-origin under `models/` — the Trazor studio ships its own trained weights, not published here (see [Export & verification](#export--verification)). Weights are never committed, so a plain `npm run dev` runs weightless and fails soft until you drop an `.onnx` in locally. Below is both the design record and the shipped model's
 spec.
 
 A lower-integration-risk sibling — a **cleanup pre-pass** (image→image restoration) — trains from the same dataset (the
