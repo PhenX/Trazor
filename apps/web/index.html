@@ -3,16 +3,199 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary -->
+    <title>Trazor — Free Image to SVG Vectorizer, in Your Browser</title>
     <meta
       name="description"
-      content="Trazor — convert raster images (PNG, JPEG, WebP…) to clean, editable SVG entirely in your browser. Color, black & white and centerline tracing with cut-ready output profiles. No uploads, no server."
+      content="Convert raster images (PNG, JPEG, WebP, GIF, BMP, AVIF) to clean, editable SVG — free and entirely in your browser. Color, black & white and centerline tracing with cut-ready output for vinyl, screen print, laser and pen plotters. No uploads, no server, no account."
     />
+    <link rel="canonical" href="https://trazor.studio/" />
+    <meta
+      name="keywords"
+      content="image to SVG, raster to vector, PNG to SVG, JPG to SVG, vectorizer, vectorize image, SVG converter, centerline tracing, vinyl cut file, silhouette, cricut, laser engraving, pen plotter, free, open source, browser, offline"
+    />
+    <meta name="author" content="PhenX" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="color-scheme" content="dark light" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230f1115'/%3E%3Cpath%20d='M7%2024C12%208%2020%208%2025%2024'%20fill='none'%20stroke='%236c7bff'%20stroke-width='2.5'%20stroke-linecap='round'/%3E%3Cpath%20d='M7%2024%2012%2013M25%2024%2020%2013'%20stroke='%233d4661'%20stroke-width='1.4'/%3E%3Ccircle%20cx='12'%20cy='13'%20r='1.8'%20fill='%239aa3b2'/%3E%3Ccircle%20cx='20'%20cy='13'%20r='1.8'%20fill='%239aa3b2'/%3E%3Crect%20x='4.8'%20y='21.8'%20width='4.4'%20height='4.4'%20rx='1'%20fill='%23e8eaf0'/%3E%3Crect%20x='22.8'%20y='21.8'%20width='4.4'%20height='4.4'%20rx='1'%20fill='%23e8eaf0'/%3E%3C/svg%3E"
+    <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Trazor" />
+    <meta property="og:title" content="Trazor — Free Image to SVG Vectorizer, in Your Browser" />
+    <meta
+      property="og:description"
+      content="Turn any image into clean, editable, cut-ready SVG — free and 100% in your browser. Nothing is uploaded."
     />
-    <title>Trazor</title>
+    <meta property="og:url" content="https://trazor.studio/" />
+    <meta property="og:image" content="https://trazor.studio/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Trazor — turn any image into clean, editable SVG in your browser"
+    />
+    <meta property="og:locale" content="en" />
+    <meta property="og:locale:alternate" content="fr" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Trazor — Free Image to SVG Vectorizer, in Your Browser" />
+    <meta
+      name="twitter:description"
+      content="Turn any image into clean, editable, cut-ready SVG — free and 100% in your browser. Nothing is uploaded."
+    />
+    <meta name="twitter:image" content="https://trazor.studio/og-image.png" />
+
+    <!-- Icons + manifest -->
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="%BASE_URL%favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
+    <link rel="manifest" href="%BASE_URL%site.webmanifest" />
+
+    <!-- Structured data: describe the tool + answer common questions for rich results. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebApplication",
+            "@id": "https://trazor.studio/#app",
+            "name": "Trazor",
+            "url": "https://trazor.studio/",
+            "description": "Free, open-source raster-to-vector converter that turns PNG, JPEG, WebP, GIF, BMP, AVIF and SVG images into clean, editable, cut-ready SVG entirely in the browser.",
+            "applicationCategory": "DesignApplication",
+            "applicationSubCategory": "Vector graphics / image tracing",
+            "operatingSystem": "Any (modern web browser)",
+            "browserRequirements": "Requires JavaScript. Runs fully client-side.",
+            "inLanguage": ["en", "fr"],
+            "isAccessibleForFree": true,
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+            "featureList": [
+              "Color, grayscale, black & white and centerline tracing",
+              "100% client-side — images are never uploaded",
+              "Cut-ready output for vinyl cutting, screen printing, laser engraving and pen plotters",
+              "Smooth Bézier curves, seam-free cutout layers and data-derived palettes",
+              "Auto-optimize settings and optional on-device ML tools"
+            ],
+            "screenshot": "https://trazor.studio/og-image.png",
+            "author": { "@type": "Person", "name": "PhenX", "url": "https://github.com/PhenX" },
+            "sameAs": ["https://github.com/PhenX/Trazor"]
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://trazor.studio/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "Is Trazor free?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Trazor is completely free and open source, with no account required."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Are my images uploaded to a server?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "No. Every image is decoded, quantized and traced on your own device. Nothing is ever uploaded, so it also works offline."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Which image formats can I convert to SVG?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "PNG, JPEG, WebP, GIF, BMP, AVIF and SVG. You can drop, paste or browse for a file, or start from a built-in sample."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can Trazor make cut-ready files for a vinyl cutter or pen plotter?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Output profiles are tuned for vinyl cutting, screen printing, laser engraving, pen plotting and stencils, including single-stroke centerline tracing and seam-free cutout layers."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+
+    <style>
+      /* Pre-JS shell styling: base.css is imported by the app bundle, so the
+         crawlable fallback below must style itself. It matches the app's dark/
+         light surfaces and is removed the moment Vue mounts over #app. */
+      .seo-shell {
+        position: fixed;
+        inset: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 22px;
+        padding: 48px 24px;
+        background: #0f1115;
+        color: #e8eaf0;
+        font-family:
+          Inter,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+        line-height: 1.55;
+      }
+      [data-theme='light'] .seo-shell {
+        background: #f4f6fa;
+        color: #1b2130;
+      }
+      .seo-shell__brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 20px;
+        font-weight: 650;
+      }
+      .seo-shell__main {
+        max-width: 640px;
+        width: 100%;
+      }
+      .seo-shell h1 {
+        font-size: 26px;
+        line-height: 1.25;
+        margin: 0 0 14px;
+      }
+      .seo-shell p {
+        color: #9aa3b2;
+        margin: 0 0 14px;
+      }
+      [data-theme='light'] .seo-shell p {
+        color: #5a6474;
+      }
+      .seo-shell ul {
+        margin: 0 0 18px;
+        padding-left: 20px;
+        color: #9aa3b2;
+      }
+      [data-theme='light'] .seo-shell ul {
+        color: #5a6474;
+      }
+      .seo-shell li {
+        margin: 6px 0;
+      }
+      .seo-shell a {
+        color: #8894ff;
+      }
+      .seo-shell__loading {
+        font-size: 13px;
+        opacity: 0.7;
+      }
+    </style>
+
     <script>
       // Apply the saved theme before first paint to avoid a flash of the wrong theme.
       try {
@@ -31,7 +214,56 @@
     </script>
   </head>
   <body>
-    <div id="app"></div>
+    <!-- The app mounts into #app and replaces its contents. Until then (and for
+         crawlers or visitors without JavaScript) this shell provides real,
+         indexable copy describing what Trazor is. -->
+    <div id="app">
+      <div class="seo-shell">
+        <div class="seo-shell__brand">
+          <svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true">
+            <path
+              d="M7 24C12 8 20 8 25 24"
+              fill="none"
+              stroke="#6c7bff"
+              stroke-width="2.5"
+              stroke-linecap="round"
+            />
+            <path d="M7 24 12 13M25 24 20 13" stroke="#667082" stroke-width="1.4" />
+            <circle cx="12" cy="13" r="1.8" fill="#9aa3b2" />
+            <circle cx="20" cy="13" r="1.8" fill="#9aa3b2" />
+            <rect x="4.8" y="21.8" width="4.4" height="4.4" rx="1" fill="#e8eaf0" />
+            <rect x="22.8" y="21.8" width="4.4" height="4.4" rx="1" fill="#e8eaf0" />
+          </svg>
+          <span>Trazor</span>
+        </div>
+        <main class="seo-shell__main">
+          <h1>Turn any image into clean, editable SVG — right in your browser</h1>
+          <p>
+            Trazor is a free, open-source raster-to-vector converter. Drop a PNG, JPEG, WebP, GIF,
+            BMP, AVIF or SVG and get crisp, editable, cut-ready SVG in seconds — with color,
+            grayscale, black &amp; white and centerline (single-stroke) tracing. Everything runs
+            locally on your device, so your images are never uploaded.
+          </p>
+          <ul>
+            <li>100% in your browser — no upload, no account, works offline</li>
+            <li>Color, grayscale, black &amp; white and centerline tracing</li>
+            <li>
+              Cut-ready output profiles for vinyl cutting, screen printing, laser engraving, pen
+              plotters and stencils
+            </li>
+            <li>Smooth Bézier curves, seam-free cutout layers and data-derived palettes</li>
+            <li>Auto-optimize settings and optional on-device ML tools</li>
+          </ul>
+          <p class="seo-shell__loading">
+            Loading the studio… if it doesn’t appear, please enable JavaScript.
+          </p>
+          <p>
+            Open source on
+            <a href="https://github.com/PhenX/Trazor" rel="noopener">GitHub</a>.
+          </p>
+        </main>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

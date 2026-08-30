@@ -24,6 +24,7 @@ export const fr: MessageSchema = {
   },
 
   header: {
+    srHeading: 'Trazor — vectoriseur d’image vers SVG gratuit en ligne',
     tagline: 'raster → SVG, entièrement dans votre navigateur',
     home: 'Accueil',
     homeTitle: "Retour à l'écran d'accueil",
