@@ -36,6 +36,44 @@ export const en = {
     github: 'View source on GitHub',
   },
 
+  support: {
+    coffee: 'Buy me a coffee',
+    coffeeTitle: 'Support Trazor on Buy Me a Coffee',
+    pitch: 'Enjoying Trazor? It’s free and open source.',
+    madeBy: 'Made with care by PhenX',
+    about: 'About Trazor',
+  },
+
+  about: {
+    title: 'About Trazor',
+    open: 'About',
+    openTitle: 'About Trazor and its maker',
+    close: 'Close about',
+    intro:
+      'Trazor turns any raster image — a photo, logo, sketch or screenshot — into clean, editable, cuttable SVG. The whole thing runs in your browser: images are decoded, quantized and traced on your own device, and nothing is ever uploaded.',
+    privacyTag: '100% in your browser',
+    openSourceTag: 'Free & open source',
+    howTitle: 'How it works',
+    howSteps: [
+      'Drop, paste or browse for an image — or start from one of the built-in samples.',
+      'Trazor decodes it and runs the tracer in a background worker: it reduces the image to a palette, grows flat color regions, and fits smooth Bézier curves along every edge.',
+      'Shape the result with target profiles — illustration, logo, vinyl cut, pen plotter and more — and live settings, or let Auto-optimize search for the best combination.',
+      'Copy or download the finished SVG. No account, no upload, no server — it all stays on your machine.',
+    ],
+    featuresTitle: 'What makes it different',
+    features: [
+      'Private by design — nothing leaves your device, so it works offline and your artwork stays yours.',
+      'A real tracing engine — a Potrace-class curve tracer with seam-free cutout layers, centerline tracing and data-derived palettes.',
+      'Built for makers — profiles tuned for screen printing, vinyl cutting, laser engraving, pen plotting and stencils.',
+      'Optional on-device ML — background removal and click-to-segment run locally, and the studio stays fully usable without them.',
+    ],
+    makerTitle: 'About the maker',
+    makerBody:
+      'Trazor is designed and built by PhenX — an independent developer and designer. It’s free to use and open source. If it saved you time, or you’d simply like to support its development, a coffee goes a long way.',
+    viewSource: 'View source on GitHub',
+    thanks: 'Thank you for using Trazor.',
+  },
+
   dropzone: {
     title: 'Drop an image, paste, or browse',
     formats: 'PNG · JPEG · WebP · GIF · BMP · AVIF · SVG — processed locally, nothing is uploaded',

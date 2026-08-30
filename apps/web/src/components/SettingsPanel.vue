@@ -5,6 +5,7 @@ import type { PaletteSuggestion } from '@trazor/assist'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../store/appStore'
+import BuyMeCoffee from './BuyMeCoffee.vue'
 import ColorRow from './controls/ColorRow.vue'
 import ControlRow from './controls/ControlRow.vue'
 import SelectRow from './controls/SelectRow.vue'
@@ -745,6 +746,14 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
           @update:model-value="set('detectIslands', $event)"
         />
       </section>
+
+      <!-- Support & about: credit the maker without cluttering the controls. -->
+      <footer class="panel-foot">
+        <BuyMeCoffee variant="button" />
+        <button class="link-btn" type="button" @click="store.openAbout()">
+          {{ t('support.about') }}
+        </button>
+      </footer>
     </div>
   </aside>
 </template>
@@ -1146,5 +1155,31 @@ function isActiveSuggestion(sug: PaletteSuggestion): boolean {
 
 .unit-seg {
   width: 110px;
+}
+
+/* Support & about footer, pinned to the end of the scrolling panel. */
+.panel-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.link-btn {
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.link-btn:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 </style>
