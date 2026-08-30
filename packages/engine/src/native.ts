@@ -96,6 +96,13 @@ const COHERENCE_ROUNDS = 4
 const EDGE_PROTECT_THRESHOLD = 0.5
 
 /**
+ * Most intermediate trace snapshots to stream while stacked layers accumulate, so
+ * the studio timeline can replay the shapes building up with real per-batch
+ * timing. Throttles the emit so a many-layer image does not flood the stream.
+ */
+const TRACE_SNAPSHOTS = 10
+
+/**
  * L1 RGB gradient (0..765) at or above which a pixel is treated as an
  * anti-aliased boundary and kept out of the color-clustering training sample,
  * so rim mixtures cannot claim a palette entry.
@@ -1034,6 +1041,21 @@ async function colorPipeline(
     // Progress splits over the base layers plus the island layers on top.
     const totalLayers = order.length + islands.length
     let done = 0
+    // Stream a snapshot of the shapes as they accumulate (throttled), so the
+    // timeline can replay the geometry building up. `shapes` is in push order, so
+    // its running length is all the studio needs to redraw the state at each stop.
+    const traceStride = Math.max(1, Math.ceil(totalLayers / TRACE_SNAPSHOTS))
+    const emitTraceSnapshot = (): void =>
+      run.emitStep(() => ({
+        code: 'trace',
+        label: `Trace layer ${done}/${totalLayers}`,
+        metrics: {
+          shapes: shapes.length,
+          nodes: totalNodes(shapes),
+          layer: done,
+          layersTotal: totalLayers,
+        },
+      }))
     for (let i = 0; i < order.length; i++) {
       const label = order[i]
       // Seed the flood from this layer's own pixels, then grow through the
@@ -1081,6 +1103,7 @@ async function colorPipeline(
       for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
       done++
       run.progress(done / totalLayers)
+      if (run.tracing && done < totalLayers && done % traceStride === 0) emitTraceSnapshot()
       // Sequential on purpose: yields the worker event loop between layers so
       // cancel messages interleave with the computation.
       // oxlint-disable-next-line no-await-in-loop
@@ -1127,6 +1150,7 @@ async function colorPipeline(
         }
         done++
         run.progress(done / totalLayers)
+        if (run.tracing && done < totalLayers && done % traceStride === 0) emitTraceSnapshot()
         // oxlint-disable-next-line no-await-in-loop
         await run.tick()
       }

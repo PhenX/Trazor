@@ -105,6 +105,22 @@ describe('engine tracer', () => {
     expect(seg?.metrics?.colors).toBeGreaterThan(1)
   })
 
+  it('streams stacked trace snapshots with a non-decreasing shape count', async () => {
+    const steps = await trace(
+      swatches(),
+      normalizeSettings({ mode: 'color', layering: 'stacked', paletteSize: 6 }),
+    )
+    const traceSteps = steps.filter((s) => s.code === 'trace')
+    // Intermediate snapshots as the shapes build up, plus the final summary.
+    expect(traceSteps.length).toBeGreaterThan(1)
+    const counts = traceSteps.map((s) => (s.metrics?.shapes as number) ?? 0)
+    for (let i = 1; i < counts.length; i++) {
+      expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1])
+    }
+    // The final summary counts every shape the run produced.
+    expect(counts[counts.length - 1]).toBeGreaterThan(0)
+  })
+
   it('bw traces a threshold mask; centerline adds a skeleton', async () => {
     const bw = await trace(ring(), normalizeSettings({ mode: 'bw' }))
     const thr = bw.find((s) => s.code === 'threshold')
