@@ -43,7 +43,7 @@ path data −35%, whole document −24% (a circle collapses to `<circle>`, −63
   serializer, the curve chain, or segmentation.
 - **New settings** (in `packages/core/src/settings.ts`): `optimizeSvg` (default true),
   `preserveDetails` (default false). Both have UI toggles in
-  `apps/web/src/components/SettingsPanel.vue`.
+  the studio's settings panel.
 - **New svg modules:** `optimize.ts` (path-data compaction), `clean.ts` (collinear
   removal), `primitive.ts` (`<rect>`/`<circle>`/`<ellipse>` detection). Serializer
   gained `SerializeOptions.optimizePaths` and `roundPrimitives`.
@@ -168,7 +168,7 @@ bilevel crack contours, for sub-pixel-accurate anti-aliased edges.
 ### E — fidelity-driven refinement / auto-tuning · NOT STARTED (gated)
 
 Use the ΔE fidelity score to refine high-error regions and auto-tune parameters. **Blocked:**
-the only rasterizer today is `apps/web/src/lib/fidelity.ts` — main-thread, DOM-bound, and
+the only rasterizer today is the studio's `fidelity.ts` — main-thread, DOM-bound, and
 non-deterministic across platforms, so it cannot run in the worker/engine and must not feed
 back into geometry (breaks the determinism invariant).
 

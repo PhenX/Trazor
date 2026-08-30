@@ -2,8 +2,8 @@
 
 Offline PyTorch training for the app's on-device pre-pass models. It reads the dataset from
 [`../dataset`](../dataset/README.md), trains a compact U-Net, and exports an ONNX model that drops straight into the app
-under `apps/web/public/models/` (served same-origin — see
-[`../../apps/web/public/models/README.md`](../../apps/web/public/models/README.md)).
+under `public/models/` (served same-origin — see
+the deploying app's `models/` setup).
 
 Three tasks share this scaffold, selected with `--task` (one generated dataset trains any — it carries all three targets):
 
@@ -15,8 +15,8 @@ Three tasks share this scaffold, selected with `--task` (one generated dataset t
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
 git; you generate them here and publish them to the `models` GitHub Release, from which the deploy workflow fetches them
-at build time (see [`apps/web/public/models/README.md`](../../apps/web/public/models/README.md)). For a purely local
-try, dropping the `.onnx` into `apps/web/public/models/` also works — it's git-ignored.
+at build time (see [`public/models/README.md`](../../public/models/README.md)). For a purely local
+try, dropping the `.onnx` into `public/models/` also works — it's git-ignored.
 
 ## From scratch
 
@@ -91,7 +91,7 @@ python scripts/train/pipeline.py --count 20000 --epochs 60 --quantize           
 python scripts/train/pipeline.py --task cleanup --count 20000 --epochs 60 --quantize
 ```
 
-This generates the dataset, trains, and writes `apps/web/public/models/<task>.onnx`. Add `--workers 8` to speed up
+This generates the dataset, trains, and writes `public/models/<task>.onnx`. Add `--workers 8` to speed up
 data loading (leave it at the default `0` if you hit a multiprocessing error on Windows). Reuse an existing dataset with
 `--data dataset-out --skip-data` — the same set trains both tasks, so generate once and run the two commands with
 `--skip-data`.
@@ -108,7 +108,7 @@ npm run dataset -- --count 20000 --out dataset-out
 # 2. train (auto-uses your GPU; --data accepts several roots to mix; best → scripts/train/checkpoints/)
 python scripts/train/train.py --task edge --data dataset-out --epochs 80 --batch 32 --workers 8
 
-# 3. export (→ apps/web/public/models/<task>.onnx, with a torch/onnx parity check)
+# 3. export (→ public/models/<task>.onnx, with a torch/onnx parity check)
 python scripts/train/export_onnx.py --task edge --quantize
 ```
 
@@ -199,5 +199,5 @@ export glyphs to per-file SVGs. Splits are per source family in each root, so fa
 tiles larger images at run time), and the export bakes in the sigmoid — so the browser sees exactly what you trained.
 `export_onnx.py` asserts torch/onnxruntime parity before you ship.
 
-Once `apps/web/public/models/<task>.onnx` exists, the matching class (`EdgeEnhancer` / `CleanupEnhancer`) loads it; until
+Once `public/models/<task>.onnx` exists, the matching class (`EdgeEnhancer` / `CleanupEnhancer`) loads it; until
 then it fails soft and the app traces classically (or leaves the image untouched).

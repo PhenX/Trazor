@@ -195,7 +195,7 @@ function fidelity(
 
 /**
  * Trazor settings for one image: its own auto-recommendation (analyze → profile
- * + patch, exactly what apps/web applies on load — tuned to balance accuracy and
+ * + patch, exactly what the studio applies on load — tuned to balance accuracy and
  * size), or a forced profile.
  */
 function trazorSettings(

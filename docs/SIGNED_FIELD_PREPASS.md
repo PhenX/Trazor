@@ -76,7 +76,7 @@ export class FieldEnhancer {
   field derived from the (degraded) input. `TrazorClient.vectorize(image, settings, onProgress, edgeHint, coverageHint)`.
 - **Modes:** bw only (silhouette refinement). Color `cutout` uses the pairwise Oklab `ColorField` instead — a separate,
   later extension.
-- **Fail-soft:** no weights at `apps/web/public/models/signed-field.onnx` ⇒ `create()` rejects and the tracer uses the
+- **Fail-soft:** no weights at `public/models/signed-field.onnx` ⇒ `create()` rejects and the tracer uses the
   classical field.
 
 ## Status

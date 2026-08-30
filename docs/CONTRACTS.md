@@ -8,8 +8,7 @@ implemented — read it first) defines the shared vocabulary: `RasterImage`,
 Rules that apply to every package:
 
 - Pure TypeScript, strict mode, ESM, no runtime dependencies beyond what the
-  package.json already declares. No DOM APIs outside `@trazor/ml` and
-  `apps/web` (everything else must run in Node for tests and in workers).
+  package.json already declares. No DOM APIs outside `@trazor/ml` (everything else must run in Node for tests and in workers).
 - Determinism: identical inputs ⇒ identical outputs. Any randomness must come
   from `mulberry32` with a caller-provided or fixed seed. Never `Math.random()`.
 - Performance: hot loops over pixels use typed arrays and indices, no per-pixel
