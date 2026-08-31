@@ -1,4 +1,5 @@
 import type { BinaryMask } from '@trazor/core'
+import { oklabToRgb } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { segmentRegions } from '../src/index'
 import { rasterOf } from './helpers'
@@ -80,5 +81,57 @@ describe('segmentRegions — region growing', () => {
     expect(seg.paletteHex).toHaveLength(seg.labels.count)
     expect(seg.paletteRgb).toHaveLength(seg.labels.count * 3)
     expect(seg.counts).toHaveLength(seg.labels.count)
+  })
+})
+
+/** An Oklab color as an 8-bit clamped RGBA pixel. */
+function okPixel(L: number, a: number, b: number): Rgba {
+  const [r, g, bl] = oklabToRgb(L, a, b)
+  const c = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)))
+  return [c(r), c(g), c(bl), 255]
+}
+
+// A close-but-distinct Oklab pair (ΔE ≈ 0.07): merged by the flat `mergeThreshold`
+// (0.1) yet above the near-duplicate floor (`SRM_FLOOR` ≈ 0.03) — a coral sun
+// against a pink sky, the colors size-aware merging must keep apart at scale.
+const CORAL = okPixel(0.6, 0.05, 0.02)
+const PINK = okPixel(0.6, 0.12, 0.02)
+
+/** Two flat blocks of the close pair, left | right. */
+function twoBlocks(w: number, h: number): ReturnType<typeof rasterOf> {
+  return rasterOf(w, h, (x) => (x < w / 2 ? CORAL : PINK))
+}
+
+describe('segmentRegions — size-aware merge (SRM)', () => {
+  it('is byte-identical to the flat threshold when off (default and explicit 0)', () => {
+    const img = twoBlocks(160, 80)
+    const dflt = segmentRegions(img)
+    const off = segmentRegions(img, { mergeSizeBias: 0 })
+    expect(off.labels.count).toBe(dflt.labels.count)
+    expect(Array.from(off.labels.data)).toEqual(Array.from(dflt.labels.data))
+    expect(off.paletteHex).toEqual(dflt.paletteHex)
+  })
+
+  it('keeps close-but-distinct large colors apart that the flat threshold washes together', () => {
+    const img = twoBlocks(160, 80)
+    // Flat 0.1 merges the pair into one mean color (the wash-out); size-aware
+    // merging keeps the two large regions distinct.
+    expect(segmentRegions(img).labels.count).toBe(1)
+    expect(segmentRegions(img, { mergeSizeBias: 0.8 }).labels.count).toBe(2)
+  })
+
+  it('still folds the same pair when both regions are small (size-dependent tolerance)', () => {
+    // The essence of SRM: the identical color pair merges at small scale — a
+    // sliver folds into its neighbor — but is preserved at large scale above.
+    const img = twoBlocks(24, 12)
+    expect(segmentRegions(img, { mergeSizeBias: 0.8 }).labels.count).toBe(1)
+  })
+
+  it('is deterministic with size-aware merging on', () => {
+    const img = twoBlocks(160, 80)
+    const a = segmentRegions(img, { mergeSizeBias: 0.8 })
+    const b = segmentRegions(img, { mergeSizeBias: 0.8 })
+    expect(b.labels.count).toBe(a.labels.count)
+    expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
 })
