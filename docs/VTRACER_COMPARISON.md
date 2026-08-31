@@ -138,3 +138,47 @@ is palette budget, not the segmenter. Both region experiments were removed.
 - **colorCoherence stays** (profiles set 0.5) — a small, real cleanup on top of the
   palette fix; not redundant.
 - Photos remain a stylization, not a reproduction — as the photo profile warns.
+
+## Follow-up: region growing was over-selected (color wash-out)
+
+Distinct from the removed cluster/SLIC experiments above, the **region-growing**
+front-end (`segment.ts`, marker-controlled watershed) stayed — and is the right
+tool for one case: many-color, anti-aliased flat art, where growing each region
+from a flat interior stops a global palette painting a soft edge a third rim
+color. But the recommender routed **all** clean flat art to it, including two
+cases it wrecks:
+
+- **Gradients.** A smooth ramp (a sunset sky, a shaded backdrop) has no flat
+  interior to seed a marker, so it is flooded by a neighbouring region and
+  painted one mean color — the gradient collapses.
+- **Few-color art.** A clean logo or game sprite has no rim halo to protect, so
+  per-pixel quantization traces it exactly; region-mean coloring only loses
+  fidelity.
+
+`recommendSettings` now gates region growing on `isCleanFlatArt` **and**
+`distinctColors > 1000` **and** `microGradientDensity < 0.25`; gradient-bearing or
+few-color flat art stays on the quantization path (palette floor + autoK +
+colorCoherence — the winner above).
+
+Mean Oklab ΔE on VTracer's own showcase samples (`npm run eval:tracers -- --data
+scripts/eval/corpus-vtracer`), illustration family:
+
+| image       | before | after      | routes to    |
+| ----------- | ------ | ---------- | ------------ |
+| Cityscape   | 0.0665 | **0.0099** | quantization |
+| tank-unit   | 0.0678 | **0.0169** | quantization |
+| Gum Tree    | 0.0411 | 0.0411     | region grow  |
+| vectorstock | 0.0745 | 0.0745     | region grow  |
+| **family**  | 0.0625 | **0.0356** |              |
+
+Line-art and photo are untouched (they never routed to region growing).
+
+The region-merge threshold stays at **0.10**. Lowering it recovers close dominant
+colors on a flat _scene_ (a coral sun against a pink sky in `Gum Tree`, ΔE ≈ 0.09)
+— but it also over-splits a clean _cartoon_ into shading/anti-alias bands (a
+character trace jumps from ~13 to ~33 colors), which is the file bloat this whole
+document argues against. No single global threshold serves both, and clean, small
+output wins. Flat scenes with close dominant colors on the region path (`Gum
+Tree`, `vectorstock`) are left for a **size-aware region merge** — fold only small
+near-color bands, keep a large distinct region whole — which fixes them without
+bloating cartoons. Demo: [`demos/region-vs-quantize.html`](demos/region-vs-quantize.html).

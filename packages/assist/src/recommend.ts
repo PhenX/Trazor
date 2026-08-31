@@ -49,6 +49,40 @@ const COLORED_FRACTION_MIN = 0.05
 const FLAT_ART_MIN_REGION = 16
 
 /**
+ * Region growing earns its place only for anti-aliased flat art with many
+ * colors; outside that window global k-means is the faithful choice, so
+ * {@link wantsRegionGrowing} adds two gates on top of {@link isCleanFlatArt}.
+ */
+const REGIONS_MIN_DISTINCT_COLORS = 1000
+const REGIONS_MAX_MICRO_GRADIENT = 0.25
+
+/**
+ * Whether flat art should be traced by region growing rather than global
+ * quantization. Region growing exists to stop a k-means palette painting a soft
+ * edge a nearest *third* color; it grows each region from a flat interior so the
+ * ramp is split between its two real neighbors. That only helps within a narrow
+ * band, so two conditions gate it beyond `isCleanFlatArt`:
+ *
+ * - **Enough distinct colors.** The rim third-color it prevents appears only
+ *   where anti-aliasing (or JPEG) invents a halo of intermediate colors — which
+ *   surfaces as thousands of distinct colors. Few-color art (a clean logo, a
+ *   flat game sprite) has no such halo: per-pixel quantization traces it exactly,
+ *   while giving each connected region one mean color would only lose fidelity.
+ * - **Little micro-gradient texture.** A region marker seeds from a flat
+ *   interior. A smooth gradient (a sunset sky, a shaded background) has none, so
+ *   it is flooded by a neighbouring region and painted a single mean color — the
+ *   whole gradient collapses. Above this density, quantization — which posterizes
+ *   the ramp into distinct bands — keeps the color.
+ */
+function wantsRegionGrowing(a: ImageAnalysis): boolean {
+  return (
+    isCleanFlatArt(a) &&
+    a.distinctColors > REGIONS_MIN_DISTINCT_COLORS &&
+    a.microGradientDensity < REGIONS_MAX_MICRO_GRADIENT
+  )
+}
+
+/**
  * Clean flat art (vector illustration, logo, cartoon) rather than a photograph
  * or a degraded graphic. Anti-aliased edges make such art score as photographic
  * (many colors, dense micro-gradients), so `photoScore` alone misroutes it; the
@@ -165,13 +199,16 @@ export function recommendSettings(
       patch.denoise = 'bilateral'
       r.add('photoTexture', 'Photographic texture detected — bilateral denoise keeps edges clean.')
     }
-    // Anti-aliased flat art: global k-means maps the soft rim between two flat
-    // colors to a nearest *third* palette color, drawing hairline slivers along
-    // every edge. Region growing instead grows each region from its flat
-    // interior, so a soft edge is split between its two real neighbors and no
-    // third rim color can form — the faithful, seam-free choice. Small regions
-    // below `FLAT_ART_MIN_REGION` still fold into their surroundings.
-    if (flatArt) {
+    // Anti-aliased flat art with many colors: global k-means maps the soft rim
+    // between two flat colors to a nearest *third* palette color, drawing
+    // hairline slivers along every edge. Region growing instead grows each
+    // region from its flat interior, so a soft edge is split between its two real
+    // neighbors and no third rim color can form — the faithful, seam-free choice.
+    // Small regions below `FLAT_ART_MIN_REGION` still fold into their
+    // surroundings. Gradient-bearing or few-color flat art is excluded
+    // (`wantsRegionGrowing`) and stays on quantization, which keeps a gradient's
+    // bands and traces few-color art exactly.
+    if (wantsRegionGrowing(a)) {
       patch.segmentation = 'regions'
       patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, FLAT_ART_MIN_REGION)
       r.add(
