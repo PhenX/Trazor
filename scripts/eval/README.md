@@ -131,6 +131,47 @@ for every image instead.
 | `--montage` | off                      | also write `index.html`: source \| Trazor \| VTracer                 |
 | `--json`    | —                        | also write the report as JSON                                        |
 
+## A/B verdict — `eval:ab`
+
+`tracer-compare` measures one build; **`eval:ab` decides whether a change is an improvement.** It traces the same
+corpus through the engine twice — once on your **working tree**, once on **HEAD** (your edits stashed away) — and prints
+an explicit **PASS / MIXED / FAIL** so a quality change never ships on a diluted whole-image mean while a localized
+metric regresses. It is the guardrail for any color / palette / segmentation change ([`../../AGENTS.md`](../../AGENTS.md)
+→ _Evaluating quality changes_).
+
+```sh
+# make your edit, then:
+npm run eval:ab                                   # auto settings over corpus-vtracer
+npm run eval:ab -- --sweep 6,8,12                 # sweep paletteSize (shorthand)
+npm run eval:ab -- --sweep segmentation=quantize,regions   # sweep any setting, verdict per value
+npm run eval:ab -- --set segmentation=quantize    # force the quantize path (palette changes)
+npm run eval:ab -- --data <dir> --profile illustration
+```
+
+The verdict prints **per image** (biggest ΔE move first, so a lone regression stands out), then per
+family, then overall — no hand-diffing two runs to find which image moved. `--sweep <key>=<v1,v2,…>`
+re-runs the whole A/B at each value of any setting and prints one verdict per value; a bare `--sweep
+6,8,12` is shorthand for `paletteSize`. To sweep a tunable that is a code constant rather than a
+setting, either thread it through `VectorizeSettings` while prototyping (then `--sweep` reaches it) or
+edit the constant and re-run `eval:ab` once per value.
+
+It requires uncommitted changes (the candidate) to compare against HEAD (the baseline); because the packages export TS
+source with no build step, stashing the source and re-running is a true baseline. The verdict rests on the two metrics
+that matter most — **mean ΔE and spurious-hue** — judged per family and overall:
+
+- **PASS** — a primary metric improved and **no** family regressed. Ships.
+- **FAIL** — a primary metric (ΔE or spurious hue) regressed overall, or on two-plus families. Does **not** ship.
+- **MIXED** — a genuine trade-off (some families win, some lose). A human weighs it.
+
+`ab-report.ts` is the pure verdict engine (unit-tested in `ab-report.test.ts`) and also runs standalone on any two
+`--json` reports, however they were produced — the way to A/B two commits rather than working-tree-vs-HEAD:
+
+```sh
+git checkout main    && npm run eval:tracers -- --data scripts/eval/corpus-vtracer --json base.json
+git checkout mybranch && npm run eval:tracers -- --data scripts/eval/corpus-vtracer --json cand.json
+tsx scripts/eval/ab-report.ts base.json cand.json
+```
+
 ## The corpus
 
 `make-corpus.mjs` (`npm run eval:corpus`) writes a small, deterministic, **browser-free** image set spanning the families

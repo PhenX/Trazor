@@ -293,7 +293,7 @@ function printTable(rows: Row[], hasV: boolean): void {
         'ms T',
         'ms V',
       ]
-    : ['family', 'image', 'ΔE T', 'nodes T', 'bytes T', 'ms T']
+    : ['family', 'image', 'ΔE T', 'spurious T', 'nodes T', 'bytes T', 'ms T']
   const body: string[][] = []
   for (const r of rows) {
     const t = r.trazor
@@ -318,6 +318,7 @@ function printTable(rows: Row[], hasV: boolean): void {
         r.family,
         r.name,
         fmt(t.dE),
+        fmt(t.spurious),
         String(Math.round(t.nodes)),
         String(t.bytes),
         String(Math.round(t.ms)),
@@ -348,8 +349,12 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
           `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
       )
     } else {
+      // Show band + spurious + p95 alongside the mean: a change can lower the
+      // whole-image ΔE while inventing a hue at a seam (spurious up) — the mean
+      // alone would hide that, so never print it alone.
       console.log(
-        `  ${fam.padEnd(12)} ΔE  T ${fmt(t.dE)}   nodes ${Math.round(t.nodes)}   ms ${Math.round(t.ms)}`,
+        `  ${fam.padEnd(12)} ΔE ${fmt(t.dE)}   band ${fmt(t.edgeDE)}   spurious ${fmt(t.spurious)}` +
+          `   p95 ${fmt(t.p95)}   nodes ${Math.round(t.nodes)}`,
       )
     }
   }
