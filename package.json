@@ -22,6 +22,7 @@
     "eval:corpus": "node scripts/eval/make-corpus.mjs",
     "eval:samples": "node scripts/eval/fetch-vtracer-samples.mjs",
     "eval:tracers": "tsx scripts/eval/tracer-compare.ts",
+    "eval:ab": "node scripts/eval/ab.mjs",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

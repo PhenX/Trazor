@@ -150,6 +150,29 @@ Do not put a model identifier anywhere in a commit message, PR title/body, or co
   circles stay near their radius, cutout regions share exact boundary anchors, output is deterministic, warnings fire.
 - Every algorithm change ships with a test that would have caught the bug it fixes.
 
+### Evaluating quality changes
+
+A change to color, palette, segmentation or the tracer is only "better" if it is **measured** better on
+**representative** images — actual illustrations, logos and photos, not clean synthetic shapes.
+
+- **Never judge a quality change on a synthetic or one-off image.** The built-in `npm run eval:corpus` set is a signal
+  generator (clean procedural shapes) and a single hand-picked image proves nothing — both routinely show a "win" that
+  vanishes on real art. Measure on the **representative corpus**: `scripts/eval/corpus-vtracer` (`npm run eval:samples`)
+  or any folder of real PNG/JPEG images passed with `--data`.
+- **Use `npm run eval:ab` for the verdict.** It traces the corpus through the engine on your working tree and on HEAD
+  and prints **PASS / MIXED / FAIL** (`scripts/eval/README.md`). A change ships only on **PASS**; a **MIXED** is a real
+  trade-off to weigh out loud with the user, and a **FAIL** does not ship. Don't hand-compare two runs by eye.
+- **Read the whole metric panel, not the mean.** Whole-image mean ΔE dilutes local damage; a change can lower the mean
+  while raising **spurious hue** (a saturated color invented at a seam). `eval:ab` judges on ΔE _and_ spurious hue for
+  exactly this reason — a better mean bought with worse spurious hue is not an improvement.
+- **Gate at the routing you actually changed.** A palette (quantize) change shows nothing on images the recommender
+  routes to region growing, and vice-versa; force the path (`--set segmentation=quantize`) or sweep a setting
+  (`--sweep segmentation=quantize,regions`, or `--sweep 6,8,12` for `paletteSize`) so the change is exercised where it
+  lives. `eval:ab` prints a per-image breakdown and a verdict per swept value — don't hand-diff two runs.
+- **Don't write throwaway eval code.** The per-image deltas and the parameter sweep are built into `eval:ab`; a quick
+  "does this function do X?" check belongs in a unit test, not a scratch script. When prototyping a new tunable you'll
+  want to sweep, thread it through `VectorizeSettings` so `--sweep` reaches it.
+
 ### Working with the user's requests
 
 - **Capture conventions.** When asked to apply a change across many files ("always do X"), add the resulting rule to
