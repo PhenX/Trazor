@@ -774,7 +774,11 @@ each suggested palette + a Latin-hypercube fill), then adaptive coordinate
 descent over the incumbent — probe one parameter at a time, expand the step on
 success and shrink on failure, with a palette swap, recombination, and (on
 stagnation) a seeded restart. Descent order is seeded from per-parameter
-sensitivity measured across the seed round.
+sensitivity measured across the seed round. Candidates far below the best
+fidelity the pool proved attainable are barred from winning (`fidelityFloor`,
+applied retroactively as the floor rises); while everything is barred (a high
+explicit `minFidelity`), descent climbs fidelity toward the admissible region
+instead of going blind below it.
 
 ```ts
 // score.ts — objectives mapped to 0..1 utilities.
@@ -783,6 +787,7 @@ export const OBJECTIVE_IDS: readonly ObjectiveId[]
 export type TuneWeights = Record<ObjectiveId, number> // 0 = don't care; normalized internally
 export interface CandidateMetrics {
   meanDeltaE: number // mean Oklab ΔE of the rendered SVG vs the source
+  p95DeltaE?: number // 95th-percentile Oklab ΔE over the same sampled pixels; absent ⇒ mean-only fidelity
   nodeCount: number
   pathCount: number
   byteLength: number
@@ -790,12 +795,21 @@ export interface CandidateMetrics {
   warnings: readonly VectorizeWarning[]
   durationMs: number
 }
-export function fidelityUtility(meanDeltaE: number): number // clamp(1 − 4·ΔE, 0, 1)
+// clamp(1 − 4·ΔE, 0, 1); with a p95 the judged ΔE is 0.65·mean + 0.35·p95, so
+// damage confined to a small region (which a whole-image mean dilutes) counts.
+export function fidelityUtility(meanDeltaE: number, p95DeltaE?: number): number
+// Max fidelity-utility drop below a pool's best before a candidate is barred from winning.
+export const FIDELITY_DROP: number
+// The pool's fidelity floor: max(minFidelity, bestFidelity − FIDELITY_DROP). Never
+// rejects the pool's best-fidelity candidate.
+export function fidelityFloor(bestFidelity: number, minFidelity?: number): number
 export function cleanlinessUtility(warnings: readonly VectorizeWarning[]): number
 export function isEmptyResult(metrics: CandidateMetrics): boolean
 export function utilitiesOf(m: CandidateMetrics, baseline: CandidateMetrics): Record<ObjectiveId, number>
-// The weight-normalized sum of the utilities. Fidelity is absolute; the
-// "fewer is better" axes anchor at 0.5 for the baseline candidate.
+// The weighted geometric mean of the utilities (weighted product model), so the
+// axes don't compensate: a candidate near zero on any weighted objective scores
+// near zero overall. Fidelity is absolute; the "fewer is better" axes anchor at
+// 0.5 for the baseline candidate.
 export function scoreCandidate(
   metrics: CandidateMetrics,
   baseline: CandidateMetrics,
@@ -840,7 +854,10 @@ export interface ScoredCandidate extends TuneCandidate {
   metrics: CandidateMetrics
   utilities: Record<ObjectiveId, number>
   score: number
-  rejected?: 'empty' | 'fidelity-floor'
+  // Barred from winning: empty output, under the explicit minFidelity, or under
+  // the adaptive floor trailing the pool's best fidelity (fidelityFloor).
+  // Retroactive: a later, higher-fidelity discovery re-marks earlier candidates.
+  rejected?: 'empty' | 'fidelity-floor' | 'fidelity-drop'
   svg?: string // the traced SVG, carried through for the results wall (opaque to the search)
 }
 export interface CandidateResult { id: number; metrics: CandidateMetrics; svg?: string }
