@@ -117,6 +117,14 @@ const CLUSTER_EDGE_THRESHOLD = 40
 const SEGMENT_MERGE_THRESHOLD = 0.1
 
 /**
+ * Size-aware merge strength for region growing (Nock & Nielsen 2004). The merge
+ * tolerance shrinks with region area, so a small anti-alias sliver still folds
+ * into its neighbor while two large regions merge only when near-identical —
+ * close-but-distinct dominant colors are kept apart instead of averaged into one.
+ */
+const SEGMENT_SIZE_BIAS = 0.8
+
+/**
  * Minimum pixel area of a merged ramp before it is painted as a gradient. Small
  * regions posterize fine and a gradient there costs more than it saves; scaled
  * up by the user's own region-size floor.
@@ -694,6 +702,7 @@ async function colorPipeline(
     // count; autoPaletteSize lets the merge thresholds decide the count.
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
+      mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
       maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
       mask: opaque,

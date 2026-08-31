@@ -36,6 +36,17 @@ export interface SegmentOptions {
   flatThreshold?: number
   /** Merge adjacent regions whose mean Oklab ΔE is below this (perceptual distance, not squared). */
   mergeThreshold?: number
+  /**
+   * Size-aware merge strength, 0..1 (0 or absent ⇒ off, byte-identical to the
+   * fixed `mergeThreshold`). Above 0, the merge tolerance shrinks as regions
+   * grow (Statistical Region Merging, Nock & Nielsen 2004): two *small* regions
+   * merge readily — an anti-alias sliver folds into its neighbor as before — but
+   * two *large* regions merge only when their colors are near-identical, so
+   * close-but-distinct dominant colors (a coral sun against a pink sky) are kept
+   * apart instead of washing into one mean. One knob serves flat scenes and
+   * clean cartoons where no single fixed threshold can.
+   */
+  mergeSizeBias?: number
   /** Regions smaller than this many pixels are merged into their most similar neighbor. */
   minRegionArea?: number
   /** Hard cap on the final region count: keep merging the closest adjacent pair until at most this many remain. 0 = no cap. */
@@ -58,6 +69,14 @@ const DEFAULT_FLAT = 0.02
 const DEFAULT_MERGE = 0.1
 const DEFAULT_MIN_AREA = 16
 
+/**
+ * Oklab ΔE two *large* regions must be within to merge under size-aware merging
+ * — the near-duplicate floor the per-region bound decays toward as |R| → ∞.
+ * ~JND, matching the quantizer's `autoK` centroid-merge distance, so a genuine
+ * dominant-color difference above it always survives.
+ */
+const SRM_FLOOR = 0.03
+
 /** Oklab distance between interleaved-buffer index `i` and a mean triple. */
 function distToMean(ok: Float32Array, i: number, mL: number, mA: number, mB: number): number {
   const o = i * 3
@@ -72,6 +91,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const n = w * h
   const flatThreshold = opts.flatThreshold ?? DEFAULT_FLAT
   const mergeThreshold = opts.mergeThreshold ?? DEFAULT_MERGE
+  const sizeBias = Math.min(1, Math.max(0, opts.mergeSizeBias ?? 0))
   const minArea = Math.max(0, opts.minRegionArea ?? DEFAULT_MIN_AREA)
   const maxRegions = Math.max(0, opts.maxRegions ?? 0)
   const mask = opts.mask?.data ?? null
@@ -224,6 +244,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     mB,
     size,
     mergeThreshold,
+    sizeBias,
     minArea,
     maxRegions,
   )
@@ -406,6 +427,7 @@ function mergeRegions(
   mB: Float64Array,
   size: Float64Array,
   mergeThreshold: number,
+  sizeBias: number,
   minArea: number,
   maxRegions: number,
 ): Int32Array {
@@ -427,6 +449,16 @@ function mergeRegions(
     const db = mB[a] - mB[b]
     return Math.sqrt(dl * dl + da * da + db * db)
   }
+  // Size-aware merge tolerance (Nock & Nielsen 2004). Off (`sizeBias === 0`) it
+  // is the flat `mergeThreshold` — byte-identical. On, the per-region bound
+  // b(|R|) = SRM_SCALE / sqrt(|R|) decays with area, so the pair limit floors at
+  // `SRM_FLOOR` for two large regions (near-identical to merge) and rises for
+  // small ones (a sliver folds freely). Root sizes, so it tracks each round.
+  const SRM_SCALE = 0.5
+  const mergeLimit = (a: number, b: number): number =>
+    sizeBias <= 0
+      ? mergeThreshold
+      : SRM_FLOOR + sizeBias * SRM_SCALE * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
   const union = (a: number, b: number): void => {
     // Fold the smaller into the larger (keep the dominant color id stable).
     const keep = size[a] >= size[b] ? a : b
@@ -494,7 +526,7 @@ function mergeRegions(
       const ra = find(a)
       const rb = find(b)
       if (ra === rb) continue
-      if (d < mergeThreshold || size[ra] < minArea || size[rb] < minArea) {
+      if (d < mergeLimit(ra, rb) || size[ra] < minArea || size[rb] < minArea) {
         union(ra, rb)
         activeRegions--
         merged = true
@@ -504,10 +536,14 @@ function mergeRegions(
   }
 
   // Global near-duplicate consolidation: fold together regions whose mean colors
-  // are within `mergeThreshold` even when they do not touch — two separate black
-  // outlines become one palette color. Greedy by descending size, so the largest
-  // region of a color is the representative. Perceptual-distance gated, so it can
-  // never merge genuinely different colors (a blue strap into a black outline).
+  // are within the consolidation distance even when they do not touch — two
+  // separate black outlines become one palette color. Greedy by descending size,
+  // so the largest region of a color is the representative. Perceptual-distance
+  // gated, so it can never merge genuinely different colors (a blue strap into a
+  // black outline). Under size-aware merging it uses the near-duplicate `SRM_FLOOR`
+  // so it consolidates true duplicates without re-merging the close-but-distinct
+  // dominant colors the adjacency pass deliberately kept apart.
+  const consolidateDist = sizeBias > 0 ? SRM_FLOOR : mergeThreshold
   const roots: number[] = []
   for (let i = 0; i < regionCount; i++) if (find(i) === i) roots.push(i)
   roots.sort((a, b) => size[b] - size[a] || a - b)
@@ -515,7 +551,7 @@ function mergeRegions(
   for (const r of roots) {
     let repFor = -1
     for (const rep of reps) {
-      if (meanDelta(r, rep) < mergeThreshold) {
+      if (meanDelta(r, rep) < consolidateDist) {
         repFor = rep
         break
       }

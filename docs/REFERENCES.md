@@ -76,6 +76,12 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (`packages/raster/src/segment.ts`), which avoids the third-color rim a global
   palette invents on soft edges. Followed by a region-adjacency-graph
   agglomerative merge (near-duplicate and small-region folding).
+- **Richard Nock & Frank Nielsen, “Statistical Region Merging”, _IEEE Trans.
+  PAMI_ 26(11), 2004.** Size-aware merge predicate: the color tolerance for
+  merging two regions shrinks as their areas grow, so small regions fold freely
+  while large regions merge only when near-identical. The `mergeSizeBias` option
+  of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
+  close-but-distinct dominant colors apart instead of averaging them into one.
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).

@@ -1,0 +1,46 @@
+<title>Size-aware region merge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#eceff3;--paper:#fff;--ink:#16202b;--muted:#55636f;--line:#dde3ea;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d131a;--paper:#151d26;
+    --ink:#e6ebf1;--muted:#9aa8b4;--line:#223040;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:system-ui,sans-serif;line-height:1.5;padding:2rem 1rem 4rem}
+  .wrap{max-width:56rem;margin:0 auto}
+  h1{font-size:1.5rem;margin:0 0 .3rem}
+  .sub{color:var(--muted);margin:0 0 2rem;font-size:.95rem}
+  .pair{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+  figure{margin:0;text-align:center;background:var(--paper);border:1px solid var(--line);
+    border-radius:12px;padding:1rem}
+  figcaption{font-size:.8rem;color:var(--muted);margin-bottom:.6rem}
+  figcaption b{color:var(--ink)}
+  img{width:100%;height:auto;image-rendering:pixelated;border:1px solid var(--line);border-radius:6px}
+  .sws{margin-top:.6rem;display:flex;gap:4px;justify-content:center;flex-wrap:wrap}
+  .sw{width:16px;height:16px;border-radius:4px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+  .count{font-variant-numeric:tabular-nums}
+  @media(max-width:40rem){.pair{grid-template-columns:1fr}}
+</style>
+<div class="wrap">
+  <h1>Size-aware region merge (SRM)</h1>
+  <p class="sub">A flat sunset — sun, sky and horizon only a little apart in color — segmented through the real
+    <code>segmentRegions</code> with everything held equal but the merge rule. A flat threshold high enough to fold the
+    small specks also averages the three large fields into one; the size-aware predicate keeps them apart while the
+    specks still fold.</p>
+  <div class="pair">
+    <figure>
+      <figcaption><b>Source</b><br>flat scene</figcaption>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQQAAACqCAYAAABLaTEgAAAD+klEQVR4Ae3BQapcxxmG4TcfZx0FBTXVZi7cpXkVAu0jY08rFNQ2Mkhy8a+BhWIsy919Tvf7PP/45y+//AdJ+p8gSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklQO9FL6nvyI1QZ6HQd6Wn1Pflbfk2+tNtBzOtBT6Xtya31PvlptoOdxoMvre/IofU++Wm1wVb9++cy3Pr2982oOdFl9T86k78mH1Qa6pgNdTt+TM+t78mG1ga7lQJfS9+Qq+p6sNriCT2/vCA50CX1PrqjvyYfVBjq/oNPre3J1fU90fgcv4tcvn/nWp7d3zqzvyTPpe/JhtYHOKeiU+p48q74nOqeg0+l78uz6nuh8Dl7Ep7d3rqDvyavoe7LaQOcRdBp9T15N3xOdR9Ap9D15VX1PdA4H+q5fv3zmW5/e3rmFvievru/JagM9VpCkEvRQfU/0m74neqwDfdent3dure+Jfq/vyWoDPUaQpBL0EH1P9H19T/QYQXfX90R/rO+J7i9IUgm6q74n+nP6nui+giSVoLvpe6If0/dE9xMkqQRJKkF30fdEf03fE91HkKQSJKkE3VzfE/2cvie6vSBJJUhSCZJUgiSVoJvqe6K/R98T3VaQpBIkqQRJKkGSSpCkEiSpBEkqQZJKkKQSJKkESSpBN7XaQH+P1Qa6rSBJJUhSCZJUgiSVoJtbbaCfs9pAtxckqQRJKkF3sdpAf81qA91HkKQSJKkE3c1qA/2Y1Qa6nyBJJeiuVhvoz1ltoPsKklSC7m61gf7YagPdX9BDrDbQ96020GMESSpBD7PaQL+32kCPE/RQqw30m9UGeqwgSSXo4VYbvLrVBnq8oFNYbfCqVhvoHIJOY7XBq1ltoPMIOpXVBq9itYHOJeh0Vhs8u9UGOp+gU1pt8KxWG+icDnRaqw0+9D15BqsNdG5Bp7fa4OpWG+j8DnQJqw0+9D25ktUGuo6gS1ltcBWrDXQtB7qc1QYf+p6c0WoDXdOBLmu1wYe+J2ew2kDXdqDLW23wVd+Te1ptoOdxoKey2uCrvie3sNpAz+lAT2u1wbf6nvyI1QZ6HQd6KasNpP/n+Pf8F5L0IUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJ5b9O5cBF3C4h1QAAAABJRU5ErkJggg==" alt="source">
+    </figure>
+    <figure>
+      <figcaption><b>Flat threshold</b><br><span class="count">1 colors</span> — washed out</figcaption>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQQAAACqCAYAAABLaTEgAAABm0lEQVR4Ae3BQQGAQAACMCS8lrOT54MY2673ub8A/BqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAaQCmAZgGYBqAOSO6BCxh9KraAAAAAElFTkSuQmCC" alt="flat merge">
+      <div class="sws"><span class="sw" style="background:#cc8786" title="#cc8786"></span></div>
+    </figure>
+    <figure>
+      <figcaption><b>Size-aware (SRM)</b><br><span class="count">3 colors</span> — kept apart</figcaption>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQQAAACqCAYAAABLaTEgAAADt0lEQVR4Ae3BUQokNRhG0etHrSMQyJZnUe4hEsg2fFAb/3lQVBzHrq7qvuf88OOXL78gSb8JklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEnlQB+l78m3WG2gz3Ggt9X35Hv1Pfmz1QZ6Twd6K31Pnq3vyVerDfQ+DnR7fU9epe/JV6sNdG8Huq2+J1fS9+RhtYHu6UC30/fkyvqePKw20L0E3Urfk7voe6J7OdAt9D25o74nD6sNdH1Bl9f35O76nuj6DnRZfU/eSd+Th9UGuqagS+p78q76nuiagi6n78m763ui6wm6lL4nn6Lvia4l6DL6nnyavie6jqBL6Hvyqfqe6BqCXq7vyafre6LXC5JUgl6q74l+1/dErxX0Mn1P9Ed9T/Q6QZJK0Ev0PdFf63ui1wg6Xd8T/bO+JzpfkKQSdKq+J/p3+p7oXEGSStBp+p7o2/Q90XmCJJUgSSXoFH1P9N/0PdE5giSVIEkl6On6nuj79D3R8wVJKkGSSpCkEiSpBD1V3xP9P/qe6LmCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJeqrVBvp/rDbQcwVJKkGSSpCkEiSpBD3dagN9n9UGer4gSSVIUgk6xWoD/TerDXSOIEklSFIJOs1qA32b1QY6T5CkEnSq1Qb6d1Yb6FxBkkrQ6VYb6J+tNtD5gl5itYH+2moDvUaQpBL0MqsN9EerDfQ6QS+12kC/W22g1wqSVIJebrXBp1ttoNcLuoTVBp9qtYGuIegyVht8mtUGuo6gS1lt8ClWG+hagi5ntcG7W22g6wm6pNUG72q1ga7pQJe12uCh78k7WG2gawu6vNUGd7faQNd3oFtYbfDQ9+ROVhvoPoJuZbXBXaw20L0c6HZWGzz0Pbmi1Qa6pwPd1mqDh74nV7DaQPd2oNtbbfBV35MzrTbQ+zjQW1lt8FXfk2dYbaD3dKC3tdrgz/qefIvVBvocB/ooqw2kv3P8PH9Ckh6CJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklSCJJUgSSVIUgmSVIIklSBJJUhSCZJUgiSVIEklSFIJklR+BUb+sD3PT8l+AAAAAElFTkSuQmCC" alt="size-aware merge">
+      <div class="sws"><span class="sw" style="background:#c99595" title="#c99595"></span><span class="sw" style="background:#ea7771" title="#ea7771"></span><span class="sw" style="background:#c47172" title="#c47172"></span></div>
+    </figure>
+  </div>
+</div>

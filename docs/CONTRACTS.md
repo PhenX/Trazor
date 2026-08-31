@@ -177,6 +177,7 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
 export interface SegmentOptions {
   flatThreshold?: number // Oklab gradient below which a pixel is a flat-region interior (marker); default 0.02
   mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
+  mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
   maxRegions?: number // soft cap: fold the closest pair (within 2·mergeThreshold) until met; 0 = none
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
@@ -222,7 +223,9 @@ export function fitRegionGradients(
 - A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
   regions under `minRegionArea` (closest first), then consolidates non-adjacent
   near-duplicates globally; `maxRegions` folds the closest pair only within a
-  perceptual ceiling, so a budget never collapses genuinely different hues.
+  perceptual ceiling, so a budget never collapses genuinely different hues. With
+  `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
+  close-but-distinct colors stay apart while small regions still fold.
 - Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
   candidates). Result mirrors `QuantizeResult` so the engine consumes it
   identically. Selected by `VectorizeSettings.segmentation === 'regions'`.
