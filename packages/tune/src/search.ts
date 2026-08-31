@@ -9,7 +9,7 @@ import {
   TUNABLE_PARAMS,
 } from './params'
 import type { ParamSpec, TunableKey } from './params'
-import { fidelityUtility, isEmptyResult, scoreCandidate } from './score'
+import { fidelityFloor, isEmptyResult, scoreCandidate } from './score'
 import type { CandidateMetrics, ObjectiveId, TuneWeights } from './score'
 
 export type CandidateOrigin =
@@ -36,8 +36,14 @@ export interface ScoredCandidate extends TuneCandidate {
   metrics: CandidateMetrics
   utilities: Record<ObjectiveId, number>
   score: number
-  /** Set when the candidate is excluded from winning (empty output or below the fidelity floor). */
-  rejected?: 'empty' | 'fidelity-floor'
+  /**
+   * Set when the candidate is excluded from winning: empty output, below the
+   * caller's explicit fidelity floor, or below the adaptive floor that trails
+   * the pool's best fidelity (see `fidelityFloor`). The adaptive verdict is
+   * retroactive — a later, higher-fidelity discovery raises the floor for
+   * every earlier candidate too.
+   */
+  rejected?: 'empty' | 'fidelity-floor' | 'fidelity-drop'
   /** The traced SVG, carried through for the results view (opaque to the search). */
   svg?: string
 }
@@ -138,8 +144,8 @@ export class TuneSearch {
   private readonly ledger: ScoredCandidate[] = []
   /** Emitted-but-unreported candidates from the last `nextRound()`. */
   private pending = new Map<number, TuneCandidate>()
-  /** Incumbent score when the pending round was proposed (gain attribution). */
-  private pendingBaseScore = 0
+  /** Incumbent standing when the pending round was proposed (gain attribution). */
+  private pendingBase = { score: 0, fidelity: 0, winnable: false }
 
   private baselineMetrics: CandidateMetrics | null = null
   private incumbent: ScoredCandidate | null = null
@@ -185,7 +191,13 @@ export class TuneSearch {
     }
     const batch = this.phase === 'seed' ? this.seedRound() : this.descendRound()
     this.pending = new Map(batch.map((c) => [c.id, c]))
-    this.pendingBaseScore = this.incumbent?.score ?? 0
+    this.pendingBase = this.incumbent
+      ? {
+          score: this.incumbent.score,
+          fidelity: this.incumbent.utilities.fidelity,
+          winnable: !this.incumbent.rejected,
+        }
+      : { score: 0, fidelity: 0, winnable: false }
     return batch
   }
 
@@ -207,33 +219,50 @@ export class TuneSearch {
     const anchor = this.baselineMetrics
     if (!anchor) return
 
-    const probedImproved = new Map<TunableKey, boolean>()
-    const probedSeen = new Set<TunableKey>()
-    let roundBest: ScoredCandidate | null = null
-
+    const roundScored: ScoredCandidate[] = []
     for (const r of results) {
       const candidate = this.pending.get(r.id)
       if (!candidate) continue
       const scored = this.scoreOne(candidate, r.metrics, anchor)
       if (r.svg !== undefined) scored.svg = r.svg
       this.record(scored)
+      roundScored.push(scored)
+    }
 
-      if (candidate.origin === 'step' && candidate.tweaked) {
-        probedSeen.add(candidate.tweaked)
-        const improved = !scored.rejected && scored.score > this.pendingBaseScore + 1e-9
-        if (improved) probedImproved.set(candidate.tweaked, true)
-        const st = this.paramState.get(candidate.tweaked)
+    // The adaptive floor moves with this round's discoveries, so settle every
+    // candidate's verdict before attributing gains or picking the round best.
+    this.applyFidelityGuard()
+
+    const probedImproved = new Map<TunableKey, boolean>()
+    const probedSeen = new Set<TunableKey>()
+    let roundBest: ScoredCandidate | null = null
+    let roundClimb: ScoredCandidate | null = null
+    for (const scored of roundScored) {
+      if (scored.origin === 'step' && scored.tweaked) {
+        probedSeen.add(scored.tweaked)
+        const { improved, gain } = this.probeProgress(scored)
+        if (improved) probedImproved.set(scored.tweaked, true)
+        const st = this.paramState.get(scored.tweaked)
         if (st) {
-          const gain = scored.rejected ? 0 : Math.max(0, scored.score - this.pendingBaseScore)
           st.gain = GAIN_EMA * st.gain + (1 - GAIN_EMA) * gain
           st.lastRound = this.round
         }
       }
       if (!scored.rejected && (!roundBest || scored.score > roundBest.score)) roundBest = scored
+      if (
+        scored.rejected !== 'empty' &&
+        (!roundClimb || scored.utilities.fidelity > roundClimb.utilities.fidelity)
+      ) {
+        roundClimb = scored
+      }
     }
 
     this.adaptSteps(probedSeen, probedImproved)
-    this.updateIncumbent(roundBest)
+    // A raised floor can retro-reject the incumbent; re-seat on the best
+    // surviving candidate (or keep the barred one as a climb point when
+    // nothing is winnable yet).
+    if (this.incumbent?.rejected) this.incumbent = this.best() ?? this.incumbent
+    this.updateIncumbent(roundBest, roundClimb)
     this.round++
     if (this.phase === 'seed') {
       // Rank the first descent by how much each parameter moved the score across
@@ -479,7 +508,10 @@ export class TuneSearch {
    * deterministic (reads the deterministic ledger).
    */
   private seedSensitivity(): void {
-    const scored = this.ledger.filter((c) => !c.rejected)
+    // Fidelity-rejected seeds still carry real scores — keep them in the
+    // correlation so a wide seed scatter informs sensitivity; only empty
+    // results (score 0, meaningless metrics) are excluded.
+    const scored = this.ledger.filter((c) => c.rejected !== 'empty')
     if (scored.length < 3) return
     const specs = applicableParams(this.freeKeys, this.mode, this.incumbent?.settings ?? this.base)
     for (const spec of specs) {
@@ -519,20 +551,57 @@ export class TuneSearch {
     }
   }
 
-  private updateIncumbent(roundBest: ScoredCandidate | null): void {
-    if (!roundBest) {
-      // No usable candidate this round: still seed the incumbent from the baseline
-      // so descent has a point to step from.
-      this.incumbent ??= this.baselineCandidate()
-      this.stall++
+  /**
+   * Whether a step probe made progress over the incumbent it stepped from, and
+   * the gain to credit its parameter. In the normal regime that's a score
+   * improvement among winnable candidates. While the incumbent itself is barred
+   * by a fidelity floor, progress is a fidelity improvement instead — descent
+   * climbs toward the admissible region rather than going blind below it.
+   */
+  private probeProgress(scored: ScoredCandidate): { improved: boolean; gain: number } {
+    if (scored.rejected === 'empty') return { improved: false, gain: 0 }
+    if (!scored.rejected) {
+      const gain = Math.max(0, scored.score - this.pendingBase.score)
+      return { improved: scored.score > this.pendingBase.score + 1e-9, gain }
+    }
+    if (this.pendingBase.winnable) return { improved: false, gain: 0 }
+    const gain = Math.max(0, scored.utilities.fidelity - this.pendingBase.fidelity)
+    return { improved: scored.utilities.fidelity > this.pendingBase.fidelity + 1e-9, gain }
+  }
+
+  private updateIncumbent(
+    roundBest: ScoredCandidate | null,
+    roundClimb: ScoredCandidate | null,
+  ): void {
+    if (roundBest) {
+      if (
+        !this.incumbent ||
+        this.incumbent.rejected ||
+        roundBest.score > this.incumbent.score + 1e-9
+      ) {
+        this.incumbent = roundBest
+        this.stall = 0
+      } else {
+        this.stall++
+      }
       return
     }
-    if (!this.incumbent || roundBest.score > this.incumbent.score + 1e-9) {
-      this.incumbent = roundBest
+    // No winnable candidate this round. While the whole pool sits under a
+    // fidelity floor, the most faithful candidate still moves descent toward it.
+    if (
+      roundClimb &&
+      (!this.incumbent ||
+        (this.incumbent.rejected &&
+          roundClimb.utilities.fidelity > this.incumbent.utilities.fidelity + 1e-9))
+    ) {
+      this.incumbent = roundClimb
       this.stall = 0
-    } else {
-      this.stall++
+      return
     }
+    // Nothing usable at all: still seed the incumbent from the baseline so
+    // descent has a point to step from.
+    this.incumbent ??= this.baselineCandidate()
+    this.stall++
   }
 
   private baselineCandidate(): ScoredCandidate | null {
@@ -557,15 +626,38 @@ export class TuneSearch {
   ): ScoredCandidate {
     const empty = isEmptyResult(metrics)
     const { score, utilities } = scoreCandidate(metrics, anchor, this.opts.weights)
-    let rejected: ScoredCandidate['rejected']
-    if (empty) rejected = 'empty'
-    else if (
-      this.opts.minFidelity !== undefined &&
-      fidelityUtility(metrics.meanDeltaE) < this.opts.minFidelity
-    ) {
-      rejected = 'fidelity-floor'
+    // Fidelity floors are settled per round by applyFidelityGuard; only the
+    // empty verdict is final here. Non-empty candidates keep their computed
+    // score either way — rejection bars winning, it doesn't erase the measure.
+    const rejected: ScoredCandidate['rejected'] = empty ? 'empty' : undefined
+    return { ...candidate, metrics, utilities, score: empty ? 0 : score, rejected }
+  }
+
+  /**
+   * Re-mark the whole ledger against the fidelity floor: the caller's explicit
+   * `minFidelity`, raised adaptively to within `FIDELITY_DROP` of the best
+   * fidelity achieved so far (`fidelityFloor`). Retroactive on purpose — once a
+   * clearly more faithful result is known to be attainable, candidates far
+   * below it stop being presentable as winners, whatever their score.
+   */
+  private applyFidelityGuard(): void {
+    let bestFid = -1
+    for (const c of this.ledger) {
+      if (c.rejected === 'empty') continue
+      if (c.utilities.fidelity > bestFid) bestFid = c.utilities.fidelity
     }
-    return { ...candidate, metrics, utilities, score: rejected ? 0 : score, rejected }
+    if (bestFid < 0) return
+    const floor = fidelityFloor(bestFid, this.opts.minFidelity)
+    const explicit = this.opts.minFidelity ?? 0
+    for (const c of this.ledger) {
+      if (c.rejected === 'empty') continue
+      const fid = c.utilities.fidelity
+      if (fid < floor - 1e-9) {
+        c.rejected = fid < explicit - 1e-9 ? 'fidelity-floor' : 'fidelity-drop'
+      } else {
+        c.rejected = undefined
+      }
+    }
   }
 
   private record(scored: ScoredCandidate): void {

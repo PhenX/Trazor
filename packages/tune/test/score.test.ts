@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { VectorizeWarning } from '@trazor/core'
 import {
   cleanlinessUtility,
+  FIDELITY_DROP,
+  fidelityFloor,
   fidelityUtility,
   isEmptyResult,
   scoreCandidate,
@@ -37,6 +39,23 @@ describe('fidelityUtility', () => {
     expect(fidelityUtility(0.25)).toBe(0)
     expect(fidelityUtility(0.5)).toBe(0)
     expect(fidelityUtility(0.0625)).toBeCloseTo(0.75, 6)
+  })
+
+  it('blends a measured p95 ΔE into the judged error (65/35)', () => {
+    expect(fidelityUtility(0.02, 0.1)).toBeCloseTo(1 - 4 * (0.65 * 0.02 + 0.35 * 0.1), 6)
+    // Local damage (high p95) lowers fidelity even when the mean barely moves.
+    expect(fidelityUtility(0.02, 0.4)).toBeLessThan(fidelityUtility(0.02, 0.1))
+    // A p95 below the mean cannot raise the utility above the mean-only value.
+    expect(fidelityUtility(0.1, 0.05)).toBeCloseTo(fidelityUtility(0.1), 6)
+  })
+})
+
+describe('fidelityFloor', () => {
+  it('is the explicit floor raised to within FIDELITY_DROP of the pool best', () => {
+    expect(fidelityFloor(0.9)).toBeCloseTo(0.9 - FIDELITY_DROP, 6)
+    expect(fidelityFloor(0.9, 0.5)).toBeCloseTo(0.9 - FIDELITY_DROP, 6)
+    expect(fidelityFloor(0.9, 0.85)).toBeCloseTo(0.85, 6)
+    expect(fidelityFloor(0.1)).toBe(0)
   })
 })
 
@@ -82,7 +101,7 @@ describe('isEmptyResult', () => {
 })
 
 describe('scoreCandidate', () => {
-  it('is the weight-normalized mean of the utilities', () => {
+  it('is the weight-normalized geometric mean of the utilities', () => {
     const base = metrics()
     const cand = metrics({ meanDeltaE: 0, nodeCount: 500 })
     const both: TuneWeights = {
@@ -93,13 +112,56 @@ describe('scoreCandidate', () => {
       cleanliness: 0,
     }
     const { score, utilities } = scoreCandidate(cand, base, both)
-    expect(score).toBeCloseTo((utilities.fidelity + utilities.simplicity) / 2, 6)
+    expect(score).toBeCloseTo(Math.sqrt(utilities.fidelity * utilities.simplicity), 6)
   })
 
   it('ignores zero-weight objectives', () => {
     const base = metrics()
     const cand = metrics({ meanDeltaE: 0 })
     expect(scoreCandidate(cand, base, ONLY('fidelity')).score).toBe(1)
+  })
+
+  it('does not let strong axes buy off a collapsed one', () => {
+    const base = metrics()
+    // Perfect simplicity/file-size, but fidelity has collapsed to 0.
+    const collapsed = metrics({ meanDeltaE: 0.3, nodeCount: 1, byteLength: 1 })
+    const weights: TuneWeights = {
+      fidelity: 1,
+      simplicity: 1,
+      fileSize: 1,
+      colorEconomy: 0,
+      cleanliness: 1,
+    }
+    expect(scoreCandidate(collapsed, base, weights).score).toBeLessThan(0.1)
+  })
+
+  it('prefers a faithful trace over a degenerate few-blob one at default-like weights', () => {
+    const base = metrics()
+    // A near-empty trace: superb simplicity/size, subject destroyed (high p95).
+    const degenerate = metrics({
+      meanDeltaE: 0.08,
+      p95DeltaE: 0.4,
+      nodeCount: 60,
+      byteLength: 500,
+      colorCount: 2,
+    })
+    // A real trace: close to the source everywhere, ordinary complexity.
+    const faithful = metrics({
+      meanDeltaE: 0.02,
+      p95DeltaE: 0.08,
+      nodeCount: 900,
+      byteLength: 7000,
+    })
+    const weights: TuneWeights = {
+      fidelity: 1,
+      simplicity: 0.5,
+      fileSize: 0.25,
+      colorEconomy: 0,
+      cleanliness: 0.25,
+    }
+    const good = scoreCandidate(faithful, base, weights).score
+    const bad = scoreCandidate(degenerate, base, weights).score
+    expect(good).toBeGreaterThan(bad)
   })
 
   it('returns 0 when all weights are zero', () => {

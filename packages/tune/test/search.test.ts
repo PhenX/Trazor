@@ -200,6 +200,32 @@ describe('TuneSearch rejection and Pareto', () => {
     for (const c of emptyOnes) expect(c.rejected).toBe('empty')
   })
 
+  it('retroactively bars candidates far below the best attainable fidelity', () => {
+    // Fidelity tracks smoothing directly, so the pool spans 0..~1 fidelity.
+    const search = run(BASE, { ...CURVE_OPTS, iterations: 30 }, (s) => bowlMetric(s.smoothing))
+    const pool = search.results().filter((c) => c.rejected !== 'empty')
+    const bestFid = Math.max(...pool.map((c) => c.utilities.fidelity))
+    // The wide seed scatter guarantees low-fidelity candidates were scored…
+    expect(pool.some((c) => c.rejected === 'fidelity-drop')).toBe(true)
+    // …and none of them survives as a winnable candidate.
+    const winnable = pool.filter((c) => !c.rejected)
+    expect(winnable.length).toBeGreaterThan(0)
+    expect(winnable.filter((c) => c.utilities.fidelity < bestFid - 0.2 - 1e-9)).toEqual([])
+    expect(search.best()!.rejected).toBeUndefined()
+  })
+
+  it('marks candidates under an explicit minFidelity as fidelity-floor', () => {
+    const search = run(BASE, { ...CURVE_OPTS, iterations: 30, minFidelity: 0.9 }, (s) =>
+      bowlMetric(s.smoothing),
+    )
+    const under = search
+      .results()
+      .filter((c) => c.rejected !== 'empty' && c.utilities.fidelity < 0.9 - 1e-9)
+    expect(under.length).toBeGreaterThan(0)
+    expect(under.every((c) => c.rejected === 'fidelity-floor')).toBe(true)
+    expect(search.best()!.utilities.fidelity).toBeGreaterThanOrEqual(0.9)
+  })
+
   it('reports a non-dominated Pareto front', () => {
     const ideal = { smoothing: 0.7, optTolerance: 2.5 }
     // Trade fidelity against simplicity: fewer nodes near high smoothing.

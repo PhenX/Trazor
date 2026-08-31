@@ -108,6 +108,11 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Computer Code”, _Technometrics_ 21(2), 1979.** Latin-hypercube sampling used
   to seed the search’s first round so the free parameters are exercised at
   spread-out levels (`packages/tune/src/search.ts`).
+- **P. W. Bridgman, _Dimensional Analysis_, Yale University Press, 1922 (the
+  weighted product model; see also E. Triantaphyllou, _Multi-Criteria Decision
+  Making Methods: A Comparative Study_, Kluwer, 2000, ch. 2).** The candidate
+  score is the weighted geometric mean of the objective utilities, so no axis
+  can compensate for a collapse on another (`packages/tune/src/score.ts`).
 
 ## Local ML models (packages/ml)
 

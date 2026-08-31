@@ -10,7 +10,9 @@ export {
 export type { ParamSpec, TunableKey } from './params'
 export {
   OBJECTIVE_IDS,
+  FIDELITY_DROP,
   fidelityUtility,
+  fidelityFloor,
   cleanlinessUtility,
   isEmptyResult,
   utilitiesOf,
