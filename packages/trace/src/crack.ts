@@ -16,6 +16,13 @@ export interface CrackPath {
   /** A pixel whose square lies inside the region this path encloses (shape interior for positive paths, hole interior for negative ones). */
   interiorX: number
   interiorY: number
+  /**
+   * Index in this array of the smallest positive path enclosing this one, or -1
+   * when none does. Rings never cross, so this is the innermost enclosing filled
+   * region; paths dropped by `minArea` are skipped, so a path inside a dropped
+   * ring reports that ring's nearest kept ancestor.
+   */
+  parent: number
 }
 
 const DIRS = [
@@ -36,8 +43,13 @@ export function decomposeMask(
     x >= 0 && x < w && y >= 0 && y < h ? work[y * w + x] : 0
 
   const paths: CrackPath[] = []
-  // Per-pixel-row toggle columns for the XOR flip of the traced region.
-  const rowToggles: number[][] = []
+  /** Per pixel, the enclosing kept positive path biased by 1 (0 = enclosed by none). */
+  const owner = new Int32Array(w * h)
+  // XOR-flip scratch, reused across rings: vertical-crack columns bucketed by
+  // pixel row, with the per-row run stored in `crackX[start..end)`.
+  let crackX = new Int32Array(64)
+  const rowCount = new Int32Array(h)
+  const rowCursor = new Int32Array(h)
 
   for (let y = 0; y < h; y++) {
     const row = y * w
@@ -52,9 +64,22 @@ export function decomposeMask(
       // outer boundary (+), empty ⇒ hole boundary (−). (Potrace's path sign.)
       const geoArea = Math.abs(signedAreaFlat(path))
       const isInk = mask.data[row + x] === 1
-      xorFlip(path)
-      if (geoArea >= minArea) {
-        paths.push({ points: path, area: isInk ? geoArea : -geoArea, interiorX: x, interiorY: y })
+      const keep = geoArea >= minArea
+      // Enclosing rings are always traced first, so the stamp standing at the
+      // seed is the innermost filled region containing this path.
+      const enclosing = owner[row + x]
+      // A filled region owns every pixel it encloses; one dropped by minArea
+      // passes its own owner down so descendants land on the nearest kept
+      // ancestor. Hole rings own nothing and leave the stamp alone.
+      xorFlip(path, isInk ? (keep ? paths.length + 1 : enclosing) : -1)
+      if (keep) {
+        paths.push({
+          points: path,
+          area: isInk ? geoArea : -geoArea,
+          interiorX: x,
+          interiorY: y,
+          parent: enclosing - 1,
+        })
       }
     }
   }
@@ -124,28 +149,64 @@ export function decomposeMask(
     return false
   }
 
-  /** Toggle every pixel enclosed by the ring (even-odd over vertical cracks). */
-  function xorFlip(points: FlatPoints): void {
-    rowToggles.length = 0
+  /**
+   * Toggle every pixel enclosed by the ring (even-odd over vertical cracks) and,
+   * for a non-negative `stamp`, record it as those pixels' enclosing path.
+   */
+  function xorFlip(points: FlatPoints, stamp: number): void {
     const n = points.length
+    let count = 0
+    let minRow = h
+    let maxRow = -1
     for (let i = 0; i < n; i += 2) {
-      const x = points[i]
       const y = points[i + 1]
       const ny = points[(i + 3) % n]
-      if (ny !== y) {
-        // vertical crack at column x crossing pixel-row min(y, ny)
-        const rowY = Math.min(y, ny)
-        ;(rowToggles[rowY] ??= []).push(x)
-      }
+      if (ny === y) continue
+      // vertical crack at column points[i] crossing pixel-row min(y, ny)
+      const rowY = ny < y ? ny : y
+      rowCount[rowY]++
+      if (rowY < minRow) minRow = rowY
+      if (rowY > maxRow) maxRow = rowY
+      count++
     }
-    for (let ry = 0; ry < rowToggles.length; ry++) {
-      const xs = rowToggles[ry]
-      if (!xs) continue
-      xs.sort((a, b) => a - b)
-      const base = ry * w
-      for (let k = 0; k + 1 < xs.length; k += 2) {
-        for (let x = xs[k]; x < xs[k + 1]; x++) {
-          work[base + x] ^= 1
+    if (count === 0) return
+    if (count > crackX.length) {
+      let cap = crackX.length
+      while (cap < count) cap *= 2
+      crackX = new Int32Array(cap)
+    }
+    let acc = 0
+    for (let r = minRow; r <= maxRow; r++) {
+      rowCursor[r] = acc
+      acc += rowCount[r]
+    }
+    for (let i = 0; i < n; i += 2) {
+      const y = points[i + 1]
+      const ny = points[(i + 3) % n]
+      if (ny === y) continue
+      crackX[rowCursor[ny < y ? ny : y]++] = points[i]
+    }
+    for (let r = minRow; r <= maxRow; r++) {
+      const end = rowCursor[r]
+      const start = end - rowCount[r]
+      rowCount[r] = 0
+      // A row holds only a handful of crossings — insertion sort in place.
+      for (let j = start + 1; j < end; j++) {
+        const v = crackX[j]
+        let k = j - 1
+        while (k >= start && crackX[k] > v) {
+          crackX[k + 1] = crackX[k]
+          k--
+        }
+        crackX[k + 1] = v
+      }
+      const base = r * w
+      for (let k = start; k + 1 < end; k += 2) {
+        const x0 = crackX[k]
+        const x1 = crackX[k + 1]
+        for (let x = x0; x < x1; x++) work[base + x] ^= 1
+        if (stamp >= 0) {
+          for (let x = x0; x < x1; x++) owner[base + x] = stamp
         }
       }
     }

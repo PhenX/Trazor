@@ -1,6 +1,5 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
-import type { CrackPath } from './crack'
-import { decomposeMask, ringBounds, ringContains } from './crack'
+import { decomposeMask } from './crack'
 import { adjustVertices } from './potrace/adjust'
 import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
@@ -52,47 +51,28 @@ export interface TracedShape {
 export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape[] {
   const paths = decomposeMask(mask, opts.turnPolicy, Math.max(1, opts.minArea))
 
-  const outers: {
-    path: CrackPath
-    commands: PathCommand[]
-    bounds: [number, number, number, number]
-    holes: PathCommand[][]
-  }[] = []
-  const holes: CrackPath[] = []
-  for (const path of paths) {
+  const outers: { area: number; commands: PathCommand[]; holes: PathCommand[][] }[] = []
+  // Decomposition index → index in `outers`. Each hole carries the smallest
+  // outer ring enclosing it, and an enclosing ring is always decomposed before
+  // the paths it contains, so its entry is already in place here.
+  const outerOf = new Int32Array(paths.length)
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i]
     if (path.area > 0) {
+      outerOf[i] = outers.length
       outers.push({
-        path,
+        area: path.area,
         commands: closedPathToCommands(path.points, opts),
-        bounds: ringBounds(path.points),
         holes: [],
       })
-    } else {
-      holes.push(path)
-    }
-  }
-
-  // Group each hole under the smallest outer ring containing its interior.
-  const byArea = outers
-    .map((o, index) => ({ index, area: o.path.area }))
-    .toSorted((a, b) => a.area - b.area)
-  for (const hole of holes) {
-    const px = hole.interiorX + 0.5
-    const py = hole.interiorY + 0.5
-    for (const { index } of byArea) {
-      const outer = outers[index]
-      const [minX, minY, maxX, maxY] = outer.bounds
-      if (px < minX || px > maxX || py < minY || py > maxY) continue
-      if (ringContains(outer.path.points, px, py)) {
-        outer.holes.push(closedPathToCommands(hole.points, opts))
-        break
-      }
+    } else if (path.parent >= 0) {
+      outers[outerOf[path.parent]].holes.push(closedPathToCommands(path.points, opts))
     }
   }
 
   const shapes: TracedShape[] = outers.map((o) => ({
     commands: o.commands.concat(...o.holes),
-    area: o.path.area,
+    area: o.area,
     holeCount: o.holes.length,
   }))
   shapes.sort((a, b) => b.area - a.area)

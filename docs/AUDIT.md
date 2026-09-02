@@ -307,8 +307,10 @@ pool (navigator.hardwareConcurrency-capped) on the layer/chain granularity would
   hoisting scratch buffers out of the loop is mechanical. `MAX_MERGE=24` with descending-j greedy means up to
   ~23 failed fits per run start; trying a binary search on j (mergeability is near-monotone in run length)
   would cut fit calls ~4×.
-- `crack.ts` `xorFlip` builds `number[][]` row toggles + sorts per ring; a typed scratch keyed by row with
-  insertion into sorted position (toggles per row are tiny) avoids the allocation churn on speckly masks.
+- `crack.ts` `xorFlip` ✅ vertical cracks are bucketed per row in typed scratch reused across rings (counting pass,
+  in-place insertion sort of each row's few entries). The flip of a filled ring also stamps its index on the toggled
+  pixels, so a hole ring reads its enclosing outer ring in O(1) (`CrackPath.parent`) instead of a point-in-ring search
+  over every outer ring.
 - `analyzeSvg` regex-parses the multi-MB string the serializer just built, to recover counts the shape model
   already knows. Compute stats during serialization; keep `analyzeSvg` for foreign SVGs.
 - `fidelity.ts` rasterizes on the main thread (DOM-bound) and runs the 2× full-image `rgbToOklab` ΔE pass in
