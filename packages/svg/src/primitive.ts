@@ -5,6 +5,10 @@
  * Circles and ellipses match within a sub-pixel tolerance and are therefore
  * only offered when `round` is set — the engine leaves it off for cutout mode,
  * where a neighbor still traces the Bézier boundary and must not diverge.
+ *
+ * Every detector states the loop structure it can match; {@link detectPrimitive}
+ * checks those preconditions up front, so a loop that cannot be a given shape
+ * never reaches that shape's fit.
  */
 
 import type { PathCommand } from '@trazor/core'
@@ -24,6 +28,13 @@ interface Pt {
   x: number
   y: number
 }
+
+type LineOp = Extract<PathCommand, { type: 'L' }>
+type CurveOp = Extract<PathCommand, { type: 'C' }>
+
+const isLine = (op: PathCommand): op is LineOp => op.type === 'L'
+const isCurve = (op: PathCommand): op is CurveOp => op.type === 'C'
+const isEdge = (op: PathCommand): op is LineOp | CurveOp => op.type === 'L' || op.type === 'C'
 
 /** One closed subpath as its ordered edge list, or null if the shape is not a single closed loop. */
 function singleClosedLoop(
@@ -47,9 +58,9 @@ function singleClosedLoop(
 }
 
 /** Anchor points of the loop, with the closing anchor (equal to start) dropped. */
-function anchors(start: Pt, ops: PathCommand[], scale: number): Pt[] {
+function anchors(start: Pt, ops: readonly LineOp[], scale: number): Pt[] {
   const pts: Pt[] = [start]
-  for (const op of ops) if (op.type !== 'Z') pts.push({ x: op.x, y: op.y })
+  for (const op of ops) pts.push({ x: op.x, y: op.y })
   const first = pts[0]
   const last = pts[pts.length - 1]
   if (
@@ -62,8 +73,8 @@ function anchors(start: Pt, ops: PathCommand[], scale: number): Pt[] {
   return pts
 }
 
-function detectRect(start: Pt, ops: PathCommand[], scale: number): Primitive | null {
-  if (!ops.every((o) => o.type === 'L')) return null
+/** Match an all-straight-edge loop against its own bounding box. */
+function detectRect(start: Pt, ops: readonly LineOp[], scale: number): Primitive | null {
   const pts = anchors(start, ops, scale)
   if (pts.length !== 4) return null
   const gx = pts.map((p) => Math.round(p.x * scale))
@@ -91,13 +102,6 @@ function detectRect(start: Pt, ops: PathCommand[], scale: number): Primitive | n
   }
 }
 
-function cubicMid(p0: Pt, c: Extract<PathCommand, { type: 'C' }>): Pt {
-  return {
-    x: 0.125 * p0.x + 0.375 * c.x1 + 0.375 * c.x2 + 0.125 * c.x,
-    y: 0.125 * p0.y + 0.375 * c.y1 + 0.375 * c.y2 + 0.125 * c.y,
-  }
-}
-
 /**
  * Round-primitive acceptance tolerance in pixels — how far a boundary sample may
  * lie off the fitted circle/ellipse. A fixed sub-pixel budget, NOT radius-
@@ -110,24 +114,21 @@ const ROUND_TOL_PX = 0.6
 
 /**
  * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
- * all-cubic loop. Parameters come from least-squares fits (`fit.ts`) — a Kåsa
- * circle fit and a direct conic ellipse fit — so uneven anchor spacing does not
- * bias the recovered center/radii. Each candidate is accepted only if every
- * boundary sample lies on it within tolerance, so a non-round shape is rejected.
+ * all-cubic loop of at least three segments. Parameters come from least-squares
+ * fits (`fit.ts`) — a Kåsa circle fit and a direct conic ellipse fit — so uneven
+ * anchor spacing does not bias the recovered center/radii. Each candidate is
+ * accepted only if every boundary sample lies on it within tolerance, so a
+ * non-round shape is rejected.
  */
-function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
-  if (ops.length < 3 || !ops.every((o) => o.type === 'C')) return null
-
+function detectRound(start: Pt, ops: readonly CurveOp[], precision: number): Primitive | null {
   // Dense boundary samples: each anchor plus three interior points per cubic.
   const samples: Pt[] = [start]
   let prev = start
   for (const op of ops) {
-    if (op.type !== 'C') return null
     samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
     samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
-  if (samples.length < 8) return null
 
   // Circle first, so a true circle stays a circle rather than a near-round ellipse.
   const circle = fitCircle(samples)
@@ -174,7 +175,7 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
 }
 
 /** Point on a cubic at parameter t (Bernstein form). */
-function cubicPoint(p0: Pt, c: Extract<PathCommand, { type: 'C' }>, t: number): Pt {
+function cubicPoint(p0: Pt, c: CurveOp, t: number): Pt {
   const u = 1 - t
   const a = u * u * u
   const b = 3 * u * u * t
@@ -198,37 +199,70 @@ function roundedRectSdf(
 ): number {
   const qx = Math.abs(px - cx) - (hx - r)
   const qy = Math.abs(py - cy) - (hy - r)
-  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r
+  const ax = Math.max(qx, 0)
+  const ay = Math.max(qy, 0)
+  // Distance out to the corner arc's center, `hypot(ax, ay)`; alongside a
+  // straight edge one term is zero and the other is that distance already.
+  const outside = ay === 0 ? ax : ax === 0 ? ay : Math.hypot(ax, ay)
+  return outside + Math.min(Math.max(qx, qy), 0) - r
 }
+
+/**
+ * How far inside its bounding box a rounded rect's boundary reaches, per unit of
+ * corner radius: the corner arc's midpoint, `1 − 1/√2` of the radius from each of
+ * its two sides. Rounded up, so the reject below never fires on a shape the SDF
+ * test would accept.
+ */
+const CORNER_INSET_RATIO = 0.3
 
 /**
  * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
  * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
  * coarse scan refined with a golden-section search (sub-pixel), and accepts only
  * if every densely sampled boundary point lies on that rounded rect within
- * tolerance, so a shape that is not really one is rejected.
+ * tolerance, so a shape that is not really one is rejected. `ops` are the loop's
+ * four or more straight and curved edges, at least one of them a corner arc.
  */
-function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
-  if (ops.length < 4 || !ops.every((o) => o.type === 'L' || o.type === 'C')) return null
-  if (!ops.some((o) => o.type === 'C')) return null // corners must be arcs
-
+function detectRoundedRect(
+  start: Pt,
+  ops: readonly (LineOp | CurveOp)[],
+  precision: number,
+): Primitive | null {
   // Dense samples: anchors plus each segment's midpoint (a non-axis-aligned edge
   // or a wrong corner then fails the fit).
-  const samples: Pt[] = [start]
-  let prev = start
+  const count = 1 + 2 * ops.length
+  const sx = new Float64Array(count)
+  const sy = new Float64Array(count)
+  sx[0] = start.x
+  sy[0] = start.y
+  let prevX = start.x
+  let prevY = start.y
+  let k = 1
   for (const op of ops) {
-    if (op.type === 'C') samples.push(cubicMid(prev, op))
-    else samples.push({ x: (prev.x + op.x) / 2, y: (prev.y + op.y) / 2 })
-    samples.push({ x: op.x, y: op.y })
-    prev = { x: op.x, y: op.y }
+    if (op.type === 'C') {
+      sx[k] = 0.125 * prevX + 0.375 * op.x1 + 0.375 * op.x2 + 0.125 * op.x
+      sy[k] = 0.125 * prevY + 0.375 * op.y1 + 0.375 * op.y2 + 0.125 * op.y
+    } else {
+      sx[k] = (prevX + op.x) / 2
+      sy[k] = (prevY + op.y) / 2
+    }
+    sx[k + 1] = op.x
+    sy[k + 1] = op.y
+    k += 2
+    prevX = op.x
+    prevY = op.y
   }
 
-  const xs = samples.map((p) => p.x)
-  const ys = samples.map((p) => p.y)
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (let i = 0; i < count; i++) {
+    minX = Math.min(minX, sx[i])
+    maxX = Math.max(maxX, sx[i])
+    minY = Math.min(minY, sy[i])
+    maxY = Math.max(maxY, sy[i])
+  }
   const cx = (minX + maxX) / 2
   const cy = (minY + maxY) / 2
   const hx = (maxX - minX) / 2
@@ -237,13 +271,28 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
 
   const maxR = Math.min(hx, hy)
   const tol = Math.max(0.75, maxR * 0.03)
+
+  // Every point of a rounded rect with corner radius r lies within
+  // `(1 − 1/√2)·r + tol` of its bounding box, and the radius search cannot
+  // return more than `maxR`: a sample deeper inside than that fails the SDF
+  // test at every candidate radius, so there is nothing to search for.
+  const band = CORNER_INSET_RATIO * maxR + tol
+  for (let i = 0; i < count; i++) {
+    const inset = Math.min(hx - Math.abs(sx[i] - cx), hy - Math.abs(sy[i] - cy))
+    if (inset > band) return null
+  }
+
   // Largest |SDF| over all samples for a candidate corner radius — minimized at
   // the true radius (V-shaped: too small clips the corners, too large bulges).
-  const maxErr = (r: number): number => {
+  // A candidate already past `cutoff` cannot win, so it stops there.
+  const maxErr = (r: number, cutoff: number): number => {
     let err = 0
-    for (const p of samples) {
-      const d = Math.abs(roundedRectSdf(p.x, p.y, cx, cy, hx, hy, r))
-      if (d > err) err = d
+    for (let i = 0; i < count; i++) {
+      const d = Math.abs(roundedRectSdf(sx[i], sy[i], cx, cy, hx, hy, r))
+      if (d > err) {
+        err = d
+        if (err >= cutoff) return err
+      }
     }
     return err
   }
@@ -254,14 +303,23 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
   let bestR = step
   let bestErr = Infinity
   for (let i = 1; i <= steps; i++) {
-    const err = maxErr(step * i)
+    const err = maxErr(step * i, bestErr)
     if (err < bestErr) {
       bestErr = err
       bestR = step * i
     }
   }
-  bestR = goldenMin(maxErr, Math.max(0, bestR - step), Math.min(maxR, bestR + step))
-  bestErr = maxErr(bestR)
+  // The SDF moves by at most `dr` when the radius moves by `dr`, so `maxErr` is
+  // 1-Lipschitz and no radius in the bracket below can beat the scan's best by
+  // more than one step: once that best is a step past tolerance, refining it
+  // cannot bring it back under.
+  if (bestErr - step > tol) return null
+  bestR = goldenMin(
+    (r) => maxErr(r, Infinity),
+    Math.max(0, bestR - step),
+    Math.min(maxR, bestR + step),
+  )
+  bestErr = maxErr(bestR, Infinity)
   if (bestErr > tol) return null
   if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
   return round(
@@ -303,110 +361,86 @@ function angleDiff(a: number, b: number): number {
   return d
 }
 
-/** Dense point samples along the outline (curves sampled too), one loop, in order. */
-function denseOutline(start: Pt, ops: PathCommand[]): Pt[] {
-  const pts: Pt[] = []
-  let prev = start
+/**
+ * Dense point samples along the outline (curves sampled too), one loop, in
+ * order, appended to `px`/`py` as parallel coordinate lists.
+ */
+function denseOutline(start: Pt, ops: readonly PathCommand[], px: number[], py: number[]): void {
+  let prevX = start.x
+  let prevY = start.y
   for (const op of ops) {
     if (op.type === 'C') {
-      for (let s = 0; s < 8; s++) pts.push(cubicPoint(prev, op, s / 8))
-      prev = { x: op.x, y: op.y }
+      // Bernstein form, eight samples per segment.
+      for (let s = 0; s < 8; s++) {
+        const t = s / 8
+        const u = 1 - t
+        const a = u * u * u
+        const b = 3 * u * u * t
+        const c = 3 * u * t * t
+        const d = t * t * t
+        px.push(a * prevX + b * op.x1 + c * op.x2 + d * op.x)
+        py.push(a * prevY + b * op.y1 + c * op.y2 + d * op.y)
+      }
+      prevX = op.x
+      prevY = op.y
     } else if (op.type === 'Q') {
       for (let s = 0; s < 8; s++) {
         const t = s / 8
         const u = 1 - t
-        pts.push({
-          x: u * u * prev.x + 2 * u * t * op.x1 + t * t * op.x,
-          y: u * u * prev.y + 2 * u * t * op.y1 + t * t * op.y,
-        })
+        px.push(u * u * prevX + 2 * u * t * op.x1 + t * t * op.x)
+        py.push(u * u * prevY + 2 * u * t * op.y1 + t * t * op.y)
       }
-      prev = { x: op.x, y: op.y }
+      prevX = op.x
+      prevY = op.y
     } else if (op.type === 'L') {
-      const steps = Math.max(1, Math.round(Math.hypot(op.x - prev.x, op.y - prev.y) / 2))
+      const steps = Math.max(1, Math.round(Math.hypot(op.x - prevX, op.y - prevY) / 2))
       for (let s = 0; s < steps; s++) {
-        pts.push({
-          x: prev.x + ((op.x - prev.x) * s) / steps,
-          y: prev.y + ((op.y - prev.y) * s) / steps,
-        })
+        px.push(prevX + ((op.x - prevX) * s) / steps)
+        py.push(prevY + ((op.y - prevY) * s) / steps)
       }
-      prev = { x: op.x, y: op.y }
+      prevX = op.x
+      prevY = op.y
     }
   }
   // Close the loop: sample the implicit edge back to start when Z did the closing.
-  if (Math.hypot(prev.x - start.x, prev.y - start.y) > 1e-6) {
-    const steps = Math.max(1, Math.round(Math.hypot(start.x - prev.x, start.y - prev.y) / 2))
+  if (Math.hypot(prevX - start.x, prevY - start.y) > 1e-6) {
+    const steps = Math.max(1, Math.round(Math.hypot(start.x - prevX, start.y - prevY) / 2))
     for (let s = 0; s < steps; s++) {
-      pts.push({
-        x: prev.x + ((start.x - prev.x) * s) / steps,
-        y: prev.y + ((start.y - prev.y) * s) / steps,
-      })
+      px.push(prevX + ((start.x - prevX) * s) / steps)
+      py.push(prevY + ((start.y - prevY) * s) / steps)
     }
   }
-  return pts
 }
 
-/** Distance from (px,py) to segment a–b. */
-function pointSegDist(px: number, py: number, a: Pt, b: Pt): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
+/** Distance from (px,py) to the segment (ax,ay)–(bx,by). */
+function pointSegDist(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax
+  const dy = by - ay
   const len2 = dx * dx + dy * dy
-  let t = len2 > 0 ? ((px - a.x) * dx + (py - a.y) * dy) / len2 : 0
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0
   t = t < 0 ? 0 : t > 1 ? 1 : t
-  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy))
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 }
 
+/** Side counts scanned for a regular polygon or star. */
+const MIN_SIDES = 3
+const MAX_SIDES = 12
+/** Rows of the per-side-count radius tables: side count `n` owns `n` slots at {@link sideBase}. */
+const SIDE_SLOTS = ((MAX_SIDES + MIN_SIDES) * (MAX_SIDES - MIN_SIDES + 1)) / 2
 /**
- * True when every outline sample lies within `tol` of the candidate polygon's
- * edges, excluding samples within `skipArc` (about the centroid) of a vertex.
- * The tracer rounds real corners, so only the straight edge spans are checked —
- * that is where a genuine regular figure matches and an irregular one does not.
+ * Half-width of a corner or edge-midpoint window, measured in steps: `hw` is a
+ * fifth of a step, rounded up past any error in the step count so a sample near
+ * a window's edge still reaches the exact angle test that decides it.
  */
-function outlineFitsEdges(
-  pts: Pt[],
-  cx: number,
-  cy: number,
-  poly: Pt[],
-  vertexAngles: number[],
-  tol: number,
-  skipArc: number,
-): boolean {
-  const m = poly.length
-  let checked = 0
-  for (const p of pts) {
-    const pa = Math.atan2(p.y - cy, p.x - cx)
-    if (vertexAngles.some((va) => Math.abs(angleDiff(pa, va)) < skipArc)) continue
-    let best = Infinity
-    for (let i = 0; i < m && best > tol; i++) {
-      const d = pointSegDist(p.x, p.y, poly[i], poly[(i + 1) % m])
-      if (d < best) best = d
-    }
-    if (best > tol) return false
-    checked++
-  }
-  // Guard against a skipArc so wide nothing is actually verified.
-  return checked >= m
-}
-
-/** Extreme (max or min) sample radius within `hw` radians of `target`, or null if none. */
-function extremeRadiusNear(
-  rad: number[],
-  ang: number[],
-  target: number,
-  hw: number,
-  wantMax: boolean,
-): number | null {
-  let best = wantMax ? -Infinity : Infinity
-  let found = false
-  for (let i = 0; i < ang.length; i++) {
-    if (Math.abs(angleDiff(ang[i], target)) <= hw) {
-      found = true
-      if (wantMax ? rad[i] > best : rad[i] < best) best = rad[i]
-    }
-  }
-  return found ? best : null
-}
-
-const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length
+const WINDOW_STEPS = 0.2 + 1e-9
+const sideBase = (n: number): number => ((n * (n - 1)) >> 1) - ((MIN_SIDES * (MIN_SIDES - 1)) >> 1)
 
 /**
  * A regular polygon or regular star, fit to the dense outline so it survives the
@@ -414,18 +448,46 @@ const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length
  * The centroid anchors polar coordinates; corners are radius maxima. For each
  * candidate side count the ideal figure is built and accepted only if every
  * outline sample lies on it within tolerance — so a circle or blob is rejected.
- * Runs after the circle/ellipse fits, which claim genuine curves first.
+ * Runs after the circle/ellipse fits, which claim genuine curves first. `ops`
+ * are the loop's three or more edges, of any kind.
  */
-function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
-  if (ops.length < 3) return null
-  const pts = denseOutline(start, ops)
-  if (pts.length < 24) return null
+function detectRegularPolygon(
+  start: Pt,
+  ops: readonly PathCommand[],
+  precision: number,
+): Primitive | null {
+  const px: number[] = []
+  const py: number[] = []
+  denseOutline(start, ops, px, py)
+  const m = px.length
+  if (m < 24) return null
 
-  const cx = mean(pts.map((p) => p.x))
-  const cy = mean(pts.map((p) => p.y))
-  const rad = pts.map((p) => Math.hypot(p.x - cx, p.y - cy))
-  const ang = pts.map((p) => Math.atan2(p.y - cy, p.x - cx))
-  const rMax = Math.max(...rad)
+  let sumX = 0
+  let sumY = 0
+  for (let i = 0; i < m; i++) {
+    sumX += px[i]
+    sumY += py[i]
+  }
+  const cx = sumX / m
+  const cy = sumY / m
+
+  // Polar coordinates about the centroid, plus the outline's own bounding box.
+  const rad = new Float64Array(m)
+  const ang = new Float64Array(m)
+  let rMax = -Infinity
+  let bx0 = Infinity
+  let bx1 = -Infinity
+  let by0 = Infinity
+  let by1 = -Infinity
+  for (let i = 0; i < m; i++) {
+    rad[i] = Math.hypot(px[i] - cx, py[i] - cy)
+    ang[i] = Math.atan2(py[i] - cy, px[i] - cx)
+    rMax = Math.max(rMax, rad[i])
+    bx0 = Math.min(bx0, px[i])
+    bx1 = Math.max(bx1, px[i])
+    by0 = Math.min(by0, py[i])
+    by1 = Math.max(by1, py[i])
+  }
   if (rMax < 3) return null
   const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
 
@@ -433,107 +495,190 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
   // fit to. Reject a candidate whose extent diverges — the polar corner search
   // can otherwise fold a thin, elongated shape into a self-intersecting star
   // (a "bowtie") that still threads the edge-distance test.
-  const bx0 = Math.min(...pts.map((p) => p.x))
-  const bx1 = Math.max(...pts.map((p) => p.x))
-  const by0 = Math.min(...pts.map((p) => p.y))
-  const by1 = Math.max(...pts.map((p) => p.y))
-  const bboxMatches = (poly: Pt[]): boolean => {
+  const bboxMatches = (polyX: Float64Array, polyY: Float64Array, sides: number): boolean => {
     let x0 = Infinity
     let x1 = -Infinity
     let y0 = Infinity
     let y1 = -Infinity
-    for (const p of poly) {
-      if (p.x < x0) x0 = p.x
-      if (p.x > x1) x1 = p.x
-      if (p.y < y0) y0 = p.y
-      if (p.y > y1) y1 = p.y
+    for (let i = 0; i < sides; i++) {
+      if (polyX[i] < x0) x0 = polyX[i]
+      if (polyX[i] > x1) x1 = polyX[i]
+      if (polyY[i] < y0) y0 = polyY[i]
+      if (polyY[i] > y1) y1 = polyY[i]
     }
-    const m = 2 * tol
+    const margin = 2 * tol
     return (
-      Math.abs(x0 - bx0) <= m &&
-      Math.abs(x1 - bx1) <= m &&
-      Math.abs(y0 - by0) <= m &&
-      Math.abs(y1 - by1) <= m
+      Math.abs(x0 - bx0) <= margin &&
+      Math.abs(x1 - bx1) <= margin &&
+      Math.abs(y0 - by0) <= margin &&
+      Math.abs(y1 - by1) <= margin
     )
+  }
+
+  /**
+   * True when every outline sample lies within `tol` of the candidate polygon's
+   * edges, excluding samples within `skipArc` (about the centroid) of a vertex.
+   * The tracer rounds real corners, so only the straight edge spans are checked —
+   * that is where a genuine regular figure matches and an irregular one does not.
+   */
+  const outlineFitsEdges = (
+    polyX: Float64Array,
+    polyY: Float64Array,
+    vertexAngles: Float64Array,
+    sides: number,
+    skipArc: number,
+  ): boolean => {
+    let checked = 0
+    for (let j = 0; j < m; j++) {
+      const pa = ang[j]
+      let atVertex = false
+      for (let v = 0; v < sides; v++) {
+        if (Math.abs(angleDiff(pa, vertexAngles[v])) < skipArc) {
+          atVertex = true
+          break
+        }
+      }
+      if (atVertex) continue
+      let best = Infinity
+      for (let i = 0; i < sides && best > tol; i++) {
+        const j2 = (i + 1) % sides
+        const d = pointSegDist(px[j], py[j], polyX[i], polyY[i], polyX[j2], polyY[j2])
+        if (d < best) best = d
+      }
+      if (best > tol) return false
+      checked++
+    }
+    // Guard against a skipArc so wide nothing is actually verified.
+    return checked >= sides
   }
 
   // Phase from the farthest sample (a corner).
   let iMax = 0
-  for (let i = 1; i < rad.length; i++) if (rad[i] > rad[iMax]) iMax = i
+  for (let i = 1; i < m; i++) if (rad[i] > rad[iMax]) iMax = i
   const phase = ang[iMax]
+
+  // Per side count: the extreme sample radius near each corner direction (a
+  // maximum) and each edge-midpoint direction (a minimum), over the samples
+  // within a fifth of a step of it. One pass over the samples fills a whole
+  // row, and the star pass reads the rows the polygon pass filled.
+  const cornerR = new Float64Array(SIDE_SLOTS)
+  const midR = new Float64Array(SIDE_SLOTS)
+  const cornerFound = new Uint8Array(SIDE_SLOTS)
+  const midFound = new Uint8Array(SIDE_SLOTS)
+  const scanned = new Uint8Array(MAX_SIDES + 1)
+  const scanSides = (n: number): void => {
+    if (scanned[n] === 1) return
+    scanned[n] = 1
+    const base = sideBase(n)
+    const step = (2 * Math.PI) / n
+    const hw = step / 5
+    for (let i = 0; i < n; i++) {
+      cornerR[base + i] = -Infinity
+      midR[base + i] = Infinity
+    }
+    for (let j = 0; j < m; j++) {
+      const a = ang[j]
+      // Steps from the phase, split into whole steps and the fraction into the
+      // current one: the windows sit at fraction 0 (a corner) and 0.5 (an edge
+      // midpoint), each `WINDOW_STEPS` wide, so a sample can only lie in the
+      // nearest window of each kind — and in only one of the two.
+      const q = (a - phase) / step
+      const whole = Math.floor(q)
+      const frac = q - whole
+      if (frac < WINDOW_STEPS || frac > 1 - WINDOW_STEPS) {
+        let i = ((frac < 0.5 ? whole : whole + 1) | 0) % n
+        if (i < 0) i += n
+        if (Math.abs(angleDiff(a, phase + i * step)) <= hw) {
+          cornerFound[base + i] = 1
+          if (rad[j] > cornerR[base + i]) cornerR[base + i] = rad[j]
+        }
+      } else if (frac > 0.5 - WINDOW_STEPS && frac < 0.5 + WINDOW_STEPS) {
+        let k = (whole | 0) % n
+        if (k < 0) k += n
+        if (Math.abs(angleDiff(a, phase + (k + 0.5) * step)) <= hw) {
+          midFound[base + k] = 1
+          if (rad[j] < midR[base + k]) midR[base + k] = rad[j]
+        }
+      }
+    }
+  }
+  /** True when every corner and every edge-midpoint direction of `n` holds a sample. */
+  const sidesCovered = (n: number): boolean => {
+    const base = sideBase(n)
+    for (let i = 0; i < n; i++) {
+      if (cornerFound[base + i] === 0 || midFound[base + i] === 0) return false
+    }
+    return true
+  }
+
+  const polyX = new Float64Array(2 * MAX_SIDES)
+  const polyY = new Float64Array(2 * MAX_SIDES)
+  const vertexAngles = new Float64Array(2 * MAX_SIDES)
+  const toPoints = (sides: number): Pt[] => {
+    const points: Pt[] = []
+    for (let i = 0; i < sides; i++) points.push({ x: polyX[i], y: polyY[i] })
+    return points
+  }
 
   // Polygon: n corners, equal spacing. The corner radius is derived from the
   // edge-midpoint radius (R = r_mid / cos(π/n)), which the tracer preserves —
   // sizing from the rounded corner tips would shrink the whole figure.
-  for (let n = 3; n <= 12; n++) {
+  for (let n = MIN_SIDES; n <= MAX_SIDES; n++) {
+    scanSides(n)
+    if (!sidesCovered(n)) continue
+    const base = sideBase(n)
     const step = (2 * Math.PI) / n
-    const hw = step / 5
-    const mids: number[] = []
-    let ok = true
-    for (let i = 0; i < n; i++) {
-      // Corner must exist (a local radius bump); edge midpoint sizes the figure.
-      const corner = extremeRadiusNear(rad, ang, phase + i * step, hw, true)
-      const mid = extremeRadiusNear(rad, ang, phase + (i + 0.5) * step, hw, false)
-      if (corner === null || mid === null) {
-        ok = false
-        break
-      }
-      mids.push(mid)
-    }
-    if (!ok) continue
-    const R = mean(mids) / Math.cos(Math.PI / n)
-    const poly: Pt[] = []
-    const vertexAngles: number[] = []
+    let mids = 0
+    for (let i = 0; i < n; i++) mids += midR[base + i]
+    const R = mids / n / Math.cos(Math.PI / n)
     for (let i = 0; i < n; i++) {
       const a = phase + i * step
-      vertexAngles.push(a)
-      poly.push({ x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) })
+      vertexAngles[i] = a
+      polyX[i] = cx + R * Math.cos(a)
+      polyY[i] = cy + R * Math.sin(a)
     }
     // An axis-aligned square is a <rect>, not a <polygon>; only keep a rotated
     // one (a diamond). Edges near horizontal/vertical ⇒ axis-aligned ⇒ skip.
     if (n === 4) {
-      const edgeAng = Math.atan2(Math.abs(poly[1].y - poly[0].y), Math.abs(poly[1].x - poly[0].x))
+      const edgeAng = Math.atan2(Math.abs(polyY[1] - polyY[0]), Math.abs(polyX[1] - polyX[0]))
       if (edgeAng < Math.PI / 12 || edgeAng > Math.PI / 2 - Math.PI / 12) continue
     }
-    if (bboxMatches(poly) && outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.18)) {
-      return round({ kind: 'polygon', points: poly }, precision)
+    if (
+      bboxMatches(polyX, polyY, n) &&
+      outlineFitsEdges(polyX, polyY, vertexAngles, n, step * 0.18)
+    ) {
+      return round({ kind: 'polygon', points: toPoints(n) }, precision)
     }
   }
 
   // Star: n outer + n inner vertices, alternating radii, with inner clearly deeper
   // than a polygon's edge dip (else it is just a polygon, handled above).
-  for (let n = 3; n <= 12; n++) {
+  for (let n = MIN_SIDES; n <= MAX_SIDES; n++) {
+    scanSides(n)
+    if (!sidesCovered(n)) continue
+    const base = sideBase(n)
     const step = (2 * Math.PI) / n
-    const hw = step / 5
-    const outer: number[] = []
-    const inner: number[] = []
-    let ok = true
+    let outer = 0
+    let inner = 0
     for (let i = 0; i < n; i++) {
-      const ro = extremeRadiusNear(rad, ang, phase + i * step, hw, true)
-      const ri = extremeRadiusNear(rad, ang, phase + (i + 0.5) * step, hw, false)
-      if (ro === null || ri === null) {
-        ok = false
-        break
-      }
-      outer.push(ro)
-      inner.push(ri)
+      outer += cornerR[base + i]
+      inner += midR[base + i]
     }
-    if (!ok) continue
-    const Ro = mean(outer)
-    const Ri = mean(inner)
+    const Ro = outer / n
+    const Ri = inner / n
     if (Ri >= Ro * Math.cos(Math.PI / n) - tol) continue // not deep enough to be a star
-    const poly: Pt[] = []
-    const vertexAngles: number[] = []
     for (let i = 0; i < 2 * n; i++) {
       const a = phase + (i * step) / 2
-      vertexAngles.push(a)
-      poly.push({
-        x: cx + (i % 2 === 0 ? Ro : Ri) * Math.cos(a),
-        y: cy + (i % 2 === 0 ? Ro : Ri) * Math.sin(a),
-      })
+      vertexAngles[i] = a
+      const r = i % 2 === 0 ? Ro : Ri
+      polyX[i] = cx + r * Math.cos(a)
+      polyY[i] = cy + r * Math.sin(a)
     }
-    if (bboxMatches(poly) && outlineFitsEdges(pts, cx, cy, poly, vertexAngles, tol, step * 0.09)) {
-      return round({ kind: 'polygon', points: poly }, precision)
+    if (
+      bboxMatches(polyX, polyY, 2 * n) &&
+      outlineFitsEdges(polyX, polyY, vertexAngles, 2 * n, step * 0.09)
+    ) {
+      return round({ kind: 'polygon', points: toPoints(2 * n) }, precision)
     }
   }
 
@@ -580,6 +725,9 @@ function round(prim: Primitive, precision: number): Primitive {
 /**
  * Detect the primitive a single closed subpath represents, or null. `round`
  * enables the sub-pixel circle/ellipse matches; rectangles are always exact.
+ * Each detector runs only on the loop structure it can match at all: a rectangle
+ * on straight edges, a circle/ellipse on an all-curve loop, a rounded rect on
+ * straight and curved edges with at least one corner arc.
  */
 export function detectPrimitive(
   commands: readonly PathCommand[],
@@ -588,15 +736,22 @@ export function detectPrimitive(
 ): Primitive | null {
   const loop = singleClosedLoop(commands)
   if (!loop) return null
-  const scale = 10 ** clampPrecision(precision)
-  const rect = detectRect(loop.start, loop.ops, scale)
-  if (rect) return rect
+  const ops = loop.ops
+  if (ops.every(isLine)) {
+    const rect = detectRect(loop.start, ops, 10 ** clampPrecision(precision))
+    if (rect) return rect
+  }
   if (!allowRound) return null
   // Circle/ellipse first so a true circle stays `<circle>`, not a pill `<rect rx>`;
   // the regular-polygon fit runs last so a curve is never mistaken for an n-gon.
-  return (
-    detectRound(loop.start, loop.ops, precision) ??
-    detectRoundedRect(loop.start, loop.ops, precision) ??
-    detectRegularPolygon(loop.start, loop.ops, precision)
-  )
+  if (ops.length >= 3 && ops.every(isCurve)) {
+    const prim = detectRound(loop.start, ops, precision)
+    if (prim) return prim
+  }
+  if (ops.length >= 4 && ops.some(isCurve) && ops.every(isEdge)) {
+    const prim = detectRoundedRect(loop.start, ops, precision)
+    if (prim) return prim
+  }
+  if (ops.length < 3) return null
+  return detectRegularPolygon(loop.start, ops, precision)
 }
