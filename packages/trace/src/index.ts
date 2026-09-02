@@ -1,4 +1,4 @@
-export { traceMask, closedPathToCommands, pixelCommands } from './closed'
+export { traceMask, shapesFromPaths, closedPathToCommands, pixelCommands } from './closed'
 export type { TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
 export { traceLabelMap } from './boundary'
 export type { ColorField, RegionShape, TraceCutoutOptions } from './boundary'

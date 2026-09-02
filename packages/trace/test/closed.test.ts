@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, PathCommand } from '@trazor/core'
-import { optimalPolyline, traceMask } from '@trazor/trace'
+import { decomposeMask, optimalPolyline, shapesFromPaths, traceMask } from '@trazor/trace'
 
 function circleMask(size: number, r: number): BinaryMask {
   const data = new Uint8Array(size * size)
@@ -152,6 +152,24 @@ describe('traceMask', () => {
     const a = JSON.stringify(traceMask(circleMask(50, 18), OPTS))
     const b = JSON.stringify(traceMask(circleMask(50, 18), OPTS))
     expect(a).toBe(b)
+  })
+
+  it('splits into decomposition + curve fitting with identical output', () => {
+    // A shape with a hole and a speck below the area floor, in every curve mode,
+    // so grouping, the hole hierarchy and the speck filter are all covered.
+    const mask = rectMask(40, 40, 3, 3, 37, 37)
+    for (let y = 12; y < 24; y++) {
+      for (let x = 12; x < 24; x++) mask.data[y * 40 + x] = 0
+    }
+    mask.data[30 * 40 + 30] = 0
+    for (const curveMode of ['spline', 'polygon', 'pixel'] as const) {
+      const opts = { ...OPTS, curveMode, minArea: 4 }
+      const paths = decomposeMask(mask, opts.turnPolicy, opts.minArea)
+      const shapes = shapesFromPaths(paths, opts)
+      expect(shapes).toEqual(traceMask(mask, opts))
+      expect(shapes).toHaveLength(1)
+      expect(shapes[0].holeCount).toBe(1)
+    }
   })
 
   it('pixel mode reproduces exact rectilinear geometry', () => {

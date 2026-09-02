@@ -27,7 +27,10 @@ src/
 ## Three entry points
 
 - **`traceMask(mask, opts)`** → `TracedShape[]`. Binary mask → filled shapes. Used by bw mode and by stacked color
-  layering (one mask per layer). Holes are grouped under their smallest enclosing outer ring (evenodd).
+  layering (one mask per layer). Holes are grouped under their smallest enclosing outer ring (evenodd). It is the two
+  halves `decomposeMask` (rings) then **`shapesFromPaths(paths, curveOptions)`** (curve chain + hole grouping), both
+  exported: rings depend only on the mask, the turn policy and the area floor, so a caller that keeps them — the
+  engine's `StageCache` does — re-fits them alone when only the curve settings change.
 - **`traceLabelMap(labels, opts)`** → `RegionShape[]`. The seam-free cutout partition (below).
 - **`traceCenterline(skeleton, opts)`** → `StrokePath[]`. Thinned skeleton → open strokes for pen plotters / engraving.
 

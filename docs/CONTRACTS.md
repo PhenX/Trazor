@@ -340,6 +340,48 @@ bimodal histogram lands between the modes; `zhangSuenThin` reduces a 5px-thick
 line to a connected 1px path; `mergeSmallRegions` removes single-pixel speckles;
 `resizeToFit` halves cleanly and preserves mean color within 1/255.
 
+## @trazor/trace (for reference — implemented by the main agent)
+
+Labels/masks in, `PathCommand[]` out: the tracer never reads pixel colors and never emits SVG text. The complete export
+list is `packages/trace/src/index.ts` and the stage map is
+[`../packages/trace/ARCHITECTURE.md`](../packages/trace/ARCHITECTURE.md); the closed-shape surface the engine's bw and
+stacked paths call is:
+
+```ts
+export interface TraceCurveOptions {
+  curveMode: CurveMode // 'spline' (full chain) | 'polygon' (stop after vertex adjustment) | 'pixel' (exact lattice)
+  smoothing: number // 0..1, mapped to alphamax = smoothing × 4/3
+  curveOptimize: boolean
+  optTolerance: number
+  cornerThreshold?: number // interior angle (deg) below which a vertex is pinned as a corner
+  coverage?: GrayImage // signed boundary field; refines ring vertices onto its zero level (ignored in pixel mode)
+}
+export interface TraceMaskOptions extends TraceCurveOptions {
+  turnPolicy: TurnPolicy
+  minArea: number // boundaries enclosing fewer pixels than this are dropped (specks & pinholes)
+}
+export interface TracedShape {
+  commands: PathCommand[] // outer ring followed by its hole rings, evenodd semantics
+  area: number // enclosed pixel area of the outer ring
+  holeCount: number
+}
+// Binary mask → filled shapes: decomposition followed by the curve chain per ring.
+export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape[]
+// Closed lattice boundary rings, signed (positive = filled region, negative = hole). Each path also
+// carries `parent`, the index of the smallest kept ring enclosing it.
+export function decomposeMask(
+  mask: BinaryMask,
+  turnPolicy: TurnPolicy,
+  minArea: number,
+): CrackPath[]
+// The second half of traceMask: decomposed rings → shapes, holes grouped under their enclosing outer
+// ring, ordered by descending area. Rings depend only on the mask, the turn policy and the area
+// floor, so a caller that keeps them (the engine's StageCache does) re-runs this alone when the curve
+// settings change. traceMask(mask, opts) === shapesFromPaths(decomposeMask(mask, opts.turnPolicy,
+// Math.max(1, opts.minArea)), opts).
+export function shapesFromPaths(paths: CrackPath[], opts: TraceCurveOptions): TracedShape[]
+```
+
 ## @trazor/svg
 
 ```ts
@@ -653,9 +695,13 @@ export function vectorize(
   // default; the interactive TrazorClient requests it, the batch pool does not.
   opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean },
 ): Promise<VectorizeResult>
-// StageCache is an opaque worker-owned holder: one preprocessed-image entry plus
-// a small LRU of palette/label entries (keyed internally by imageId + settings
-// slices), so alternating palettes on one worker stay warm. Instantiate as `{}`.
+// StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
+// small LRU of palette/label entries (keyed internally by imageId + settings
+// slices) so alternating palettes on one worker stay warm, one ink entry (the
+// bw/centerline mask + coverage field), and the decomposed boundary rings — so a
+// curve-only change (smoothing, curve optimization, corner threshold) skips
+// decomposition and re-runs the curve chain alone. Rings are the bulk of the
+// footprint, so only the newest palette entry keeps a set. Instantiate as `{}`.
 // `stats` exposes hit/miss counters for measuring cache/affinity effectiveness.
 export interface StageCache {
   /* engine-internal fields */ stats?: StageCacheStats
@@ -665,6 +711,10 @@ export interface StageCacheStats {
   preMisses: number
   palHits: number
   palMisses: number
+  ringHits: number // decomposed rings reused (stacked layers, and the bw mask)
+  ringMisses: number
+  inkHits: number // bw/centerline mask + coverage field reused
+  inkMisses: number
 }
 
 // Raw pre-serialization geometry (@trazor/core), attached to VectorizeResult as

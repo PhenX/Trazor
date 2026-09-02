@@ -94,8 +94,10 @@ decode (consumer)
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes,
   `<defs>` gradient paint servers, metadata), plus a regex-based `analyzeSvg` for path/node/color/byte stats.
 - **`engine`** — the four mode pipelines, stage timing + progress + cooperative cancellation, result warnings (stencil
-  islands, tiny mm features, node counts), and the worker protocol: `installWorkerHandler` (worker side) +
-  `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+  islands, tiny mm features, node counts), the worker-owned `StageCache` (preprocessed image, palette/label entries, the
+  bw mask and the decomposed boundary rings, each keyed by the settings that shape it, so tuning one stage's settings
+  reuses the stages before it), and the worker protocol: `installWorkerHandler` (worker side) + `TrazorClient`
+  (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
   `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
   (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so a consumer works without it.

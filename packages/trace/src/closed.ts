@@ -1,5 +1,6 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
 import { decomposeMask } from './crack'
+import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
 import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
@@ -49,8 +50,17 @@ export interface TracedShape {
  * boundary, holes grouped under their smallest enclosing shape.
  */
 export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape[] {
-  const paths = decomposeMask(mask, opts.turnPolicy, Math.max(1, opts.minArea))
+  return shapesFromPaths(decomposeMask(mask, opts.turnPolicy, Math.max(1, opts.minArea)), opts)
+}
 
+/**
+ * Decomposed crack paths → filled shapes: the curve chain per ring, holes
+ * grouped under their smallest enclosing outer ring (evenodd), shapes ordered
+ * by descending area. Decomposition depends only on the mask, the turn policy
+ * and the area floor, so a caller that keeps the paths can re-run this alone
+ * when only the curve options change.
+ */
+export function shapesFromPaths(paths: CrackPath[], opts: TraceCurveOptions): TracedShape[] {
   const outers: { area: number; commands: PathCommand[]; holes: PathCommand[][] }[] = []
   // Decomposition index → index in `outers`. Each hole carries the smallest
   // outer ring enclosing it, and an enclosing ring is always decomposed before

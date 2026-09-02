@@ -19,6 +19,10 @@
  *     --max-dim N      resize before tracing (default 1600; 0 = native)
  *     --repeat N       trace each image N times, report the fastest (default 1)
  *     --limit N        cap images
+ *     --tweak          warm-cache mode: after a cold run, nudge `smoothing` and
+ *                      re-run on the same StageCache (what the studio does when a
+ *                      curve slider moves), printing the warm stage times and
+ *                      checking the SVG against a cold run of the tweaked settings
  */
 import { createHash } from 'node:crypto'
 import { readdirSync } from 'node:fs'
@@ -27,6 +31,7 @@ import { analyzeImage, recommendSettings } from '@trazor/assist'
 import { DEFAULT_SETTINGS, getProfile, normalizeSettings } from '@trazor/core'
 import type { ProfileId, StageId, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
+import type { StageCache } from '@trazor/engine'
 import { resizeToFit } from '@trazor/raster'
 import { readRgba } from '../eval/lib'
 
@@ -37,6 +42,7 @@ interface Args {
   maxDim: number
   repeat: number
   limit: number
+  tweak: boolean
 }
 
 function parseArgs(argv: string[]): Args {
@@ -47,6 +53,7 @@ function parseArgs(argv: string[]): Args {
     maxDim: 1600,
     repeat: 1,
     limit: 0,
+    tweak: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const val = argv[i + 1]
@@ -77,6 +84,9 @@ function parseArgs(argv: string[]): Args {
         a.limit = Number(val)
         i++
         break
+      case '--tweak':
+        a.tweak = true
+        break
     }
   }
   return a
@@ -93,6 +103,23 @@ function coerce(key: string, raw: string): unknown {
 
 const STAGES: StageId[] = ['preprocess', 'palette', 'segment', 'trace', 'svg']
 
+/** Short SVG digest — two runs are byte-identical iff these match. */
+function svgHash(svg: string): string {
+  return createHash('sha1').update(svg).digest('hex').slice(0, 10)
+}
+
+/** Per-stage milliseconds of one run, summed per stage id. */
+function stageMs(stages: { stage: StageId; ms: number }[]): Record<string, number> {
+  const t: Record<string, number> = {}
+  for (const s of stages) t[s.stage] = (t[s.stage] ?? 0) + s.ms
+  return t
+}
+
+/** The curve-setting nudge the warm run applies: ±0.1 smoothing, clamped to [0,1]. */
+function tweakSmoothing(v: number): number {
+  return Math.round((v <= 0.9 ? v + 0.1 : v - 0.1) * 100) / 100
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   let files = readdirSync(args.data)
@@ -102,9 +129,14 @@ async function main(): Promise<void> {
 
   const totals: Record<string, number> = {}
   let sumMs = 0
+  let mismatches = 0
+  const reuse = { pre: 0, pal: 0, ring: 0, ink: 0 }
   console.log(
-    `${'image'.padEnd(28)} ${'size'.padStart(9)} ${'settings'.padEnd(22)}` +
-      ` ${STAGES.map((s) => s.padStart(9)).join('')} ${'total'.padStart(8)} ${'nodes'.padStart(7)}  svg-sha1`,
+    args.tweak
+      ? `${'image'.padEnd(28)} ${'size'.padStart(9)} ${'settings'.padEnd(22)}` +
+          ` ${STAGES.map((s) => s.padStart(9)).join('')} ${'warm'.padStart(8)} ${'cold'.padStart(8)}  svg-sha1    tweak`
+      : `${'image'.padEnd(28)} ${'size'.padStart(9)} ${'settings'.padEnd(22)}` +
+          ` ${STAGES.map((s) => s.padStart(9)).join('')} ${'total'.padStart(8)} ${'nodes'.padStart(7)}  svg-sha1`,
   )
   for (const file of files) {
     const original = readRgba(join(args.data, file))
@@ -121,27 +153,60 @@ async function main(): Promise<void> {
     // own resize/denoise/flatten, not the harness's pre-resize.
     settings = { ...settings, maxDimension: 0 }
 
+    const desc = `${settings.mode}/${settings.mode === 'color' || settings.mode === 'grayscale' ? `${settings.segmentation}/${settings.layering}` : settings.thresholdMode}`
+    const name = basename(file, extname(file)).slice(0, 28).padEnd(28)
+    const size = `${image.width}x${image.height}`.padStart(9)
+
+    if (args.tweak) {
+      // What the studio does when a curve slider moves: one cold run seeds the
+      // worker's StageCache, the tweaked run reuses it. The tweaked settings are
+      // also traced cold on a fresh cache — the two must be byte-identical.
+      const cache: StageCache = {}
+      const cold = await vectorize(image, settings, undefined, { imageId: 1, cache })
+      const tweaked = { ...settings, smoothing: tweakSmoothing(settings.smoothing) }
+      const warm = await vectorize(image, tweaked, undefined, { imageId: 1, cache })
+      const reference = await vectorize(image, tweaked)
+      const t = stageMs(warm.stats.stages)
+      for (const st of STAGES) totals[st] = (totals[st] ?? 0) + (t[st] ?? 0)
+      sumMs += warm.stats.durationMs
+      const hash = svgHash(warm.svg)
+      const same = hash === svgHash(reference.svg)
+      if (!same) mismatches++
+      const st = cache.stats
+      if (st) {
+        reuse.pre += st.preHits
+        reuse.pal += st.palHits
+        reuse.ring += st.ringHits
+        reuse.ink += st.inkHits
+      }
+      console.log(
+        `${name} ${size} ${desc.padEnd(22)}` +
+          ` ${STAGES.map((s) => (t[s] ?? 0).toFixed(0).padStart(9)).join('')}` +
+          ` ${warm.stats.durationMs.toFixed(0).padStart(8)} ${cold.stats.durationMs.toFixed(0).padStart(8)}  ${hash}` +
+          `  ${same ? 'ok' : `MISMATCH cold=${svgHash(reference.svg)}`}`,
+      )
+      continue
+    }
+
     let best: Record<string, number> | null = null
     let bestTotal = Infinity
     let nodes = 0
     let hash = ''
     for (let r = 0; r < args.repeat; r++) {
       const res = await vectorize(image, settings)
-      const t: Record<string, number> = {}
-      for (const s of res.stats.stages) t[s.stage] = (t[s.stage] ?? 0) + s.ms
+      const t = stageMs(res.stats.stages)
       if (res.stats.durationMs < bestTotal) {
         bestTotal = res.stats.durationMs
         best = t
         nodes = res.stats.nodeCount
-        hash = createHash('sha1').update(res.svg).digest('hex').slice(0, 10)
+        hash = svgHash(res.svg)
       }
     }
     const t = best ?? {}
     for (const s of STAGES) totals[s] = (totals[s] ?? 0) + (t[s] ?? 0)
     sumMs += bestTotal
-    const desc = `${settings.mode}/${settings.mode === 'color' || settings.mode === 'grayscale' ? `${settings.segmentation}/${settings.layering}` : settings.thresholdMode}`
     console.log(
-      `${basename(file, extname(file)).slice(0, 28).padEnd(28)} ${`${image.width}x${image.height}`.padStart(9)} ${desc.padEnd(22)}` +
+      `${name} ${size} ${desc.padEnd(22)}` +
         ` ${STAGES.map((s) => (t[s] ?? 0).toFixed(0).padStart(9)).join('')} ${bestTotal.toFixed(0).padStart(8)} ${String(nodes).padStart(7)}  ${hash}`,
     )
   }
@@ -151,6 +216,18 @@ async function main(): Promise<void> {
   )
   const pct = STAGES.map((s) => `${s} ${((100 * (totals[s] ?? 0)) / sumMs).toFixed(0)}%`).join('  ')
   console.log(`share: ${pct}`)
+  if (args.tweak) {
+    console.log(
+      `warm reuse: preprocess ${reuse.pre}  palette ${reuse.pal}  rings ${reuse.ring}  ink ${reuse.ink}` +
+        ` (of ${files.length} images)`,
+    )
+    if (mismatches > 0) {
+      console.log(
+        `\n!! MISMATCH on ${mismatches} image(s): a warm run differs from its cold run !!`,
+      )
+      process.exitCode = 1
+    }
+  }
 }
 
 main().catch((err) => {

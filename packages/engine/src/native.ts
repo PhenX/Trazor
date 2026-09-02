@@ -17,6 +17,7 @@ import type {
   RasterImage,
   StageId,
   StageTiming,
+  TurnPolicy,
   VectorizeMode,
   VectorizeResult,
   VectorizeSettings,
@@ -70,8 +71,8 @@ import {
   toOklabBuffer,
   zhangSuenThin,
 } from '@trazor/raster'
-import { traceCenterline, traceLabelMap, traceMask } from '@trazor/trace'
-import type { TracedShape } from '@trazor/trace'
+import { decomposeMask, shapesFromPaths, traceCenterline, traceLabelMap } from '@trazor/trace'
+import type { CrackPath, TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { SvgGradient, SvgShape } from '@trazor/svg'
 
@@ -281,17 +282,54 @@ interface PaletteEntry {
   paletteClampedTo?: number
   /** Per-label gradient paint (label ⇒ ramp fill, or null for a flat fill); absent when gradients are off. */
   gradients?: (GradientPaint | null)[]
+  /** Stacked layer rings for one ring key; a key change replaces the whole set. */
+  rings?: LayerRings
+}
+
+/** One stacked layer: the label whose paint it carries and its decomposed rings. */
+interface RingLayer {
+  label: number
+  paths: CrackPath[]
+}
+
+/**
+ * Decomposed rings for every stacked layer, in paint order (base layers, then
+ * the lifted island layers) — the array index is the layer id. `key` covers
+ * everything the rings depend on beyond the palette entry that holds them, so a
+ * mismatch means recompute.
+ */
+interface LayerRings {
+  key: string
+  layers: RingLayer[]
+}
+
+/**
+ * The binarized ink mask (after despeckle) and its sub-pixel field for one
+ * threshold slice, plus the rings decomposed from that mask under `ringKey`.
+ */
+interface InkEntry {
+  key: string
+  mask: BinaryMask
+  coverage?: GrayImage
+  ringKey?: string
+  rings?: CrackPath[]
 }
 
 /**
  * Reusable intermediates the worker keeps across runs so that tuning trace-only
- * settings does not re-run preprocessing and quantization. One preprocess entry
- * keyed by the client's image id plus the preprocess settings slice, and a small
- * LRU of palette entries keyed by the palette slice — so a search that alternates
- * palettes on one worker (e.g. an oscillating incumbent) keeps recent ones warm
- * instead of thrashing a single slot. A new image or changed preprocess setting
- * clears the whole cache. Reuse is byte-identical to recomputation (deterministic
- * stages, complete keys).
+ * settings does not re-run preprocessing, quantization and boundary
+ * decomposition. One preprocess entry keyed by the client's image id plus the
+ * preprocess settings slice; a small LRU of palette entries keyed by the palette
+ * slice — so a search that alternates palettes on one worker (e.g. an
+ * oscillating incumbent) keeps recent ones warm instead of thrashing a single
+ * slot; one ink entry for the bw/centerline mask. A palette entry also carries
+ * the stacked layers' decomposed rings, so a curve-only change re-runs the curve
+ * chain alone. A new image or changed preprocess setting clears the whole cache.
+ * Reuse is byte-identical to recomputation (deterministic stages, complete keys).
+ *
+ * Rings dominate the footprint — every layer's lattice boundary as a `number[]`,
+ * 7.4 M coordinates (~59 MB) for a 4096×2731 photo over its 28 stacked layers —
+ * so only the newest palette entry keeps a set; the others hold labels only.
  */
 export interface StageCache {
   imageId?: number
@@ -300,23 +338,38 @@ export interface StageCache {
   opaque?: BinaryMask | null
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
+  /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
+  ink?: InkEntry
   /** Reuse counters, for measuring affinity/cache effectiveness. */
   stats?: StageCacheStats
 }
 
-/** Cache hit/miss counters (both preprocess and palette stages). */
+/** Cache hit/miss counters (preprocess, palette, ink mask and decomposed rings). */
 export interface StageCacheStats {
   preHits: number
   preMisses: number
   palHits: number
   palMisses: number
+  ringHits: number
+  ringMisses: number
+  inkHits: number
+  inkMisses: number
 }
 
 /** Palette entries retained per worker; caps memory while covering an oscillating incumbent. */
 const PALETTE_CACHE_SIZE = 4
 
 function cacheStats(cache: StageCache): StageCacheStats {
-  return (cache.stats ??= { preHits: 0, preMisses: 0, palHits: 0, palMisses: 0 })
+  return (cache.stats ??= {
+    preHits: 0,
+    preMisses: 0,
+    palHits: 0,
+    palMisses: 0,
+    ringHits: 0,
+    ringMisses: 0,
+    inkHits: 0,
+    inkMisses: 0,
+  })
 }
 
 /** LRU get: returns the entry and moves it to newest, or undefined on a miss. */
@@ -422,6 +475,31 @@ function palKeyOf(s: VectorizeSettings): string {
 }
 
 /**
+ * Settings that change the stacked layers' decomposed rings, beyond the label
+ * map they are cut from (the palette entry's own key). The layer masks follow
+ * from the labels and counts alone — the stacking order, the lifted islands and
+ * the per-layer union flood are all derived from them — so only the tracer's own
+ * decomposition inputs are left. `traceMinArea` already folds in
+ * `preserveDetails`; an edge hint disables caching altogether.
+ */
+function ringKeyOf(s: VectorizeSettings, traceMinArea: number): string {
+  return [s.layering, s.turnPolicy, traceMinArea].join('|')
+}
+
+/** Settings that change the binarized ink mask and its sub-pixel coverage field. */
+function inkKeyOf(s: VectorizeSettings): string {
+  return [
+    s.thresholdMode,
+    s.threshold,
+    s.adaptiveRadius,
+    s.adaptiveBias,
+    s.invert,
+    s.minRegionArea,
+    s.curveMode === 'pixel' ? 'px' : '-',
+  ].join('|')
+}
+
+/**
  * The native vectorization pipeline:
  * preprocess → (palette | binarize) → segment cleanup → trace/fit → SVG.
  */
@@ -464,12 +542,13 @@ export async function vectorize(
     image = img
     if (cacheable) {
       cacheStats(cache).preMisses++
-      // New image or preprocess ⇒ every palette entry depended on it, so clear them.
+      // New image or preprocess ⇒ every palette and ink entry depended on it.
       cache.imageId = imageId
       cache.preKey = preKey
       cache.workImage = image
       cache.opaque = opaque
       cache.palette = new Map()
+      cache.ink = undefined
     }
   }
   const { width, height } = image
@@ -534,6 +613,8 @@ export async function vectorize(
       (p) => (palette = p),
       ctx?.edgeHint,
       ctx?.coverageHint,
+      cacheable ? cache : undefined,
+      imageId,
     )
   }
 
@@ -683,6 +764,9 @@ async function colorPipeline(
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
       ? paletteGet(cache, palKey)
       : undefined
+  // The entry the stacked rings hang off, whether it came from the cache or is
+  // stored below; undefined when this run does not cache.
+  let paletteEntry: PaletteEntry | undefined = cached
   if (cached) {
     labels = cached.labels
     paletteHex = cached.paletteHex
@@ -722,14 +806,8 @@ async function colorPipeline(
     gradients = applyGradients(image, labels, settings)
     if (gradients) counts = countLabels(labels)
     if (canCachePal && palKey !== undefined) {
-      palettePut(cache!, palKey, {
-        labels,
-        paletteHex,
-        paletteRgb,
-        counts,
-        paletteClampedTo,
-        gradients,
-      })
+      paletteEntry = { labels, paletteHex, paletteRgb, counts, paletteClampedTo, gradients }
+      palettePut(cache!, palKey, paletteEntry)
     }
   } else {
     if (canCachePal) cacheStats(cache!).palMisses++
@@ -830,14 +908,8 @@ async function colorPipeline(
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
-      palettePut(cache!, palKey, {
-        labels,
-        paletteHex,
-        paletteRgb,
-        counts,
-        paletteClampedTo,
-        gradients,
-      })
+      paletteEntry = { labels, paletteHex, paletteRgb, counts, paletteClampedTo, gradients }
+      palettePut(cache!, palKey, paletteEntry)
     }
   }
 
@@ -948,112 +1020,22 @@ async function colorPipeline(
     }
     run.progress(1)
   } else {
-    // Stacked: each layer covers itself plus the sheets above that its own
-    // color actually reaches, so lower shapes extend underneath their neighbours
-    // and edges cannot crack — without dragging in far regions already covered
-    // by their own sheets (see the per-layer flood below). The most connective
-    // color — the one whose regions have the largest total perimeter, i.e. that
-    // borders the most other regions — is pinned to the bottom as the base,
-    // so it reads as the outline/backdrop showing between the colors stacked on
-    // top: the standard layered-vinyl build (a cartoon's black outline, a flat
-    // design's background). A thin outline threading between regions outscores a
-    // compact blob of the same color, and a tiny dark speck never wins. The
-    // rest stack by descending area (large fields low, small details on top).
-    // Order sets only which sheet is the full base and the layer/group order —
-    // never the rendered pixels, since each pixel's topmost layer is its own.
-    // An enclosed island whose color sits below its surround punches a floating
-    // hole in every layer stacked over it. Because the island is ringed by a
-    // single color, the count of those layers is exactly its stack depth below
-    // the surround: each level from just above the island up to the surround
-    // still has that ring, so each carries a hole. Lift a pocket only when two
-    // or more sheets stack over it — one sheet's single hole weeds and aligns
-    // cleanly, but two or more drift and let the middle sheets peek through.
-    // Lifting relabels the island into its surround for the solid base layers,
-    // then repaints it on top as its own island layer; its mask is exactly its
-    // own pixels, so nested regions still show through and the rendered pixels
-    // are unchanged — only the cut layers get cleaner.
-    const order0 = stackingOrder(labels, counts)
-    const position0 = new Int32Array(counts.length).fill(-1)
-    order0.forEach((l, i) => (position0[l] = i))
-    const islands = findEnclosedComponents(labels).filter((c) => {
-      const depth = position0[c.surround] - position0[c.label]
-      return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
-    })
+    // Stacked layers are decomposed once per ring key and re-fitted on every
+    // run, so changing only the curve settings skips the layer floods and the
+    // crack decomposition and replays the curve chain over the cached rings.
+    const ringKey = ringKeyOf(settings, traceMinArea)
+    const reusable = paletteEntry?.rings
+    const cachedLayers =
+      reusable !== undefined && reusable.key === ringKey ? reusable.layers : undefined
 
-    // The label map painted for the base layers: island pixels take their
-    // surrounding label so nothing beneath them is punched out. With no islands
-    // this is the original map and order (no extra work).
-    let stackData = labels.data
-    let stackCounts = counts
-    let order = order0
-    if (islands.length > 0) {
-      stackData = new Int32Array(labels.data)
-      for (const c of islands) for (const p of c.pixels) stackData[p] = c.surround
-      stackCounts = new Uint32Array(counts.length)
-      for (let i = 0; i < stackData.length; i++) {
-        const l = stackData[i]
-        if (l >= 0) stackCounts[l]++
-      }
-      const stackLabels: LabelMap = {
-        width: labels.width,
-        height: labels.height,
-        data: stackData,
-        count: labels.count,
-      }
-      order = stackingOrder(stackLabels, stackCounts)
-    }
-
-    // Pixel indices bucketed by label (one O(n) pass) so each layer is built
-    // from the previous one by removing just the label that dropped out — the
-    // union masks are the same bits as a per-layer full rescan, at O(n) total
-    // instead of O(k·n).
-    const nPix = stackData.length
-    const offset = new Int32Array(stackCounts.length + 1)
-    for (let l = 0; l < stackCounts.length; l++) offset[l + 1] = offset[l] + stackCounts[l]
-    const bucket = new Int32Array(offset[stackCounts.length])
-    const cursor = offset.slice(0, stackCounts.length)
-    for (let p = 0; p < nPix; p++) {
-      const l = stackData[p]
-      if (l >= 0) bucket[cursor[l]++] = p
-    }
-
-    const unionMask: BinaryMask = {
-      width: labels.width,
-      height: labels.height,
-      data: new Uint8Array(nPix),
-    }
-    const union = unionMask.data
-    // Layer 0's union is every labeled pixel (all layers stacked); higher layers
-    // peel off. The union is only the running membership test for the flood
-    // below — it is never traced directly.
-    for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
-
-    // A lower layer extends under the sheets above it so their shared edges
-    // cannot crack — but only where its own color actually reaches. The raw
-    // union also drags in far regions that sit entirely above this layer and
-    // are already fully covered by their own sheets: redundant underlay this
-    // layer's color never touches, so it backs none of this layer's seams and
-    // only adds area to weed. Keep just the union components the layer's own
-    // color reaches — flood 4-connected from its pixels through the union — so
-    // those disconnected islands drop out of the cut. The region directly below
-    // a dropped island still backs it, so no seam is lost; and the base, whose
-    // color threads the whole silhouette, still floods to one full solid.
-    const cutMask: BinaryMask = {
-      width: labels.width,
-      height: labels.height,
-      data: new Uint8Array(nPix),
-    }
-    const cut = cutMask.data
-    const flood = new Int32Array(nPix)
-    const w = labels.width
-
-    // Progress splits over the base layers plus the island layers on top.
-    const totalLayers = order.length + islands.length
+    // Layer bookkeeping shared by the cached and the computed path: layers are
+    // painted in order and the running count is each layer's own id.
     let done = 0
+    let totalLayers = 0
     // Stream a snapshot of the shapes as they accumulate (throttled), so the
     // timeline can replay the geometry building up. `shapes` is in push order, so
     // its running length is all the studio needs to redraw the state at each stop.
-    const traceStride = Math.max(1, Math.ceil(totalLayers / TRACE_SNAPSHOTS))
+    let traceStride = 1
     const emitTraceSnapshot = (): void =>
       run.emitStep(() => ({
         code: 'trace',
@@ -1065,108 +1047,247 @@ async function colorPipeline(
           layersTotal: totalLayers,
         },
       }))
-    for (let i = 0; i < order.length; i++) {
-      const label = order[i]
-      // Seed the flood from this layer's own pixels, then grow through the
-      // union; `cut` ends up as exactly the union components its color reaches.
-      cut.fill(0)
-      let sp = 0
-      for (let k = offset[label]; k < offset[label + 1]; k++) {
-        const p = bucket[k]
-        if (cut[p] === 0) {
-          cut[p] = 1
-          flood[sp++] = p
-        }
-      }
-      while (sp > 0) {
-        const p = flood[--sp]
-        const x = p - ((p / w) | 0) * w
-        if (x > 0 && union[p - 1] === 1 && cut[p - 1] === 0) {
-          cut[p - 1] = 1
-          flood[sp++] = p - 1
-        }
-        if (x < w - 1 && union[p + 1] === 1 && cut[p + 1] === 0) {
-          cut[p + 1] = 1
-          flood[sp++] = p + 1
-        }
-        if (p >= w && union[p - w] === 1 && cut[p - w] === 0) {
-          cut[p - w] = 1
-          flood[sp++] = p - w
-        }
-        if (p < nPix - w && union[p + w] === 1 && cut[p + w] === 0) {
-          cut[p + w] = 1
-          flood[sp++] = p + w
-        }
-      }
-      const traced = traceMask(cutMask, {
-        ...curveOpts,
-        turnPolicy: settings.turnPolicy,
-        minArea: traceMinArea,
-      })
-      const fill = fillFor[order[i]]
-      if (traced.length > 0) addColors(usedPalette, paletteColorsFor[order[i]])
+    const startLayers = (total: number): void => {
+      totalLayers = total
+      traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
+    }
+    /** Fit one layer's rings into shapes, then report progress and yield. */
+    const paintLayer = async (label: number, paths: CrackPath[]): Promise<void> => {
+      const traced = shapesFromPaths(paths, curveOpts)
+      const fill = fillFor[label]
+      if (traced.length > 0) addColors(usedPalette, paletteColorsFor[label])
       for (const shape of traced) {
-        shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: i })
+        shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: done })
       }
-      // Remove this layer's own pixels so the next union is the layers below it.
-      for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
       done++
       run.progress(done / totalLayers)
       if (run.tracing && done < totalLayers && done % traceStride === 0) emitTraceSnapshot()
       // Sequential on purpose: yields the worker event loop between layers so
       // cancel messages interleave with the computation.
-      // oxlint-disable-next-line no-await-in-loop
       await run.tick()
     }
 
-    // Island layers: each lifted color repainted on top of every base layer.
-    // Islands of different colors are disjoint pixel sets, so their paint order
-    // is free; ascending label id keeps it deterministic.
-    if (islands.length > 0) {
-      const byColor = new Map<number, number[]>()
-      for (const c of islands) {
-        let arr = byColor.get(c.label)
-        if (arr === undefined) {
-          arr = []
-          byColor.set(c.label, arr)
-        }
-        for (const p of c.pixels) arr.push(p)
-      }
-      const islandColors = [...byColor.keys()].toSorted((a, b) => a - b)
-      const islandMask: BinaryMask = {
-        width: labels.width,
-        height: labels.height,
-        data: new Uint8Array(nPix),
-      }
-      for (let c = 0; c < islandColors.length; c++) {
-        const label = islandColors[c]
-        islandMask.data.fill(0)
-        for (const p of byColor.get(label) as number[]) islandMask.data[p] = 1
-        const traced = traceMask(islandMask, {
-          ...curveOpts,
-          turnPolicy: settings.turnPolicy,
-          minArea: traceMinArea,
-        })
-        const fill = fillFor[label]
-        if (traced.length > 0) addColors(usedPalette, paletteColorsFor[label])
-        for (const shape of traced) {
-          shapes.push({
-            commands: shape.commands,
-            fill,
-            fillRule: 'evenodd',
-            layerId: order.length + c,
-          })
-        }
-        done++
-        run.progress(done / totalLayers)
-        if (run.tracing && done < totalLayers && done % traceStride === 0) emitTraceSnapshot()
+    if (cachedLayers) {
+      cacheStats(cache!).ringHits++
+      startLayers(cachedLayers.length)
+      for (const layer of cachedLayers) {
         // oxlint-disable-next-line no-await-in-loop
-        await run.tick()
+        await paintLayer(layer.label, layer.paths)
+      }
+    } else {
+      if (canCachePal) cacheStats(cache!).ringMisses++
+      // Rings are retained only when there is a cache to hold them.
+      const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
+      await decomposeStackedLayers(
+        labels,
+        counts,
+        settings.turnPolicy,
+        traceMinArea,
+        startLayers,
+        async (label, paths) => {
+          layers?.push({ label, paths })
+          await paintLayer(label, paths)
+        },
+      )
+      if (layers && paletteEntry) {
+        // One ring set at a time: the older entries keep their labels (cheap to
+        // re-decompose from) but drop rings, which are the bulk of the cache.
+        for (const other of cache!.palette?.values() ?? []) {
+          if (other !== paletteEntry) other.rings = undefined
+        }
+        paletteEntry.rings = { key: ringKey, layers }
       }
     }
   }
   setPalette(usedPalette)
   run.progress(1)
+}
+
+/**
+ * Stacked layering: build each cut layer's mask and decompose it into boundary
+ * rings, handing them to `onLayer` in paint order (base layers bottom-up, then
+ * the lifted island layers). `startLayers` reports the layer total first, so a
+ * caller can drive progress; `onLayer` is awaited, so the caller controls where
+ * the loop yields.
+ */
+async function decomposeStackedLayers(
+  labels: LabelMap,
+  counts: Uint32Array,
+  turnPolicy: TurnPolicy,
+  minArea: number,
+  startLayers: (total: number) => void,
+  onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
+): Promise<void> {
+  const floor = Math.max(1, minArea)
+  // Each layer covers itself plus the sheets above that its own
+  // color actually reaches, so lower shapes extend underneath their neighbours
+  // and edges cannot crack — without dragging in far regions already covered
+  // by their own sheets (see the per-layer flood below). The most connective
+  // color — the one whose regions have the largest total perimeter, i.e. that
+  // borders the most other regions — is pinned to the bottom as the base,
+  // so it reads as the outline/backdrop showing between the colors stacked on
+  // top: the standard layered-vinyl build (a cartoon's black outline, a flat
+  // design's background). A thin outline threading between regions outscores a
+  // compact blob of the same color, and a tiny dark speck never wins. The
+  // rest stack by descending area (large fields low, small details on top).
+  // Order sets only which sheet is the full base and the layer/group order —
+  // never the rendered pixels, since each pixel's topmost layer is its own.
+  // An enclosed island whose color sits below its surround punches a floating
+  // hole in every layer stacked over it. Because the island is ringed by a
+  // single color, the count of those layers is exactly its stack depth below
+  // the surround: each level from just above the island up to the surround
+  // still has that ring, so each carries a hole. Lift a pocket only when two
+  // or more sheets stack over it — one sheet's single hole weeds and aligns
+  // cleanly, but two or more drift and let the middle sheets peek through.
+  // Lifting relabels the island into its surround for the solid base layers,
+  // then repaints it on top as its own island layer; its mask is exactly its
+  // own pixels, so nested regions still show through and the rendered pixels
+  // are unchanged — only the cut layers get cleaner.
+  const order0 = stackingOrder(labels, counts)
+  const position0 = new Int32Array(counts.length).fill(-1)
+  order0.forEach((l, i) => (position0[l] = i))
+  const islands = findEnclosedComponents(labels).filter((c) => {
+    const depth = position0[c.surround] - position0[c.label]
+    return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
+  })
+
+  // The label map painted for the base layers: island pixels take their
+  // surrounding label so nothing beneath them is punched out. With no islands
+  // this is the original map and order (no extra work).
+  let stackData = labels.data
+  let stackCounts = counts
+  let order = order0
+  if (islands.length > 0) {
+    stackData = new Int32Array(labels.data)
+    for (const c of islands) for (const p of c.pixels) stackData[p] = c.surround
+    stackCounts = new Uint32Array(counts.length)
+    for (let i = 0; i < stackData.length; i++) {
+      const l = stackData[i]
+      if (l >= 0) stackCounts[l]++
+    }
+    const stackLabels: LabelMap = {
+      width: labels.width,
+      height: labels.height,
+      data: stackData,
+      count: labels.count,
+    }
+    order = stackingOrder(stackLabels, stackCounts)
+  }
+
+  // Pixel indices bucketed by label (one O(n) pass) so each layer is built
+  // from the previous one by removing just the label that dropped out — the
+  // union masks are the same bits as a per-layer full rescan, at O(n) total
+  // instead of O(k·n).
+  const nPix = stackData.length
+  const offset = new Int32Array(stackCounts.length + 1)
+  for (let l = 0; l < stackCounts.length; l++) offset[l + 1] = offset[l] + stackCounts[l]
+  const bucket = new Int32Array(offset[stackCounts.length])
+  const cursor = offset.slice(0, stackCounts.length)
+  for (let p = 0; p < nPix; p++) {
+    const l = stackData[p]
+    if (l >= 0) bucket[cursor[l]++] = p
+  }
+
+  const unionMask: BinaryMask = {
+    width: labels.width,
+    height: labels.height,
+    data: new Uint8Array(nPix),
+  }
+  const union = unionMask.data
+  // Layer 0's union is every labeled pixel (all layers stacked); higher layers
+  // peel off. The union is only the running membership test for the flood
+  // below — it is never traced directly.
+  for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
+
+  // A lower layer extends under the sheets above it so their shared edges
+  // cannot crack — but only where its own color actually reaches. The raw
+  // union also drags in far regions that sit entirely above this layer and
+  // are already fully covered by their own sheets: redundant underlay this
+  // layer's color never touches, so it backs none of this layer's seams and
+  // only adds area to weed. Keep just the union components the layer's own
+  // color reaches — flood 4-connected from its pixels through the union — so
+  // those disconnected islands drop out of the cut. The region directly below
+  // a dropped island still backs it, so no seam is lost; and the base, whose
+  // color threads the whole silhouette, still floods to one full solid.
+  const cutMask: BinaryMask = {
+    width: labels.width,
+    height: labels.height,
+    data: new Uint8Array(nPix),
+  }
+  const cut = cutMask.data
+  const flood = new Int32Array(nPix)
+  const w = labels.width
+
+  // The paint order is the base layers followed by the island layers on top.
+  startLayers(order.length + islands.length)
+  for (let i = 0; i < order.length; i++) {
+    const label = order[i]
+    // Seed the flood from this layer's own pixels, then grow through the
+    // union; `cut` ends up as exactly the union components its color reaches.
+    cut.fill(0)
+    let sp = 0
+    for (let k = offset[label]; k < offset[label + 1]; k++) {
+      const p = bucket[k]
+      if (cut[p] === 0) {
+        cut[p] = 1
+        flood[sp++] = p
+      }
+    }
+    while (sp > 0) {
+      const p = flood[--sp]
+      const x = p - ((p / w) | 0) * w
+      if (x > 0 && union[p - 1] === 1 && cut[p - 1] === 0) {
+        cut[p - 1] = 1
+        flood[sp++] = p - 1
+      }
+      if (x < w - 1 && union[p + 1] === 1 && cut[p + 1] === 0) {
+        cut[p + 1] = 1
+        flood[sp++] = p + 1
+      }
+      if (p >= w && union[p - w] === 1 && cut[p - w] === 0) {
+        cut[p - w] = 1
+        flood[sp++] = p - w
+      }
+      if (p < nPix - w && union[p + w] === 1 && cut[p + w] === 0) {
+        cut[p + w] = 1
+        flood[sp++] = p + w
+      }
+    }
+    const paths = decomposeMask(cutMask, turnPolicy, floor)
+    // Remove this layer's own pixels so the next union is the layers below it.
+    for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
+    // oxlint-disable-next-line no-await-in-loop
+    await onLayer(label, paths)
+  }
+
+  // Island layers: each lifted color repainted on top of every base layer.
+  // Islands of different colors are disjoint pixel sets, so their paint order
+  // is free; ascending label id keeps it deterministic.
+  if (islands.length > 0) {
+    const byColor = new Map<number, number[]>()
+    for (const c of islands) {
+      let arr = byColor.get(c.label)
+      if (arr === undefined) {
+        arr = []
+        byColor.set(c.label, arr)
+      }
+      for (const p of c.pixels) arr.push(p)
+    }
+    const islandColors = [...byColor.keys()].toSorted((a, b) => a - b)
+    const islandMask: BinaryMask = {
+      width: labels.width,
+      height: labels.height,
+      data: new Uint8Array(nPix),
+    }
+    for (let c = 0; c < islandColors.length; c++) {
+      const label = islandColors[c]
+      islandMask.data.fill(0)
+      for (const p of byColor.get(label) as number[]) islandMask.data[p] = 1
+      const paths = decomposeMask(islandMask, turnPolicy, floor)
+      // oxlint-disable-next-line no-await-in-loop
+      await onLayer(label, paths)
+    }
+  }
 }
 
 async function inkPipeline(
@@ -1179,52 +1300,81 @@ async function inkPipeline(
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
   coverageHint: GrayImage | undefined,
+  cache: StageCache | undefined,
+  imageId: number | undefined,
 ): Promise<void> {
   run.stage('palette')
-  const gray = toGrayscale(image)
+  // The despeckled mask and its coverage field are reused when the image and
+  // every threshold setting behind them are unchanged. Both hints feed the mask
+  // or the field without appearing in the key, so caching is off while either is
+  // present (correctness over speed).
+  const canCacheInk =
+    cache !== undefined &&
+    imageId !== undefined &&
+    cache.imageId === imageId &&
+    edgeHint === undefined &&
+    coverageHint === undefined
+  const inkKey = canCacheInk ? inkKeyOf(settings) : undefined
+  let entry = canCacheInk && cache.ink?.key === inkKey ? cache.ink : undefined
+  // Edge hint (if any) protects thin real features from the size-based despeckle;
+  // with no hint this is byte-identical to despeckleMask (and always null when caching).
+  const protect = edgeProtectMask(edgeHint, image.width, image.height)
+
   let mask: BinaryMask
   // Signed boundary field for sub-pixel trace refinement. Only the global
   // threshold has a single crossing level to build it from; adaptive and pixel
   // mode trace on the exact lattice.
   let coverage: GrayImage | undefined
-  if (settings.thresholdMode === 'adaptive') {
-    mask = adaptiveBinarize(
-      gray,
-      settings.adaptiveRadius,
-      settings.adaptiveBias / 255,
-      settings.invert,
-      opaque,
-    )
-    if (settings.curveMode !== 'pixel') {
-      coverage = signedAdaptiveField(
+  if (entry) {
+    mask = entry.mask
+    coverage = entry.coverage
+    cacheStats(cache!).inkHits++
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+  } else {
+    if (canCacheInk) cacheStats(cache!).inkMisses++
+    const gray = toGrayscale(image)
+    if (settings.thresholdMode === 'adaptive') {
+      mask = adaptiveBinarize(
         gray,
         settings.adaptiveRadius,
         settings.adaptiveBias / 255,
         settings.invert,
+        opaque,
       )
+      if (settings.curveMode !== 'pixel') {
+        coverage = signedAdaptiveField(
+          gray,
+          settings.adaptiveRadius,
+          settings.adaptiveBias / 255,
+          settings.invert,
+        )
+      }
+    } else {
+      const t =
+        settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
+      mask = binarize(gray, t, settings.invert, opaque)
+      if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
     }
-  } else {
-    const t =
-      settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
-    mask = binarize(gray, t, settings.invert, opaque)
-    if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
-  }
-  // A learned coverage hint (FieldEnhancer) replaces the field derived from the
-  // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
-  // (the discretization boundary) and only when a sub-pixel field applies. No hint
-  // ⇒ the classical field, byte-identical.
-  if (coverageHint && settings.curveMode !== 'pixel') {
-    const hf = coverageHintField(coverageHint, image.width, image.height)
-    if (hf) coverage = hf
-  }
-  await run.tick()
+    // A learned coverage hint (FieldEnhancer) replaces the field derived from the
+    // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
+    // (the discretization boundary) and only when a sub-pixel field applies. No hint
+    // ⇒ the classical field, byte-identical.
+    if (coverageHint && settings.curveMode !== 'pixel') {
+      const hf = coverageHintField(coverageHint, image.width, image.height)
+      if (hf) coverage = hf
+    }
+    await run.tick()
 
-  run.stage('segment')
-  // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // with no hint this is byte-identical to despeckleMask.
-  const protect = edgeProtectMask(edgeHint, image.width, image.height)
-  mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
-  await run.tick()
+    run.stage('segment')
+    mask = despeckleMaskGuided(mask, settings.minRegionArea, protect)
+    await run.tick()
+    if (canCacheInk && inkKey !== undefined) {
+      entry = { key: inkKey, mask, coverage }
+      cache!.ink = entry
+    }
+  }
 
   if (run.tracing) {
     run.emitStep(() => ({
@@ -1244,18 +1394,32 @@ async function inkPipeline(
   setPalette([settings.fillColor])
 
   if (settings.mode === 'bw') {
-    const traced = traceMask(mask, {
+    // With a hint, the guided despeckle is the speck filter (it already dropped
+    // everything small that the hint did not protect), so the tracer must not
+    // re-drop the small features it kept — mirrors preserveDetails in color.
+    const traceMinArea = protect ? 1 : Math.max(1, settings.minRegionArea)
+    // The mask's rings are decomposed once per turn policy + speck floor, so a
+    // curve-only change re-runs the curve chain alone.
+    const ringKey = `${settings.turnPolicy}|${traceMinArea}`
+    let paths: CrackPath[]
+    if (entry?.rings && entry.ringKey === ringKey) {
+      paths = entry.rings
+      cacheStats(cache!).ringHits++
+    } else {
+      paths = decomposeMask(mask, settings.turnPolicy, traceMinArea)
+      if (entry) {
+        entry.ringKey = ringKey
+        entry.rings = paths
+        cacheStats(cache!).ringMisses++
+      }
+    }
+    const traced = shapesFromPaths(paths, {
       curveMode: settings.curveMode,
       smoothing: settings.smoothing,
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
       cornerThreshold: settings.cornerThreshold,
       coverage,
-      turnPolicy: settings.turnPolicy,
-      // With a hint, the guided despeckle is the speck filter (it already dropped
-      // everything small that the hint did not protect), so the tracer must not
-      // re-drop the small features it kept — mirrors preserveDetails in color.
-      minArea: protect ? 1 : Math.max(1, settings.minRegionArea),
     })
     for (const shape of traced) {
       shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })
