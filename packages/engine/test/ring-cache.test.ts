@@ -89,9 +89,13 @@ describe('ring cache', () => {
     const base = { mode: 'color' as const, paletteSize: 6 }
     await run(img, { ...base, smoothing: 0.4 }, cache)
     expect(stats(cache).ringMisses).toBe(1)
+    expect(stats(cache).polyMisses).toBe(1)
 
+    // Smoothing only drives the corner analysis and curve optimization, so both
+    // the rings and their adjusted polygons are reused.
     const warm = await run(img, { ...base, smoothing: 0.8 }, cache)
     expect(stats(cache).ringHits).toBe(1)
+    expect(stats(cache).polyHits).toBe(1)
     expect(warm.svg).toBe((await run(img, { ...base, smoothing: 0.8 })).svg)
 
     // The turn policy resolves saddle junctions during decomposition, so the
@@ -100,6 +104,36 @@ describe('ring cache', () => {
     expect(stats(cache).ringHits).toBe(1)
     expect(stats(cache).ringMisses).toBe(2)
     expect(turned.svg).toBe((await run(img, { ...base, smoothing: 0.8, turnPolicy: 'black' })).svg)
+  })
+
+  it('reuses the polygons across spline and polygon curve modes', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    const base = { mode: 'color' as const, paletteSize: 6 }
+    await run(img, { ...base, curveMode: 'spline' }, cache)
+    // Both modes consume the adjusted polygon; only the stages after it differ.
+    const asPolygon = await run(img, { ...base, curveMode: 'polygon' }, cache)
+    expect(stats(cache).polyHits).toBe(1)
+    expect(asPolygon.svg).toBe((await run(img, { ...base, curveMode: 'polygon' })).svg)
+    const backToSpline = await run(img, { ...base, curveMode: 'spline', smoothing: 0.6 }, cache)
+    expect(stats(cache).polyHits).toBe(2)
+    expect(backToSpline.svg).toBe(
+      (await run(img, { ...base, curveMode: 'spline', smoothing: 0.6 })).svg,
+    )
+  })
+
+  it('builds no polygons in pixel curve mode, and rebuilds them on the way back', async () => {
+    const img = scene()
+    const cache: StageCache = {}
+    const base = { mode: 'color' as const, paletteSize: 6 }
+    await run(img, base, cache)
+    const before = { ...stats(cache) }
+    // Pixel mode traces the exact lattice ring — no polygon is read or stored.
+    const pixels = await run(img, { ...base, curveMode: 'pixel' }, cache)
+    expect(stats(cache).polyHits).toBe(before.polyHits)
+    expect(pixels.svg).toBe((await run(img, { ...base, curveMode: 'pixel' })).svg)
+    const back = await run(img, { ...base, smoothing: 0.9 }, cache)
+    expect(back.svg).toBe((await run(img, { ...base, smoothing: 0.9 })).svg)
   })
 
   it('misses the ring cache when the speck floor changes', async () => {
@@ -150,6 +184,9 @@ describe('ring cache', () => {
     const warm = await run(img, { mode: 'bw', smoothing: 0.9 }, cache)
     expect(stats(cache).inkHits).toBe(1)
     expect(stats(cache).ringHits).toBe(1)
+    // The polygons were refined onto the entry's own coverage field, so they
+    // survive with it.
+    expect(stats(cache).polyHits).toBe(1)
     expect(warm.svg).toBe((await run(img, { mode: 'bw', smoothing: 0.9 })).svg)
 
     // A threshold change rebuilds the mask, and with it the rings.

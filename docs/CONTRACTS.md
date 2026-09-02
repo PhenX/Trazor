@@ -378,8 +378,34 @@ export function decomposeMask(
 // ring, ordered by descending area. Rings depend only on the mask, the turn policy and the area
 // floor, so a caller that keeps them (the engine's StageCache does) re-runs this alone when the curve
 // settings change. traceMask(mask, opts) === shapesFromPaths(decomposeMask(mask, opts.turnPolicy,
-// Math.max(1, opts.minArea)), opts).
-export function shapesFromPaths(paths: CrackPath[], opts: TraceCurveOptions): TracedShape[]
+// Math.max(1, opts.minArea)), opts). `polygons` (optional, parallel to `paths`, built against the
+// same field as opts.coverage) skips the polygon stages per ring — see ringPolygon.
+export function shapesFromPaths(
+  paths: CrackPath[],
+  opts: TraceCurveOptions,
+  polygons?: readonly (FlatPoints | null)[],
+): TracedShape[]
+
+// The curve chain for one ring, split at the point where the curve settings first matter.
+// closedPathToCommands(ring, opts, field) === polygonToCommands(ring, ringPolygon(ring, field ??
+// opts.coverage), opts). FlatPoints is `number[]`: interleaved [x0, y0, x1, y1, …].
+export function closedPathToCommands(
+  ring: FlatPoints,
+  opts: TraceCurveOptions,
+  field?: SignedField, // per-chain color field (cutout); takes precedence over opts.coverage
+): PathCommand[]
+// Optimal polygon + least-squares vertex adjustment (Selinger §2.2, §2.3.1), the first vertex
+// repeated as the last; null when the ring is too short to carry a polygon. Depends on the ring and
+// the field only — never on smoothing, curve optimization or the corner threshold — so a caller may
+// compute it once and re-fit it many times.
+export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null
+// Corner analysis, smoothing and curve optimization over an adjusted polygon (Selinger §2.3.2, §2.4).
+// `pixel` curveMode and a null polygon emit the exact rectilinear ring instead.
+export function polygonToCommands(
+  ring: FlatPoints,
+  polygon: FlatPoints | null,
+  opts: TraceCurveOptions,
+): PathCommand[]
 ```
 
 ## @trazor/svg
@@ -698,9 +724,10 @@ export function vectorize(
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
 // small LRU of palette/label entries (keyed internally by imageId + settings
 // slices) so alternating palettes on one worker stay warm, one ink entry (the
-// bw/centerline mask + coverage field), and the decomposed boundary rings — so a
-// curve-only change (smoothing, curve optimization, corner threshold) skips
-// decomposition and re-runs the curve chain alone. Rings are the bulk of the
+// bw/centerline mask + coverage field), and the decomposed boundary rings with
+// their adjusted polygons — so a curve-only change (smoothing, curve
+// optimization, corner threshold) skips decomposition and the polygon stages and
+// replays only the smoothing/optimization tail. Rings are the bulk of the
 // footprint, so only the newest palette entry keeps a set. Instantiate as `{}`.
 // `stats` exposes hit/miss counters for measuring cache/affinity effectiveness.
 export interface StageCache {
@@ -713,6 +740,8 @@ export interface StageCacheStats {
   palMisses: number
   ringHits: number // decomposed rings reused (stacked layers, and the bw mask)
   ringMisses: number
+  polyHits: number // adjusted polygons reused (never counted in pixel curveMode, which has none)
+  polyMisses: number
   inkHits: number // bw/centerline mask + coverage field reused
   inkMisses: number
 }

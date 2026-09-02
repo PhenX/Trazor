@@ -21,7 +21,7 @@ changed setting actually invalidates re-run. Each image is traced cold once (see
 `smoothing` nudged by 0.1 on that same cache — the printed stage times and `warm` total are that second run, next to the
 `cold` total for reference. The tweaked settings are then traced a third time on a **fresh** cache: the two SVG hashes
 must be equal, so the row ends in `ok` (a differing hash prints `MISMATCH` and the run exits non-zero). The closing
-`warm reuse` line counts which entries were hit — preprocess, palette, decomposed rings, ink mask.
+`warm reuse` line counts which entries were hit — preprocess, palette, decomposed rings, adjusted polygons, ink mask.
 
 ## CPU profile
 

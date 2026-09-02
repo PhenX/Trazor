@@ -1,4 +1,11 @@
-export { traceMask, shapesFromPaths, closedPathToCommands, pixelCommands } from './closed'
+export {
+  traceMask,
+  shapesFromPaths,
+  closedPathToCommands,
+  ringPolygon,
+  polygonToCommands,
+  pixelCommands,
+} from './closed'
 export type { TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
 export { traceLabelMap } from './boundary'
 export type { ColorField, RegionShape, TraceCutoutOptions } from './boundary'
@@ -13,3 +20,4 @@ export { optimalPolyline, straightReach } from './potrace/polyfit'
 export { refineRingToField, pairwiseField } from './refine'
 export type { SignedField } from './refine'
 export { reverseCommands } from './paths'
+export type { FlatPoints } from './paths'

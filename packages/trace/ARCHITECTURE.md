@@ -28,9 +28,9 @@ src/
 
 - **`traceMask(mask, opts)`** → `TracedShape[]`. Binary mask → filled shapes. Used by bw mode and by stacked color
   layering (one mask per layer). Holes are grouped under their smallest enclosing outer ring (evenodd). It is the two
-  halves `decomposeMask` (rings) then **`shapesFromPaths(paths, curveOptions)`** (curve chain + hole grouping), both
-  exported: rings depend only on the mask, the turn policy and the area floor, so a caller that keeps them — the
-  engine's `StageCache` does — re-fits them alone when only the curve settings change.
+  halves `decomposeMask` (rings) then **`shapesFromPaths(paths, curveOptions, polygons?)`** (curve chain + hole
+  grouping), both exported: rings depend only on the mask, the turn policy and the area floor, so a caller that keeps
+  them — the engine's `StageCache` does — re-fits them alone when only the curve settings change.
 - **`traceLabelMap(labels, opts)`** → `RegionShape[]`. The seam-free cutout partition (below).
 - **`traceCenterline(skeleton, opts)`** → `StrokePath[]`. Thinned skeleton → open strokes for pen plotters / engraving.
 
@@ -58,6 +58,13 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    `optTolerance`, keeping node counts low.
 
 `curveMode` short-circuits this: `polygon` stops after step 3; `pixel` skips it entirely for exact rectilinear paths.
+
+The chain is exported in two halves, split where the curve settings first matter: **`ringPolygon(ring, field?)`** runs
+steps 2-3 (returning the adjusted polygon, or `null` for a ring too short to carry one) and depends on the ring and the
+optional field alone, while **`polygonToCommands(ring, polygon, opts)`** runs steps 4-5 under `smoothing`,
+`curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed; `shapesFromPaths`
+takes the polygons for a whole path array as an optional argument. Holding the polygons is what lets the engine's
+`StageCache` replay a smoothing change without re-running the straightness DP.
 
 ## The seam-free boundary graph (`boundary.ts`)
 

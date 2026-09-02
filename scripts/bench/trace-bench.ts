@@ -130,7 +130,7 @@ async function main(): Promise<void> {
   const totals: Record<string, number> = {}
   let sumMs = 0
   let mismatches = 0
-  const reuse = { pre: 0, pal: 0, ring: 0, ink: 0 }
+  const reuse = { pre: 0, pal: 0, ring: 0, poly: 0, ink: 0 }
   console.log(
     args.tweak
       ? `${'image'.padEnd(28)} ${'size'.padStart(9)} ${'settings'.padEnd(22)}` +
@@ -177,6 +177,7 @@ async function main(): Promise<void> {
         reuse.pre += st.preHits
         reuse.pal += st.palHits
         reuse.ring += st.ringHits
+        reuse.poly += st.polyHits
         reuse.ink += st.inkHits
       }
       console.log(
@@ -218,7 +219,8 @@ async function main(): Promise<void> {
   console.log(`share: ${pct}`)
   if (args.tweak) {
     console.log(
-      `warm reuse: preprocess ${reuse.pre}  palette ${reuse.pal}  rings ${reuse.ring}  ink ${reuse.ink}` +
+      `warm reuse: preprocess ${reuse.pre}  palette ${reuse.pal}  rings ${reuse.ring}` +
+        `  polygons ${reuse.poly}  ink ${reuse.ink}` +
         ` (of ${files.length} images)`,
     )
     if (mismatches > 0) {

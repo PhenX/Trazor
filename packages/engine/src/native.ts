@@ -71,8 +71,14 @@ import {
   toOklabBuffer,
   zhangSuenThin,
 } from '@trazor/raster'
-import { decomposeMask, shapesFromPaths, traceCenterline, traceLabelMap } from '@trazor/trace'
-import type { CrackPath, TracedShape } from '@trazor/trace'
+import {
+  decomposeMask,
+  ringPolygon,
+  shapesFromPaths,
+  traceCenterline,
+  traceLabelMap,
+} from '@trazor/trace'
+import type { CrackPath, FlatPoints, TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { SvgGradient, SvgShape } from '@trazor/svg'
 
@@ -297,15 +303,24 @@ interface RingLayer {
  * the lifted island layers) — the array index is the layer id. `key` covers
  * everything the rings depend on beyond the palette entry that holds them, so a
  * mismatch means recompute.
+ *
+ * `polygons[i]` holds the adjusted optimal polygons of `layers[i].paths` (same
+ * order), absent until a non-`pixel` run builds them. A polygon depends on its
+ * ring and the sub-pixel field only, and stacked color tracing passes no field,
+ * so polygons stored here stay valid for exactly as long as the rings do.
  */
 interface LayerRings {
   key: string
   layers: RingLayer[]
+  polygons?: (FlatPoints | null)[][]
 }
 
 /**
  * The binarized ink mask (after despeckle) and its sub-pixel field for one
- * threshold slice, plus the rings decomposed from that mask under `ringKey`.
+ * threshold slice, plus the rings decomposed from that mask under `ringKey` and
+ * their adjusted polygons. The polygons are built against this entry's own
+ * `coverage` (its threshold slice pins the field, and a coverage hint disables
+ * caching), so they are valid whenever the rings they came from are.
  */
 interface InkEntry {
   key: string
@@ -313,6 +328,7 @@ interface InkEntry {
   coverage?: GrayImage
   ringKey?: string
   rings?: CrackPath[]
+  polygons?: (FlatPoints | null)[]
 }
 
 /**
@@ -323,13 +339,15 @@ interface InkEntry {
  * slice — so a search that alternates palettes on one worker (e.g. an
  * oscillating incumbent) keeps recent ones warm instead of thrashing a single
  * slot; one ink entry for the bw/centerline mask. A palette entry also carries
- * the stacked layers' decomposed rings, so a curve-only change re-runs the curve
- * chain alone. A new image or changed preprocess setting clears the whole cache.
- * Reuse is byte-identical to recomputation (deterministic stages, complete keys).
+ * the stacked layers' decomposed rings and their adjusted polygons, so a
+ * curve-only change replays only smoothing and curve optimization. A new image
+ * or changed preprocess setting clears the whole cache. Reuse is byte-identical
+ * to recomputation (deterministic stages, complete keys).
  *
  * Rings dominate the footprint — every layer's lattice boundary as a `number[]`,
- * 7.4 M coordinates (~59 MB) for a 4096×2731 photo over its 28 stacked layers —
- * so only the newest palette entry keeps a set; the others hold labels only.
+ * 7.4 M coordinates (~59 MB) for a 4096×2731 photo over its 28 stacked layers,
+ * with the polygons adding 1.3 M more (~10 MB) — so only the newest palette
+ * entry keeps a set; the others hold labels only.
  */
 export interface StageCache {
   imageId?: number
@@ -352,6 +370,8 @@ export interface StageCacheStats {
   palMisses: number
   ringHits: number
   ringMisses: number
+  polyHits: number
+  polyMisses: number
   inkHits: number
   inkMisses: number
 }
@@ -367,6 +387,8 @@ function cacheStats(cache: StageCache): StageCacheStats {
     palMisses: 0,
     ringHits: 0,
     ringMisses: 0,
+    polyHits: 0,
+    polyMisses: 0,
     inkHits: 0,
     inkMisses: 0,
   })
@@ -1021,12 +1043,16 @@ async function colorPipeline(
     run.progress(1)
   } else {
     // Stacked layers are decomposed once per ring key and re-fitted on every
-    // run, so changing only the curve settings skips the layer floods and the
-    // crack decomposition and replays the curve chain over the cached rings.
+    // run, so changing only the curve settings skips the layer floods, the crack
+    // decomposition and the polygon stages, and replays smoothing and curve
+    // optimization over the cached rings and polygons.
     const ringKey = ringKeyOf(settings, traceMinArea)
     const reusable = paletteEntry?.rings
     const cachedLayers =
       reusable !== undefined && reusable.key === ringKey ? reusable.layers : undefined
+    // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
+    const wantPolygons = settings.curveMode !== 'pixel'
+    const cachedPolygons = cachedLayers && wantPolygons ? reusable?.polygons : undefined
 
     // Layer bookkeeping shared by the cached and the computed path: layers are
     // painted in order and the running count is each layer's own id.
@@ -1052,8 +1078,12 @@ async function colorPipeline(
       traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
     }
     /** Fit one layer's rings into shapes, then report progress and yield. */
-    const paintLayer = async (label: number, paths: CrackPath[]): Promise<void> => {
-      const traced = shapesFromPaths(paths, curveOpts)
+    const paintLayer = async (
+      label: number,
+      paths: CrackPath[],
+      polygons: (FlatPoints | null)[] | undefined,
+    ): Promise<void> => {
+      const traced = shapesFromPaths(paths, curveOpts, polygons)
       const fill = fillFor[label]
       if (traced.length > 0) addColors(usedPalette, paletteColorsFor[label])
       for (const shape of traced) {
@@ -1069,15 +1099,34 @@ async function colorPipeline(
 
     if (cachedLayers) {
       cacheStats(cache!).ringHits++
-      startLayers(cachedLayers.length)
-      for (const layer of cachedLayers) {
-        // oxlint-disable-next-line no-await-in-loop
-        await paintLayer(layer.label, layer.paths)
+      if (wantPolygons) {
+        if (cachedPolygons) cacheStats(cache!).polyHits++
+        else cacheStats(cache!).polyMisses++
       }
+      // Rings without polygons (a `pixel` run stored them): rebuild and keep them.
+      const rebuilt: (FlatPoints | null)[][] | undefined =
+        wantPolygons && !cachedPolygons ? [] : undefined
+      startLayers(cachedLayers.length)
+      for (let i = 0; i < cachedLayers.length; i++) {
+        const layer = cachedLayers[i]
+        let polygons = cachedPolygons?.[i]
+        if (rebuilt) {
+          polygons = layerPolygons(layer.paths)
+          rebuilt.push(polygons)
+        }
+        // oxlint-disable-next-line no-await-in-loop
+        await paintLayer(layer.label, layer.paths, polygons)
+      }
+      if (rebuilt && reusable) reusable.polygons = rebuilt
     } else {
-      if (canCachePal) cacheStats(cache!).ringMisses++
-      // Rings are retained only when there is a cache to hold them.
+      if (canCachePal) {
+        cacheStats(cache!).ringMisses++
+        if (wantPolygons) cacheStats(cache!).polyMisses++
+      }
+      // Rings and polygons are retained only when there is a cache to hold them.
       const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
+      const polygonSets: (FlatPoints | null)[][] | undefined =
+        layers && wantPolygons ? [] : undefined
       await decomposeStackedLayers(
         labels,
         counts,
@@ -1085,8 +1134,10 @@ async function colorPipeline(
         traceMinArea,
         startLayers,
         async (label, paths) => {
+          const polygons = wantPolygons ? layerPolygons(paths) : undefined
           layers?.push({ label, paths })
-          await paintLayer(label, paths)
+          if (polygonSets && polygons) polygonSets.push(polygons)
+          await paintLayer(label, paths, polygons)
         },
       )
       if (layers && paletteEntry) {
@@ -1095,12 +1146,21 @@ async function colorPipeline(
         for (const other of cache!.palette?.values() ?? []) {
           if (other !== paletteEntry) other.rings = undefined
         }
-        paletteEntry.rings = { key: ringKey, layers }
+        paletteEntry.rings = { key: ringKey, layers, polygons: polygonSets }
       }
     }
   }
   setPalette(usedPalette)
   run.progress(1)
+}
+
+/**
+ * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`.
+ * Stacked layering traces flat label masks with no sub-pixel field, so the
+ * polygons depend on the rings alone.
+ */
+function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
+  return paths.map((p) => ringPolygon(p.points))
 }
 
 /**
@@ -1398,29 +1458,50 @@ async function inkPipeline(
     // everything small that the hint did not protect), so the tracer must not
     // re-drop the small features it kept — mirrors preserveDetails in color.
     const traceMinArea = protect ? 1 : Math.max(1, settings.minRegionArea)
-    // The mask's rings are decomposed once per turn policy + speck floor, so a
-    // curve-only change re-runs the curve chain alone.
+    // The mask's rings are decomposed once per turn policy + speck floor and
+    // their polygons built once against this entry's coverage field, so a
+    // curve-only change replays smoothing and curve optimization alone.
     const ringKey = `${settings.turnPolicy}|${traceMinArea}`
+    // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
+    const wantPolygons = settings.curveMode !== 'pixel'
     let paths: CrackPath[]
+    let polygons: (FlatPoints | null)[] | undefined
     if (entry?.rings && entry.ringKey === ringKey) {
       paths = entry.rings
+      polygons = wantPolygons ? entry.polygons : undefined
       cacheStats(cache!).ringHits++
     } else {
       paths = decomposeMask(mask, settings.turnPolicy, traceMinArea)
       if (entry) {
         entry.ringKey = ringKey
         entry.rings = paths
+        entry.polygons = undefined
         cacheStats(cache!).ringMisses++
       }
     }
-    const traced = shapesFromPaths(paths, {
-      curveMode: settings.curveMode,
-      smoothing: settings.smoothing,
-      curveOptimize: settings.curveOptimize,
-      optTolerance: settings.optTolerance,
-      cornerThreshold: settings.cornerThreshold,
-      coverage,
-    })
+    if (wantPolygons) {
+      if (polygons) {
+        cacheStats(cache!).polyHits++
+      } else {
+        polygons = paths.map((p) => ringPolygon(p.points, coverage))
+        if (entry) {
+          entry.polygons = polygons
+          cacheStats(cache!).polyMisses++
+        }
+      }
+    }
+    const traced = shapesFromPaths(
+      paths,
+      {
+        curveMode: settings.curveMode,
+        smoothing: settings.smoothing,
+        curveOptimize: settings.curveOptimize,
+        optTolerance: settings.optTolerance,
+        cornerThreshold: settings.cornerThreshold,
+        coverage,
+      },
+      polygons,
+    )
     for (const shape of traced) {
       shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })
     }
