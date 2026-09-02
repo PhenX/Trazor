@@ -23,6 +23,7 @@
     "eval:samples": "node scripts/eval/fetch-vtracer-samples.mjs",
     "eval:tracers": "tsx scripts/eval/tracer-compare.ts",
     "eval:ab": "node scripts/eval/ab.mjs",
+    "bench": "tsx scripts/bench/trace-bench.ts",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

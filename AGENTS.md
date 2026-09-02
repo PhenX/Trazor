@@ -47,7 +47,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
   tune/                    @trazor/tune — automatic settings search: weighted objectives + adaptive
                            parameter descent. Pure, DOM-free; a consumer pairs it with the engine worker pool.
 docs/                      CONTRACTS.md (package APIs), REFERENCES.md (sources), ML strategy/roadmap.
-scripts/                   dataset generation, corpus fetch, and tracer-evaluation tooling (see scripts/eval/README.md).
+scripts/                   dataset generation, corpus fetch, tracer-evaluation tooling (scripts/eval/README.md)
+                           and the performance bench (scripts/bench/README.md).
 shared configs             .oxlintrc.json, .oxfmtrc.json, tsconfig.base.json, tsconfig.packages.json, vitest.config.ts.
 ```
 
@@ -75,14 +76,15 @@ The packages are pure and run in Node; there is no database, server or configura
 
 From the repo root:
 
-| Command                                 | Purpose                                             |
-| --------------------------------------- | --------------------------------------------------- |
-| `npm test` / `test:watch`               | Unit tests (Vitest) across all packages             |
-| `npm run typecheck`                     | `tsc` over the packages                             |
-| `npm run lint` / `lint:fix`             | oxlint                                              |
-| `npm run fmt` / `fmt:check`             | oxfmt                                               |
-| `npm run check`                         | lint + fmt:check + typecheck + test (the CI gate)   |
-| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation |
+| Command                                 | Purpose                                                               |
+| --------------------------------------- | --------------------------------------------------------------------- |
+| `npm test` / `test:watch`               | Unit tests (Vitest) across all packages                               |
+| `npm run typecheck`                     | `tsc` over the packages                                               |
+| `npm run lint` / `lint:fix`             | oxlint                                                                |
+| `npm run fmt` / `fmt:check`             | oxfmt                                                                 |
+| `npm run check`                         | lint + fmt:check + typecheck + test (the CI gate)                     |
+| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation                   |
+| `npm run bench`                         | per-stage timing + SVG hash over a corpus (`scripts/bench/README.md`) |
 
 Run a single package's tests with `npx vitest run packages/<name>`.
 
