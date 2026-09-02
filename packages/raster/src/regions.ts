@@ -31,6 +31,14 @@ export interface MergeOptions {
  * from the target label's by at least `keepContrast` in Oklab, or when any of
  * its pixels lies on the `protect` mask (a discretized edge hint), preserving
  * small high-contrast features while still clearing low-contrast noise.
+ *
+ * The first round labels the whole map; a later round only revisits the
+ * components an absorption can have changed — one holding a rewritten pixel or
+ * touching one, plus the neighbors of a component absorbed earlier in the same
+ * round, discovered as that happens. Every other component keeps its pixels,
+ * its size and its neighbor labels, so it decides exactly as it did in the
+ * round before and cannot merge. Components are absorbed in ascending
+ * lowest-pixel-index order — the order a full relabeling reaches them in.
  */
 export function mergeSmallRegions(
   labels: LabelMap,
@@ -40,94 +48,301 @@ export function mergeSmallRegions(
   if (minArea <= 1) return labels
   const keepSq = opts?.keepContrast ? opts.keepContrast * opts.keepContrast : 0
   const prot = opts?.protect?.data ?? null
+  const oklab = opts?.oklab
   const { width: w, height: h, data } = labels
   const n = w * h
-  const comp = new Int32Array(n)
-  const stack = new Int32Array(n)
-  // Pixels in flood order; component `id` owns order[compStart[id] .. +compSize[id]).
-  const order = new Int32Array(n)
-  const neighborCount = new Map<number, number>()
+  if (n === 0) return labels
 
-  for (let round = 0; round < 8; round++) {
-    comp.fill(-1)
-    const compStart: number[] = []
-    const compSize: number[] = []
-    let pos = 0
-    for (let i = 0; i < n; i++) {
-      if (comp[i] !== -1 || data[i] === -1) continue
-      const id = compStart.length
-      const lab = data[i]
-      compStart.push(pos)
-      let sp = 0
-      stack[sp++] = i
-      comp[i] = id
-      while (sp > 0) {
-        const p = stack[--sp]
-        order[pos++] = p
-        const x = p - ((p / w) | 0) * w
-        if (x > 0 && comp[p - 1] === -1 && data[p - 1] === lab) {
-          comp[p - 1] = id
+  // Neighbor census indexed by label; `censusSeen` lists the labels one
+  // component touched, so the counters clear in O(labels touched).
+  let span = labels.count
+  for (let i = 0; i < n; i++) {
+    if (data[i] >= span) span = data[i] + 1
+  }
+  const census = new Int32Array(span)
+  const censusSeen = new Int32Array(span)
+
+  // Per pixel: 0 = not reached this round, 1 = flooded into a component,
+  // 2 = flooded into a component already known to reach `minArea`.
+  const mark = new Uint8Array(n)
+  const stack = new Int32Array(n)
+  // Pixels of the components in play; component `c` owns
+  // `order[compStart[c] .. +compSize[c])`.
+  const order = new Int32Array(n)
+  let compStart = new Int32Array(64)
+  let compSize = new Int32Array(64)
+  let compMin = new Int32Array(64)
+  // Min-heap of component ids keyed by `compMin`: an incremental round absorbs
+  // in lowest-pixel-index order while still discovering components as it goes.
+  let heap = new Int32Array(64)
+  let comps = 0
+  let heapLen = 0
+  let pos = 0
+
+  /**
+   * Flood the component holding `seed` into `order` and record it, returning
+   * its id — or -1 when it reaches `minArea` and so can never be absorbed.
+   * `capped` stops the flood as soon as that is known and marks what it reached
+   * with 2, so the rest of the round dismisses the component in O(1).
+   */
+  const collect = (seed: number, capped: boolean): number => {
+    const lab = data[seed]
+    const start = pos
+    let end = start
+    let min = seed
+    let sp = 0
+    let big = false
+    stack[sp++] = seed
+    mark[seed] = 1
+    while (sp > 0) {
+      const p = stack[--sp]
+      order[end++] = p
+      if (p < min) min = p
+      if (capped && end - start >= minArea) {
+        big = true
+        break
+      }
+      const x = p - ((p / w) | 0) * w
+      if (x > 0) {
+        const m = mark[p - 1]
+        if (m !== 1 && data[p - 1] === lab) {
+          if (m === 2) {
+            big = true
+            break
+          }
+          mark[p - 1] = 1
           stack[sp++] = p - 1
         }
-        if (x < w - 1 && comp[p + 1] === -1 && data[p + 1] === lab) {
-          comp[p + 1] = id
+      }
+      if (x < w - 1) {
+        const m = mark[p + 1]
+        if (m !== 1 && data[p + 1] === lab) {
+          if (m === 2) {
+            big = true
+            break
+          }
+          mark[p + 1] = 1
           stack[sp++] = p + 1
         }
-        if (p >= w && comp[p - w] === -1 && data[p - w] === lab) {
-          comp[p - w] = id
+      }
+      if (p >= w) {
+        const m = mark[p - w]
+        if (m !== 1 && data[p - w] === lab) {
+          if (m === 2) {
+            big = true
+            break
+          }
+          mark[p - w] = 1
           stack[sp++] = p - w
         }
-        if (p < n - w && comp[p + w] === -1 && data[p + w] === lab) {
-          comp[p + w] = id
+      }
+      if (p < n - w) {
+        const m = mark[p + w]
+        if (m !== 1 && data[p + w] === lab) {
+          if (m === 2) {
+            big = true
+            break
+          }
+          mark[p + w] = 1
           stack[sp++] = p + w
         }
       }
-      compSize.push(pos - compStart[id])
     }
+    if (big) {
+      for (let s = start; s < end; s++) mark[order[s]] = 2
+      for (let k = 0; k < sp; k++) mark[stack[k]] = 2
+      return -1
+    }
+    const size = end - start
+    if (size >= minArea) return -1
+    pos = end
+    if (comps === compStart.length) {
+      compStart = grownInt32(compStart)
+      compSize = grownInt32(compSize)
+      compMin = grownInt32(compMin)
+    }
+    compStart[comps] = start
+    compSize[comps] = size
+    compMin[comps] = min
+    return comps++
+  }
+
+  const heapPush = (c: number): void => {
+    if (c < 0) return
+    if (heapLen === heap.length) heap = grownInt32(heap)
+    const key = compMin[c]
+    let i = heapLen++
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (compMin[heap[parent]] <= key) break
+      heap[i] = heap[parent]
+      i = parent
+    }
+    heap[i] = c
+  }
+
+  /** The queued component with the lowest `compMin`, or -1 when none is left. */
+  const heapPop = (): number => {
+    if (heapLen === 0) return -1
+    const top = heap[0]
+    const last = heap[--heapLen]
+    if (heapLen > 0) {
+      const key = compMin[last]
+      let i = 0
+      for (;;) {
+        let child = 2 * i + 1
+        if (child >= heapLen) break
+        if (child + 1 < heapLen && compMin[heap[child + 1]] < compMin[heap[child]]) child++
+        if (compMin[heap[child]] >= key) break
+        heap[i] = heap[child]
+        i = child
+      }
+      heap[i] = last
+    }
+    return top
+  }
+
+  /**
+   * Census component `c`'s differing 4-neighbor labels and absorb it into the
+   * most frequent one (ties to the smallest label id). Returns true when its
+   * pixels were rewritten.
+   */
+  const absorb = (c: number): boolean => {
+    const start = compStart[c]
+    const end = start + compSize[c]
+    const lab = data[order[start]]
+    let guarded = false
+    let seen = 0
+    for (let s = start; s < end; s++) {
+      const p = order[s]
+      if (prot !== null && prot[p] !== 0) guarded = true
+      const x = p - ((p / w) | 0) * w
+      if (x > 0) {
+        const v = data[p - 1]
+        if (v !== -1 && v !== lab && census[v]++ === 0) censusSeen[seen++] = v
+      }
+      if (x < w - 1) {
+        const v = data[p + 1]
+        if (v !== -1 && v !== lab && census[v]++ === 0) censusSeen[seen++] = v
+      }
+      if (p >= w) {
+        const v = data[p - w]
+        if (v !== -1 && v !== lab && census[v]++ === 0) censusSeen[seen++] = v
+      }
+      if (p < n - w) {
+        const v = data[p + w]
+        if (v !== -1 && v !== lab && census[v]++ === 0) censusSeen[seen++] = v
+      }
+    }
+    let bestLab = -1
+    let bestCnt = 0
+    for (let t = 0; t < seen; t++) {
+      const lb = censusSeen[t]
+      const cnt = census[lb]
+      census[lb] = 0
+      if (cnt > bestCnt || (cnt === bestCnt && lb < bestLab)) {
+        bestCnt = cnt
+        bestLab = lb
+      }
+    }
+    if (guarded) return false // a protected edge pixel — keep this small region
+    if (bestLab === -1) return false
+    if (oklab && contrastExceeds(oklab, lab, bestLab, keepSq)) return false // keep the detail
+    for (let s = start; s < end; s++) data[order[s]] = bestLab
+    return true
+  }
+
+  /** Bring the component holding `q` into the round when its turn is still ahead. */
+  const discover = (q: number, after: number): void => {
+    if (mark[q] !== 0 || data[q] === -1) return
+    const c = collect(q, true)
+    if (c >= 0 && compMin[c] > after) heapPush(c)
+  }
+
+  // Pixels a round rewrote; they seed the next one. Past `dirtyCap` flooding
+  // the whole map again is the cheaper way to find the components in play, so
+  // recording stops and the next round is a full one.
+  const dirtyCap = Math.max(4096, n >> 3)
+  let dirty = new Int32Array(Math.min(1024, dirtyCap))
+  let dirtyLen = 0
+  let nextFull = true
+
+  const record = (c: number): void => {
+    if (nextFull) return
+    const start = compStart[c]
+    const size = compSize[c]
+    if (dirtyLen + size > dirtyCap) {
+      nextFull = true
+      return
+    }
+    while (dirtyLen + size > dirty.length) dirty = grownInt32(dirty)
+    for (let s = start; s < start + size; s++) dirty[dirtyLen++] = order[s]
+  }
+
+  for (let round = 0; round < 8; round++) {
+    mark.fill(0)
+    comps = 0
+    heapLen = 0
+    pos = 0
+    const incremental = !nextFull
+    if (incremental) {
+      // A component can only decide differently from the round before when one
+      // of its own pixels, or one of their 4-neighbors, was rewritten.
+      for (let k = 0; k < dirtyLen; k++) {
+        const p = dirty[k]
+        const x = p - ((p / w) | 0) * w
+        if (mark[p] === 0 && data[p] !== -1) heapPush(collect(p, true))
+        if (x > 0 && mark[p - 1] === 0 && data[p - 1] !== -1) heapPush(collect(p - 1, true))
+        if (x < w - 1 && mark[p + 1] === 0 && data[p + 1] !== -1) heapPush(collect(p + 1, true))
+        if (p >= w && mark[p - w] === 0 && data[p - w] !== -1) heapPush(collect(p - w, true))
+        if (p < n - w && mark[p + w] === 0 && data[p + w] !== -1) heapPush(collect(p + w, true))
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        if (mark[i] === 0 && data[i] !== -1) collect(i, false)
+      }
+    }
+    dirtyLen = 0
+    nextFull = false
 
     let merged = false
-    for (let id = 0; id < compStart.length; id++) {
-      const size = compSize[id]
-      if (size >= minArea) continue
-      const start = compStart[id]
-      const lab = data[order[start]]
-      neighborCount.clear()
-      let guarded = false
-      for (let s = start; s < start + size; s++) {
-        const p = order[s]
-        if (prot !== null && prot[p] !== 0) guarded = true
-        const x = p - ((p / w) | 0) * w
-        if (x > 0 && comp[p - 1] !== id && data[p - 1] !== -1 && data[p - 1] !== lab) {
-          neighborCount.set(data[p - 1], (neighborCount.get(data[p - 1]) ?? 0) + 1)
-        }
-        if (x < w - 1 && comp[p + 1] !== id && data[p + 1] !== -1 && data[p + 1] !== lab) {
-          neighborCount.set(data[p + 1], (neighborCount.get(data[p + 1]) ?? 0) + 1)
-        }
-        if (p >= w && comp[p - w] !== id && data[p - w] !== -1 && data[p - w] !== lab) {
-          neighborCount.set(data[p - w], (neighborCount.get(data[p - w]) ?? 0) + 1)
-        }
-        if (p < n - w && comp[p + w] !== id && data[p + w] !== -1 && data[p + w] !== lab) {
-          neighborCount.set(data[p + w], (neighborCount.get(data[p + w]) ?? 0) + 1)
-        }
-      }
-      if (guarded) continue // a protected edge pixel — keep this small region
-      let bestLab = -1
-      let bestCnt = 0
-      for (const [lb, c] of neighborCount) {
-        if (c > bestCnt || (c === bestCnt && lb < bestLab)) {
-          bestCnt = c
-          bestLab = lb
-        }
-      }
-      if (bestLab !== -1) {
-        if (opts?.oklab && contrastExceeds(opts.oklab, lab, bestLab, keepSq)) continue // keep the detail
-        for (let s = start; s < start + size; s++) data[order[s]] = bestLab
+    if (incremental) {
+      for (let c = heapPop(); c >= 0; c = heapPop()) {
+        if (!absorb(c)) continue
         merged = true
+        record(c)
+        // The rewritten pixels are new neighbor labels for whatever borders
+        // them, so those components join this round — unless their turn passed.
+        const after = compMin[c]
+        const start = compStart[c]
+        const end = start + compSize[c]
+        for (let s = start; s < end; s++) {
+          const p = order[s]
+          const x = p - ((p / w) | 0) * w
+          if (x > 0) discover(p - 1, after)
+          if (x < w - 1) discover(p + 1, after)
+          if (p >= w) discover(p - w, after)
+          if (p < n - w) discover(p + w, after)
+        }
+      }
+    } else {
+      for (let c = 0; c < comps; c++) {
+        if (absorb(c)) {
+          merged = true
+          record(c)
+        }
       }
     }
     if (!merged) break
   }
   return labels
+}
+
+/** A copy of `a` with twice the capacity. */
+function grownInt32(a: Int32Array): Int32Array<ArrayBuffer> {
+  const b = new Int32Array(a.length * 2)
+  b.set(a)
+  return b
 }
 
 /** True when two palette labels differ by at least `keepSq` (squared Oklab ΔE). */

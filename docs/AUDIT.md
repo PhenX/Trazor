@@ -57,8 +57,8 @@ The efficiency/interactivity tier is implemented on this branch. All items are b
 - **A9 — per-stroke centerline width** ✅ `traceCenterline` takes an optional chamfer `distanceField` and reports each
   stroke's own median width, so varying line weight is preserved instead of one global average.
 - **Deferred (risk > "low" gain):** the Zhang–Suen iteration cap (would corrupt legitimately thick strokes; capping by
-  chamfer distance doesn't bound the pathological solid-region case anyway) and the `opticurve`/`crack` scratch reuse and
-  `mergeSmallRegions` round-restriction (correctness-sensitive hot loops). **E4** (worker pool) and the structural stacked
+  chamfer distance doesn't bound the pathological solid-region case anyway) and the `opticurve`/`crack` scratch reuse
+  (correctness-sensitive hot loops). **E4** (worker pool) and the structural stacked
   rewrite remain open.
 
 ## The measured baseline
@@ -300,8 +300,9 @@ pool (navigator.hardwareConcurrency-capped) on the layer/chain granularity would
 
 ### E5 — Assorted hot-loop notes · **low**
 
-- `mergeSmallRegions` re-floods the _entire_ image up to 8 rounds; restricting rounds 2+ to components
-  adjacent to prior merges would cap the tail. Measured 115–241ms.
+- `mergeSmallRegions` ✅ round 0 relabels the whole map; later rounds revisit only the components whose pixels or
+  4-neighbors changed in the previous round (a full relabel again when a round rewrote more than n/8 pixels), with a
+  typed-array neighbor census. Equivalence to the full relabeling is asserted in `regions.test.ts`.
 - `opticurve.tryMerge` allocates sample arrays per attempt and re-derives arc-length parameterization;
   hoisting scratch buffers out of the loop is mechanical. `MAX_MERGE=24` with descending-j greedy means up to
   ~23 failed fits per run start; trying a binary search on j (mergeability is near-monotone in run length)
