@@ -735,6 +735,59 @@ function simplify(
   return kept
 }
 
+/**
+ * Pool-adjacent-violators: the least-squares non-decreasing fit of `v`, in
+ * place. A profile that only wiggles against its own direction by noise (its
+ * backtracking already judged small) is smoothed to run one way, so the noise
+ * does not survive simplification as extra stops.
+ */
+function monotone(v: number[]): void {
+  const n = v.length
+  const val: number[] = []
+  const cnt: number[] = []
+  for (let i = 0; i < n; i++) {
+    let x = v[i]
+    let c = 1
+    while (val.length > 0 && val[val.length - 1] > x) {
+      const pv = val.pop()!
+      const pc = cnt.pop()!
+      x = (x * c + pv * pc) / (c + pc)
+      c += pc
+    }
+    val.push(x)
+    cnt.push(c)
+  }
+  let k = 0
+  for (let b = 0; b < val.length; b++) for (let j = 0; j < cnt[b]; j++) v[k++] = val[b]
+}
+
+/**
+ * Smooth a color path to run monotonically along its net first→last direction
+ * (the projection onto that direction is made non-decreasing by
+ * {@link monotone}; the colors move along the direction by the correction).
+ * Curvature across the direction is untouched.
+ */
+function monotoneAlong(cols: Lab[]): void {
+  const n = cols.length
+  if (n < 3) return
+  const f = cols[0]
+  const l = cols[n - 1]
+  const d: Lab = [l[0] - f[0], l[1] - f[1], l[2] - f[2]]
+  const norm = Math.hypot(d[0], d[1], d[2])
+  if (norm < 1e-9) return
+  d[0] /= norm
+  d[1] /= norm
+  d[2] /= norm
+  const proj = cols.map((c) => (c[0] - f[0]) * d[0] + (c[1] - f[1]) * d[1] + (c[2] - f[2]) * d[2])
+  const fixed = proj.slice()
+  monotone(fixed)
+  for (let i = 0; i < n; i++) {
+    const shift = fixed[i] - proj[i]
+    if (shift === 0) continue
+    cols[i] = [cols[i][0] + shift * d[0], cols[i][1] + shift * d[1], cols[i][2] + shift * d[2]]
+  }
+}
+
 /** Round an opacity to 3 decimals; `undefined` when it rounds to fully opaque. */
 function opacityOf(v: number): number | undefined {
   const o = Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000
@@ -849,6 +902,10 @@ function profileToStops(
     steps.push(deltaEOk(p[0], p[1], p[2], q[0], q[1], q[2]))
   }
   if (rampShape(offs, steps, MIN_RAMP_SPREAD) < 0) return null
+  // A reversal is refused on the raw bins; what remains wiggles only by noise
+  // and is smoothed to run one way before simplification.
+  if (pathBacktrack(cols) > maxBacktrack) return null
+  monotoneAlong(cols)
 
   const kept = simplify(offs, STOP_TOLERANCE, (i, a, b, t) => {
     const L = cols[a][0] + (cols[b][0] - cols[a][0]) * t
@@ -972,6 +1029,9 @@ function alphaProfileToStops(
     if (d < 0) back -= d
   }
   if (back / path > maxBacktrack) return null
+  if (sign < 0) for (let i = 0; i < np; i++) vals[i] = -vals[i]
+  monotone(vals)
+  if (sign < 0) for (let i = 0; i < np; i++) vals[i] = -vals[i]
   const kept = simplify(offs, ALPHA_STOP_TOLERANCE, (i, a, b, t) =>
     Math.abs(vals[i] - (vals[a] + (vals[b] - vals[a]) * t)),
   )
@@ -2052,8 +2112,11 @@ export function fitRegionGradients(
   }
   const adj: number[][] = adjSets.map((s) => [...s].toSorted((a, b) => a - b))
 
+  // A label's pool of fragments is noise dust scattered over other regions: it
+  // never grows a ramp of its own (the absorb pass may still fold it into one).
   const seeds: number[] = []
-  for (let l = 0; l < count; l++) if (counts[l] > 0) seeds.push(l)
+  for (let l = 0; l < count; l++)
+    if (counts[l] > 0 && fragmentUnit[unitLabel[l]] !== l) seeds.push(l)
   seeds.sort((a, b) => counts[b] - counts[a] || a - b)
 
   const ctx: Ctx = {
@@ -2247,7 +2310,7 @@ export function fitRegionGradients(
       area.set(rep, a)
     }
     const out = ctx.lab
-    for (const l of seeds) {
+    for (let l = 0; l < count; l++) {
       if (claimed[l] >= 0 || counts[l] === 0) continue
       const hosts = new Set<number>()
       for (const nb of adj[l]) {
