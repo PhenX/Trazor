@@ -40,7 +40,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
   trace/                   @trazor/trace — THE tracer: crack decomposition, Potrace chain, shared boundary
                            graph (seam-free cutout), centerline extraction, Schneider fitting.
   svg/                     @trazor/svg — compact SVG serialization + output analysis.
-  engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client.
+  engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client,
+                           and the optional helper pool that traces layers/shapes/chains in parallel.
   ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge,
                            cleanup & signed-field conditioning models, via onnxruntime-web. Browser-only.
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.

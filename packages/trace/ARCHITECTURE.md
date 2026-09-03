@@ -74,10 +74,23 @@ regions meet. Instead:
 1. Build the label map's **crack network** (horizontal/vertical cracks between differing labels).
 2. Walk it into **chains** — junction-to-junction runs plus pure loops — each recording the labels on its left and right.
 3. Fit each chain **once** (the same Potrace stages for loops; an open-chain variant with **pinned junction endpoints**
-   for junction-to-junction chains), memoized forward and reversed.
+   for junction-to-junction chains).
 4. **Assemble** each region's rings by walking its chain instances (reversing shared chains for the neighbor), so the two
    regions on either side of a boundary emit the _same_ curve. No gaps, no overlaps — asserted anchor-for-anchor in
    `boundary.test.ts`.
+
+The three steps are separately exported, because step 3 is the expensive one and every chain is independent of every
+other: **`extractChains(labels)`** → `ChainNetwork` (steps 1-2, a function of the label map alone),
+**`fitChain(network, i, opts)`** → `ChainFit` (step 3 for one chain, callable in any order or in another thread — the
+engine's helper pool farms these out), and **`assembleRegions(network, fits)`** → `RegionShape[]` (step 4).
+`traceLabelMap` is the three composed, and `fitChains` is `fitChain` over the whole network.
+
+A `ChainFit` carries up to two forms of the same chain, because a region reaches a chain in one of two ways: `open` is
+the forward run **without** a leading `M` (the form a ring splices in as it passes through), and a chain that returns to
+its own start corner also carries `closed`, the complete `M…Z` ring a region uses when that chain **is** the whole ring.
+A chain that closes on a junction can be both — its own ring for one region, one arc of a larger ring for another — so
+both fits exist and the assembler picks by how it arrived. The reversed form of whichever it used is derived once and
+shared, which is what makes the two neighbors' geometry identical rather than merely equal.
 
 _Optional sub-pixel color refinement_ (`ColorField`): given the working image's per-pixel Oklab buffer and the per-label
 palette Oklab, each shared chain is snapped onto the true anti-aliased edge between its two region colors before fitting —
@@ -107,4 +120,6 @@ instead of collapsing to one global average. Omitted ⇒ `width` is unset and th
 
 `crack.test.ts` (decomposition signs/areas/turn policy), `closed.test.ts` (optimal polygon + `traceMask` corners,
 circles, holes, closure, determinism, pixel mode), `boundary.test.ts` (shared anchors, 3-color junctions, hole rings,
-determinism), `centerline.test.ts` (single stroke, crossing → two strokes, spur pruning, corners, closed rings).
+determinism), `boundary-split.test.ts` (extract/fit/assemble reproduces `traceLabelMap`, including with the chains
+fitted out of order), `centerline.test.ts` (single stroke, crossing → two strokes, spur pruning, corners, closed
+rings).

@@ -2,6 +2,7 @@ import { CancelledError } from '@trazor/core'
 import type { GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from './native'
 import type { StageCache } from './native'
+import { HelperPool } from './helper-pool'
 import { traceTransferables } from './trace'
 import type { WorkerInMessage, WorkerOutMessage, WorkerScope } from './protocol'
 
@@ -17,6 +18,9 @@ export function installWorkerHandler(scope: WorkerScope): void {
   // Persisted across runs: reuses preprocess/palette work while the same image
   // is tuned. Single entry, keyed by imageId + settings slices inside vectorize.
   const stageCache: StageCache = {}
+  // Helper workers, once the consumer transfers their ports. Absent ⇒ every run
+  // traces on this thread.
+  let helpers: HelperPool | undefined
 
   const post = (msg: WorkerOutMessage, transfer?: Transferable[]) =>
     scope.postMessage(msg, transfer)
@@ -25,6 +29,10 @@ export function installWorkerHandler(scope: WorkerScope): void {
     const msg = ev.data as WorkerInMessage
     if (msg.type === 'cancel') {
       cancelled.add(msg.id)
+      return
+    }
+    if (msg.type === 'helpers') {
+      helpers = msg.ports.length > 0 ? new HelperPool(msg.ports) : undefined
       return
     }
     if (msg.type !== 'vectorize') return
@@ -71,7 +79,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
             ? (step) => post({ type: 'trace-step', id, step }, traceTransferables(step.rasters))
             : undefined,
         },
-        { imageId, cache: stageCache, withDocument },
+        { imageId, cache: stageCache, withDocument, helpers },
       )
       if (cancelled.has(id)) {
         post({ type: 'error', id, message: 'cancelled', cancelled: true })

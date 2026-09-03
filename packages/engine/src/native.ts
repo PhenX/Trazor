@@ -14,6 +14,7 @@ import type {
   GradientPaint,
   GrayImage,
   LabelMap,
+  PathCommand,
   RasterImage,
   StageId,
   StageTiming,
@@ -72,15 +73,19 @@ import {
   zhangSuenThin,
 } from '@trazor/raster'
 import {
+  assembleRegions,
   decomposeMask,
+  extractChains,
   ringPolygon,
   shapesFromPaths,
   traceCenterline,
   traceLabelMap,
 } from '@trazor/trace'
-import type { CrackPath, FlatPoints, TracedShape } from '@trazor/trace'
+import type { ChainFit, CrackPath, FlatPoints, RegionShape, TracedShape } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
-import type { SvgGradient, SvgShape } from '@trazor/svg'
+import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
+import type { HelperPool, StackPlanPayload } from './helper-pool'
+import type { HelperCurveOptions, HelperSerializeOptions } from './protocol'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -290,6 +295,29 @@ interface PaletteEntry {
   gradients?: (GradientPaint | null)[]
   /** Stacked layer rings for one ring key; a key change replaces the whole set. */
   rings?: LayerRings
+  /**
+   * The stacked layering plan (base label map, paint order, lifted islands),
+   * which follows from this entry's labels and counts alone. Retained alongside
+   * the rings so a re-run — sequential or across helpers — skips the enclosed-
+   * component scan and the stacking sort.
+   */
+  stack?: StackPlan
+}
+
+/**
+ * How stacked layering paints a label map: the label map painted for the base
+ * layers (each lifted island's pixels folded into its surround), those layers'
+ * paint order, and the island layers that follow them on top. Derived from the
+ * labels and their counts, so it is byte-identical to recomputation.
+ */
+interface StackPlan {
+  stackLabels: Int32Array
+  /** Size of the label space (the palette length) the labels index into. */
+  labelCount: number
+  /** Base-layer paint order (layer index ⇒ label). */
+  order: number[]
+  /** Island layers in paint order after the base layers. */
+  islands: { label: number; pixels: number[] }[]
 }
 
 /** One stacked layer: the label whose paint it carries and its decomposed rings. */
@@ -347,7 +375,12 @@ interface InkEntry {
  * Rings dominate the footprint — every layer's lattice boundary as a `number[]`,
  * 7.4 M coordinates (~59 MB) for a 4096×2731 photo over its 28 stacked layers,
  * with the polygons adding 1.3 M more (~10 MB) — so only the newest palette
- * entry keeps a set; the others hold labels only.
+ * entry keeps a set (and its stacked plan); the others hold labels only.
+ *
+ * With a helper pool the per-layer rings and polygons live in the helper that
+ * owns each unit, so `ringHits`/`ringMisses` then cover only the coordinator's
+ * own share (the bw ring decomposition) and no polygons are counted here at
+ * all; the stacked plan's own counters are unaffected.
  */
 export interface StageCache {
   imageId?: number
@@ -362,12 +395,17 @@ export interface StageCache {
   stats?: StageCacheStats
 }
 
-/** Cache hit/miss counters (preprocess, palette, ink mask and decomposed rings). */
+/**
+ * Cache hit/miss counters: preprocess, palette, the stacked layering plan, the
+ * decomposed rings and their polygons, and the ink mask.
+ */
 export interface StageCacheStats {
   preHits: number
   preMisses: number
   palHits: number
   palMisses: number
+  stackHits: number
+  stackMisses: number
   ringHits: number
   ringMisses: number
   polyHits: number
@@ -385,6 +423,8 @@ function cacheStats(cache: StageCache): StageCacheStats {
     preMisses: 0,
     palHits: 0,
     palMisses: 0,
+    stackHits: 0,
+    stackMisses: 0,
     ringHits: 0,
     ringMisses: 0,
     polyHits: 0,
@@ -422,6 +462,14 @@ export interface VectorizeRunOptions {
   /** Stable per-image identity (new working image ⇒ new id); enables the cache. */
   imageId?: number
   cache?: StageCache
+  /**
+   * Helper workers to trace and serialize across. Absent (or empty) runs the
+   * whole pipeline on this thread — the default, and the only path a consumer
+   * without workers needs. With helpers, the parallel unit is a stacked layer, a
+   * bw shape, or a cutout boundary chain; results are placed by unit index, so
+   * the SVG text and the shapes are byte-identical to a sequential run.
+   */
+  helpers?: HelperPool
   /**
    * Attach the raw pre-serialization geometry to the result as `document`, for
    * consumers that emit alternate formats (PDF, DXF, …) without re-parsing the
@@ -522,6 +570,14 @@ function inkKeyOf(s: VectorizeSettings): string {
 }
 
 /**
+ * Distinguishes one run's helper payloads from another's when the run is not
+ * cacheable (no image id, or a hint that disables reuse): a fresh serial makes
+ * every key a miss, so a helper never reads a payload from a different image or
+ * a different label map. It never reaches the output.
+ */
+let runSerial = 0
+
+/**
  * The native vectorization pipeline:
  * preprocess → (palette | binarize) → segment cleanup → trace/fit → SVG.
  */
@@ -539,6 +595,8 @@ export async function vectorize(
   const cache = opts?.cache
   const imageId = opts?.imageId
   const cacheable = cache !== undefined && imageId !== undefined
+  const helpers = opts?.helpers !== undefined && opts.helpers.size > 0 ? opts.helpers : undefined
+  const serial = ++runSerial
 
   // ---- preprocess (reused across runs when the image + preprocess key match) ----
   run.stage('preprocess')
@@ -609,6 +667,26 @@ export async function vectorize(
   const shapes: SvgShape[] = []
   const defs: SvgGradient[] = []
   let palette: string[] = []
+  // Per-shape SVG a helper already produced, index-parallel to `shapes`. Only
+  // stacked layers serialize in a helper (a shape belongs to exactly one layer);
+  // every other path leaves this empty and the serializer does the per-shape
+  // half itself.
+  const shapeParts: (ShapeOut | null)[] = []
+  // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays off
+  // for cutout — an element can't be shared with a neighbor's path edge. Arc
+  // fitting for cutout happens seam-safely per shared chain instead (the
+  // `refineChain` passed to the tracer).
+  const roundPrimitives = settings.optimizeSvg && settings.layering !== 'cutout'
+  // Exactly the per-shape settings the serializer would apply, so a helper's
+  // output drops into the document unchanged.
+  const shapeSerialize: HelperSerializeOptions = {
+    precision: settings.precision,
+    optimize: settings.optimizeSvg,
+    roundPrimitives,
+  }
+  // Helper payloads are keyed by the same identities the StageCache uses, so a
+  // warm run finds its rings and polygons in the helper that owns those units.
+  const helperScope = cacheable ? `${imageId}|${preKey}` : `#${serial}`
 
   if (settings.mode === 'color' || settings.mode === 'grayscale') {
     await colorPipeline(
@@ -617,12 +695,14 @@ export async function vectorize(
       opaque,
       settings,
       shapes,
+      shapeParts,
       defs,
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
       cacheable ? cache : undefined,
       imageId,
+      { helpers, scope: helperScope, serial, serialize: shapeSerialize },
     )
   } else {
     await inkPipeline(
@@ -637,6 +717,7 @@ export async function vectorize(
       ctx?.coverageHint,
       cacheable ? cache : undefined,
       imageId,
+      { helpers, scope: helperScope, serial, serialize: shapeSerialize },
     )
   }
 
@@ -675,11 +756,7 @@ export async function vectorize(
     {
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
-      // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays
-      // off for cutout — an element can't be shared with a neighbor's path edge.
-      // Arc fitting for cutout happens seam-safely per shared chain instead (the
-      // `refineChain` passed to traceLabelMap below).
-      roundPrimitives: settings.optimizeSvg && settings.layering !== 'cutout',
+      roundPrimitives,
       // One <g> per cut layer (color layers only). Cutout is a color partition,
       // so group by color; stacked paints in layer order and a color can recur
       // at two heights (a base outline and a pupil island above it), so group by
@@ -687,6 +764,7 @@ export async function vectorize(
       groupByColor: grouped && settings.layering === 'cutout',
       groupByLayer: grouped && settings.layering !== 'cutout',
     },
+    shapeParts.length === shapes.length ? shapeParts : undefined,
   )
   run.progress(0.6)
   const analysis = analyzeSvg(svg)
@@ -752,18 +830,30 @@ export async function vectorize(
   }
 }
 
+/** What the pipelines need to farm parallel units out to helper workers. */
+interface HelperContext {
+  helpers: HelperPool | undefined
+  /** Image-level key prefix: the image id + preprocess slice, or a per-run serial. */
+  scope: string
+  /** Unique per run — keys a payload this run must not share with another. */
+  serial: number
+  serialize: HelperSerializeOptions
+}
+
 async function colorPipeline(
   run: Run,
   image: RasterImage,
   opaque: BinaryMask | null,
   settings: VectorizeSettings,
   shapes: SvgShape[],
+  shapeParts: (ShapeOut | null)[],
   defs: SvgGradient[],
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
   cache: StageCache | undefined,
   imageId: number | undefined,
+  helperCtx: HelperContext,
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
@@ -985,7 +1075,8 @@ async function colorPipeline(
   }
 
   run.stage('trace')
-  const curveOpts = {
+  // The curve slice alone: what a re-fit depends on, and what a helper job carries.
+  const curveOpts: HelperCurveOptions = {
     curveMode: settings.curveMode,
     smoothing: settings.smoothing,
     curveOptimize: settings.curveOptimize,
@@ -996,25 +1087,46 @@ async function colorPipeline(
   // filter — the tracer must not drop the small regions it deliberately kept.
   const traceMinArea = settings.preserveDetails || protect ? 1 : Math.max(1, settings.minRegionArea)
   const usedPalette: string[] = []
+  const helpers = helperCtx.helpers
+  // Payload identity for anything derived from this run's label map. A palette
+  // key means the labels are cache-pinned and a helper may reuse what it holds;
+  // without one (an edge hint disables palette caching) the run's serial makes
+  // every helper key a miss.
+  const labelScope = palKey !== undefined ? `${helperCtx.scope}|${palKey}` : `#${helperCtx.serial}`
 
   if (settings.layering === 'cutout') {
     // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
     // true anti-aliased edge between its two region colors. Skipped in pixel
     // mode (exact lattice) and when the palette is degenerate.
-    const colorField =
-      settings.curveMode !== 'pixel' && paletteHex.length > 1
-        ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(paletteRgb) }
-        : undefined
-    const regions = traceLabelMap(labels, {
-      ...curveOpts,
-      colorField,
-      // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
-      // (fitted once, reused reversed) so cutout gets the node reduction without
-      // seam divergence. Full-shape primitives stay off for cutout (an element
-      // can't be shared with a neighbour's path), which is why `roundPrimitives`
-      // is disabled at serialization above.
-      refineChain: settings.optimizeSvg ? (cmds) => fitArcs(cmds, settings.precision) : undefined,
-    })
+    const refinesColor = settings.curveMode !== 'pixel' && paletteHex.length > 1
+    // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
+    // (fitted once, reused reversed) so cutout gets the node reduction without
+    // seam divergence. Full-shape primitives stay off for cutout (an element
+    // can't be shared with a neighbour's path), which is why `roundPrimitives`
+    // is disabled at serialization.
+    const arcPrecision = settings.optimizeSvg ? settings.precision : undefined
+    let regions: RegionShape[]
+    if (helpers) {
+      regions = await fitCutoutInHelpers(
+        run,
+        helpers,
+        labels,
+        image,
+        refinesColor ? paletteToOklab(paletteRgb) : undefined,
+        curveOpts,
+        arcPrecision,
+        helperCtx,
+        labelScope,
+      )
+    } else {
+      regions = traceLabelMap(labels, {
+        ...curveOpts,
+        colorField: refinesColor
+          ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(paletteRgb) }
+          : undefined,
+        refineChain: arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
+      })
+    }
     regions.sort((a, b) => b.area - a.area)
     // Trap width in viewBox px. An mm-unit output carries a physical millimetre
     // trap: convert it through the document's mm-per-px so the overlap means the
@@ -1077,27 +1189,61 @@ async function colorPipeline(
       totalLayers = total
       traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
     }
-    /** Fit one layer's rings into shapes, then report progress and yield. */
-    const paintLayer = async (
+    /** Place one layer's traced shapes, then report progress and yield. */
+    const paintShapes = async (
       label: number,
-      paths: CrackPath[],
-      polygons: (FlatPoints | null)[] | undefined,
+      layerShapes: readonly PathCommand[][],
+      parts: readonly (ShapeOut | null)[] | undefined,
     ): Promise<void> => {
-      const traced = shapesFromPaths(paths, curveOpts, polygons)
       const fill = fillFor[label]
-      if (traced.length > 0) addColors(usedPalette, paletteColorsFor[label])
-      for (const shape of traced) {
-        shapes.push({ commands: shape.commands, fill, fillRule: 'evenodd', layerId: done })
+      if (layerShapes.length > 0) addColors(usedPalette, paletteColorsFor[label])
+      for (let i = 0; i < layerShapes.length; i++) {
+        shapes.push({ commands: layerShapes[i], fill, fillRule: 'evenodd', layerId: done })
+        if (parts) shapeParts.push(parts[i] ?? null)
       }
       done++
       run.progress(done / totalLayers)
       if (run.tracing && done < totalLayers && done % traceStride === 0) emitTraceSnapshot()
-      // Sequential on purpose: yields the worker event loop between layers so
-      // cancel messages interleave with the computation.
+      // Yields the worker event loop between layers, so cancel messages
+      // interleave with the computation.
       await run.tick()
     }
+    /** Fit one layer's rings into shapes on this thread. */
+    const paintLayer = (
+      label: number,
+      paths: CrackPath[],
+      polygons: (FlatPoints | null)[] | undefined,
+    ): Promise<void> =>
+      paintShapes(
+        label,
+        shapesFromPaths(paths, curveOpts, polygons).map((t) => t.commands),
+        undefined,
+      )
 
-    if (cachedLayers) {
+    if (helpers) {
+      // Each layer is an independent unit: the helper rebuilds the layer's union
+      // flood from the shared plan, decomposes it, fits the curve chain and
+      // serializes its shapes. Units come back in layer order, so the paint
+      // order — and with it every `layerId` and the SVG text — is unchanged.
+      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
+      const labelOf = (unit: number): number =>
+        unit < plan.order.length ? plan.order[unit] : plan.islands[unit - plan.order.length].label
+      const total = plan.order.length + plan.islands.length
+      const stackKey = `${labelScope}|${ringKey}`
+      helpers.setStackPlan(stackKey, stackPayload(labels, plan, settings.turnPolicy, traceMinArea))
+      startLayers(total)
+      for await (const out of helpers.dispatch({
+        kind: 'trace-layers',
+        total,
+        stateKey: stackKey,
+        curve: curveOpts,
+        meta: (unit) => ({ fill: fillFor[labelOf(unit)], fillRule: 'evenodd', layerId: unit }),
+        serialize: helperCtx.serialize,
+      })) {
+        // oxlint-disable-next-line no-await-in-loop
+        await paintShapes(labelOf(out.unit), out.shapes, out.svg)
+      }
+    } else if (cachedLayers) {
       cacheStats(cache!).ringHits++
       if (wantPolygons) {
         if (cachedPolygons) cacheStats(cache!).polyHits++
@@ -1129,7 +1275,7 @@ async function colorPipeline(
         layers && wantPolygons ? [] : undefined
       await decomposeStackedLayers(
         labels,
-        counts,
+        stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined),
         settings.turnPolicy,
         traceMinArea,
         startLayers,
@@ -1164,49 +1310,41 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
 }
 
 /**
- * Stacked layering: build each cut layer's mask and decompose it into boundary
- * rings, handing them to `onLayer` in paint order (base layers bottom-up, then
- * the lifted island layers). `startLayers` reports the layer total first, so a
- * caller can drive progress; `onLayer` is awaited, so the caller controls where
- * the loop yields.
+ * How stacked layering will paint a label map (Selinger-independent bookkeeping):
+ * the base layers' order, the label map they are cut from, and the enclosed
+ * pockets lifted onto their own top layers.
+ *
+ * Each layer covers itself plus the sheets above that its own color actually
+ * reaches, so lower shapes extend underneath their neighbours and edges cannot
+ * crack — without dragging in far regions already covered by their own sheets
+ * (see the per-layer flood in {@link decomposeStackedLayers}). The most
+ * connective color — the one whose regions have the largest total perimeter,
+ * i.e. that borders the most other regions — is pinned to the bottom as the
+ * base, so it reads as the outline/backdrop showing between the colors stacked
+ * on top: the standard layered-vinyl build (a cartoon's black outline, a flat
+ * design's background). A thin outline threading between regions outscores a
+ * compact blob of the same color, and a tiny dark speck never wins. The rest
+ * stack by descending area (large fields low, small details on top). Order sets
+ * only which sheet is the full base and the layer/group order — never the
+ * rendered pixels, since each pixel's topmost layer is its own.
+ *
+ * An enclosed island whose color sits below its surround punches a floating
+ * hole in every layer stacked over it. Because the island is ringed by a single
+ * color, the count of those layers is exactly its stack depth below the
+ * surround: each level from just above the island up to the surround still has
+ * that ring, so each carries a hole. Lift a pocket only when two or more sheets
+ * stack over it — one sheet's single hole weeds and aligns cleanly, but two or
+ * more drift and let the middle sheets peek through. Lifting relabels the island
+ * into its surround for the solid base layers, then repaints it on top as its
+ * own island layer; its mask is exactly its own pixels, so nested regions still
+ * show through and the rendered pixels are unchanged — only the cut layers get
+ * cleaner.
  */
-async function decomposeStackedLayers(
-  labels: LabelMap,
-  counts: Uint32Array,
-  turnPolicy: TurnPolicy,
-  minArea: number,
-  startLayers: (total: number) => void,
-  onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
-): Promise<void> {
-  const floor = Math.max(1, minArea)
-  // Each layer covers itself plus the sheets above that its own
-  // color actually reaches, so lower shapes extend underneath their neighbours
-  // and edges cannot crack — without dragging in far regions already covered
-  // by their own sheets (see the per-layer flood below). The most connective
-  // color — the one whose regions have the largest total perimeter, i.e. that
-  // borders the most other regions — is pinned to the bottom as the base,
-  // so it reads as the outline/backdrop showing between the colors stacked on
-  // top: the standard layered-vinyl build (a cartoon's black outline, a flat
-  // design's background). A thin outline threading between regions outscores a
-  // compact blob of the same color, and a tiny dark speck never wins. The
-  // rest stack by descending area (large fields low, small details on top).
-  // Order sets only which sheet is the full base and the layer/group order —
-  // never the rendered pixels, since each pixel's topmost layer is its own.
-  // An enclosed island whose color sits below its surround punches a floating
-  // hole in every layer stacked over it. Because the island is ringed by a
-  // single color, the count of those layers is exactly its stack depth below
-  // the surround: each level from just above the island up to the surround
-  // still has that ring, so each carries a hole. Lift a pocket only when two
-  // or more sheets stack over it — one sheet's single hole weeds and aligns
-  // cleanly, but two or more drift and let the middle sheets peek through.
-  // Lifting relabels the island into its surround for the solid base layers,
-  // then repaints it on top as its own island layer; its mask is exactly its
-  // own pixels, so nested regions still show through and the rendered pixels
-  // are unchanged — only the cut layers get cleaner.
+function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
   const order0 = stackingOrder(labels, counts)
   const position0 = new Int32Array(counts.length).fill(-1)
   order0.forEach((l, i) => (position0[l] = i))
-  const islands = findEnclosedComponents(labels).filter((c) => {
+  const enclosed = findEnclosedComponents(labels).filter((c) => {
     const depth = position0[c.surround] - position0[c.label]
     return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
   })
@@ -1214,35 +1352,131 @@ async function decomposeStackedLayers(
   // The label map painted for the base layers: island pixels take their
   // surrounding label so nothing beneath them is punched out. With no islands
   // this is the original map and order (no extra work).
-  let stackData = labels.data
-  let stackCounts = counts
+  let stackLabels = labels.data
   let order = order0
-  if (islands.length > 0) {
-    stackData = new Int32Array(labels.data)
-    for (const c of islands) for (const p of c.pixels) stackData[p] = c.surround
-    stackCounts = new Uint32Array(counts.length)
-    for (let i = 0; i < stackData.length; i++) {
-      const l = stackData[i]
+  if (enclosed.length > 0) {
+    const painted = new Int32Array(labels.data)
+    for (const c of enclosed) for (const p of c.pixels) painted[p] = c.surround
+    const stackCounts = new Uint32Array(counts.length)
+    for (let i = 0; i < painted.length; i++) {
+      const l = painted[i]
       if (l >= 0) stackCounts[l]++
     }
-    const stackLabels: LabelMap = {
-      width: labels.width,
-      height: labels.height,
-      data: stackData,
-      count: labels.count,
-    }
-    order = stackingOrder(stackLabels, stackCounts)
+    stackLabels = painted
+    order = stackingOrder(
+      { width: labels.width, height: labels.height, data: painted, count: labels.count },
+      stackCounts,
+    )
   }
+
+  // Islands of different colors are disjoint pixel sets, so their paint order is
+  // free; ascending label id keeps it deterministic.
+  const byColor = new Map<number, number[]>()
+  for (const c of enclosed) {
+    let arr = byColor.get(c.label)
+    if (arr === undefined) {
+      arr = []
+      byColor.set(c.label, arr)
+    }
+    for (const p of c.pixels) arr.push(p)
+  }
+  const islands = [...byColor.keys()]
+    .toSorted((a, b) => a - b)
+    .map((label) => ({ label, pixels: byColor.get(label) as number[] }))
+
+  return { stackLabels, labelCount: counts.length, order, islands }
+}
+
+/** The stacked plan for this label map, from the palette entry when it holds one. */
+function stackPlanFor(
+  labels: LabelMap,
+  counts: Uint32Array,
+  entry: PaletteEntry | undefined,
+  cache: StageCache | undefined,
+): StackPlan {
+  const held = entry?.stack
+  if (held) {
+    if (cache) cacheStats(cache).stackHits++
+    return held
+  }
+  if (cache) cacheStats(cache).stackMisses++
+  const plan = stackPlan(labels, counts)
+  if (entry) {
+    // One plan at a time, like the rings: the older entries keep their labels
+    // (cheap to re-plan from) but drop the base label map, which is the bulk.
+    for (const other of cache?.palette?.values() ?? []) {
+      if (other !== entry) other.stack = undefined
+    }
+    entry.stack = plan
+  }
+  return plan
+}
+
+/** The stacked plan as the flat, transferable payload the helpers cache. */
+function stackPayload(
+  labels: LabelMap,
+  plan: StackPlan,
+  turnPolicy: TurnPolicy,
+  minArea: number,
+): StackPlanPayload {
+  const islandOffsets = new Int32Array(plan.islands.length + 1)
+  for (let i = 0; i < plan.islands.length; i++) {
+    islandOffsets[i + 1] = islandOffsets[i] + plan.islands[i].pixels.length
+  }
+  const islandLabels = new Int32Array(plan.islands.length)
+  const islandPixels = new Int32Array(islandOffsets[plan.islands.length])
+  for (let i = 0; i < plan.islands.length; i++) {
+    islandLabels[i] = plan.islands[i].label
+    islandPixels.set(plan.islands[i].pixels, islandOffsets[i])
+  }
+  return {
+    width: labels.width,
+    height: labels.height,
+    labelCount: plan.labelCount,
+    stackLabels: plan.stackLabels,
+    order: new Int32Array(plan.order),
+    islandLabels,
+    islandPixels,
+    islandOffsets,
+    turnPolicy,
+    minArea,
+  }
+}
+
+/**
+ * Stacked layering: build each cut layer's mask from `plan` and decompose it
+ * into boundary rings, handing them to `onLayer` in paint order (base layers
+ * bottom-up, then the lifted island layers). `startLayers` reports the layer
+ * total first, so a caller can drive progress; `onLayer` is awaited, so the
+ * caller controls where the loop yields.
+ */
+async function decomposeStackedLayers(
+  labels: LabelMap,
+  plan: StackPlan,
+  turnPolicy: TurnPolicy,
+  minArea: number,
+  startLayers: (total: number) => void,
+  onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
+): Promise<void> {
+  const floor = Math.max(1, minArea)
+  const stackData = plan.stackLabels
+  const order = plan.order
 
   // Pixel indices bucketed by label (one O(n) pass) so each layer is built
   // from the previous one by removing just the label that dropped out — the
   // union masks are the same bits as a per-layer full rescan, at O(n) total
   // instead of O(k·n).
   const nPix = stackData.length
-  const offset = new Int32Array(stackCounts.length + 1)
-  for (let l = 0; l < stackCounts.length; l++) offset[l + 1] = offset[l] + stackCounts[l]
-  const bucket = new Int32Array(offset[stackCounts.length])
-  const cursor = offset.slice(0, stackCounts.length)
+  const labelCount = plan.labelCount
+  const stackCounts = new Uint32Array(labelCount)
+  for (let p = 0; p < nPix; p++) {
+    const l = stackData[p]
+    if (l >= 0) stackCounts[l]++
+  }
+  const offset = new Int32Array(labelCount + 1)
+  for (let l = 0; l < labelCount; l++) offset[l + 1] = offset[l] + stackCounts[l]
+  const bucket = new Int32Array(offset[labelCount])
+  const cursor = offset.slice(0, labelCount)
   for (let p = 0; p < nPix; p++) {
     const l = stackData[p]
     if (l >= 0) bucket[cursor[l]++] = p
@@ -1279,7 +1513,7 @@ async function decomposeStackedLayers(
   const w = labels.width
 
   // The paint order is the base layers followed by the island layers on top.
-  startLayers(order.length + islands.length)
+  startLayers(order.length + plan.islands.length)
   for (let i = 0; i < order.length; i++) {
     const label = order[i]
     // Seed the flood from this layer's own pixels, then grow through the
@@ -1321,34 +1555,67 @@ async function decomposeStackedLayers(
   }
 
   // Island layers: each lifted color repainted on top of every base layer.
-  // Islands of different colors are disjoint pixel sets, so their paint order
-  // is free; ascending label id keeps it deterministic.
-  if (islands.length > 0) {
-    const byColor = new Map<number, number[]>()
-    for (const c of islands) {
-      let arr = byColor.get(c.label)
-      if (arr === undefined) {
-        arr = []
-        byColor.set(c.label, arr)
-      }
-      for (const p of c.pixels) arr.push(p)
-    }
-    const islandColors = [...byColor.keys()].toSorted((a, b) => a - b)
-    const islandMask: BinaryMask = {
-      width: labels.width,
-      height: labels.height,
-      data: new Uint8Array(nPix),
-    }
-    for (let c = 0; c < islandColors.length; c++) {
-      const label = islandColors[c]
-      islandMask.data.fill(0)
-      for (const p of byColor.get(label) as number[]) islandMask.data[p] = 1
-      const paths = decomposeMask(islandMask, turnPolicy, floor)
-      // oxlint-disable-next-line no-await-in-loop
-      await onLayer(label, paths)
-    }
+  for (const island of plan.islands) {
+    cut.fill(0)
+    for (const p of island.pixels) cut[p] = 1
+    const paths = decomposeMask(cutMask, turnPolicy, floor)
+    // oxlint-disable-next-line no-await-in-loop
+    await onLayer(island.label, paths)
   }
 }
+
+/**
+ * Cutout tracing across helpers: the coordinator walks the crack network into
+ * chains, each chain is fitted ONCE in the helper that owns it, and the regions
+ * are assembled here from the shared fits — so both neighbours of a chain still
+ * inherit mathematically identical geometry and the partition stays seam-free.
+ */
+async function fitCutoutInHelpers(
+  run: Run,
+  helpers: HelperPool,
+  labels: LabelMap,
+  image: RasterImage,
+  paletteOklab: Float32Array | undefined,
+  curve: HelperCurveOptions,
+  arcPrecision: number | undefined,
+  helperCtx: HelperContext,
+  labelScope: string,
+): Promise<RegionShape[]> {
+  const network = extractChains(labels)
+  if (paletteOklab) helpers.setImage(helperCtx.scope, image)
+  helpers.setChains(labelScope, network)
+  const fits: ChainFit[] = new Array(network.chains.length)
+  let done = 0
+  for await (const out of helpers.dispatch({
+    kind: 'fit-chains',
+    total: network.chains.length,
+    stateKey: labelScope,
+    curve,
+    batch: CHAIN_BATCH,
+    paletteOklab,
+    arcPrecision,
+  })) {
+    fits[out.unit] = { open: out.shapes[0], closed: out.shapes[1] }
+    done++
+    // A chain is small, so progress and the cancel check tile the run in
+    // batches rather than per chain.
+    if ((done & CHAIN_TICK_MASK) === 0) {
+      run.progress(done / network.chains.length)
+      // oxlint-disable-next-line no-await-in-loop
+      await run.tick()
+    }
+  }
+  return assembleRegions(network, fits)
+}
+
+/** Chains between a progress report and a cancel check (a power of two, minus one). */
+const CHAIN_TICK_MASK = 255
+
+/**
+ * Chains per helper reply. A chain is small and there are many, so batching
+ * keeps the job to a few hundred messages instead of one per chain.
+ */
+const CHAIN_BATCH = 256
 
 async function inkPipeline(
   run: Run,
@@ -1362,6 +1629,7 @@ async function inkPipeline(
   coverageHint: GrayImage | undefined,
   cache: StageCache | undefined,
   imageId: number | undefined,
+  helperCtx: HelperContext,
 ): Promise<void> {
   run.stage('palette')
   // The despeckled mask and its coverage field are reused when the image and
@@ -1479,31 +1747,74 @@ async function inkPipeline(
         cacheStats(cache!).ringMisses++
       }
     }
-    if (wantPolygons) {
-      if (polygons) {
-        cacheStats(cache!).polyHits++
-      } else {
-        polygons = paths.map((p) => ringPolygon(p.points, coverage))
-        if (entry) {
-          entry.polygons = polygons
-          cacheStats(cache!).polyMisses++
+    const curve: HelperCurveOptions = {
+      curveMode: settings.curveMode,
+      smoothing: settings.smoothing,
+      curveOptimize: settings.curveOptimize,
+      optTolerance: settings.optTolerance,
+      cornerThreshold: settings.cornerThreshold,
+    }
+    const helpers = helperCtx.helpers
+    let traced: TracedShape[]
+    if (helpers) {
+      // One ring is the parallel unit. A bw shape is an outer ring plus the holes
+      // under it, and one ink silhouette routinely carries most of the rings in
+      // an image, so a shape-sized unit would leave the run waiting on it — the
+      // ring is what balances. The grouping and the descending-area order follow
+      // from the rings' signs and parents alone, so the shapes the coordinator
+      // concatenates here are exactly the ones `shapesFromPaths` would produce,
+      // in the same order.
+      const units = ringShapeUnits(paths)
+      const inkScope =
+        inkKey !== undefined ? `${helperCtx.scope}|${inkKey}` : `#${helperCtx.serial}`
+      const ringsKey = `${inkScope}|${ringKey}`
+      helpers.setRingUnits(ringsKey, {
+        width: mask.width,
+        height: mask.height,
+        rings: paths.map((p) => p.points),
+        coverage: wantPolygons ? coverage : undefined,
+      })
+      const ringCommands: PathCommand[][] = new Array(paths.length)
+      let done = 0
+      for await (const out of helpers.dispatch({
+        kind: 'trace-rings',
+        total: paths.length,
+        stateKey: ringsKey,
+        curve,
+        batch: RING_BATCH,
+      })) {
+        ringCommands[out.unit] = out.shapes[0]
+        done++
+        if ((done & RING_TICK_MASK) === 0) {
+          run.progress(done / paths.length)
+          // oxlint-disable-next-line no-await-in-loop
+          await run.tick()
         }
       }
-    }
-    const traced = shapesFromPaths(
-      paths,
-      {
-        curveMode: settings.curveMode,
-        smoothing: settings.smoothing,
-        curveOptimize: settings.curveOptimize,
-        optTolerance: settings.optTolerance,
-        cornerThreshold: settings.cornerThreshold,
-        coverage,
-      },
-      polygons,
-    )
-    for (const shape of traced) {
-      shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })
+      traced = units.map((unit) => {
+        const commands: PathCommand[] = []
+        for (const ring of unit.rings) commands.push(...ringCommands[ring])
+        return { commands, area: unit.area, holeCount: unit.holeCount }
+      })
+      for (const shape of traced) {
+        shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })
+      }
+    } else {
+      if (wantPolygons) {
+        if (polygons) {
+          cacheStats(cache!).polyHits++
+        } else {
+          polygons = paths.map((p) => ringPolygon(p.points, coverage))
+          if (entry) {
+            entry.polygons = polygons
+            cacheStats(cache!).polyMisses++
+          }
+        }
+      }
+      traced = shapesFromPaths(paths, { ...curve, coverage }, polygons)
+      for (const shape of traced) {
+        shapes.push({ commands: shape.commands, fill: settings.fillColor, fillRule: 'evenodd' })
+      }
     }
     if (settings.detectIslands) warnIslands(traced, warnings)
     run.progress(1)
@@ -1545,6 +1856,41 @@ async function inkPipeline(
     }
     run.progress(1)
   }
+}
+
+/** Rings between a progress report and a cancel check (a power of two, minus one). */
+const RING_TICK_MASK = 255
+
+/** Bw rings per helper reply — small units, so they travel in groups. */
+const RING_BATCH = 64
+
+/**
+ * Group decomposed rings into the shapes `shapesFromPaths` builds from them: a
+ * positive ring is an outer boundary, a negative one a hole appended to the
+ * smallest positive ring enclosing it, and the shapes come back by descending
+ * enclosed area. Depends on the rings' area signs and parents only — no curve
+ * fitting — so a caller can partition the fitting work by shape.
+ */
+function ringShapeUnits(
+  paths: CrackPath[],
+): { rings: number[]; area: number; holeCount: number }[] {
+  const units: { rings: number[]; area: number; holeCount: number }[] = []
+  // Decomposition index → index in `units`. An enclosing ring is always
+  // decomposed before the paths it contains, so its entry is already in place.
+  const outerOf = new Int32Array(paths.length)
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i]
+    if (path.area > 0) {
+      outerOf[i] = units.length
+      units.push({ rings: [i], area: path.area, holeCount: 0 })
+    } else if (path.parent >= 0) {
+      const unit = units[outerOf[path.parent]]
+      unit.rings.push(i)
+      unit.holeCount++
+    }
+  }
+  units.sort((a, b) => b.area - a.area)
+  return units
 }
 
 function desaturateInPlace(image: RasterImage): void {

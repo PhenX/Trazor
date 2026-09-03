@@ -34,6 +34,7 @@ import { vectorize } from '@trazor/engine'
 import type { StageCache } from '@trazor/engine'
 import { resizeToFit } from '@trazor/raster'
 import { readRgba } from '../eval/lib'
+import { createNodeHelpers } from './node-helpers'
 
 interface Args {
   data: string
@@ -42,6 +43,7 @@ interface Args {
   maxDim: number
   repeat: number
   limit: number
+  workers: number
   tweak: boolean
 }
 
@@ -53,6 +55,7 @@ function parseArgs(argv: string[]): Args {
     maxDim: 1600,
     repeat: 1,
     limit: 0,
+    workers: 0,
     tweak: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -82,6 +85,10 @@ function parseArgs(argv: string[]): Args {
         break
       case '--limit':
         a.limit = Number(val)
+        i++
+        break
+      case '--workers':
+        a.workers = Math.max(0, Number(val))
         i++
         break
       case '--tweak':
@@ -122,6 +129,9 @@ function tweakSmoothing(v: number): number {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
+  // One id per image so the StageCache (and the helpers' caches) treat each as a
+  // fresh working image rather than reusing the previous image's entries.
+  let nextImageId = 0
   let files = readdirSync(args.data)
     .filter((f) => /\.(png|jpe?g)$/i.test(f))
     .toSorted()
@@ -130,7 +140,18 @@ async function main(): Promise<void> {
   const totals: Record<string, number> = {}
   let sumMs = 0
   let mismatches = 0
-  const reuse = { pre: 0, pal: 0, ring: 0, poly: 0, ink: 0 }
+  const reuse = { pre: 0, pal: 0, stack: 0, ring: 0, poly: 0, ink: 0 }
+  // Helper threads own the parallel units (a stacked layer, a bw shape, a cutout
+  // chain) and keep their own ring/polygon caches, so one pool spans every image
+  // and a warm run finds each unit in the helper that traced it.
+  const helperSet = args.workers > 0 ? createNodeHelpers(args.workers) : null
+  const runOpts = helperSet ? { helpers: helperSet.pool } : undefined
+  if (helperSet) {
+    // Wait for the threads to finish loading, so the first image does not pay
+    // for it in its trace time.
+    await helperSet.ready
+    console.log(`helpers: ${helperSet.pool.size}`)
+  }
   console.log(
     args.tweak
       ? `${'image'.padEnd(28)} ${'size'.padStart(9)} ${'settings'.padEnd(22)}` +
@@ -162,10 +183,11 @@ async function main(): Promise<void> {
       // worker's StageCache, the tweaked run reuses it. The tweaked settings are
       // also traced cold on a fresh cache — the two must be byte-identical.
       const cache: StageCache = {}
-      const cold = await vectorize(image, settings, undefined, { imageId: 1, cache })
+      const imageId = ++nextImageId
+      const cold = await vectorize(image, settings, undefined, { imageId, cache, ...runOpts })
       const tweaked = { ...settings, smoothing: tweakSmoothing(settings.smoothing) }
-      const warm = await vectorize(image, tweaked, undefined, { imageId: 1, cache })
-      const reference = await vectorize(image, tweaked)
+      const warm = await vectorize(image, tweaked, undefined, { imageId, cache, ...runOpts })
+      const reference = await vectorize(image, tweaked, undefined, runOpts)
       const t = stageMs(warm.stats.stages)
       for (const st of STAGES) totals[st] = (totals[st] ?? 0) + (t[st] ?? 0)
       sumMs += warm.stats.durationMs
@@ -176,6 +198,7 @@ async function main(): Promise<void> {
       if (st) {
         reuse.pre += st.preHits
         reuse.pal += st.palHits
+        reuse.stack += st.stackHits
         reuse.ring += st.ringHits
         reuse.poly += st.polyHits
         reuse.ink += st.inkHits
@@ -194,7 +217,7 @@ async function main(): Promise<void> {
     let nodes = 0
     let hash = ''
     for (let r = 0; r < args.repeat; r++) {
-      const res = await vectorize(image, settings)
+      const res = await vectorize(image, settings, undefined, runOpts)
       const t = stageMs(res.stats.stages)
       if (res.stats.durationMs < bestTotal) {
         bestTotal = res.stats.durationMs
@@ -219,8 +242,8 @@ async function main(): Promise<void> {
   console.log(`share: ${pct}`)
   if (args.tweak) {
     console.log(
-      `warm reuse: preprocess ${reuse.pre}  palette ${reuse.pal}  rings ${reuse.ring}` +
-        `  polygons ${reuse.poly}  ink ${reuse.ink}` +
+      `warm reuse: preprocess ${reuse.pre}  palette ${reuse.pal}  stack ${reuse.stack}` +
+        `  rings ${reuse.ring}  polygons ${reuse.poly}  ink ${reuse.ink}` +
         ` (of ${files.length} images)`,
     )
     if (mismatches > 0) {
@@ -230,6 +253,7 @@ async function main(): Promise<void> {
       process.exitCode = 1
     }
   }
+  await helperSet?.dispose()
 }
 
 main().catch((err) => {

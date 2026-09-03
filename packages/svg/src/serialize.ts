@@ -186,11 +186,19 @@ function gradientElement(g: SvgGradient, precision: number): string {
 /**
  * A shape as either a finished element (primitive or an un-optimized path) or,
  * when optimizing, a path split into its `d` and paint so consecutive shapes
- * sharing the exact paint can be merged into one `<path>`.
+ * sharing the exact paint can be merged into one `<path>`. Plain data, so a
+ * worker can produce it and the document assembler place it.
  */
-type ShapeOut = { kind: 'element'; svg: string } | { kind: 'path'; d: string; paint: string }
+export type ShapeOut = { kind: 'element'; svg: string } | { kind: 'path'; d: string; paint: string }
 
-function shapeOut(
+/**
+ * One shape's serialized form, independent of every other shape in the
+ * document: cleaned commands → a primitive element, or a `d` plus its paint
+ * attributes. `null` for a shape that contributes nothing. The document
+ * assembler ({@link serializeSvg}) folds, groups and orders these, so a caller
+ * may compute them elsewhere (in parallel) and hand them back by shape index.
+ */
+export function shapeOut(
   shape: SvgShape,
   precision: number,
   optimize: boolean,
@@ -222,7 +230,11 @@ function shapeOut(
  * inter-tag whitespace); `pretty` puts each child on its own 2-space-indented
  * line and ends with a newline.
  */
-export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
+export function serializeSvg(
+  doc: SvgDocument,
+  opts: SerializeOptions,
+  parts?: readonly (ShapeOut | null)[],
+): string {
   const precision = clampPrecision(opts.precision)
   const optimize = opts.optimizePaths === true
   const roundPrimitives = opts.roundPrimitives === true
@@ -269,7 +281,14 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
       opts.groupByLayer === true ? groupShapesByLayer(doc.shapes) : groupShapesByColor(doc.shapes)
     let layer = 0
     for (const group of groups) {
-      const body = foldShapes(group.shapes, precision, optimize, roundPrimitives)
+      const body = foldShapes(
+        doc.shapes,
+        group.indices,
+        precision,
+        optimize,
+        roundPrimitives,
+        parts,
+      )
       if (body.length === 0) continue
       layer++
       const groupOpen = `<g id="layer-${layer}"><title>${xmlEscape(group.key)}</title>`
@@ -280,7 +299,8 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
       )
     }
   } else {
-    for (const child of foldShapes(doc.shapes, precision, optimize, roundPrimitives)) {
+    const all = doc.shapes.map((_, i) => i)
+    for (const child of foldShapes(doc.shapes, all, precision, optimize, roundPrimitives, parts)) {
       children.push(child)
     }
   }
@@ -292,16 +312,20 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
 }
 
 /**
- * Emit shapes as finished element strings. Consecutive optimized paths that
- * share identical paint fold into one `<path>` (same-paint shapes in our output
- * are disjoint, so the union renders identically); primitives and un-optimized
- * paths flush the pending run. Shapes that produce no output are dropped.
+ * Emit the shapes at `indices` as finished element strings. Consecutive
+ * optimized paths that share identical paint fold into one `<path>` (same-paint
+ * shapes in our output are disjoint, so the union renders identically);
+ * primitives and un-optimized paths flush the pending run. Shapes that produce
+ * no output are dropped. `parts` supplies already-serialized shapes by index;
+ * any index it does not cover is serialized here.
  */
 function foldShapes(
   shapes: readonly SvgShape[],
+  indices: readonly number[],
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  parts?: readonly (ShapeOut | null)[],
 ): string[] {
   const out: string[] = []
   let pending: { d: string; paint: string } | null = null
@@ -311,8 +335,11 @@ function foldShapes(
       pending = null
     }
   }
-  for (const shape of shapes) {
-    const so = shapeOut(shape, precision, optimize, roundPrimitives)
+  for (const index of indices) {
+    const so =
+      parts !== undefined && index < parts.length
+        ? parts[index]
+        : shapeOut(shapes[index], precision, optimize, roundPrimitives)
     if (so === null) continue
     if (so.kind === 'element') {
       flush()
@@ -333,41 +360,48 @@ function paintKeyOf(shape: SvgShape): string {
   return shape.fill !== undefined && shape.fill !== 'none' ? shape.fill : (shape.stroke ?? '')
 }
 
+/** A serialization group: its `<title>` paint key and the shape indices it holds. */
+interface ShapeGroup {
+  key: string
+  indices: number[]
+}
+
 /**
- * Partition shapes into one bucket per paint color — the fill, or the stroke
- * when there is no fill — keeping the order in which each color first appears.
+ * Partition shape indices into one bucket per paint color — the fill, or the
+ * stroke when there is no fill — keeping the order in which each color first
+ * appears.
  */
-function groupShapesByColor(shapes: readonly SvgShape[]): { key: string; shapes: SvgShape[] }[] {
-  const groups: { key: string; shapes: SvgShape[] }[] = []
-  const byKey = new Map<string, SvgShape[]>()
-  for (const shape of shapes) {
-    const key = paintKeyOf(shape)
+function groupShapesByColor(shapes: readonly SvgShape[]): ShapeGroup[] {
+  const groups: ShapeGroup[] = []
+  const byKey = new Map<string, number[]>()
+  for (let i = 0; i < shapes.length; i++) {
+    const key = paintKeyOf(shapes[i])
     let bucket = byKey.get(key)
     if (bucket === undefined) {
       bucket = []
       byKey.set(key, bucket)
-      groups.push({ key, shapes: bucket })
+      groups.push({ key, indices: bucket })
     }
-    bucket.push(shape)
+    bucket.push(i)
   }
   return groups
 }
 
 /**
- * Partition shapes into runs sharing `layerId`, preserving paint order — one
- * group per stacking layer, keyed by the run's paint color. A shape with no
+ * Partition shape indices into runs sharing `layerId`, preserving paint order —
+ * one group per stacking layer, keyed by the run's paint color. A shape with no
  * `layerId` forms its own run, so mixed input still serializes sanely.
  */
-function groupShapesByLayer(shapes: readonly SvgShape[]): { key: string; shapes: SvgShape[] }[] {
-  const groups: { key: string; shapes: SvgShape[] }[] = []
-  let current: { shapes: SvgShape[]; id: number | undefined } | null = null
-  for (const shape of shapes) {
-    const id = shape.layerId
+function groupShapesByLayer(shapes: readonly SvgShape[]): ShapeGroup[] {
+  const groups: ShapeGroup[] = []
+  let current: { indices: number[]; id: number | undefined } | null = null
+  for (let i = 0; i < shapes.length; i++) {
+    const id = shapes[i].layerId
     if (current === null || id === undefined || id !== current.id) {
-      current = { shapes: [shape], id }
-      groups.push({ key: paintKeyOf(shape), shapes: current.shapes })
+      current = { indices: [i], id }
+      groups.push({ key: paintKeyOf(shapes[i]), indices: current.indices })
     } else {
-      current.shapes.push(shape)
+      current.indices.push(i)
     }
   }
   return groups

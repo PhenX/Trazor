@@ -408,6 +408,48 @@ export function polygonToCommands(
 ): PathCommand[]
 ```
 
+The seam-free cutout partition, in three steps a caller can drive separately — walk the boundary network, fit each
+chain (the parallel unit; a chain is fitted ONCE and both neighbours reuse it, which is what makes the partition
+seam-free), then assemble the regions from the collected fits.
+`traceLabelMap(labels, opts) === assembleRegions(network, fitChains(network, opts))` for
+`network = extractChains(labels)`:
+
+```ts
+export interface BoundaryChain {
+  points: FlatPoints // integer pixel corners, junction → junction or closing on its own start
+  left: number // label left of forward travel (-1 outside the image / unlabeled)
+  right: number
+  loop: boolean // returns to its own start corner
+  firstDir: number // first/last step direction: 0 = +x, 1 = +y, 2 = −x, 3 = −y
+  lastDir: number
+  shoelace: number // open shoelace sum Σ (x_i·y_{i+1} − x_{i+1}·y_i) along forward travel
+}
+export interface ChainNetwork {
+  width: number
+  height: number
+  chains: BoundaryChain[]
+  areas: Map<number, number> // pixel count per label, for RegionShape.area
+}
+// One chain's fitted geometry. `open` is the forward run WITHOUT a leading M (and without a Z) — the
+// form a ring splices in as it passes through. A chain that returns to its own start corner also
+// carries `closed`, the complete closed ring (M…Z) a region uses when the chain IS the whole ring;
+// reached instead as a continuation of a larger ring, that same chain contributes its `open` run.
+export interface ChainFit {
+  open: PathCommand[]
+  closed?: PathCommand[]
+}
+// Walk the label map's crack network once. Depends on the label map alone, so a caller may extract
+// once and re-fit many times.
+export function extractChains(labels: LabelMap): ChainNetwork
+// Fit chain `index`. Every chain is independent, so a caller may fit them in any order or in
+// parallel (the engine's helper pool does) and place the results by index.
+export function fitChain(network: ChainNetwork, index: number, opts: TraceCutoutOptions): ChainFit
+export function fitChains(network: ChainNetwork, opts: TraceCutoutOptions): ChainFit[]
+// Regions from the fitted chains: each ring walks the chain instances around it, reusing the
+// identical fit (reversed for the left-hand instance). `fits` is parallel to `network.chains`.
+export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]): RegionShape[]
+```
+
 ## @trazor/svg
 
 ```ts
@@ -452,7 +494,29 @@ export interface SerializeOptions {
   // pupil island above it) as separate layers. Takes precedence over groupByColor.
   groupByLayer?: boolean
 }
-export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string
+// `parts` (optional) supplies already-serialized shapes by shape index — see shapeOut. Any index it
+// does not cover is serialized here, so serializeSvg(doc, opts) and
+// serializeSvg(doc, opts, doc.shapes.map((s) => shapeOut(s, opts.precision, optimize, round)))
+// are byte-identical.
+export function serializeSvg(
+  doc: SvgDocument,
+  opts: SerializeOptions,
+  parts?: readonly (ShapeOut | null)[],
+): string
+// A shape as either a finished element (primitive, or an un-optimized path) or, when optimizing, a
+// path split into its `d` and its paint attributes so consecutive shapes sharing the exact paint
+// fold into one <path>.
+export type ShapeOut = { kind: 'element'; svg: string } | { kind: 'path'; d: string; paint: string }
+// One shape's serialized form, independent of every other shape in the document; null for a shape
+// that contributes nothing (no geometry, or no paint). The document assembler (serializeSvg) folds,
+// groups and orders these, so a caller may compute them elsewhere — in parallel, in a worker — and
+// hand them back by shape index.
+export function shapeOut(
+  shape: SvgShape,
+  precision: number,
+  optimize: boolean,
+  roundPrimitives: boolean,
+): ShapeOut | null
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
 // Shortest `d` for the same geometry as buildPathData: per-command absolute vs
 // relative vs H/V selection, quantized on the output grid (drift-free deltas).
@@ -678,6 +742,10 @@ export type WorkerInMessage =
       trace?: boolean // opt into per-stage tracing, streamed back as `trace-step`
     }
   | { type: 'cancel'; id: number }
+  // Hand the worker its helper workers, one transferred MessagePort each (the other end runs
+  // installHelperHandler). The worker builds a HelperPool from them and traces in parallel from the
+  // next run on; an empty list returns it to the sequential path.
+  | { type: 'helpers'; ports: HelperEndpoint[] }
 export type WorkerOutMessage =
   | { type: 'progress'; id: number; stage: StageId; overall: number }
   | { type: 'trace-step'; id: number; step: TraceStep } // one recorded pipeline step (raster snapshots transferred)
@@ -719,7 +787,10 @@ export function vectorize(
   // `document` (a VectorDocument), so a consumer can emit alternate formats
   // (PDF/DXF/…) from full-precision paths without re-parsing the SVG. Off by
   // default; the interactive TrazorClient requests it, the batch pool does not.
-  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean },
+  // helpers (optional) farms the trace and the per-shape serialization out to a HelperPool. Absent or
+  // empty, the whole pipeline runs on this thread — the default. Results are placed by unit index,
+  // so the SVG text, the shapes and `document` are byte-identical to a sequential run.
+  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean; helpers?: HelperPool },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
 // small LRU of palette/label entries (keyed internally by imageId + settings
@@ -738,7 +809,12 @@ export interface StageCacheStats {
   preMisses: number
   palHits: number
   palMisses: number
-  ringHits: number // decomposed rings reused (stacked layers, and the bw mask)
+  stackHits: number // the stacked layering plan reused (order, lifted islands, base label map)
+  stackMisses: number
+  // Decomposed rings reused: the stacked layers' rings and the bw mask's. With a helper pool the
+  // per-layer rings and polygons live in the helper that owns each unit, so these then cover only
+  // the coordinator's own share (the bw ring decomposition) and polyHits/polyMisses stay 0.
+  ringHits: number
   ringMisses: number
   polyHits: number // adjusted polygons reused (never counted in pixel curveMode, which has none)
   polyMisses: number
@@ -809,6 +885,48 @@ export interface TraceChart {
   xLabel?: string
   yLabel?: string
   log?: boolean
+}
+
+// helper.ts / helper-pool.ts — parallel tracing across helper workers.
+//
+// A helper is a stateful engine instance: it is sent the working image, the stacked layering plan,
+// the bw shapes' rings or its share of the cutout chain network ONCE per key, keeps its own
+// ring/polygon caches (so a warm curve tweak re-fits in the helper without shipping or recomputing
+// geometry), and answers job messages one unit at a time. The parallel unit is:
+//   trace-layers — one stacked layer: rebuild its union flood mask from the shared plan, decompose,
+//                  curve-fit and serialize its shapes.
+//   trace-rings  — one ring of the bw mask: its polygon and curve stages. A bw shape is an outer ring
+//                  plus the holes under it, and one ink silhouette routinely carries most of the
+//                  rings in an image, so the ring is the unit that balances; the coordinator
+//                  concatenates each shape from its rings' fits and serializes it.
+//   fit-chains   — one cutout boundary chain: fit it once, with the junction endpoints both
+//                  neighbours reuse. No serialization — the coordinator assembles the regions from
+//                  the shared fits, which is what keeps the partition seam-free.
+// Centerline stays on the coordinator: the skeleton graph walk is one indivisible pass.
+//
+// Units are partitioned round-robin by unit index — deterministic, so a re-run hands each unit to
+// the helper that already holds its cache — and results are handed back strictly in unit order
+// whatever order the helpers finish in. A helper answers in batches of `batch` units and yields its
+// event loop once per batch, so a cancel interleaves with a running job.
+//
+// MEMORY: each helper holds its own copy of what it is sent — the working image (4·w·h bytes, 45 MB
+// at 4096×2731), plus for stacked the label map (4·w·h) and its pixel buckets, for bw its share of
+// the rings and the coverage field (4·w·h), and for cutout the Oklab buffer it derives (12·w·h) —
+// on top of its ring and polygon caches. Size the pool for the image, not only for the core count.
+export interface HelperEndpoint {
+  // A DOM Worker, a MessagePort, and a Node worker_threads MessagePort all satisfy this (a Node
+  // worker_threads Worker is an EventEmitter, not an EventTarget — wrap it, or hand over a
+  // MessagePort from a MessageChannel).
+  postMessage(message: unknown, transfer?: Transferable[]): void
+  addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void
+}
+// Run in a helper worker: wires the handler to the port/scope the consumer supplied.
+export function installHelperHandler(scope: WorkerScope): void
+export class HelperPool {
+  constructor(endpoints: readonly HelperEndpoint[])
+  readonly size: number // 0 ⇒ the caller runs everything itself
+  helperOf(unit: number): number // round-robin owner of a unit
+  cancel(): void // every dispatch in flight rejects with CancelledError
 }
 
 // pool.ts — a fixed worker pool for throughput work (the settings search).

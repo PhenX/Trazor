@@ -45,25 +45,54 @@ export interface RegionShape {
   holeCount: number
 }
 
-// Directions: 0 = +x, 1 = +y, 2 = −x, 3 = −y (screen y-down, clockwise order).
-const DX = [1, 0, -1, 0]
-const DY = [0, 1, 0, -1]
-
-interface Chain {
+/**
+ * One walked edge of the label map's boundary network: junction → junction, or
+ * a pure loop. Lattice `points` are integer pixel corners; `left`/`right` are
+ * the labels on either side of forward travel (`-1` outside the image or on an
+ * unlabeled pixel).
+ */
+export interface BoundaryChain {
   points: FlatPoints
-  /** Labels on the left/right of forward travel. */
   left: number
   right: number
   loop: boolean
-  /** First/last step direction when traveling forward. */
+  /** First/last step direction when traveling forward (0 = +x, 1 = +y, 2 = −x, 3 = −y). */
   firstDir: number
   lastDir: number
   /** Open shoelace sum Σ (x_i·y_{i+1} − x_{i+1}·y_i) along forward travel. */
   shoelace: number
-  fwd: PathCommand[] | null
-  rev: PathCommand[] | null
-  fwdClosed: PathCommand[] | null
 }
+
+/**
+ * One chain's fitted geometry. `open` is the forward run WITHOUT a leading M,
+ * starting at the chain's first point — the form a ring splices in as it passes
+ * through. A chain that returns to its own start corner also carries `closed`,
+ * the complete closed ring (M…Z) that a region uses when the chain is the whole
+ * ring; reached instead as a continuation of a larger ring, that same chain
+ * contributes its `open` run.
+ */
+export interface ChainFit {
+  open: PathCommand[]
+  closed?: PathCommand[]
+}
+
+/**
+ * The label map's complete boundary network: every crack walked exactly once
+ * into chains, plus each label's pixel count. Plain data — a chain can be
+ * fitted anywhere ({@link fitChain}) and the regions assembled from the fits
+ * ({@link assembleRegions}).
+ */
+export interface ChainNetwork {
+  width: number
+  height: number
+  chains: BoundaryChain[]
+  /** Pixel count per label, for `RegionShape.area`. */
+  areas: Map<number, number>
+}
+
+// Directions: 0 = +x, 1 = +y, 2 = −x, 3 = −y (screen y-down, clockwise order).
+const DX = [1, 0, -1, 0]
+const DY = [0, 1, 0, -1]
 
 /**
  * Seam-free partition tracing. The label map's boundary network is walked once
@@ -73,6 +102,17 @@ interface Chain {
  * share mathematically identical boundaries: no gaps, no overlaps.
  */
 export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): RegionShape[] {
+  const network = extractChains(labels)
+  return assembleRegions(network, fitChains(network, opts))
+}
+
+/**
+ * Walk the label map's crack network into chains (Selinger-style crack
+ * boundaries between differing labels): a chain runs junction → junction, or
+ * closes on itself as a pure loop. Depends on the label map alone, so a caller
+ * may extract once and re-fit many times through {@link fitChain}.
+ */
+export function extractChains(labels: LabelMap): ChainNetwork {
   const { width: w, height: h, data } = labels
   const labelAt = (x: number, y: number): number =>
     x >= 0 && x < w && y >= 0 && y < h ? data[y * w + x] : -1
@@ -144,7 +184,7 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
   }
 
   // ---- chain extraction ----
-  const chains: Chain[] = []
+  const chains: BoundaryChain[] = []
 
   const walkChain = (sx: number, sy: number, sd: number, stopAtJunction: boolean): void => {
     const [left, right] = sideLabels(sx, sy, sd)
@@ -184,9 +224,6 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
       firstDir,
       lastDir: d,
       shoelace,
-      fwd: null,
-      rev: null,
-      fwdClosed: null,
     })
   }
 
@@ -210,10 +247,86 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
   }
 
   // ---- region pixel counts ----
-  const counts = new Map<number, number>()
+  const areas = new Map<number, number>()
   for (let i = 0; i < data.length; i++) {
     const l = data[i]
-    if (l >= 0) counts.set(l, (counts.get(l) ?? 0) + 1)
+    if (l >= 0) areas.set(l, (areas.get(l) ?? 0) + 1)
+  }
+
+  return { width: w, height: h, chains, areas }
+}
+
+/**
+ * Fit one chain of the network under the curve settings. Junction endpoints are
+ * exact lattice corners, so the two regions that share the chain still meet;
+ * every chain is independent, so a caller may fit them in any order or in
+ * parallel, and both neighbors reuse the one fit (reversed on the assembly
+ * side) — which is what makes the partition seam-free.
+ */
+export function fitChain(network: ChainNetwork, index: number, opts: TraceCutoutOptions): ChainFit {
+  const chain = network.chains[index]
+  const field = chainField(network, chain, opts)
+  const open = withRefine(fitOpenChain(chain.points, opts, field), chain, opts)
+  if (!chain.loop) return { open }
+  const loop = fitLoop(chain.points, opts, field)
+  return { open, closed: opts.refineChain ? opts.refineChain(loop) : loop }
+}
+
+/** Fit every chain of the network, parallel to `network.chains`. */
+export function fitChains(network: ChainNetwork, opts: TraceCutoutOptions): ChainFit[] {
+  const fits: ChainFit[] = new Array(network.chains.length)
+  for (let i = 0; i < network.chains.length; i++) fits[i] = fitChain(network, i, opts)
+  return fits
+}
+
+/**
+ * Apply the chain refinement (arc fitting) once, with the leading M so an arc
+ * knows its start point, then strip the M back off. Both instances share this
+ * fit, so the reverse inherits the identical (reversed) transform — the seam
+ * stays exact.
+ */
+function withRefine(
+  open: PathCommand[],
+  chain: BoundaryChain,
+  opts: TraceCutoutOptions,
+): PathCommand[] {
+  if (!opts.refineChain) return open
+  const sx = chain.points[0]
+  const sy = chain.points[1]
+  return stripM(opts.refineChain([{ type: 'M', x: sx, y: sy }, ...open]))
+}
+
+/**
+ * Assemble the regions of a partition from the fitted chains: each region walks
+ * the chain instances around every one of its rings, reusing the identical fit
+ * (reversed for the left-hand instance). `fits` must be parallel to
+ * `network.chains` — the output of {@link fitChain} per index.
+ */
+export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]): RegionShape[] {
+  const { chains, areas } = network
+  const cw = network.width + 1
+  // Reversed fit per chain, built on first use and shared by every ring that
+  // travels the chain backwards.
+  const reversed: (PathCommand[] | null)[] = new Array(chains.length).fill(null)
+
+  /** The whole closed ring of a chain that is a region's entire ring. */
+  const ringCommandsOf = (inst: Instance): PathCommand[] => {
+    const i = inst.chain
+    const closed = fits[i].closed as PathCommand[]
+    if (inst.forward) return closed
+    return (reversed[i] ??= reverseCommands(closed))
+  }
+
+  /** The open run of a chain the ring passes through. */
+  const runCommandsOf = (inst: Instance): PathCommand[] => {
+    const i = inst.chain
+    if (inst.forward) return fits[i].open
+    return (reversed[i] ??= stripM(
+      reverseCommands([
+        { type: 'M', x: chains[i].points[0], y: chains[i].points[1] },
+        ...fits[i].open,
+      ]),
+    ))
   }
 
   // ---- per-region instance index ----
@@ -221,9 +334,9 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
   const cornerKey = (x: number, y: number): number => y * cw + x
   const addInstance = (label: number, inst: Instance): void => {
     if (label < 0) return
-    const c = inst.chain
-    const sx = inst.forward ? c.points[0] : c.points[c.points.length - 2]
-    const sy = inst.forward ? c.points[1] : c.points[c.points.length - 1]
+    const p = chains[inst.chain].points
+    const sx = inst.forward ? p[0] : p[p.length - 2]
+    const sy = inst.forward ? p[1] : p[p.length - 1]
     let byCorner = regionInstances.get(label)
     if (!byCorner) {
       byCorner = new Map()
@@ -237,27 +350,11 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
     }
     list.push(inst)
   }
-  for (const chain of chains) {
-    addInstance(chain.right, { chain, forward: true, used: false })
-    addInstance(chain.left, { chain, forward: false, used: false })
+  for (let i = 0; i < chains.length; i++) {
+    addInstance(chains[i].right, { chain: i, forward: true, used: false })
+    addInstance(chains[i].left, { chain: i, forward: false, used: false })
   }
 
-  // Sub-pixel color-boundary field for a chain, from its two region colors.
-  const makeField = (chain: Chain): SignedField | undefined => {
-    const cf = opts.colorField
-    if (!cf || chain.left < 0 || chain.right < 0) return undefined
-    const li = chain.left * 3
-    const ri = chain.right * 3
-    return pairwiseField(
-      cf.oklab,
-      w,
-      h,
-      [cf.paletteOklab[li], cf.paletteOklab[li + 1], cf.paletteOklab[li + 2]],
-      [cf.paletteOklab[ri], cf.paletteOklab[ri + 1], cf.paletteOklab[ri + 2]],
-    )
-  }
-
-  // ---- assembly ----
   const shapes: RegionShape[] = []
   for (const [label, byCorner] of regionInstances) {
     const commands: PathCommand[] = []
@@ -265,31 +362,34 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
     for (const list of byCorner.values()) {
       for (const start of list) {
         if (start.used) continue
+        const startChain = chains[start.chain]
 
-        if (start.chain.loop) {
-          // Pure loop: its fitted commands are already a complete closed ring.
+        if (startChain.loop) {
+          // The chain closes on its own start corner, so its fitted commands are
+          // already this region's complete ring.
           start.used = true
-          const area = (start.forward ? start.chain.shoelace : -start.chain.shoelace) / 2
+          const area = (start.forward ? startChain.shoelace : -startChain.shoelace) / 2
           if (area < 0) holeCount++
-          commands.push(...loopCommands(start.chain, start.forward, opts, makeField))
+          commands.push(...ringCommandsOf(start))
           continue
         }
 
         // Follow chain instances until the cycle returns to the start instance.
         let ringArea = 0
         const ringCmds: PathCommand[] = []
-        const p = start.chain.points
+        const p = startChain.points
         const sx = start.forward ? p[0] : p[p.length - 2]
         const sy = start.forward ? p[1] : p[p.length - 1]
         ringCmds.push({ type: 'M', x: sx, y: sy })
         let inst = start
         for (;;) {
           inst.used = true
-          ringArea += inst.forward ? inst.chain.shoelace : -inst.chain.shoelace
-          ringCmds.push(...instanceCommands(inst, opts, makeField))
-          const [ex, ey] = instEnd(inst)
+          const c = chains[inst.chain]
+          ringArea += inst.forward ? c.shoelace : -c.shoelace
+          ringCmds.push(...runCommandsOf(inst))
+          const [ex, ey] = instEnd(chains, inst)
           const nextList = byCorner.get(cornerKey(ex, ey))
-          const next = pickContinuation(nextList, instLastDir(inst), start)
+          const next = pickContinuation(chains, nextList, instLastDir(chains, inst), start)
           if (!next || next === start) break
           inst = next
         }
@@ -299,92 +399,70 @@ export function traceLabelMap(labels: LabelMap, opts: TraceCutoutOptions): Regio
       }
     }
     if (commands.length > 0) {
-      shapes.push({ label, commands, area: counts.get(label) ?? 0, holeCount })
+      shapes.push({ label, commands, area: areas.get(label) ?? 0, holeCount })
     }
   }
   return shapes
-
-  function pickContinuation(
-    list: Instance[] | undefined,
-    incoming: number,
-    start: Instance,
-  ): Instance | null {
-    if (!list) return null
-    // Prefer the sharpest right turn: right, straight, left, u-turn. The start
-    // instance stays eligible (though marked used) — reaching it closes the ring.
-    for (const turn of [1, 0, 3, 2]) {
-      const want = (incoming + turn) % 4
-      for (const inst of list) {
-        if ((inst === start || !inst.used) && instFirstDir(inst) === want) return inst
-      }
-    }
-    return null
-  }
 }
 
+/** Sub-pixel color-boundary field for a chain, from its two region colors. */
+function chainField(
+  network: ChainNetwork,
+  chain: BoundaryChain,
+  opts: TraceCutoutOptions,
+): SignedField | undefined {
+  const cf = opts.colorField
+  if (!cf || chain.left < 0 || chain.right < 0) return undefined
+  const li = chain.left * 3
+  const ri = chain.right * 3
+  return pairwiseField(
+    cf.oklab,
+    network.width,
+    network.height,
+    [cf.paletteOklab[li], cf.paletteOklab[li + 1], cf.paletteOklab[li + 2]],
+    [cf.paletteOklab[ri], cf.paletteOklab[ri + 1], cf.paletteOklab[ri + 2]],
+  )
+}
+
+/** One directed traversal of a chain by one of the two regions that share it. */
 interface Instance {
-  chain: Chain
+  /** Index into `ChainNetwork.chains`. */
+  chain: number
   forward: boolean
   used: boolean
 }
 
-function instFirstDir(inst: Instance): number {
-  return inst.forward ? inst.chain.firstDir : (inst.chain.lastDir + 2) % 4
-}
-
-function instLastDir(inst: Instance): number {
-  return inst.forward ? inst.chain.lastDir : (inst.chain.firstDir + 2) % 4
-}
-
-function instEnd(inst: Instance): [number, number] {
-  const p = inst.chain.points
-  return inst.forward ? [p[p.length - 2], p[p.length - 1]] : [p[0], p[1]]
-}
-
-/** Fitted commands of one directed OPEN chain instance, memoized per chain. */
-function instanceCommands(
-  inst: { chain: Chain; forward: boolean },
-  opts: TraceCutoutOptions,
-  makeField: (chain: Chain) => SignedField | undefined,
-): PathCommand[] {
-  const chain = inst.chain
-  if (!chain.fwd) {
-    const fwd = fitOpenChain(chain.points, opts, makeField(chain))
-    // Refine the chain once, with its leading M so an arc knows its start point,
-    // then strip the M back off. Both instances share this, so the reverse below
-    // inherits the identical (reversed) transform — the seam stays exact.
-    if (opts.refineChain) {
-      const sx = chain.points[0]
-      const sy = chain.points[1]
-      chain.fwd = stripM(opts.refineChain([{ type: 'M', x: sx, y: sy }, ...fwd]))
-    } else {
-      chain.fwd = fwd
+function pickContinuation(
+  chains: readonly BoundaryChain[],
+  list: Instance[] | undefined,
+  incoming: number,
+  start: Instance,
+): Instance | null {
+  if (!list) return null
+  // Prefer the sharpest right turn: right, straight, left, u-turn. The start
+  // instance stays eligible (though marked used) — reaching it closes the ring.
+  for (const turn of [1, 0, 3, 2]) {
+    const want = (incoming + turn) % 4
+    for (const inst of list) {
+      if ((inst === start || !inst.used) && instFirstDir(chains, inst) === want) return inst
     }
   }
-  if (inst.forward) return chain.fwd
-  if (!chain.rev) {
-    const sx = chain.points[0]
-    const sy = chain.points[1]
-    const full: PathCommand[] = [{ type: 'M', x: sx, y: sy }, ...chain.fwd]
-    chain.rev = stripM(reverseCommands(full))
-  }
-  return chain.rev
+  return null
 }
 
-/** Complete closed ring commands of a pure-loop chain (memoized, shared). */
-function loopCommands(
-  chain: Chain,
-  forward: boolean,
-  opts: TraceCutoutOptions,
-  makeField: (chain: Chain) => SignedField | undefined,
-): PathCommand[] {
-  if (!chain.fwdClosed) {
-    const loop = fitLoop(chain.points, opts, makeField(chain))
-    chain.fwdClosed = opts.refineChain ? opts.refineChain(loop) : loop
-  }
-  if (forward) return chain.fwdClosed
-  if (!chain.rev) chain.rev = reverseCommands(chain.fwdClosed)
-  return chain.rev
+function instFirstDir(chains: readonly BoundaryChain[], inst: Instance): number {
+  const c = chains[inst.chain]
+  return inst.forward ? c.firstDir : (c.lastDir + 2) % 4
+}
+
+function instLastDir(chains: readonly BoundaryChain[], inst: Instance): number {
+  const c = chains[inst.chain]
+  return inst.forward ? c.lastDir : (c.firstDir + 2) % 4
+}
+
+function instEnd(chains: readonly BoundaryChain[], inst: Instance): [number, number] {
+  const p = chains[inst.chain].points
+  return inst.forward ? [p[p.length - 2], p[p.length - 1]] : [p[0], p[1]]
 }
 
 function stripM(commands: PathCommand[]): PathCommand[] {

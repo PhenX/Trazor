@@ -50,6 +50,7 @@ class FakeWorker {
       this.cancelled.add(msg.id)
       return
     }
+    if (msg.type !== 'vectorize') return
     const aff = this.settingsAffinity(msg.settings)
     this.affinities.push(aff)
     this.tracker.inFlight++
