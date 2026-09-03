@@ -34,8 +34,9 @@
  *
  * A band whose pixels mix two layers — quantization put a glow's faint skirt and
  * the sky behind it under one centroid — is explained by neither a ramp nor an
- * overlay and keeps its flat fill; the ramps on either side of it ship
- * separately.
+ * overlay and keeps its flat fill; the ramp pieces on either side of it still
+ * merge (a pair sharing a neighbor is a candidate), and an opaque ramp that an
+ * overlay explains as well joins the overlay.
  *
  * Stops follow the pixel profile in Oklab and are simplified by Douglas–Peucker,
  * so a straight ramp keeps 2 stops and a curved one the few it needs. When the
@@ -195,6 +196,13 @@ const RADIAL_MAX_UNEXPLAINED = 0.15
  * its flat fill. Binning and stop simplification cost about this much.
  */
 const MEMBER_TOLERANCE = 2.5e-4
+/**
+ * Additional share of a member's own flat error the union may exceed it by. A
+ * band whose pixels already mix two layers has a large flat error, and a ramp
+ * through it is judged by the same measure; a truly flat foreign band has
+ * none, and keeps the absolute tolerance alone (and the per-bin outlier gate).
+ */
+const MEMBER_SLACK = 0.5
 /**
  * Per-pixel Oklab error is capped at this before ramp and flat fills are
  * compared, so a minority of pixels that neither fill explains — the fringe of
@@ -576,12 +584,11 @@ interface Built {
   paint: GradientPaint
   /** Mean per-pixel Oklab distance of the fitted pixels to the painted ramp. */
   residual: number
-  /** Kept stops as [offset, L, a, b] per stop (composited colors): what the paint renders at a point. */
-  lab: Float64Array
   /**
    * Every populated profile bin as [offset, r, g, b] (sRGB, 0-1): the ramp
    * before stop simplification, accurate to the noise, in the space an SVG
-   * renderer composites in — for fitting an overlay on top of it.
+   * renderer composites in — for fitting an overlay on top of it. The painted
+   * stops stay within STOP_TOLERANCE of it.
    */
   fineRgb: Float64Array
   /** Any stop carries opacity (a fade of the source, or an overlay). */
@@ -589,10 +596,10 @@ interface Built {
 }
 
 /** Simplified stops plus the per-bin Oklab colors they were read from. */
-/** Simplified stops, the same stops' composited Oklab (for scoring), and the unsimplified bins in sRGB. */
+/** Simplified stops, and the unsimplified bins as composited Oklab (what the gates judge) and sRGB (what an overlay is fitted over). */
 interface Profile {
   stops: GradientStop[]
-  lab: Float64Array
+  fineLab: Float64Array
   fineRgb: Float64Array
   translucent: boolean
 }
@@ -780,16 +787,20 @@ function profileToStops(
   // longer reads as a reversal, while a genuine there-and-back still does.
   if (pathBacktrack(kept.map((i) => cols[i])) > maxBacktrack) return null
 
+  const fineLab = new Float64Array(np * 4)
   const fineRgb = new Float64Array(np * 4)
   for (let i = 0; i < np; i++) {
     const [r, g, b] = oklabToRgb(cols[i][0], cols[i][1], cols[i][2])
+    fineLab[i * 4] = offs[i]
+    fineLab[i * 4 + 1] = cols[i][0]
+    fineLab[i * 4 + 2] = cols[i][1]
+    fineLab[i * 4 + 3] = cols[i][2]
     fineRgb[i * 4] = offs[i]
     fineRgb[i * 4 + 1] = r
     fineRgb[i * 4 + 2] = g
     fineRgb[i * 4 + 3] = b
   }
   const nk = kept.length
-  const lab = new Float64Array(nk * 4)
   let translucent = false
   const stops: GradientStop[] = []
   for (let k = 0; k < nk; k++) {
@@ -813,10 +824,6 @@ function profileToStops(
       cover = cnt * (cover / cnt + (bins[bj + 7] / bins[bj] - cover / cnt) * u)
       offset = end
     }
-    lab[k * 4] = offset
-    lab[k * 4 + 1] = L
-    lab[k * 4 + 2] = A
-    lab[k * 4 + 3] = B
     // A fully covered bin keeps the composited Oklab mean; a partially covered
     // one un-composites: straight color = Σ(premultiplied) / Σα.
     const opacity = ctx.alpha === null || cover >= cnt - 1e-9 ? undefined : opacityOf(cover / cnt)
@@ -832,7 +839,7 @@ function profileToStops(
         : oklabToHex(L, A, B)
     stops.push({ offset, color, opacity })
   }
-  return { stops, lab, fineRgb, translucent }
+  return { stops, fineLab, fineRgb, translucent }
 }
 
 /**
@@ -928,14 +935,19 @@ function labAt(lab: Float64Array, t: number, out: Float64Array): void {
   out[2] = lab[a + 3] + (lab[b + 3] - lab[a + 3]) * u
 }
 
-/** Opacity stops as a flat [offset, opacity] table for interpolation. */
-function alphaTable(stops: readonly GradientStop[]): Float64Array {
-  const t = new Float64Array(stops.length * 2)
-  stops.forEach((s, i) => {
-    t[i * 2] = s.offset
-    t[i * 2 + 1] = s.opacity ?? 1
-  })
-  return t
+/**
+ * A populated opacity-profile's bin means as a flat [offset, opacity] table —
+ * the opacity ramp itself, which the emitted stops follow within
+ * ALPHA_STOP_TOLERANCE.
+ */
+function alphaBinTable(bins: Float64Array): Float64Array {
+  const out: number[] = []
+  for (let i = 0; i < BIN_COUNT; i++) {
+    const b = i * ABIN_FIELDS
+    if (bins[b] <= 0) continue
+    out.push(bins[b + 2] / bins[b], Math.min(1, Math.max(0, bins[b + 1] / bins[b])))
+  }
+  return Float64Array.from(out)
 }
 
 /** Interpolated opacity at `t` (clamped past the ends). */
@@ -1090,16 +1102,17 @@ function addError(sc: Score, i: number, t: number, d2: number, f2: number): void
  * Whether a model's score clears every pixel-level gate: mean error under
  * MAX_RESIDUAL; the members' pooled flat-fill error reduced by
  * MIN_IMPROVEMENT; no member left worse off than its own flat fill by more
- * than MEMBER_TOLERANCE; and no well-populated bin with more than
+ * than MEMBER_TOLERANCE plus MEMBER_SLACK of that flat error; and no
+ * well-populated bin with more than
  * MAX_BIN_OUTLIERS of its pixels off the fit.
  */
 function accepts(sc: Score, n: number, memberN: Float64Array): boolean {
   if (sc.abs / n > MAX_RESIDUAL) return false
   if (sc.flatSse <= 0 || 1 - sc.sse / sc.flatSse < MIN_IMPROVEMENT) return false
   for (let i = 0; i < memberN.length; i++) {
-    if (memberN[i] > 0 && (sc.perMember[i] - sc.perMemberFlat[i]) / memberN[i] > MEMBER_TOLERANCE) {
-      return false
-    }
+    if (memberN[i] <= 0) continue
+    const flat = sc.perMemberFlat[i] / memberN[i]
+    if (sc.perMember[i] / memberN[i] > flat + MEMBER_TOLERANCE + MEMBER_SLACK * flat) return false
   }
   let maxPop = 0
   for (let b = 0; b < BIN_COUNT; b++) if (sc.binN[b] > maxPop) maxPop = sc.binN[b]
@@ -1198,8 +1211,9 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
   const profR = binsR ? profileToStops(binsR, ctx, 1, minSpan) : null
   if (!profL && !profR) return null
 
-  // Pass 3: score each surviving model against the stops it would paint, and
-  // the members' own flat fills against the same pixels.
+  // Pass 3: score each surviving model's profile — the ramp itself, which the
+  // painted stops follow within STOP_TOLERANCE — and the members' own flat
+  // fills against the same pixels.
   const out = ctx.lab
   const scL = newScore(members.length)
   const scR = newScore(members.length)
@@ -1218,12 +1232,12 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
       const f2 = flatError(ok, base, means, i)
       if (profL) {
         const t = (dx * px + dy * py - smin) / span
-        labAt(profL.lab, t, out)
+        labAt(profL.fineLab, t, out)
         addError(scL, i, t, deltaEOkSq3(ok, base, out), f2)
       }
       if (profR) {
         const t = Math.hypot(px - rcx, py - rcy) / rmax
-        labAt(profR.lab, t, out)
+        labAt(profR.fineLab, t, out)
         addError(scR, i, t, deltaEOkSq3(ok, base, out), f2)
       }
     }
@@ -1235,7 +1249,6 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
     const sc = dx * cx + dy * cy
     best = {
       residual: scL.abs / sampled,
-      lab: profL.lab,
       fineRgb: profL.fineRgb,
       translucent: profL.translucent,
       paint: {
@@ -1252,7 +1265,6 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
     if (best === null || scR.abs < scL.abs) {
       best = {
         residual: scR.abs / sampled,
-        lab: profR.lab,
         fineRgb: profR.fineRgb,
         translucent: profR.translucent,
         paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: profR.stops },
@@ -1484,11 +1496,11 @@ function fitOverlay(
   const stopsL = binsL ? alphaProfileToStops(binsL, hex, ctx.maxBacktrack, minSpan) : null
   const stopsR = binsR ? alphaProfileToStops(binsR, hex, 1, minSpan) : null
   if (!stopsL && !stopsR) return null
-  const alphaL = stopsL ? alphaTable(stopsL) : null
-  const alphaR = stopsR ? alphaTable(stopsR) : null
+  const alphaL = binsL && stopsL ? alphaBinTable(binsL) : null
+  const alphaR = binsR && stopsR ? alphaBinTable(binsR) : null
 
-  // Pass 5: score the composite each model paints (in Oklab, like every other
-  // gate), and the members' own flat fills.
+  // Pass 5: score the composite each model's opacity profile paints (in
+  // Oklab, like every other gate), and the members' own flat fills.
   const scL = newScore(members.length)
   const scR = newScore(members.length)
   const memberN = new Float64Array(members.length)
@@ -1538,7 +1550,6 @@ function fitOverlay(
     const sc = dx * cx + dy * cy
     best = {
       residual: scL.abs / sampled,
-      lab: none,
       fineRgb: none,
       translucent: true,
       paint: {
@@ -1555,7 +1566,6 @@ function fitOverlay(
     if (best === null || scR.abs < scL.abs) {
       best = {
         residual: scR.abs / sampled,
-        lab: none,
         fineRgb: none,
         translucent: true,
         paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: stopsR },
@@ -1578,11 +1588,11 @@ interface Cluster {
 }
 
 /**
- * Agglomeratively merge adjacent bands into ramps: start one cluster per
- * unclaimed seed, then repeatedly merge the adjacent pair whose union screens
- * best (`screen` returns a score, Infinity to reject) *and* verifies at the
- * pixel level (`verify` returns the union's fit, or null), until no acceptable
- * merge remains. Merging the globally best pair first — rather than greedily
+ * Agglomeratively merge bands into ramps: start one cluster per unclaimed
+ * seed, then repeatedly merge the pair — adjacent, or sharing a neighbor —
+ * whose union screens best (`screen` returns a score, Infinity to reject)
+ * *and* verifies at the pixel level (`verify` returns the union's fit, or
+ * null), until no acceptable merge remains. Merging the globally best pair first — rather than greedily
  * growing one seed to exhaustion — keeps a suboptimal early union from
  * fragmenting the rest. Verifications are cached per pair and invalidated when
  * either side changes (`verify(members, false)`). Every surviving cluster,
@@ -1619,15 +1629,23 @@ function growRamps(
   const cache = new Map<number, Built | null>()
   for (;;) {
     const pairs: [number, number, number][] = []
+    const seen = new Set<number>()
+    const consider = (a: number, ca: Cluster, b: number): void => {
+      if (b <= a) return // each undirected pair once
+      const key = a * count + b
+      if (seen.has(key) || cache.get(key) === null) return
+      seen.add(key)
+      const cb = clusters.get(b)!
+      for (let j = 0; j < NM; j++) trial[j] = ca.acc[j] + cb.acc[j]
+      const score = screen(trial, ca.members.concat(cb.members))
+      if (Number.isFinite(score)) pairs.push([score, a, b])
+    }
     for (const [a, ca] of clusters) {
-      for (const b of ca.adj) {
-        if (b <= a) continue // each undirected pair once
-        if (cache.get(a * count + b) === null) continue
-        const cb = clusters.get(b)!
-        for (let j = 0; j < NM; j++) trial[j] = ca.acc[j] + cb.acc[j]
-        const score = screen(trial, ca.members.concat(cb.members))
-        if (Number.isFinite(score)) pairs.push([score, a, b])
-      }
+      for (const b of ca.adj) consider(a, ca, b)
+      // Two ramp pieces separated by a band neither can take — a mixture band
+      // that quantization built from a ramp and a layer over it — still share
+      // that band as a neighbor; their union verifies like an adjacent one.
+      for (const x of ca.adj) for (const b of clusters.get(x)!.adj) if (b !== a) consider(a, ca, b)
     }
     pairs.sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2])
     let merged = false
@@ -1860,9 +1878,9 @@ export function fitRegionGradients(
 
   // ---- phase 2: semi-transparent overlays over each opaque ramp, largest base
   // first. Candidates are the unclaimed bands reachable from the base through
-  // other unclaimed bands (a glow's rings enclose its core), plus the smaller
-  // ramps touching the base whose pixels an overlay explains far better than
-  // their own opaque fit did. ----
+  // other unclaimed bands (a glow's rings enclose its core), then the smaller
+  // opaque ramps touching the base or an overlay that the overlay explains
+  // better. ----
   if (opts?.overlays !== false) {
     const areaOf = (s: Super): number => {
       let area = 0
@@ -1870,29 +1888,29 @@ export function fitRegionGradients(
       return area
     }
     const byArea = supers.toSorted((p, q) => areaOf(q) - areaOf(p) || p.rep - q.rep)
+    const byRep = new Map<number, Super>(byArea.map((x) => [x.rep, x]))
     const dissolved = new Set<Super>()
     const stacked: { overlay: Super; base: Super }[] = []
     for (const base of byArea) {
       if (base.built.translucent || dissolved.has(base)) continue
       const reach = new Set<number>()
       const stack: number[] = []
-      const touching = new Set<number>()
-      for (const mem of base.members)
-        for (const nb of adj[mem]) {
+      const touching = new Set<Super>()
+      const visit = (l: number): void => {
+        for (const nb of adj[l]) {
           if (claimed[nb] < 0 && !reach.has(nb)) {
             reach.add(nb)
             stack.push(nb)
           }
-          if (finalRep[nb] >= 0 && finalRep[nb] !== base.rep) touching.add(finalRep[nb])
+          const rep = finalRep[nb]
+          if (rep >= 0 && rep !== base.rep) {
+            const other = byRep.get(rep)
+            if (other && !other.built.translucent && !dissolved.has(other)) touching.add(other)
+          }
         }
-      while (stack.length > 0) {
-        const l = stack.pop()!
-        for (const nb of adj[l])
-          if (claimed[nb] < 0 && !reach.has(nb)) {
-            reach.add(nb)
-            stack.push(nb)
-          }
       }
+      for (const mem of base.members) visit(mem)
+      while (stack.length > 0) visit(stack.pop()!)
       const overlays =
         reach.size === 0
           ? []
@@ -1908,8 +1926,7 @@ export function fitRegionGradients(
             )
       // A smaller opaque ramp touching the base whose pixels an overlay
       // explains far better than its own opaque fit did is an overlay too.
-      for (const other of byArea) {
-        if (!touching.has(other.rep) || other.built.translucent || dissolved.has(other)) continue
+      for (const other of touching) {
         if (areaOf(other) >= areaOf(base)) continue
         const over = fitOverlay(ctx, other.members, base.built, true)
         if (over === null || over.residual > OVERLAY_PREFER * other.built.residual) continue
