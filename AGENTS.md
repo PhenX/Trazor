@@ -148,6 +148,12 @@ Do not put a model identifier anywhere in a commit message, PR title/body, or co
 - **Vitest** only — pure functions, run in Node. Tests live in `packages/<name>/test/*.test.ts`.
 - Assert **geometric/behavioral invariants**, not golden blobs where a blob would be brittle: corners preserved,
   circles stay near their radius, cutout regions share exact boundary anchors, output is deterministic, warnings fire.
+- **Gradient detection is pinned** by [`packages/engine/test/gradient-scenes.test.ts`](packages/engine/test/gradient-scenes.test.ts):
+  a fixed set of scenes (ramps, radials, overlays, fades, flat controls, the studio's dusk sample) traced end to end,
+  with the gradients they yield recorded in a Vitest snapshot. Any change to detection fails CI as a diff to review;
+  after checking the new output is an improvement, update the snapshot with
+  `npx vitest run -u packages/engine/test/gradient-scenes.test.ts` and commit it with the change. Add a scene when a
+  new kind of gradient input is handled.
 - Every algorithm change ships with a test that would have caught the bug it fixes.
 
 ### Evaluating quality changes

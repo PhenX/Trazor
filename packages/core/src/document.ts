@@ -24,7 +24,8 @@ export interface VectorShape {
 export interface VectorGradient {
   id: string
   kind: 'linear' | 'radial'
-  stops: { offset: number; color: string }[]
+  /** `opacity` (0-1) is present only on a stop that is not fully opaque. */
+  stops: { offset: number; color: string; opacity?: number }[]
 }
 
 /** The whole document: shapes in paint order, in user (px) coordinates, y-down. */

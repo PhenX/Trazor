@@ -13,10 +13,16 @@
  * of.
  */
 
-/** One gradient color stop: `offset` in [0,1] along the ramp, `color` `'#rrggbb'`. */
+/**
+ * One gradient color stop: `offset` in [0,1] along the ramp, `color` `'#rrggbb'`,
+ * and `opacity` in [0,1] (absent ⇒ 1; serialized as `stop-opacity`). A ramp
+ * whose coverage fades — a source fade to transparent, or a semi-transparent
+ * layer stacked over another paint — carries its opacity here.
+ */
 export interface GradientStop {
   offset: number
   color: string
+  opacity?: number
 }
 
 /**

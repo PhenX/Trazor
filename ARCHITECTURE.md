@@ -88,7 +88,10 @@ decode (consumer)
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
   quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and
   **gradient detection** (`gradient.ts`) that merges posterized ramp bands into one region painted with a single
-  `<linearGradient>` or `<radialGradient>` — mesh-free, so the geometry (and the cutout partition) is untouched.
+  `<linearGradient>` or `<radialGradient>` — every fit verified on the pixels against the flat bands it replaces —
+  keeps a transparent source's fades as opacity stops, and paints a semi-transparent layer stacked over a ramp (a glow
+  on a sky) as an opacity gradient over an underlay of the ramp. Mesh-free, so the geometry (and the cutout partition)
+  is untouched.
 - **`trace`** — the tracer. Crack-boundary decomposition, the Potrace curve chain, the seam-free boundary graph, and
   centerline extraction. Its own map: [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes,

@@ -30,6 +30,13 @@ export interface SvgShape {
    * island on top) and so must stay separate layers, not one merged color.
    */
   layerId?: number
+  /**
+   * This shape may overlap a neighboring shape of the same paint (an underlay
+   * beneath a semi-transparent overlay, over a sheet that already carries the
+   * same paint), so it is emitted as its own element rather than folded into
+   * one even-odd path where the overlap would punch a hole.
+   */
+  unfoldable?: boolean
 }
 
 /** A gradient paint server (`@trazor/core` `GradientPaint`) plus the `id` a shape
@@ -159,16 +166,20 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
 /**
  * A gradient as its `<defs>` element. Coordinates are user space
  * (`gradientUnits="userSpaceOnUse"`), so they share the paths' pixel space and
- * need no per-shape normalization. Stop offsets carry their own precision (only
- * ever 0/1 today) independent of the coordinate precision.
+ * need no per-shape normalization. Stop offsets and opacities carry their own
+ * precision (3 decimals) independent of the coordinate precision; a stop with
+ * opacity below 1 carries `stop-opacity`.
  */
 function gradientElement(g: SvgGradient, precision: number): string {
   const n = (v: number): string => formatNumber(v, precision)
   const stops = g.stops
-    .map(
-      (s) =>
-        `<stop offset="${formatNumber(s.offset, 3)}" stop-color="${assertAttrSafe(s.color, 'stop-color')}"/>`,
-    )
+    .map((s) => {
+      const opacity =
+        s.opacity !== undefined && s.opacity < 1
+          ? ` stop-opacity="${formatNumber(s.opacity, 3)}"`
+          : ''
+      return `<stop offset="${formatNumber(s.offset, 3)}" stop-color="${assertAttrSafe(s.color, 'stop-color')}"${opacity}/>`
+    })
     .join('')
   const id = xmlEscape(g.id)
   if (g.kind === 'linear') {
@@ -294,8 +305,9 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
 /**
  * Emit shapes as finished element strings. Consecutive optimized paths that
  * share identical paint fold into one `<path>` (same-paint shapes in our output
- * are disjoint, so the union renders identically); primitives and un-optimized
- * paths flush the pending run. Shapes that produce no output are dropped.
+ * are disjoint, so the union renders identically); primitives, un-optimized
+ * paths and `unfoldable` shapes flush the pending run. Shapes that produce no
+ * output are dropped.
  */
 function foldShapes(
   shapes: readonly SvgShape[],
@@ -317,6 +329,9 @@ function foldShapes(
     if (so.kind === 'element') {
       flush()
       out.push(so.svg)
+    } else if (shape.unfoldable === true) {
+      flush()
+      out.push(`<path d="${so.d}"${so.paint}/>`)
     } else if (pending !== null && pending.paint === so.paint) {
       pending.d += ` ${so.d}`
     } else {

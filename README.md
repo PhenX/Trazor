@@ -18,6 +18,9 @@ Selinger's 2003 paper — clean-room, no GPL code) and applies it **per color la
 - **Least-squares vertex adjustment** — sub-pixel accurate corners.
 - **Corner-aware smoothing (α_max)** — circles come out round, squares stay sharp, on the same image.
 - **Curve-run optimization** — adjacent Béziers merge while staying within tolerance, so node counts stay low.
+- **Gradient detection** — posterized ramps become one linear or radial gradient, each fit verified on the pixels
+  against the flat bands it replaces; a transparent source's fades keep their opacity, and a glow or vignette over a
+  ramp becomes an opacity gradient stacked over it.
 
 On top of that, three things most tracers don't do:
 

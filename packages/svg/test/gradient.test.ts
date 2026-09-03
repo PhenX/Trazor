@@ -48,6 +48,47 @@ describe('serializeSvg — gradients', () => {
     expect(svg.indexOf('<defs>')).toBeLessThan(svg.indexOf('url(#g0)'))
   })
 
+  it('emits stop-opacity only on a stop whose opacity is below 1', () => {
+    const doc = gradientDoc()
+    doc.defs![0].stops = [
+      { offset: 0, color: '#c81e1e', opacity: 1 },
+      { offset: 0.5, color: '#c81e1e', opacity: 0.5 },
+      { offset: 1, color: '#c81e1e', opacity: 0 },
+    ]
+    const svg = serializeSvg(doc, { precision: 2 })
+    expect(svg).toContain('<stop offset="0" stop-color="#c81e1e"/>')
+    expect(svg).toContain('<stop offset="0.5" stop-color="#c81e1e" stop-opacity="0.5"/>')
+    expect(svg).toContain('<stop offset="1" stop-color="#c81e1e" stop-opacity="0"/>')
+  })
+
+  it('keeps an unfoldable underlay as its own path instead of folding it into a same-paint neighbor', () => {
+    const doc = gradientDoc()
+    // An L-shape: not a primitive, so it serializes as a path that can fold.
+    const ell = {
+      ...doc.shapes[0],
+      commands: [
+        { type: 'M' as const, x: 0, y: 0 },
+        { type: 'L' as const, x: 20, y: 0 },
+        { type: 'L' as const, x: 20, y: 4 },
+        { type: 'L' as const, x: 6, y: 4 },
+        { type: 'L' as const, x: 6, y: 10 },
+        { type: 'L' as const, x: 0, y: 10 },
+        { type: 'Z' as const },
+      ],
+    }
+    // A sheet and, beneath an overlay, an underlay of the same paint whose
+    // geometry lies inside the sheet: folded into one even-odd path, the
+    // overlap would punch a hole.
+    doc.shapes = [ell, { ...ell, unfoldable: true }, { ...ell, fill: '#ff0000' }]
+    const svg = serializeSvg(doc, { precision: 2, optimizePaths: true })
+    expect(svg.match(/<path /g)).toHaveLength(3)
+    const folded = serializeSvg(
+      { ...doc, shapes: [ell, ell] },
+      { precision: 2, optimizePaths: true },
+    )
+    expect(folded.match(/<path /g)).toHaveLength(1)
+  })
+
   it('omits <defs> entirely when there are no gradients (byte-identical path)', () => {
     const doc = gradientDoc()
     doc.defs = undefined
