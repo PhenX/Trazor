@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LabelMap } from '@trazor/core'
-import { hexToRgb, oklabToRgb } from '@trazor/core'
+import { hexToRgb, mulberry32, oklabToRgb } from '@trazor/core'
 import { fitRegionGradients } from '../src/index'
 import { rasterOf } from './helpers'
 import type { Rgba } from './helpers'
@@ -306,5 +306,196 @@ describe('fitRegionGradients — radial', () => {
     const rb = fitRegionGradients(radialImage(100, 100, 50, 50, 52), b, { minArea: 64 })
     expect(JSON.stringify(rb.gradients)).toBe(JSON.stringify(ra.gradients))
     expect(Array.from(b.data)).toEqual(Array.from(a.data))
+  })
+})
+
+describe('fitRegionGradients — few bands, single band, noise, posterized source', () => {
+  it('recovers a ramp quantized into only two or three bands', () => {
+    const w = 60
+    const h = 20
+    for (const bands of [2, 3]) {
+      const labels = bandLabels(w, h, bands)
+      const { gradients } = fitRegionGradients(rampImage(w, h), labels, { minArea: 32 })
+      const found = gradients.filter((g) => g !== null)
+      expect(found).toHaveLength(1)
+      expect(found[0]!.kind).toBe('linear')
+      expect(new Set(labels.data).size).toBe(1)
+    }
+  })
+
+  it('paints a single band whose own pixels ramp', () => {
+    const w = 60
+    const h = 20
+    const labels = bandLabels(w, h, 1)
+    const { gradients } = fitRegionGradients(rampImage(w, h), labels, { minArea: 32 })
+    expect(gradients[0]?.kind).toBe('linear')
+  })
+
+  it('merges a noisy ramp into one gradient', () => {
+    const w = 120
+    const h = 40
+    const rnd = mulberry32(11)
+    const gauss = (): number =>
+      Math.sqrt(-2 * Math.log(rnd() || 1e-9)) * Math.cos(2 * Math.PI * rnd())
+    const image = rasterOf(w, h, (x) => {
+      const v = 30 + (x / (w - 1)) * 200 + gauss() * 8
+      return [v, v, v, 255] as Rgba
+    })
+    const labels = bandLabels(w, h, 8)
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 32 })
+    expect(gradients.filter((g) => g !== null)).toHaveLength(1)
+    expect(new Set(labels.data).size).toBe(1)
+  })
+
+  it('leaves a posterized source (flat steps) flat', () => {
+    // Six hard steps in the source itself, one label each: the bands are flat
+    // inside, so a ramp has nothing to explain and would only smooth the steps.
+    const w = 120
+    const h = 30
+    const image = rasterOf(w, h, (x) => {
+      const v = 30 + Math.floor(x / (w / 6)) * 40
+      return [v, v, v, 255] as Rgba
+    })
+    const labels = bandLabels(w, h, 6)
+    const before = Array.from(labels.data)
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 32 })
+    expect(gradients.every((g) => g === null)).toBe(true)
+    expect(Array.from(labels.data)).toEqual(before)
+  })
+
+  it('keeps a flat object adjacent to a ramp out of the gradient', () => {
+    // A ramp with a flat black block: the ramp bands (label 0..7) merge, the
+    // block (label 8) keeps its flat fill.
+    const w = 160
+    const h = 60
+    const inBlock = (x: number, y: number): boolean => x > 50 && x < 110 && y > 20 && y < 40
+    const image = rasterOf(w, h, (x, y) => {
+      if (inBlock(x, y)) return [10, 10, 10, 255] as Rgba
+      const v = Math.round(60 + (x / (w - 1)) * 180)
+      return [v, Math.round(v * 0.8), Math.round(v * 0.5), 255] as Rgba
+    })
+    const data = new Int32Array(w * h)
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++)
+        data[y * w + x] = inBlock(x, y) ? 8 : Math.min(7, Math.floor((x / w) * 8))
+    const labels: LabelMap = { width: w, height: h, data, count: 9 }
+    const { gradients } = fitRegionGradients(image, labels, { minArea: 32 })
+    expect(gradients.filter((g) => g !== null)).toHaveLength(1)
+    expect(gradients[8]).toBeNull()
+    expect(new Set(labels.data)).toEqual(new Set([0, 8]))
+  })
+})
+
+describe('fitRegionGradients — alpha', () => {
+  it('emits a fade of a transparent source as opacity stops of one straight color', () => {
+    // A red disc whose coverage fades from 1 to 0, composited over white as the
+    // engine does; only pixels with coverage ≥ 0.5 are labeled (rings by level).
+    const w = 120
+    const h = 120
+    const cover = (x: number, y: number): number =>
+      Math.max(0, Math.min(1, 1 - (Math.hypot(x + 0.5 - 60, y + 0.5 - 60) - 10) / 35))
+    const image = rasterOf(w, h, (x, y) => {
+      const a = cover(x, y)
+      return [
+        Math.round(255 + (200 - 255) * a),
+        Math.round(255 + (30 - 255) * a),
+        Math.round(255 + (30 - 255) * a),
+        255,
+      ] as Rgba
+    })
+    const alpha = new Uint8Array(w * h)
+    const data = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const a = cover(x, y)
+        alpha[y * w + x] = Math.round(a * 255)
+        data[y * w + x] = a >= 0.5 ? Math.min(5, Math.floor((1 - a) * 12)) : -1
+      }
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 6 }
+    const { gradients, underlays } = fitRegionGradients(image, labels, { minArea: 32, alpha })
+    const found = gradients.filter((g) => g !== null)
+    expect(found).toHaveLength(1)
+    const g = found[0]!
+    expect(g.kind).toBe('radial')
+    // Every stop is the disc's own color, un-composited from the white backdrop.
+    for (const s of g.stops) {
+      const rgb = hexToRgb(s.color)!
+      expect(Math.abs(rgb[0] - 200)).toBeLessThanOrEqual(4)
+      expect(Math.abs(rgb[1] - 30)).toBeLessThanOrEqual(4)
+    }
+    // Opacity fades outward: the last stop is well below the first.
+    const first = g.stops[0].opacity ?? 1
+    const last = g.stops[g.stops.length - 1].opacity ?? 1
+    expect(first).toBeGreaterThan(0.9)
+    expect(last).toBeLessThan(0.7)
+    expect(underlays.every((u) => u < 0)).toBe(true)
+  })
+
+  it('decomposes a glow over a sky ramp into a base gradient and an opacity overlay', () => {
+    // A vertical sky ramp with a radial glow of one constant color whose opacity
+    // ramps 1 → 0. The composite under the glow is a 2-D field no single
+    // gradient paints; the layered fit recovers the sky as one linear gradient
+    // and the glow as a radial gradient of opacity stops painted over it.
+    const w = 120
+    const h = 120
+    const cx = 60
+    const cy = 50
+    const R = 30
+    const F: [number, number, number] = [255, 240, 120]
+    const sky = (y: number): [number, number, number] => {
+      const t = y / (h - 1)
+      return [20 + 230 * t, 30 + 110 * t, 90 - 30 * t]
+    }
+    const glowA = (x: number, y: number): number =>
+      Math.max(0, 1 - Math.hypot(x + 0.5 - cx, y + 0.5 - cy) / R)
+    const image = rasterOf(w, h, (x, y) => {
+      const b = sky(y)
+      const a = glowA(x, y)
+      return [
+        Math.round(b[0] + (F[0] - b[0]) * a),
+        Math.round(b[1] + (F[1] - b[1]) * a),
+        Math.round(b[2] + (F[2] - b[2]) * a),
+        255,
+      ] as Rgba
+    })
+    // Labels: 8 sky bands by row; 4 glow rings by opacity level (labels 8..11).
+    const data = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const a = glowA(x, y)
+        data[y * w + x] = a > 0 ? 8 + Math.min(3, Math.floor(a * 4)) : Math.floor(y / 15)
+      }
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 12 }
+    const { gradients, underlays } = fitRegionGradients(image, labels, { minArea: 32 })
+    const reps = [...new Set(labels.data)]
+    expect(reps).toHaveLength(2)
+    const skyRep = reps.find((l) => l < 8)!
+    const glowRep = reps.find((l) => l >= 8)!
+    expect(gradients[skyRep]?.kind).toBe('linear')
+    const glow = gradients[glowRep]!
+    expect(glow.kind).toBe('radial')
+    if (glow.kind !== 'radial') return
+    expect(Math.hypot(glow.cx - cx, glow.cy - cy)).toBeLessThan(3)
+    expect(underlays[glowRep]).toBe(skyRep)
+    expect(underlays[skyRep]).toBe(-1)
+    // One constant color (the glow's), opacity falling from the center outward.
+    const colors = new Set(glow.stops.map((s) => s.color))
+    expect(colors.size).toBe(1)
+    const rgb = hexToRgb(glow.stops[0].color)!
+    expect(Math.abs(rgb[0] - F[0])).toBeLessThanOrEqual(6)
+    expect(Math.abs(rgb[1] - F[1])).toBeLessThanOrEqual(6)
+    expect(Math.abs(rgb[2] - F[2])).toBeLessThanOrEqual(8)
+    expect(glow.stops[0].opacity ?? 1).toBeGreaterThan(0.85)
+    expect(glow.stops[glow.stops.length - 1].opacity ?? 1).toBeLessThan(0.3)
+  })
+
+  it('overlays can be disabled', () => {
+    const w = 40
+    const h = 40
+    const labels = bandLabels(w, h, 4)
+    const res = fitRegionGradients(rampImage(w, h), labels, { minArea: 8, overlays: false })
+    expect(res.underlays.every((u) => u < 0)).toBe(true)
   })
 })

@@ -159,16 +159,20 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
 /**
  * A gradient as its `<defs>` element. Coordinates are user space
  * (`gradientUnits="userSpaceOnUse"`), so they share the paths' pixel space and
- * need no per-shape normalization. Stop offsets carry their own precision (only
- * ever 0/1 today) independent of the coordinate precision.
+ * need no per-shape normalization. Stop offsets and opacities carry their own
+ * precision (3 decimals) independent of the coordinate precision; a stop with
+ * opacity below 1 carries `stop-opacity`.
  */
 function gradientElement(g: SvgGradient, precision: number): string {
   const n = (v: number): string => formatNumber(v, precision)
   const stops = g.stops
-    .map(
-      (s) =>
-        `<stop offset="${formatNumber(s.offset, 3)}" stop-color="${assertAttrSafe(s.color, 'stop-color')}"/>`,
-    )
+    .map((s) => {
+      const opacity =
+        s.opacity !== undefined && s.opacity < 1
+          ? ` stop-opacity="${formatNumber(s.opacity, 3)}"`
+          : ''
+      return `<stop offset="${formatNumber(s.offset, 3)}" stop-color="${assertAttrSafe(s.color, 'stop-color')}"${opacity}/>`
+    })
     .join('')
   const id = xmlEscape(g.id)
   if (g.kind === 'linear') {

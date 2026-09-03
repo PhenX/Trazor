@@ -1,8 +1,11 @@
 /**
  * Visual demo: gradient detection (the `gradients` setting). Traces shapes with
  * smooth color ramps with gradients off (posterized bands) and on (one
- * `<linearGradient>` per ramp) and writes a side-by-side HTML page next to this
- * file. A flat control shape shows that non-ramp art is left byte-identical.
+ * `<linearGradient>` / `<radialGradient>` per ramp) and writes a side-by-side
+ * HTML page next to this file. A flat control shape shows that non-ramp art is
+ * left byte-identical; a glow over a sky shows a semi-transparent layer painted
+ * as an opacity gradient stacked over the sky's gradient; a disc fading to
+ * transparent keeps its transparency as opacity stops.
  *
  * Mesh-free: only the fill changes, so the geometry is unchanged — the "on"
  * side is far fewer shapes and smaller, with no banding.
@@ -12,10 +15,11 @@
  */
 import { writeFileSync } from 'node:fs'
 import { createRaster, normalizeSettings, setPixel } from '@trazor/core'
-import type { RasterImage, VectorizeResult } from '@trazor/core'
+import type { RasterImage, VectorizeResult, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 
 type Rgb = [number, number, number]
+type Rgba = [number, number, number, number]
 const lerp = (a: number, b: number, t: number): number =>
   Math.round(a + (b - a) * Math.min(1, Math.max(0, t)))
 const mix = (a: Rgb, b: Rgb, t: number): Rgb => [
@@ -24,10 +28,14 @@ const mix = (a: Rgb, b: Rgb, t: number): Rgb => [
   lerp(a[2], b[2], t),
 ]
 
-function build(w: number, h: number, px: (x: number, y: number) => Rgb): RasterImage {
+function build(w: number, h: number, px: (x: number, y: number) => Rgb | Rgba): RasterImage {
   const img = createRaster(w, h)
   for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) setPixel(img, x, y, ...px(x, y))
+    for (let x = 0; x < w; x++) {
+      const [r, g, b, a] = px(x, y)
+      setPixel(img, x, y, r, g, b)
+      if (a !== undefined) img.data[(y * w + x) * 4 + 3] = a
+    }
   }
   return img
 }
@@ -37,7 +45,12 @@ const H = 132
 const M = 16 // shape inset from the frame
 const BG: Rgb = [26, 30, 38] // dark, high-contrast against every shape (no low-contrast merges)
 
-const scenes: { name: string; note: string; image: RasterImage }[] = [
+const scenes: {
+  name: string
+  note: string
+  image: RasterImage
+  settings?: Partial<VectorizeSettings>
+}[] = [
   {
     name: 'Sky panel',
     note: 'A bounded panel with a vertical light-to-deep blue ramp',
@@ -78,6 +91,27 @@ const scenes: { name: string; note: string; image: RasterImage }[] = [
       const d = Math.hypot(x - W / 2, y - H / 2)
       return d > r ? BG : mix([228, 244, 236], [22, 96, 88], d / r)
     }),
+  },
+  {
+    name: 'Sun glow (stacked)',
+    note: 'A warm glow of one color fading over a vertical sky ramp — the sky is one gradient, the glow an opacity gradient composited over it',
+    image: build(W, H, (x, y) => {
+      const inside = x >= M && x < W - M && y >= M && y < H - M
+      if (!inside) return BG
+      const sky = mix([24, 34, 96], [250, 140, 60], (y - M) / (H - 2 * M - 1))
+      const a = Math.max(0, 1 - Math.hypot(x - W * 0.6, y - H * 0.4) / 26)
+      return mix(sky, [255, 240, 120], a)
+    }),
+  },
+  {
+    name: 'Fade to transparent',
+    note: 'A disc whose alpha fades to 0 on a transparent canvas — one gradient of the disc color with opacity stops, no backdrop baked in',
+    image: build(W, H, (x, y) => {
+      const d = Math.hypot(x - W / 2, y - H / 2)
+      const a = Math.max(0, Math.min(1, 1 - (d - 20) / 30))
+      return [40, 120, 220, Math.round(a * 255)]
+    }),
+    settings: { alphaThreshold: 24 },
   },
   {
     name: 'Flat badge (control)',
@@ -122,8 +156,9 @@ async function main(): Promise<void> {
   const rows: string[] = []
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i]
-    const off = await vectorize(scene.image, normalizeSettings({ ...BASE, gradients: false }))
-    const on = await vectorize(scene.image, normalizeSettings({ ...BASE, gradients: true }))
+    const base = { ...BASE, ...scene.settings }
+    const off = await vectorize(scene.image, normalizeSettings({ ...base, gradients: false }))
+    const on = await vectorize(scene.image, normalizeSettings({ ...base, gradients: true }))
     const identical = off.svg === on.svg
     rows.push(`<section class="row">
       <div class="rowhead"><h2>${scene.name}</h2><p>${scene.note}${identical ? ' — <strong>identical output</strong>' : ''}</p></div>

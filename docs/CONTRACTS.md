@@ -72,6 +72,7 @@ export function parseSettingsImport(input: string): ImportedSettings
 export interface GradientStop {
   offset: number // 0..1 along the ramp
   color: string // '#rrggbb'
+  opacity?: number // 0..1; absent ⇒ 1. Serialized as stop-opacity. A source fade or a stacked overlay carries its opacity here.
 }
 export interface LinearGradientPaint {
   kind: 'linear'
@@ -115,6 +116,7 @@ export function bilateralFilter(
 export interface FlattenResult {
   image: RasterImage // RGB composited over white (transparent) or backgroundColor (custom)
   opaque: BinaryMask | null // null when fully opaque handling; else 1 = alpha >= alphaThreshold
+  alpha: Uint8Array | null // source alpha per pixel (0-255) whenever `opaque` is set; else null
 }
 // background 'auto': behaves as 'transparent' if any pixel alpha < 250, else fully opaque.
 // 'custom': composite over settings.backgroundColor, opaque = null.
@@ -191,19 +193,29 @@ export interface SegmentResult {
 export function segmentRegions(image: RasterImage, opts?: SegmentOptions): SegmentResult
 
 // gradient.ts — linear + radial color-ramp detection (color/grayscale).
-// Adjacent quantized bands that lie on one Oklab ramp are merged into a single
-// region (mutating `labels`) and returned as a per-label gradient paint (linear
-// for straight ramps, radial for concentric ones). Geometry is unchanged
-// (mesh-free) so the tracer and cutout partition are untouched; a run with no
-// detectable ramp returns all-null and leaves `labels` unchanged.
+// Adjacent quantized bands that form one ramp — or a single band whose own
+// pixels ramp — are merged into a single region (mutating `labels`) and returned
+// as a per-label gradient paint (linear for straight ramps, radial for
+// concentric ones). Every fit is verified on the pixels: it must be a ramp,
+// paint them within a residual, and explain them better than the bands' own
+// flat fills (a posterized source stays flat). A semi-transparent layer stacked
+// over a detected ramp (a glow, a vignette, a shadow) is returned as an overlay
+// gradient of one color with opacity stops plus the label to paint beneath it;
+// a fade of a transparent source (`alpha`) gets opacity stops of its own color.
+// Geometry is unchanged (mesh-free) so the tracer and cutout partition are
+// untouched; a run with no detectable ramp returns all-null and leaves
+// `labels` unchanged.
 export interface GradientOptions {
   minArea?: number // min pixel area of a merged ramp to become a gradient (default 0)
   maxBacktrack?: number // max fraction of the ramp's color path that may run backwards (lower = stricter; keeps flat/reversing neighbors out)
   minColorSpan?: number // min total Oklab color change to qualify (higher = only strong ramps)
   oklab?: Float32Array // interleaved Oklab for `image` (w*h*3); computed if absent
+  alpha?: Uint8Array | Uint8ClampedArray // source coverage (0-255, w*h) of an image composited over white; varying coverage ⇒ stops with opacity and un-composited colors
+  overlays?: boolean // also detect semi-transparent overlays stacked over a detected ramp (default true)
 }
 export interface GradientResult {
   gradients: (GradientPaint | null)[] // per (rewritten) label; length = labels.count
+  underlays: Int32Array // per label: the label to paint beneath it with the same geometry (an overlay's base), or -1
 }
 export function fitRegionGradients(
   image: RasterImage,
@@ -690,7 +702,7 @@ export interface VectorShape {
 export interface VectorGradient {
   id: string
   kind: 'linear' | 'radial'
-  stops: { offset: number; color: string }[]
+  stops: { offset: number; color: string; opacity?: number }[]
 }
 
 // Opt-in step tracer (@trazor/core). Attach EngineContext.onTrace (or pass the

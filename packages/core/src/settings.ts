@@ -119,13 +119,17 @@ export interface VectorizeSettings {
   /**
    * Detect smooth color ramps (color/grayscale modes) and paint them with a
    * single SVG gradient instead of posterized bands: adjacent quantized slices
-   * that form one Oklab ramp are merged into one region filled with a
-   * `<linearGradient>` (straight ramps) or `<radialGradient>` (concentric ramps
-   * — vignettes, spotlights). Geometry is unchanged (mesh-free), so cutout stays
-   * seam-free. Ignored with a fixed `palette` and for single-ink (bw/centerline)
-   * modes. Off is byte-identical to the classic flat-fill path. Experimental
-   * (beta): off by default and enabled by no profile — detection is still rough
-   * on some images.
+   * that form one ramp — or a single slice whose own pixels ramp — are merged
+   * into one region filled with a `<linearGradient>` (straight ramps) or
+   * `<radialGradient>` (concentric ramps — vignettes, spotlights). Every ramp
+   * is verified on its pixels and must beat the flat bands it replaces, so an
+   * already posterized source stays posterized. A fade of a transparent source
+   * keeps its transparency (stops with `stop-opacity`), and a semi-transparent
+   * layer over a ramp — a glow, a vignette, a shadow on a sky — is painted as an
+   * opacity gradient composited over the ramp beneath it. Geometry is unchanged
+   * (mesh-free), so cutout stays seam-free. Ignored with a fixed `palette` and
+   * for single-ink (bw/centerline) modes. Off is byte-identical to the classic
+   * flat-fill path. Off by default and enabled by no profile.
    */
   gradients: boolean
   /**

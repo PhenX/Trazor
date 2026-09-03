@@ -48,6 +48,19 @@ describe('serializeSvg — gradients', () => {
     expect(svg.indexOf('<defs>')).toBeLessThan(svg.indexOf('url(#g0)'))
   })
 
+  it('emits stop-opacity only on a stop whose opacity is below 1', () => {
+    const doc = gradientDoc()
+    doc.defs![0].stops = [
+      { offset: 0, color: '#c81e1e', opacity: 1 },
+      { offset: 0.5, color: '#c81e1e', opacity: 0.5 },
+      { offset: 1, color: '#c81e1e', opacity: 0 },
+    ]
+    const svg = serializeSvg(doc, { precision: 2 })
+    expect(svg).toContain('<stop offset="0" stop-color="#c81e1e"/>')
+    expect(svg).toContain('<stop offset="0.5" stop-color="#c81e1e" stop-opacity="0.5"/>')
+    expect(svg).toContain('<stop offset="1" stop-color="#c81e1e" stop-opacity="0"/>')
+  })
+
   it('omits <defs> entirely when there are no gradients (byte-identical path)', () => {
     const doc = gradientDoc()
     doc.defs = undefined
