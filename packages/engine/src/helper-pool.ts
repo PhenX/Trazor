@@ -142,6 +142,7 @@ export class HelperPool {
       slot.endpoint.addEventListener('message', (ev) => {
         this.handleMessage(i, ev.data as HelperOutMessage)
       })
+      slot.endpoint.start?.()
     }
   }
 

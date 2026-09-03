@@ -67,6 +67,12 @@ export interface WorkerScope {
 export interface HelperEndpoint {
   postMessage(message: unknown, transfer?: Transferable[]): void
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void
+  /**
+   * A transferred browser `MessagePort` delivers nothing to `addEventListener`
+   * until it is started; the pool calls this after attaching its listener.
+   * Absent on a Worker and on Node ports, which deliver as soon as a listener exists.
+   */
+  start?(): void
 }
 
 // ---------------------------- helper protocol ----------------------------

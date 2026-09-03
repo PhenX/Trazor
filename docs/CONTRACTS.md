@@ -938,6 +938,9 @@ export interface HelperEndpoint {
   // MessagePort from a MessageChannel).
   postMessage(message: unknown, transfer?: Transferable[]): void
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void
+  // A transferred browser MessagePort delivers nothing until started; the pool calls this
+  // right after attaching its listener. Absent on a Worker and on Node ports.
+  start?(): void
 }
 // Run in a helper worker: wires the handler to the port/scope the consumer supplied.
 export function installHelperHandler(scope: WorkerScope): void
