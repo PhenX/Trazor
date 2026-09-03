@@ -138,6 +138,7 @@ export function installHelperHandler(scope: WorkerScope): void {
       for (let at = 0; at < job.units.length && !cancelled.has(job.id); at += size) {
         const units: number[] = []
         const counts: number[] = []
+        const svgCounts: number[] | undefined = serialize ? [] : undefined
         const runs: PathCommand[][] = []
         const svg: (ShapeOut | null)[] | undefined = serialize ? [] : undefined
         for (let i = at; i < Math.min(at + size, job.units.length); i++) {
@@ -147,11 +148,14 @@ export function installHelperHandler(scope: WorkerScope): void {
           units.push(unit)
           counts.push(out.shapes.length)
           for (const commands of out.shapes) runs.push(commands)
-          if (svg && out.svg) svg.push(...out.svg)
+          if (svg && out.svg) {
+            svg.push(...out.svg)
+            svgCounts?.push(out.svg.length)
+          }
         }
         const commands = packCommands(runs)
         post(
-          { type: 'helper-batch', id: job.id, units, counts, commands, svg },
+          { type: 'helper-batch', id: job.id, units, counts, svgCounts, commands, svg },
           flatTransferables(commands),
         )
         // Yields the helper's event loop once per batch, so a cancel message can
@@ -221,10 +225,16 @@ export function installHelperHandler(scope: WorkerScope): void {
       job.kind === 'trace-layers' ? traceLayer(curve, unit) : traceRingUnit(curve, unit)
     const out = job.serialize
     if (!out) return { shapes }
-    const meta = job.meta?.[at] ?? {}
-    const svg = shapes.map((commands) =>
-      shapeOut({ ...meta, commands }, out.precision, out.optimize, out.roundPrimitives),
-    )
+    const paint = job.meta?.[at]
+    // A unit with an underlay is emitted twice, base paint first — one pass per
+    // paint over the same geometry, in the order the coordinator places them.
+    const variants = paint?.under ? [paint.under, paint.own] : [paint?.own ?? {}]
+    const svg: (ShapeOut | null)[] = []
+    for (const meta of variants) {
+      for (const commands of shapes) {
+        svg.push(shapeOut({ ...meta, commands }, out.precision, out.optimize, out.roundPrimitives))
+      }
+    }
     return { shapes, svg }
   }
 

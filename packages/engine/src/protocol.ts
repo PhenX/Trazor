@@ -96,6 +96,17 @@ export interface HelperSerializeOptions {
 export type HelperShapeMeta = Omit<SvgShape, 'commands'>
 
 /**
+ * The paints one unit's shapes carry. A layer whose color sits over an underlay
+ * emits its geometry twice — the base's paint first, then the layer's own on
+ * top — so the helper serializes each shape once per paint and returns the
+ * underlay copies of every shape ahead of the layer's own.
+ */
+export interface HelperUnitPaint {
+  own: HelperShapeMeta
+  under?: HelperShapeMeta
+}
+
+/**
  * The working image, cached in the helper under `key` (the coordinator's image
  * id + preprocess settings slice). Cutout chain fitting derives its Oklab
  * buffer from it and caches that too.
@@ -220,7 +231,7 @@ export interface HelperJobMessage {
    */
   batch: number
   /** Paint per unit, index-parallel to `units`; only `trace-layers` serializes. */
-  meta?: HelperShapeMeta[]
+  meta?: HelperUnitPaint[]
   /** Serialization settings; only `trace-layers` serializes. */
   serialize?: HelperSerializeOptions
   /**
@@ -258,13 +269,23 @@ export type HelperOutMessage =
       /** Command runs each unit contributed, index-parallel to `units`. */
       counts: number[]
       /**
+       * Serialized shapes each unit contributed, index-parallel to `units`; a
+       * unit with an underlay emits its geometry once per paint, so this is a
+       * whole multiple of `counts`. Absent when the job does not serialize.
+       */
+      svgCounts?: number[]
+      /**
        * Encoded commands: one run per shape for `trace-layers`, one per ring for
        * `trace-rings`, and per chain fit for `fit-chains` (the open run, then the
        * closed ring when the chain closes on its own start corner). Runs are in
        * `units` order.
        */
       commands: FlatRuns
-      /** Serialized shapes, index-parallel to the command runs; only `trace-layers`. */
+      /**
+       * Serialized shapes in emission order; only `trace-layers`. One per
+       * command run, or — for a unit with an underlay — the underlay copy of
+       * every run followed by the run's own copy.
+       */
       svg?: (ShapeOut | null)[]
     }
   | { type: 'helper-done'; id: number }

@@ -5,6 +5,7 @@ import { HelperPool, installHelperHandler, vectorize } from '@trazor/engine'
 import type { HelperEndpoint, StageCache } from '@trazor/engine'
 import { createNodeHelpers } from '../../../scripts/bench/node-helpers'
 import type { NodeHelpers } from '../../../scripts/bench/node-helpers'
+import { scenes } from './helpers/gradient-scenes'
 
 function settings(patch: Partial<VectorizeSettings>): VectorizeSettings {
   return normalizeSettings({ maxDimension: 0, minRegionArea: 2, ...patch })
@@ -40,6 +41,15 @@ function ramp(): RasterImage {
   }
   return img
 }
+
+/**
+ * The pinned scene whose glow is detected as a semi-transparent overlay, so its
+ * layers carry underlays: each such layer emits its geometry twice, the base's
+ * paint first. The helper has to serialize both paints for one traced unit.
+ */
+const overlayScene = scenes.find((s) => s.name === 'glow over a sky ramp (stacked overlay)') as
+  | (typeof scenes)[number]
+  | undefined
 
 /** Ink art with a hole and a few specks — enough boundary work for bw mode. */
 function inkArt(): RasterImage {
@@ -96,6 +106,11 @@ const MODES: Mode[] = [
     patch: { mode: 'color', segmentation: 'regions' },
   },
   {
+    name: 'color stacked, gradient overlay (underlays)',
+    image: () => (overlayScene as (typeof scenes)[number]).image(),
+    patch: { ...overlayScene?.settings, mode: 'color', gradients: true },
+  },
+  {
     name: 'color cutout',
     image: scene,
     patch: { mode: 'color', paletteSize: 6, layering: 'cutout' },
@@ -125,6 +140,19 @@ const MODES: Mode[] = [
   // run must still be identical with a pool attached.
   { name: 'centerline', image: inkArt, patch: { mode: 'centerline' } },
 ]
+
+/** Consecutive paths sharing a `d` but not a `fill` — one underlay/overlay pair each. */
+function underlayCount(svg: string): number {
+  const paths = [...svg.matchAll(/<path\b[^>]*>/g)].map((p) => ({
+    d: /\bd="([^"]*)"/.exec(p[0])?.[1] ?? '',
+    fill: /\bfill="([^"]*)"/.exec(p[0])?.[1] ?? '',
+  }))
+  let n = 0
+  for (let i = 1; i < paths.length; i++) {
+    if (paths[i].d === paths[i - 1].d && paths[i].fill !== paths[i - 1].fill) n++
+  }
+  return n
+}
 
 /** Everything a byte-for-byte comparison of two runs must cover. */
 function digest(r: VectorizeResult): unknown {
@@ -195,6 +223,22 @@ describe('helper pool parallel tracing', () => {
       expect(digest(warmPar)).toEqual(digest(fresh))
     })
   }
+
+  it('emits both paints of an underlay layer identically to the sequential run', async () => {
+    const found = overlayScene
+    expect(found).toBeDefined()
+    const s = settings({ ...found?.settings, mode: 'color', gradients: true })
+    const img = (found as (typeof scenes)[number]).image()
+    const sequential = await vectorize(img, s, undefined, { withDocument: true })
+    // The scene has to actually produce underlays, or the case above proves
+    // nothing: an underlay is a path repeated with a different fill.
+    expect(underlayCount(sequential.svg)).toBeGreaterThan(0)
+    const parallel = await vectorize(img, s, undefined, {
+      withDocument: true,
+      helpers: helpers.pool,
+    })
+    expect(digest(parallel)).toEqual(digest(sequential))
+  })
 
   it('rejects with CancelledError mid-run and leaves the pool reusable', async () => {
     const img = scene()

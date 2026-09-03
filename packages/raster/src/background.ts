@@ -9,6 +9,8 @@ export interface FlattenResult {
   image: RasterImage
   /** `null` under fully-opaque handling; else 1 where original alpha ≥ `alphaThreshold`. */
   opaque: BinaryMask | null
+  /** Source alpha per pixel (0-255), kept whenever `opaque` is; `null` otherwise. */
+  alpha: Uint8Array | null
 }
 
 /** `out = src * a + bg * (1 - a)` per channel; output alpha is always 255. */
@@ -67,18 +69,20 @@ export function flattenImage(
 
   if (mode === 'custom') {
     const rgb = hexToRgb(settings.backgroundColor) ?? [255, 255, 255]
-    return { image: compositeOver(image, rgb[0], rgb[1], rgb[2]), opaque: null }
+    return { image: compositeOver(image, rgb[0], rgb[1], rgb[2]), opaque: null, alpha: null }
   }
 
   const flat = compositeOver(image, 255, 255, 255)
-  if (mode === 'opaque') return { image: flat, opaque: null }
+  if (mode === 'opaque') return { image: flat, opaque: null, alpha: null }
 
   const opaque = createMask(width, height)
+  const alpha = new Uint8Array(n)
   const threshold = settings.alphaThreshold
   for (let i = 0, p = 3; i < n; i++, p += 4) {
+    alpha[i] = data[p]
     opaque.data[i] = data[p] >= threshold ? 1 : 0
   }
-  return { image: flat, opaque }
+  return { image: flat, opaque, alpha }
 }
 
 /**

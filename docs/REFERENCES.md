@@ -90,10 +90,25 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (`packages/raster/src/filters.ts`).
 - **Z. Du, L. Zhang, et al., “Image Vectorization and Editing via Linear
   Gradient Layer Decomposition”, _ACM TOG (SIGGRAPH)_ 42(4), 2023.** Decomposing
-  regions into linear-gradient layers. The linear case: posterized quantization
-  bands that lie on one Oklab ramp are merged and fitted to a single
-  `<linearGradient>` — a closed-form moment fit (ramp direction = the dominant
-  covariance-normalized least-squares color gradient in position space)
+  regions into linear-gradient layers. Posterized quantization bands that form
+  one ramp are merged and fitted to a single `<linearGradient>` or
+  `<radialGradient>` — closed-form moment fits screen the candidate unions (ramp
+  direction = the dominant covariance-normalized least-squares color gradient in
+  position space; radial center from an isotropic quadratic fit) before the
+  pixel-level verification (`packages/raster/src/gradient.ts`).
+- **J.-D. Favreau, F. Lafarge & A. Bousseau, “Photo2ClipArt: Image Abstraction
+  and Vectorization Using Layered Linear Gradients”, _ACM TOG (SIGGRAPH Asia)_
+  36(6), 2017.** Vectorizing a segmented image as stacked layers, each a color
+  gradient with an opacity gradient, chosen by fidelity against simplicity. The
+  acceptance rule (a ramp ships only when it explains the pixels better than the
+  bands' own flat fills) and the layered fit of a constant-color overlay with a
+  ramping opacity over a detected gradient (`packages/raster/src/gradient.ts`).
+- **C. Richardt, J. Lopez-Moreno, A. Bousseau, M. Agrawala & G. Drettakis,
+  “Vectorising Bitmaps into Semi-Transparent Gradient Layers”, _Computer
+  Graphics Forum (EGSR)_ 33(4), 2014.** Decomposing a bitmap into
+  semi-transparent linear/radial gradient layers by least squares on the
+  compositing equation. The overlay color as the meeting point of the per-pixel
+  base→pixel lines in sRGB, and the per-pixel opacity as the projection onto it
   (`packages/raster/src/gradient.ts`).
 
 ## Settings search (packages/tune)

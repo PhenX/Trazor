@@ -88,7 +88,10 @@ decode (consumer)
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
   quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and
   **gradient detection** (`gradient.ts`) that merges posterized ramp bands into one region painted with a single
-  `<linearGradient>` or `<radialGradient>` — mesh-free, so the geometry (and the cutout partition) is untouched.
+  `<linearGradient>` or `<radialGradient>` — every fit verified on the pixels against the flat bands it replaces —
+  keeps a transparent source's fades as opacity stops, and paints a semi-transparent layer stacked over a ramp (a glow
+  on a sky) as an opacity gradient over an underlay of the ramp. Mesh-free, so the geometry (and the cutout partition)
+  is untouched.
 - **`trace`** — the tracer. Crack-boundary decomposition, the Potrace curve chain, the seam-free boundary graph, and
   centerline extraction. Its own map: [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes,
@@ -126,7 +129,9 @@ The parallel unit is chosen per mode, always something whose result is a functio
 | centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
 
 The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
-routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it.
+routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it. A
+stacked layer painted over an underlay (a semi-transparent gradient overlay and its base) emits its geometry twice, once
+per paint, so its unit carries both paints and comes back with two serialized shapes per traced one.
 
 A helper is a stateful engine instance: it receives the working image, the layering plan, the rings or its share of the
 chain network **once per key** and keeps its own ring/polygon caches, so a warm curve tweak re-fits inside the helper

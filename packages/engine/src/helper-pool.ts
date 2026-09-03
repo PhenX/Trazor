@@ -10,7 +10,7 @@ import type {
   HelperJobKind,
   HelperOutMessage,
   HelperSerializeOptions,
-  HelperShapeMeta,
+  HelperUnitPaint,
 } from './protocol'
 
 /** The stacked-layering plan the coordinator ships to every helper. */
@@ -52,7 +52,7 @@ export interface HelperDispatchSpec {
   stateKey: string
   curve: HelperCurveOptions
   /** Paint of the shapes a unit produces; omit to fit without serializing. */
-  meta?: (unit: number) => HelperShapeMeta
+  meta?: (unit: number) => HelperUnitPaint
   /** Serialization settings; omit to fit without serializing. */
   serialize?: HelperSerializeOptions
   /** `fit-chains`: per-label palette Oklab, enabling sub-pixel color refinement. */
@@ -77,7 +77,11 @@ export interface HelperUnitOutput {
    * when the chain closes on its own start corner.
    */
   shapes: PathCommand[][]
-  /** Serialized shapes, index-parallel to `shapes`; absent when fitting only. */
+  /**
+   * Serialized shapes in emission order; absent when fitting only. One per entry
+   * of `shapes`, or — for a unit with an underlay — the underlay copy of every
+   * entry followed by the entry's own copy.
+   */
   svg?: (ShapeOut | null)[]
 }
 
@@ -360,13 +364,18 @@ export class HelperPool {
     if (!job) return
     switch (msg.type) {
       case 'helper-batch': {
+        // Geometry and serialized shapes advance separately: a unit with an
+        // underlay serializes its geometry once per paint.
         let run = 0
+        let part = 0
         for (let u = 0; u < msg.units.length; u++) {
           const count = msg.counts[u]
+          const parts = msg.svgCounts?.[u] ?? count
           const shapes: PathCommand[][] = new Array(count)
-          const svg = msg.svg ? msg.svg.slice(run, run + count) : undefined
           for (let i = 0; i < count; i++) shapes[i] = unpackCommands(msg.commands, run + i)
+          const svg = msg.svg ? msg.svg.slice(part, part + parts) : undefined
           run += count
+          part += parts
           job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg })
         }
         break

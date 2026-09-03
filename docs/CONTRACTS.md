@@ -72,6 +72,7 @@ export function parseSettingsImport(input: string): ImportedSettings
 export interface GradientStop {
   offset: number // 0..1 along the ramp
   color: string // '#rrggbb'
+  opacity?: number // 0..1; absent ⇒ 1. Serialized as stop-opacity. A source fade or a stacked overlay carries its opacity here.
 }
 export interface LinearGradientPaint {
   kind: 'linear'
@@ -115,6 +116,7 @@ export function bilateralFilter(
 export interface FlattenResult {
   image: RasterImage // RGB composited over white (transparent) or backgroundColor (custom)
   opaque: BinaryMask | null // null when fully opaque handling; else 1 = alpha >= alphaThreshold
+  alpha: Uint8Array | null // source alpha per pixel (0-255) whenever `opaque` is set; else null
 }
 // background 'auto': behaves as 'transparent' if any pixel alpha < 250, else fully opaque.
 // 'custom': composite over settings.backgroundColor, opaque = null.
@@ -191,19 +193,33 @@ export interface SegmentResult {
 export function segmentRegions(image: RasterImage, opts?: SegmentOptions): SegmentResult
 
 // gradient.ts — linear + radial color-ramp detection (color/grayscale).
-// Adjacent quantized bands that lie on one Oklab ramp are merged into a single
-// region (mutating `labels`) and returned as a per-label gradient paint (linear
-// for straight ramps, radial for concentric ones). Geometry is unchanged
-// (mesh-free) so the tracer and cutout partition are untouched; a run with no
-// detectable ramp returns all-null and leaves `labels` unchanged.
+// Adjacent quantized bands that form one ramp — or a single band whose own
+// pixels ramp — are merged into a single region (mutating `labels`) and returned
+// as a per-label gradient paint (linear for straight ramps, radial for
+// concentric ones). Every fit is verified on the pixels: it must be a ramp,
+// paint them within a residual, and explain them better than the bands' own
+// flat fills (a posterized source stays flat). A semi-transparent layer stacked
+// over a detected ramp (a glow, a vignette, a shadow) is returned as an overlay
+// gradient of one color with opacity stops plus the label to paint beneath it;
+// a fade of a transparent source (`alpha`) gets opacity stops of its own color.
+// The unit of detection is a connected component of a label, so a sky band and
+// a hill top that share a quantization label can join different ramps.
+// Geometry is unchanged (mesh-free) so the tracer and cutout partition are
+// untouched; a run with no detectable ramp returns all-null and leaves
+// `labels` unchanged.
 export interface GradientOptions {
   minArea?: number // min pixel area of a merged ramp to become a gradient (default 0)
   maxBacktrack?: number // max fraction of the ramp's color path that may run backwards (lower = stricter; keeps flat/reversing neighbors out)
   minColorSpan?: number // min total Oklab color change to qualify (higher = only strong ramps)
   oklab?: Float32Array // interleaved Oklab for `image` (w*h*3); computed if absent
+  alpha?: Uint8Array | Uint8ClampedArray // source coverage (0-255, w*h) of an image composited over white; varying coverage ⇒ stops with opacity and un-composited colors
+  overlays?: boolean // also detect semi-transparent overlays stacked over a detected ramp (default true)
 }
 export interface GradientResult {
-  gradients: (GradientPaint | null)[] // per (rewritten) label; length = labels.count
+  gradients: (GradientPaint | null)[] // per label of `labels`; length = labels.count
+  underlays: Int32Array // per label: the label to paint beneath it with the same geometry (an overlay's base), or -1
+  labels: LabelMap // the input map relabeled in place; `count` may exceed the input's (see parentLabel)
+  parentLabel: Int32Array // per label: the input label it came from. Detection runs on connected components of a label; a label whose components met different fates (one joined a ramp, another did not) yields a new label past the input count for the ramp, carrying the parent's flat color.
 }
 export function fitRegionGradients(
   image: RasterImage,
@@ -463,6 +479,7 @@ export interface SvgShape {
   strokeLinejoin?: 'miter' | 'round' | 'bevel'
   id?: string
   layerId?: number // stacking layer (paint order); groups a cut layer under groupByLayer
+  unfoldable?: boolean // may overlap a same-paint neighbor (an overlay's underlay): emitted as its own <path>, never folded into one even-odd path
 }
 // A gradient paint server plus the id a shape references it by (fill: 'url(#id)').
 export type SvgGradient = GradientPaint & { id: string }
@@ -845,7 +862,7 @@ export interface VectorShape {
 export interface VectorGradient {
   id: string
   kind: 'linear' | 'radial'
-  stops: { offset: number; color: string }[]
+  stops: { offset: number; color: string; opacity?: number }[]
 }
 
 // Opt-in step tracer (@trazor/core). Attach EngineContext.onTrace (or pass the
@@ -894,7 +911,9 @@ export interface TraceChart {
 // ring/polygon caches (so a warm curve tweak re-fits in the helper without shipping or recomputing
 // geometry), and answers job messages one unit at a time. The parallel unit is:
 //   trace-layers — one stacked layer: rebuild its union flood mask from the shared plan, decompose,
-//                  curve-fit and serialize its shapes.
+//                  curve-fit and serialize its shapes. A layer whose color sits over an underlay
+//                  carries two paints, and its geometry is serialized once per paint (the base's
+//                  copy first), so a unit can return more serialized shapes than command runs.
 //   trace-rings  — one ring of the bw mask: its polygon and curve stages. A bw shape is an outer ring
 //                  plus the holes under it, and one ink silhouette routinely carries most of the
 //                  rings in an image, so the ring is the unit that balances; the coordinator

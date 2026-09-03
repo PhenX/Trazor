@@ -85,7 +85,12 @@ import type { ChainFit, CrackPath, FlatPoints, RegionShape, TracedShape } from '
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import type { HelperPool, StackPlanPayload } from './helper-pool'
-import type { HelperCurveOptions, HelperSerializeOptions } from './protocol'
+import type {
+  HelperCurveOptions,
+  HelperSerializeOptions,
+  HelperShapeMeta,
+  HelperUnitPaint,
+} from './protocol'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -293,6 +298,8 @@ interface PaletteEntry {
   paletteClampedTo?: number
   /** Per-label gradient paint (label ⇒ ramp fill, or null for a flat fill); absent when gradients are off. */
   gradients?: (GradientPaint | null)[]
+  /** Per label, the label painted beneath it with the same geometry (an overlay's base), or -1; absent with `gradients`. */
+  underlays?: Int32Array
   /** Stacked layer rings for one ring key; a key change replaces the whole set. */
   rings?: LayerRings
   /**
@@ -387,6 +394,8 @@ export interface StageCache {
   preKey?: string
   workImage?: RasterImage
   opaque?: BinaryMask | null
+  /** Source alpha per pixel when `opaque` is set (transparent handling), else null. */
+  alpha?: Uint8Array | null
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
   /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
@@ -490,7 +499,11 @@ function buildDocument(
   const gradients: VectorGradient[] = defs.map((g) => ({
     id: g.id,
     kind: g.kind,
-    stops: g.stops.map((s) => ({ offset: s.offset, color: s.color })),
+    stops: g.stops.map((s) =>
+      s.opacity === undefined
+        ? { offset: s.offset, color: s.color }
+        : { offset: s.offset, color: s.color, opacity: s.opacity },
+    ),
   }))
   const outShapes: VectorShape[] = shapes.map((s) => ({
     commands: s.commands,
@@ -603,9 +616,11 @@ export async function vectorize(
   const preKey = preKeyOf(settings)
   let image: RasterImage
   let opaque: BinaryMask | null
+  let alpha: Uint8Array | null
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
+    alpha = cache.alpha ?? null
     cacheStats(cache).preHits++
     run.progress(1)
   } else {
@@ -618,6 +633,7 @@ export async function vectorize(
     const flat = flattenImage(img, settings)
     img = flat.image
     opaque = flat.opaque
+    alpha = flat.alpha
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
     if (cacheable) {
@@ -627,6 +643,7 @@ export async function vectorize(
       cache.preKey = preKey
       cache.workImage = image
       cache.opaque = opaque
+      cache.alpha = alpha
       cache.palette = new Map()
       cache.ink = undefined
     }
@@ -693,6 +710,7 @@ export async function vectorize(
       run,
       image,
       opaque,
+      alpha,
       settings,
       shapes,
       shapeParts,
@@ -844,6 +862,7 @@ async function colorPipeline(
   run: Run,
   image: RasterImage,
   opaque: BinaryMask | null,
+  alpha: Uint8Array | null,
   settings: VectorizeSettings,
   shapes: SvgShape[],
   shapeParts: (ShapeOut | null)[],
@@ -871,6 +890,7 @@ async function colorPipeline(
   let counts: Uint32Array
   let paletteClampedTo: number | undefined
   let gradients: (GradientPaint | null)[] | undefined
+  let underlays: Int32Array | undefined
 
   const cached =
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
@@ -886,6 +906,7 @@ async function colorPipeline(
     counts = cached.counts
     paletteClampedTo = cached.paletteClampedTo
     gradients = cached.gradients
+    underlays = cached.underlays
     cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
@@ -915,10 +936,23 @@ async function colorPipeline(
       const cleared = clearBorderLabel(labels, backgroundLabel)
       counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
     }
-    gradients = applyGradients(image, labels, settings)
-    if (gradients) counts = countLabels(labels)
+    const fitted = applyGradients(image, labels, paletteHex, paletteRgb, alpha, settings)
+    if (fitted) {
+      ;({ labels, paletteHex, paletteRgb } = fitted)
+      gradients = fitted.gradients
+      underlays = fitted.underlays
+      counts = countLabels(labels)
+    }
     if (canCachePal && palKey !== undefined) {
-      paletteEntry = { labels, paletteHex, paletteRgb, counts, paletteClampedTo, gradients }
+      paletteEntry = {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        paletteClampedTo,
+        gradients,
+        underlays,
+      }
       palettePut(cache!, palKey, paletteEntry)
     }
   } else {
@@ -1012,15 +1046,28 @@ async function colorPipeline(
       const cleared = clearBorderLabel(labels, backgroundLabel)
       counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
     }
-    // Merge posterized bands that form one linear ramp into a gradient region
-    // (mutates labels; relabeled bands need a fresh count). Off ⇒ undefined,
+    // Merge posterized bands that form one ramp into a gradient region (mutates
+    // labels; relabeled bands need a fresh count). Off ⇒ undefined,
     // byte-identical to the flat-fill path.
-    gradients = applyGradients(image, labels, settings)
-    if (gradients) counts = countLabels(labels)
+    const fitted = applyGradients(image, labels, paletteHex, paletteRgb, alpha, settings)
+    if (fitted) {
+      ;({ labels, paletteHex, paletteRgb } = fitted)
+      gradients = fitted.gradients
+      underlays = fitted.underlays
+      counts = countLabels(labels)
+    }
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
-      paletteEntry = { labels, paletteHex, paletteRgb, counts, paletteClampedTo, gradients }
+      paletteEntry = {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        paletteClampedTo,
+        gradients,
+        underlays,
+      }
       palettePut(cache!, palKey, paletteEntry)
     }
   }
@@ -1053,6 +1100,11 @@ async function colorPipeline(
       paletteColorsFor[l] = [paletteHex[l]]
     }
   }
+  // A semi-transparent overlay composites over its base: the base's paint is
+  // emitted first with the overlay's own geometry, then the overlay on top. The
+  // underlay may overlap a same-paint sheet beneath it, so it is never folded
+  // into one even-odd path with it.
+  const underOf = (l: number): number => underlays?.[l] ?? -1
 
   if (run.tracing) {
     run.emitStep(() => {
@@ -1141,16 +1193,20 @@ async function colorPipeline(
             : 0
           : settings.gapFill
     for (const region of regions) {
-      const fill = fillFor[region.label]
-      addColors(usedPalette, paletteColorsFor[region.label])
-      shapes.push({
-        commands: region.commands,
-        fill,
-        fillRule: 'evenodd',
-        ...(trapPx > 0
-          ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
-          : {}),
-      })
+      const under = underOf(region.label)
+      for (const label of under >= 0 ? [under, region.label] : [region.label]) {
+        const fill = fillFor[label]
+        addColors(usedPalette, paletteColorsFor[label])
+        shapes.push({
+          commands: region.commands,
+          fill,
+          fillRule: 'evenodd',
+          ...(label === under ? { unfoldable: true } : {}),
+          ...(trapPx > 0
+            ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
+            : {}),
+        })
+      }
     }
     run.progress(1)
   } else {
@@ -1189,17 +1245,44 @@ async function colorPipeline(
       totalLayers = total
       traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
     }
-    /** Place one layer's traced shapes, then report progress and yield. */
+    /** The paints a layer's shapes carry, for a helper to serialize them with. */
+    const layerPaint = (label: number, layerId: number): HelperUnitPaint => {
+      const under = underOf(label)
+      const own: HelperShapeMeta = { fill: fillFor[label], fillRule: 'evenodd', layerId }
+      if (under < 0) return { own }
+      return {
+        own,
+        under: { fill: fillFor[under], fillRule: 'evenodd', layerId, unfoldable: true },
+      }
+    }
+    /**
+     * Place one layer's traced shapes, then report progress and yield. A layer
+     * whose color sits over an underlay emits its geometry twice — the base's
+     * paint first, then the layer's own on top — so `parts`, when a helper
+     * serialized them, carries the underlay copy of every shape followed by the
+     * layer's own copies, in that order.
+     */
     const paintShapes = async (
       label: number,
       layerShapes: readonly PathCommand[][],
       parts: readonly (ShapeOut | null)[] | undefined,
     ): Promise<void> => {
-      const fill = fillFor[label]
-      if (layerShapes.length > 0) addColors(usedPalette, paletteColorsFor[label])
-      for (let i = 0; i < layerShapes.length; i++) {
-        shapes.push({ commands: layerShapes[i], fill, fillRule: 'evenodd', layerId: done })
-        if (parts) shapeParts.push(parts[i] ?? null)
+      const under = underOf(label)
+      const layerId = done
+      let at = 0
+      for (const l of under >= 0 ? [under, label] : [label]) {
+        if (layerShapes.length > 0) addColors(usedPalette, paletteColorsFor[l])
+        for (const commands of layerShapes) {
+          shapes.push({
+            commands,
+            fill: fillFor[l],
+            fillRule: 'evenodd',
+            layerId,
+            ...(l === under ? { unfoldable: true } : {}),
+          })
+          if (parts) shapeParts.push(parts[at] ?? null)
+          at++
+        }
       }
       done++
       run.progress(done / totalLayers)
@@ -1237,7 +1320,7 @@ async function colorPipeline(
         total,
         stateKey: stackKey,
         curve: curveOpts,
-        meta: (unit) => ({ fill: fillFor[labelOf(unit)], fillRule: 'evenodd', layerId: unit }),
+        meta: (unit) => layerPaint(labelOf(unit), unit),
         serialize: helperCtx.serialize,
       })) {
         // oxlint-disable-next-line no-await-in-loop
@@ -1959,22 +2042,36 @@ function stackingOrder(labels: LabelMap, counts: Uint32Array): number[] {
 }
 
 /**
- * Detect linear color ramps and merge the posterized bands that form them into
- * gradient regions (mutating `labels`). Off for a fixed palette (the user pinned
- * exact colors) and in pixel mode (exact lattice), and only in color/grayscale
- * modes. Returns the per-label paint table, or undefined when it did not run
- * (byte-identical to the flat-fill path).
+ * Detect color ramps and merge the posterized bands that form them into
+ * gradient regions (mutating `labels`), including semi-transparent overlays
+ * stacked over a ramp and fades of a transparent source. Off for a fixed
+ * palette (the user pinned exact colors) and in pixel mode (exact lattice), and
+ * only in color/grayscale modes. Returns the per-label paint table and underlay
+ * table, or undefined when it did not run or found nothing (byte-identical to
+ * the flat-fill path).
  */
 function applyGradients(
   image: RasterImage,
   labels: LabelMap,
+  paletteHex: string[],
+  paletteRgb: Uint8Array,
+  alpha: Uint8Array | null,
   settings: VectorizeSettings,
-): (GradientPaint | null)[] | undefined {
+):
+  | {
+      gradients: (GradientPaint | null)[]
+      underlays: Int32Array
+      labels: LabelMap
+      paletteHex: string[]
+      paletteRgb: Uint8Array
+    }
+  | undefined {
   if (!settings.gradients || settings.palette !== null || settings.curveMode === 'pixel') {
     return undefined
   }
   const s = settings.gradientStrength
-  const { gradients } = fitRegionGradients(image, labels, {
+  const fitted = fitRegionGradients(image, labels, {
+    alpha: alpha ?? undefined,
     minArea:
       settings.gradientMinArea > 0
         ? settings.gradientMinArea
@@ -1984,9 +2081,29 @@ function applyGradients(
     // (flat objects stay flat) and a high value tolerates more reversal and
     // catches subtler ramps. 0.5 reproduces the neutral defaults.
     maxBacktrack: 0.06 + 0.18 * s,
-    minColorSpan: 0.1 - 0.08 * s,
+    minColorSpan: 0.09 - 0.08 * s,
   })
-  return gradients.some((g) => g !== null) ? gradients : undefined
+  if (!fitted.gradients.some((g) => g !== null)) return undefined
+  // A label split off a quantization label (one component joined a ramp, another
+  // did not) inherits the flat color of the label it came from.
+  const total = fitted.labels.count
+  const hex = paletteHex.slice()
+  const rgb = new Uint8Array(total * 3)
+  rgb.set(paletteRgb.subarray(0, Math.min(paletteRgb.length, total * 3)))
+  for (let l = paletteHex.length; l < total; l++) {
+    const parent = fitted.parentLabel[l]
+    hex.push(paletteHex[parent])
+    rgb[l * 3] = paletteRgb[parent * 3]
+    rgb[l * 3 + 1] = paletteRgb[parent * 3 + 1]
+    rgb[l * 3 + 2] = paletteRgb[parent * 3 + 2]
+  }
+  return {
+    gradients: fitted.gradients,
+    underlays: fitted.underlays,
+    labels: fitted.labels,
+    paletteHex: hex,
+    paletteRgb: rgb,
+  }
 }
 
 /** Recount pixels per label after a relabel (gradient merge). */

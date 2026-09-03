@@ -1,0 +1,153 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`gradient scenes > 'diagonal ramp on a wide canvas' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 linear (30,-29)->(150,89) 0:#1e3c78 0.45:#7d858a 1:#f0dca0",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'disc fading to transparent' 1`] = `
+{
+  "colors": 1,
+  "gradients": [
+    "g0 radial c(60,60) r46 0:#c81e1e 0.33:#c81e1e@1 0.42:#c81e1e@0.88 0.64:#c81e1e@0.59 1:#c81e1e@0.13",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'dusk landscape (studio sample, illust…' 1`] = `
+{
+  "colors": 9,
+  "gradients": [
+    "g0 linear (233,365)->(235,-1) 0:#e9956c 0.36:#8f5383 1:#18286e",
+    "g1 linear (249,391)->(250,480) 0:#2c2146 1:#100c22",
+    "g3 linear (251,335)->(251,406) 0:#6f4872 1:#593862",
+    "g2 radial c(298,202) r43 0:#fff6d6 1:#ffbe60",
+  ],
+  "paths": 4,
+}
+`;
+
+exports[`gradient scenes > 'flat stripes (no gradient)' 1`] = `
+{
+  "colors": 5,
+  "gradients": [],
+  "paths": 5,
+}
+`;
+
+exports[`gradient scenes > 'gentle low-contrast ramp' 1`] = `
+{
+  "colors": 2,
+  "gradients": [
+    "g0 linear (1,30)->(160,30) 0:#787878 1:#a0a0a0",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'glow over a sky ramp (stacked overlay)' 1`] = `
+{
+  "colors": 7,
+  "gradients": [
+    "g0 linear (118,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
+    "g1 radial c(151,61) r26 0:#fff078 1:#fff078@0",
+    "url(#g1) over url(#g0)",
+  ],
+  "paths": 7,
+}
+`;
+
+exports[`gradient scenes > 'horizontal gray ramp, 2 colors' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 linear (1,30)->(160,30) 0:#1e1e1e 0.42:#727272 1:#e6e6e6",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'horizontal gray ramp, 8 colors' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 linear (1,30)->(160,30) 0:#1e1e1e 0.42:#727272 1:#e6e6e6",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'noisy ramp' 1`] = `
+{
+  "colors": 4,
+  "gradients": [
+    "g0 linear (0,31)->(160,30) 0:#1c1c1c 0.3:#5a5a5a 0.67:#a5a5a5 1:#e6e6e6",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'off-center radial disc on flat ground' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 radial c(60,50) r45 0:#faf0c8 1:#c85028",
+  ],
+  "paths": 2,
+}
+`;
+
+exports[`gradient scenes > 'posterized source with six flat steps…' 1`] = `
+{
+  "colors": 6,
+  "gradients": [],
+  "paths": 6,
+}
+`;
+
+exports[`gradient scenes > 'radial vignette' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 radial c(80,60) r99 0:#f0f0f0 0.55:#838383 1:#2a2a2a",
+  ],
+  "paths": 1,
+}
+`;
+
+exports[`gradient scenes > 'ramp with a flat block inside' 1`] = `
+{
+  "colors": 4,
+  "gradients": [
+    "g0 linear (0,30)->(160,30) 0:#3c301e 0.42:#886d44 1:#f0c078",
+  ],
+  "paths": 2,
+}
+`;
+
+exports[`gradient scenes > 'two ramps with different axes (sky ov…' 1`] = `
+{
+  "colors": 4,
+  "gradients": [
+    "g0 linear (1,90)->(160,90) 0:#0a3c5a 1:#3c8ca0",
+    "g1 linear (80,1)->(80,60) 0:#142878 1:#78a0e6",
+  ],
+  "paths": 2,
+}
+`;
+
+exports[`gradient scenes > 'vertical three-stop sky bending in Ok…' 1`] = `
+{
+  "colors": 3,
+  "gradients": [
+    "g0 linear (60,1)->(60,200) 0:#18286e 0.49:#8e5383 1:#fad682",
+  ],
+  "paths": 1,
+}
+`;
