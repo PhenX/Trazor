@@ -491,6 +491,47 @@ describe('fitRegionGradients — alpha', () => {
     expect(glow.stops[glow.stops.length - 1].opacity ?? 1).toBeLessThan(0.3)
   })
 
+  it('splits a label whose components lie on different layers', () => {
+    // A vertical ramp (bands by row) and, below it, a flat block whose color
+    // equals one sky band's centroid: quantization gives both the same label
+    // (label 2), though the block is not part of the ramp. The ramp's component
+    // joins the gradient; the block keeps a label of its own with the flat color.
+    const w = 60
+    const h = 100
+    const image = rasterOf(w, h, (_x, y) => {
+      if (y >= 70) return [120, 90, 130, 255] as Rgba
+      const t = y / 69
+      return [
+        Math.round(40 + 160 * t),
+        Math.round(50 + 80 * t),
+        Math.round(150 - 40 * t),
+        255,
+      ] as Rgba
+    })
+    const data = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      // Sky bands 0..4 over rows 0-69 (14 rows each); the block takes band 2's label.
+      const band = y >= 70 ? 2 : Math.min(4, Math.floor(y / 14))
+      for (let x = 0; x < w; x++) data[y * w + x] = band
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 5 }
+    const res = fitRegionGradients(image, labels, { minArea: 32 })
+    const skyLabel = res.labels.data[0]
+    const g = res.gradients[skyLabel]
+    expect(g?.kind).toBe('linear')
+    if (g?.kind !== 'linear') return
+    // The gradient's extent stops at the sky's bottom row, not at the block.
+    expect(Math.max(g.y1, g.y2)).toBeLessThan(72)
+    // Every sky pixel carries the gradient label; the block carries another,
+    // flat label whose parent is label 2.
+    for (let y = 0; y < 70; y += 7) expect(res.labels.data[y * w + 30]).toBe(skyLabel)
+    const blockLabel = res.labels.data[85 * w + 30]
+    expect(blockLabel).not.toBe(skyLabel)
+    expect(res.gradients[blockLabel]).toBeNull()
+    expect(res.parentLabel[blockLabel]).toBe(2)
+    expect(res.gradients).toHaveLength(res.labels.count)
+  })
+
   it('overlays can be disabled', () => {
     const w = 40
     const h = 40

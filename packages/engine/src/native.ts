@@ -735,10 +735,13 @@ async function colorPipeline(
       const cleared = clearBorderLabel(labels, backgroundLabel)
       counts[backgroundLabel] = Math.max(0, counts[backgroundLabel] - cleared)
     }
-    const fitted = applyGradients(image, labels, alpha, settings)
-    gradients = fitted?.gradients
-    underlays = fitted?.underlays
-    if (gradients) counts = countLabels(labels)
+    const fitted = applyGradients(image, labels, paletteHex, paletteRgb, alpha, settings)
+    if (fitted) {
+      ;({ labels, paletteHex, paletteRgb } = fitted)
+      gradients = fitted.gradients
+      underlays = fitted.underlays
+      counts = countLabels(labels)
+    }
     if (canCachePal && palKey !== undefined) {
       palettePut(cache!, palKey, {
         labels,
@@ -844,10 +847,13 @@ async function colorPipeline(
     // Merge posterized bands that form one ramp into a gradient region (mutates
     // labels; relabeled bands need a fresh count). Off ⇒ undefined,
     // byte-identical to the flat-fill path.
-    const fitted = applyGradients(image, labels, alpha, settings)
-    gradients = fitted?.gradients
-    underlays = fitted?.underlays
-    if (gradients) counts = countLabels(labels)
+    const fitted = applyGradients(image, labels, paletteHex, paletteRgb, alpha, settings)
+    if (fitted) {
+      ;({ labels, paletteHex, paletteRgb } = fitted)
+      gradients = fitted.gradients
+      underlays = fitted.underlays
+      counts = countLabels(labels)
+    }
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
@@ -1421,14 +1427,24 @@ function stackingOrder(labels: LabelMap, counts: Uint32Array): number[] {
 function applyGradients(
   image: RasterImage,
   labels: LabelMap,
+  paletteHex: string[],
+  paletteRgb: Uint8Array,
   alpha: Uint8Array | null,
   settings: VectorizeSettings,
-): { gradients: (GradientPaint | null)[]; underlays: Int32Array } | undefined {
+):
+  | {
+      gradients: (GradientPaint | null)[]
+      underlays: Int32Array
+      labels: LabelMap
+      paletteHex: string[]
+      paletteRgb: Uint8Array
+    }
+  | undefined {
   if (!settings.gradients || settings.palette !== null || settings.curveMode === 'pixel') {
     return undefined
   }
   const s = settings.gradientStrength
-  const { gradients, underlays } = fitRegionGradients(image, labels, {
+  const fitted = fitRegionGradients(image, labels, {
     alpha: alpha ?? undefined,
     minArea:
       settings.gradientMinArea > 0
@@ -1439,9 +1455,29 @@ function applyGradients(
     // (flat objects stay flat) and a high value tolerates more reversal and
     // catches subtler ramps. 0.5 reproduces the neutral defaults.
     maxBacktrack: 0.06 + 0.18 * s,
-    minColorSpan: 0.1 - 0.08 * s,
+    minColorSpan: 0.09 - 0.08 * s,
   })
-  return gradients.some((g) => g !== null) ? { gradients, underlays } : undefined
+  if (!fitted.gradients.some((g) => g !== null)) return undefined
+  // A label split off a quantization label (one component joined a ramp, another
+  // did not) inherits the flat color of the label it came from.
+  const total = fitted.labels.count
+  const hex = paletteHex.slice()
+  const rgb = new Uint8Array(total * 3)
+  rgb.set(paletteRgb.subarray(0, Math.min(paletteRgb.length, total * 3)))
+  for (let l = paletteHex.length; l < total; l++) {
+    const parent = fitted.parentLabel[l]
+    hex.push(paletteHex[parent])
+    rgb[l * 3] = paletteRgb[parent * 3]
+    rgb[l * 3 + 1] = paletteRgb[parent * 3 + 1]
+    rgb[l * 3 + 2] = paletteRgb[parent * 3 + 2]
+  }
+  return {
+    gradients: fitted.gradients,
+    underlays: fitted.underlays,
+    labels: fitted.labels,
+    paletteHex: hex,
+    paletteRgb: rgb,
+  }
 }
 
 /** Recount pixels per label after a relabel (gradient merge). */

@@ -202,6 +202,8 @@ export function segmentRegions(image: RasterImage, opts?: SegmentOptions): Segme
 // over a detected ramp (a glow, a vignette, a shadow) is returned as an overlay
 // gradient of one color with opacity stops plus the label to paint beneath it;
 // a fade of a transparent source (`alpha`) gets opacity stops of its own color.
+// The unit of detection is a connected component of a label, so a sky band and
+// a hill top that share a quantization label can join different ramps.
 // Geometry is unchanged (mesh-free) so the tracer and cutout partition are
 // untouched; a run with no detectable ramp returns all-null and leaves
 // `labels` unchanged.
@@ -214,8 +216,10 @@ export interface GradientOptions {
   overlays?: boolean // also detect semi-transparent overlays stacked over a detected ramp (default true)
 }
 export interface GradientResult {
-  gradients: (GradientPaint | null)[] // per (rewritten) label; length = labels.count
+  gradients: (GradientPaint | null)[] // per label of `labels`; length = labels.count
   underlays: Int32Array // per label: the label to paint beneath it with the same geometry (an overlay's base), or -1
+  labels: LabelMap // the input map relabeled in place; `count` may exceed the input's (see parentLabel)
+  parentLabel: Int32Array // per label: the input label it came from. Detection runs on connected components of a label; a label whose components met different fates (one joined a ramp, another did not) yields a new label past the input count for the ramp, carrying the parent's flat color.
 }
 export function fitRegionGradients(
   image: RasterImage,

@@ -32,14 +32,14 @@ function radialImage(w = 96, h = 96): RasterImage {
 }
 
 /** A vertical sky ramp with a soft radial glow of one color composited over it. */
-function glowImage(w = 200, h = 150): RasterImage {
+function glowImage(w = 240, h = 180): RasterImage {
   const img = createRaster(w, h)
   const lerp = (a: number, b: number, t: number): number =>
     a + (b - a) * Math.min(1, Math.max(0, t))
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const t = y / (h - 1)
-      const a = Math.max(0, 1 - Math.hypot(x - 100, y - 60) / 45)
+      const a = Math.max(0, 1 - Math.hypot(x - 150, y - 60) / 28)
       setPixel(
         img,
         x,
@@ -184,7 +184,9 @@ describe('gradient detection — engine', () => {
           p.fill.startsWith('url(#'),
       )
       expect(overlaid).toBe(true)
-      expect(analyzeSvg(res.svg).width).toBe(200)
+      // The sky behind the glow is one gradient, not pieces around it.
+      expect(res.svg.match(/<linearGradient/g)).toHaveLength(1)
+      expect(analyzeSvg(res.svg).width).toBe(240)
     })
   }
 })

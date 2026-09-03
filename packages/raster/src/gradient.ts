@@ -23,6 +23,12 @@
  *   gradient even on its own, so a ramp quantized to one, two or three bands is
  *   still recovered.
  *
+ * The unit of detection is a connected component of a label, not the label:
+ * quantization gives one label to a sky band and a hill top that merely share a
+ * color, and only apart can each join its own ramp. A component that joined a
+ * ramp is relabeled to the ramp's label; when a label's components met
+ * different fates the region takes a fresh label past the input count.
+ *
  * Bands are merged agglomeratively — repeatedly uniting the adjacent pair whose
  * union screens best, verified at the pixel level before it is accepted — so a
  * long multi-stop ramp is recovered whole regardless of band count. Screening is
@@ -120,6 +126,16 @@ export interface GradientResult {
    * source's layers did. Length is `labels.count`.
    */
   underlays: Int32Array
+  /**
+   * The rewritten label map: the input map's `data` (relabeled in place) with a
+   * `count` that may exceed the input's. A quantization label whose connected
+   * components met different fates — one joined a ramp, another stayed flat, or
+   * two joined different ramps — needs one label per fate; a label past the
+   * input count is such a split, and `parentLabel[l]` names the input label it
+   * came from (its flat color). `gradients` and `underlays` have this length.
+   */
+  labels: LabelMap
+  parentLabel: Int32Array
 }
 
 /** Mean per-pixel Oklab distance to the fitted ramp above which a fit is rejected (a 2-D field, not a ramp). */
@@ -141,7 +157,7 @@ const MAX_OUTLIER = 0.35
 /** Fraction of position→color energy on the principal axis required (1-D linear ramp). */
 const MIN_DIRECTIONALITY = 0.88
 /** Total Oklab distance across the ramp below which the region is treated as flat. */
-const MIN_COLOR_SPAN = 0.06
+const MIN_COLOR_SPAN = 0.05
 /**
  * Fraction of the members' pooled within-band color variance a ramp must
  * remove — (flat − ramp) / flat — to ship. A ramp quantized into bands leaves
@@ -233,10 +249,14 @@ const ERROR_CAP = 0.08
  * bend through it and paint a streak of that color across the ramp.
  */
 const MAX_BIN_OUTLIERS = 0.2
+/** A connected component of a label smaller than this pools with the label's other fragments as one unit. */
+const MIN_UNIT_AREA = 16
 /** Most pixels a verification pass scans; larger unions are sampled at a fixed stride. */
 const MAX_SAMPLE = 32768
 /** An overlay replaces an opaque fit of the same bands only when its error is at most this fraction of the opaque one's. */
 const OVERLAY_PREFER = 0.5
+/** An opaque fit whose mean error is below this (Oklab) is not visibly improvable and never becomes part of an overlay. */
+const OVERLAY_REPLACE_MIN = 0.01
 /**
  * An opaque ramp touching an overlay joins it when the overlay fitted over both
  * errs by at most this more than the worse of the two separate fits — a glow's
@@ -282,8 +302,8 @@ const NM = 28
 // Fields per profile bin: [count, ΣL, Σa, Σb, ΣLL, Σaa, Σbb, Σα, ΣPr, ΣPg, ΣPb, Σt]
 // (α = coverage in [0,1]; P = coverage-premultiplied sRGB, 0-255; t = scalar).
 const BIN_FIELDS = 12
-// Fields per opacity-profile bin: [count, Σα, Σt].
-const ABIN_FIELDS = 3
+// Fields per opacity-profile bin: [count, Σα, Σt, ΣL, Σa, Σb] (composited Oklab, for the color-span gate).
+const ABIN_FIELDS = 6
 
 type Lab = [number, number, number]
 
@@ -637,6 +657,9 @@ interface Profile {
   fineLab: Float64Array
   fineRgb: Float64Array
   translucent: boolean
+  /** The span of the model scalar the profile covers, as [lo, hi] ⊂ [0, 1]; stops and fine tables are rescaled to it. */
+  lo: number
+  hi: number
 }
 
 /** Linear-interpolate the offset at which the cumulative path first reaches `target`. */
@@ -743,7 +766,7 @@ function foldSparseEnds(
   bins: Float64Array,
   fields: number,
   popFloor: number,
-): { bins: Float64Array; first: number; last: number } | null {
+): { bins: Float64Array; first: number; last: number; lo: number; hi: number } | null {
   let first = -1
   let last = -1
   for (let i = 0; i < BIN_COUNT; i++) {
@@ -758,9 +781,19 @@ function foldSparseEnds(
     for (let f = 0; f < fields; f++) out[into * fields + f] += out[from * fields + f]
     out[from * fields] = 0
   }
-  for (let i = 0; i < first; i++) fold(i, first)
-  for (let i = last + 1; i < BIN_COUNT; i++) fold(i, last)
-  return { bins: out, first, last }
+  // Sparse bins contiguous with the dense span fold into its end bin; bins
+  // beyond an empty gap are another cluster of pixels — a strip of a mixture
+  // label far from the ramp — and are dropped, the painted ramp padding over
+  // them with its end color.
+  let lo = first
+  while (lo > 0 && out[(lo - 1) * fields] > 0) lo--
+  let hi = last
+  while (hi + 1 < BIN_COUNT && out[(hi + 1) * fields] > 0) hi++
+  for (let i = 0; i < lo; i++) out[i * fields] = 0
+  for (let i = hi + 1; i < BIN_COUNT; i++) out[i * fields] = 0
+  for (let i = lo; i < first; i++) fold(i, first)
+  for (let i = last + 1; i <= hi; i++) fold(i, last)
+  return { bins: out, first, last, lo: lo / BIN_COUNT, hi: (hi + 1) / BIN_COUNT }
 }
 
 /**
@@ -778,6 +811,7 @@ function profileToStops(
   ctx: Ctx,
   maxBacktrack: number,
   minSpan: number,
+  radial: boolean,
 ): Profile | null {
   // Ignore any interior bin holding less than SPARSE_FRAC of the fullest bin,
   // so the profile reads only the ramp's well-populated cross-sections.
@@ -786,7 +820,10 @@ function profileToStops(
   const popFloor = maxPop * SPARSE_FRAC
   const folded = foldSparseEnds(raw, BIN_FIELDS, popFloor)
   if (!folded) return null
-  const { bins, first: firstBin, last: lastBin } = folded
+  const { bins, first: firstBin, last: lastBin, hi } = folded
+  // A radial ramp's scalar starts at its center whatever the region covers.
+  const lo = radial ? 0 : folded.lo
+  const rescale = 1 / (hi - lo)
 
   const offs: number[] = []
   const cols: Lab[] = []
@@ -796,7 +833,7 @@ function profileToStops(
     const cnt = bins[b]
     if (cnt < popFloor || cnt <= 0) continue
     const inv = 1 / cnt
-    offs.push(bins[b + 11] * inv)
+    offs.push((bins[b + 11] * inv - lo) * rescale)
     cols.push([bins[b + 1] * inv, bins[b + 2] * inv, bins[b + 3] * inv])
     idx.push(b)
   }
@@ -876,39 +913,50 @@ function profileToStops(
         : oklabToHex(L, A, B)
     stops.push({ offset, color, opacity })
   }
-  return { stops, fineLab, fineRgb, translucent }
+  return { stops, fineLab, fineRgb, translucent, lo, hi }
 }
 
 /**
  * Reduce a per-bin opacity profile to stops of one constant color `hex`, or null
  * when the opacity is not a ramp (populated, monotone, no hard step, spanning
- * at least `minSpan`).
+ * at least `minSpan`) or the composited colors span less than `minColorSpan`.
  */
 function alphaProfileToStops(
   raw: Float64Array,
   hex: string,
   maxBacktrack: number,
   minSpan: number,
-): GradientStop[] | null {
+  minColorSpan: number,
+  radial: boolean,
+): { stops: GradientStop[]; lo: number; hi: number } | null {
   let maxPop = 0
   for (let i = 0; i < BIN_COUNT; i++)
     if (raw[i * ABIN_FIELDS] > maxPop) maxPop = raw[i * ABIN_FIELDS]
   const popFloor = maxPop * SPARSE_FRAC
   const folded = foldSparseEnds(raw, ABIN_FIELDS, popFloor)
   if (!folded) return null
-  const { bins, first: firstBin, last: lastBin } = folded
+  const { bins, first: firstBin, last: lastBin, hi } = folded
+  const lo = radial ? 0 : folded.lo
+  const rescale = 1 / (hi - lo)
   const offs: number[] = []
   const vals: number[] = []
+  const cols: Lab[] = []
   for (let i = firstBin; i <= lastBin; i++) {
     const b = i * ABIN_FIELDS
     const cnt = bins[b]
     if (cnt < popFloor || cnt <= 0) continue
-    offs.push(bins[b + 2] / cnt)
+    offs.push((bins[b + 2] / cnt - lo) * rescale)
     vals.push(bins[b + 1] / cnt)
+    cols.push([bins[b + 3] / cnt, bins[b + 4] / cnt, bins[b + 5] / cnt])
   }
   const np = offs.length
   if (np < MIN_POPULATED_BINS) return null
   if (Math.abs(vals[np - 1] - vals[0]) < minSpan) return null
+  // The same color-span gate as an opaque ramp: a region too subtle to be a
+  // gradient is not one as an overlay either.
+  const c0 = cols[0]
+  const c1 = cols[np - 1]
+  if (deltaEOk(c0[0], c0[1], c0[2], c1[0], c1[1], c1[2]) < minColorSpan) return null
   const steps: number[] = []
   for (let i = 1; i < np; i++) steps.push(Math.abs(vals[i] - vals[i - 1]))
   // No spread floor: an overlay's opacity may fade out well inside its extent
@@ -949,7 +997,7 @@ function alphaProfileToStops(
   const last = stops[nk - 1]
   const faint = (first.opacity ?? 1) <= (last.opacity ?? 1) ? first : last
   if ((faint.opacity ?? 1) < RIM_FADE) faint.opacity = 0
-  return stops
+  return { stops, lo, hi }
 }
 
 /** Write the profile's interpolated Oklab at `t` into `out` (clamped past the ends). */
@@ -984,12 +1032,14 @@ function labAt(lab: Float64Array, t: number, out: Float64Array): void {
  * the opacity ramp itself, which the emitted stops follow within
  * ALPHA_STOP_TOLERANCE.
  */
-function alphaBinTable(bins: Float64Array): Float64Array {
+function alphaBinTable(bins: Float64Array, lo: number, hi: number): Float64Array {
   const out: number[] = []
   for (let i = 0; i < BIN_COUNT; i++) {
     const b = i * ABIN_FIELDS
     if (bins[b] <= 0) continue
-    out.push(bins[b + 2] / bins[b], Math.min(1, Math.max(0, bins[b + 1] / bins[b])))
+    const t = bins[b + 2] / bins[b]
+    if (t < lo || t > hi) continue
+    out.push((t - lo) / (hi - lo), Math.min(1, Math.max(0, bins[b + 1] / bins[b])))
   }
   return Float64Array.from(out)
 }
@@ -1050,12 +1100,21 @@ function addToBin(bins: Float64Array, t: number, ctx: Ctx, p: number): void {
   bins[b + 10] += ctx.rgb[q + 2] - w
 }
 
-/** Accumulate opacity `a` at scalar `t` into the opacity-profile bin for `t`. */
-function addToAlphaBin(bins: Float64Array, t: number, a: number): void {
+/** Accumulate opacity `a` at scalar `t`, and the pixel's Oklab, into the opacity-profile bin for `t`. */
+function addToAlphaBin(
+  bins: Float64Array,
+  t: number,
+  a: number,
+  ok: Float32Array,
+  q: number,
+): void {
   const b = binOf(t) * ABIN_FIELDS
   bins[b] += 1
   bins[b + 1] += a
   bins[b + 2] += t
+  bins[b + 3] += ok[q]
+  bins[b + 4] += ok[q + 1]
+  bins[b + 5] += ok[q + 2]
 }
 
 /** Bin index for a scalar in [0,1]. */
@@ -1294,10 +1353,15 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
   // The color span is a shipping gate: two narrow bands of a gentle ramp span
   // little, yet are one ramp and must be allowed to start merging.
   const minSpan = final ? ctx.minColorSpan : 0
-  const profL = binsL ? profileToStops(binsL, ctx, ctx.maxBacktrack, minSpan) : null
+  const profL = binsL ? profileToStops(binsL, ctx, ctx.maxBacktrack, minSpan, false) : null
   // Radial profiles are monotone in radius by construction, so no backtrack gate.
-  const profR = binsR ? profileToStops(binsR, ctx, 1, minSpan) : null
+  const profR = binsR ? profileToStops(binsR, ctx, 1, minSpan, true) : null
   if (!profL && !profR) return null
+  // The profiles cover the dense span of each scalar; pixels outside it (a
+  // detached strip of a mixture label) read the padded end color.
+  const lLo = profL ? profL.lo : 0
+  const lScale = profL ? 1 / (profL.hi - profL.lo) : 1
+  const rScale = profR ? 1 / profR.hi : 1
 
   // Pass 3: score each surviving model's profile — the ramp itself, which the
   // painted stops follow within STOP_TOLERANCE — and the members' own flat
@@ -1329,7 +1393,7 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
       sampled++
       const f2 = flatError(ok, base, means, i)
       if (profL && coh) {
-        const t = (dx * px + dy * py - smin) / span
+        const t = Math.min(1, Math.max(0, ((dx * px + dy * py - smin) / span - lLo) * lScale))
         labAt(profL.fineLab, t, out)
         addError(scL, i, t, deltaEOkSq3(ok, base, out), f2)
         const c = (-dy * px + dx * py - crossMean) / crossStd
@@ -1349,7 +1413,7 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
         }
       }
       if (profR) {
-        const t = Math.hypot(px - rcx, py - rcy) / rmax
+        const t = Math.min(1, (Math.hypot(px - rcx, py - rcy) / rmax) * rScale)
         labAt(profR.fineLab, t, out)
         addError(scR, i, t, deltaEOkSq3(ok, base, out), f2)
       }
@@ -1361,6 +1425,8 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
     const cx = sacc[1] / n
     const cy = sacc[2] / n
     const sc = dx * cx + dy * cy
+    const sLo = smin + profL.lo * span
+    const sHi = smin + profL.hi * span
     best = {
       residual: scL.abs / sampled,
       fineLab: profL.fineLab,
@@ -1368,10 +1434,10 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
       translucent: profL.translucent,
       paint: {
         kind: 'linear',
-        x1: cx + (smin - sc) * dx,
-        y1: cy + (smin - sc) * dy,
-        x2: cx + (smax - sc) * dx,
-        y2: cy + (smax - sc) * dy,
+        x1: cx + (sLo - sc) * dx,
+        y1: cy + (sLo - sc) * dy,
+        x2: cx + (sHi - sc) * dx,
+        y2: cy + (sHi - sc) * dy,
         stops: profL.stops,
       },
     }
@@ -1383,24 +1449,13 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
         fineLab: profR.fineLab,
         fineRgb: profR.fineRgb,
         translucent: profR.translucent,
-        paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: profR.stops },
+        paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax * profR.hi, stops: profR.stops },
       }
     }
   }
   return best
 }
 
-/**
- * Fit the members' pixels as a constant color F at a ramping opacity a(p)
- * composited over `base`: c(p) = B(p) + a(p)·(F − B(p)), in sRGB (the space
- * an SVG renderer composites in), with B read from the base's unsimplified
- * profile. F is the weighted least-squares meeting point of
- * the lines B(p)→c(p), refined by alternating least squares with the per-pixel
- * opacities (the projection of c(p) − B(p) onto F − B(p)); the opacity field is
- * then fitted (axis or center from its moments), profiled, gated and scored
- * against the composite it would paint — the same bar as an opaque ramp
- * ({@link accepts}).
- */
 /**
  * Fit the members' pixels as a constant color F at a ramping opacity a(p)
  * composited over `base`: c(p) = B(p) + a(p)·(F − B(p)), in sRGB (the space
@@ -1604,16 +1659,24 @@ function fitOverlay(
       const py = (p - (p % width)) / width + 0.5
       labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
       const a = alphaOf(p * 4)
-      if (binsL) addToAlphaBin(binsL, (dx * px + dy * py - smin) / span, a)
-      if (binsR) addToAlphaBin(binsR, Math.hypot(px - rcx, py - rcy) / rmax, a)
+      if (binsL) addToAlphaBin(binsL, (dx * px + dy * py - smin) / span, a, ok, p * 3)
+      if (binsR) addToAlphaBin(binsR, Math.hypot(px - rcx, py - rcy) / rmax, a, ok, p * 3)
     }
   }
   const minSpan = final ? MIN_ALPHA_SPAN : 0
-  const stopsL = binsL ? alphaProfileToStops(binsL, hex, ctx.maxBacktrack, minSpan) : null
-  const stopsR = binsR ? alphaProfileToStops(binsR, hex, 1, minSpan) : null
-  if (!stopsL && !stopsR) return null
-  const alphaL = binsL && stopsL ? alphaBinTable(binsL) : null
-  const alphaR = binsR && stopsR ? alphaBinTable(binsR) : null
+  const minColor = final ? ctx.minColorSpan : 0
+  const profAL = binsL
+    ? alphaProfileToStops(binsL, hex, ctx.maxBacktrack, minSpan, minColor, false)
+    : null
+  const profAR = binsR ? alphaProfileToStops(binsR, hex, 1, minSpan, minColor, true) : null
+  if (!profAL && !profAR) return null
+  const stopsL = profAL?.stops ?? null
+  const stopsR = profAR?.stops ?? null
+  const alphaL = binsL && profAL ? alphaBinTable(binsL, profAL.lo, profAL.hi) : null
+  const alphaR = binsR && profAR ? alphaBinTable(binsR, 0, profAR.hi) : null
+  const lLo = profAL ? profAL.lo : 0
+  const lScale = profAL ? 1 / (profAL.hi - profAL.lo) : 1
+  const rScale = profAR ? 1 / profAR.hi : 1
 
   // Pass 5: score the composite each model's opacity profile paints (in
   // Oklab, like every other gate), and the members' own flat fills.
@@ -1635,7 +1698,7 @@ function fitOverlay(
       sampled++
       const f2 = flatError(ok, q, means, i)
       if (alphaL) {
-        const t = (dx * px + dy * py - smin) / span
+        const t = Math.min(1, Math.max(0, ((dx * px + dy * py - smin) / span - lLo) * lScale))
         const a = alphaAt(alphaL, t)
         oklabInto(
           bcol[0] + a * (F[0] - bcol[0]),
@@ -1646,7 +1709,7 @@ function fitOverlay(
         addError(scL, i, t, deltaEOkSq3(ok, q, comp), f2)
       }
       if (alphaR) {
-        const t = Math.hypot(px - rcx, py - rcy) / rmax
+        const t = Math.min(1, (Math.hypot(px - rcx, py - rcy) / rmax) * rScale)
         const a = alphaAt(alphaR, t)
         oklabInto(
           bcol[0] + a * (F[0] - bcol[0]),
@@ -1660,10 +1723,12 @@ function fitOverlay(
   }
   const none = new Float64Array(0)
   let best: Built | null = null
-  if (stopsL && accepts(scL, sampled, memberN)) {
+  if (stopsL && profAL && accepts(scL, sampled, memberN)) {
     const cx = sacc[1] / n
     const cy = sacc[2] / n
     const sc = dx * cx + dy * cy
+    const sLo = smin + profAL.lo * span
+    const sHi = smin + profAL.hi * span
     best = {
       residual: scL.abs / sampled,
       fineLab: none,
@@ -1671,22 +1736,22 @@ function fitOverlay(
       translucent: true,
       paint: {
         kind: 'linear',
-        x1: cx + (smin - sc) * dx,
-        y1: cy + (smin - sc) * dy,
-        x2: cx + (smax - sc) * dx,
-        y2: cy + (smax - sc) * dy,
+        x1: cx + (sLo - sc) * dx,
+        y1: cy + (sLo - sc) * dy,
+        x2: cx + (sHi - sc) * dx,
+        y2: cy + (sHi - sc) * dy,
         stops: stopsL,
       },
     }
   }
-  if (stopsR && accepts(scR, sampled, memberN)) {
+  if (stopsR && profAR && accepts(scR, sampled, memberN)) {
     if (best === null || scR.abs < scL.abs) {
       best = {
         residual: scR.abs / sampled,
         fineLab: none,
         fineRgb: none,
         translucent: true,
-        paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: stopsR },
+        paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax * profAR.hi, stops: stopsR },
       }
     }
   }
@@ -1830,11 +1895,15 @@ export function fitRegionGradients(
   labels: LabelMap,
   opts?: GradientOptions,
 ): GradientResult {
-  const { width, height, count } = labels
+  const { width, height, count: labelCount } = labels
   const data = labels.data
-  const gradients: (GradientPaint | null)[] = new Array(count).fill(null)
-  const underlays = new Int32Array(count).fill(-1)
-  if (count < 1) return { gradients, underlays }
+  const identity = (): GradientResult => ({
+    gradients: new Array(labelCount).fill(null),
+    underlays: new Int32Array(labelCount).fill(-1),
+    labels,
+    parentLabel: Int32Array.from({ length: labelCount }, (_, l) => l),
+  })
+  if (labelCount < 1) return identity()
 
   const minArea = opts?.minArea ?? 0
   const maxBacktrack = opts?.maxBacktrack ?? MAX_BACKTRACK
@@ -1848,13 +1917,63 @@ export function fitRegionGradients(
     if (!partial) alpha = null
   }
 
-  // ---- per-label moment sums and pixel counts (one pass) ----
+  // ---- units: the connected components of each label. Quantization gives
+  // one label to every pixel near a centroid wherever it lies, so one label
+  // can hold a sky band and a hill top that merely share a color; they belong
+  // to different ramps, and only apart can each join its own. Fragments below
+  // MIN_UNIT_AREA of one label pool into a single unit. ----
+  const unit = new Int32Array(data.length).fill(-1)
+  const unitLabel: number[] = []
+  const fragmentUnit = new Int32Array(labelCount).fill(-1)
+  const todo = new Int32Array(data.length)
+  const walked = new Int32Array(data.length)
+  for (let p0 = 0; p0 < data.length; p0++) {
+    if (data[p0] < 0 || unit[p0] >= 0) continue
+    const l = data[p0]
+    const id = unitLabel.length
+    unitLabel.push(l)
+    let sp = 0
+    let size = 0
+    todo[sp++] = p0
+    unit[p0] = id
+    while (sp > 0) {
+      const p = todo[--sp]
+      walked[size++] = p
+      const x = p % width
+      if (x > 0 && data[p - 1] === l && unit[p - 1] < 0) {
+        unit[p - 1] = id
+        todo[sp++] = p - 1
+      }
+      if (x + 1 < width && data[p + 1] === l && unit[p + 1] < 0) {
+        unit[p + 1] = id
+        todo[sp++] = p + 1
+      }
+      if (p >= width && data[p - width] === l && unit[p - width] < 0) {
+        unit[p - width] = id
+        todo[sp++] = p - width
+      }
+      if (p + width < data.length && data[p + width] === l && unit[p + width] < 0) {
+        unit[p + width] = id
+        todo[sp++] = p + width
+      }
+    }
+    if (size >= MIN_UNIT_AREA) continue
+    if (fragmentUnit[l] < 0) {
+      fragmentUnit[l] = id
+      continue
+    }
+    for (let k = 0; k < size; k++) unit[walked[k]] = fragmentUnit[l]
+    unitLabel.pop()
+  }
+  const count = unitLabel.length
+
+  // ---- per-unit moment sums and pixel counts (one pass) ----
   const m = new Float64Array(count * NM)
   const counts = new Uint32Array(count)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const p = y * width + x
-      const l = data[p]
+      const l = unit[p]
       if (l < 0) continue
       counts[l]++
       const cx = x + 0.5
@@ -1904,7 +2023,7 @@ export function fitRegionGradients(
   const bucket = new Int32Array(offset[count])
   const cursor = offset.slice(0, count)
   for (let p = 0; p < data.length; p++) {
-    const l = data[p]
+    const l = unit[p]
     if (l >= 0) bucket[cursor[l]++] = p
   }
 
@@ -1913,17 +2032,17 @@ export function fitRegionGradients(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const p = y * width + x
-      const l = data[p]
+      const l = unit[p]
       if (l < 0) continue
       if (x + 1 < width) {
-        const r = data[p + 1]
+        const r = unit[p + 1]
         if (r >= 0 && r !== l) {
           adjSets[l].add(r)
           adjSets[r].add(l)
         }
       }
       if (y + 1 < height) {
-        const d = data[p + width]
+        const d = unit[p + width]
         if (d >= 0 && d !== l) {
           adjSets[l].add(d)
           adjSets[d].add(l)
@@ -1969,6 +2088,8 @@ export function fitRegionGradients(
   // and the better screen orders the verifications. ----
   const claimed = new Int32Array(count).fill(-1)
   const finalRep = new Int32Array(count).fill(-1)
+  const paintOf: (GradientPaint | null)[] = new Array(count).fill(null)
+  const underOf = new Int32Array(count).fill(-1)
   const supers = growRamps(
     m,
     adj,
@@ -1990,7 +2111,7 @@ export function fitRegionGradients(
     count,
   )
   for (const s of supers) {
-    gradients[s.rep] = s.built.paint
+    paintOf[s.rep] = s.built.paint
     for (const mem of s.members) finalRep[mem] = s.rep
   }
 
@@ -2043,17 +2164,19 @@ export function fitRegionGradients(
               count,
             )
       // A smaller opaque ramp touching the base whose pixels an overlay
-      // explains far better than its own opaque fit did is an overlay too.
+      // explains far better than its own, visibly imperfect, opaque fit did is
+      // an overlay too.
       for (const other of touching) {
-        if (areaOf(other) >= areaOf(base)) continue
+        if (areaOf(other) >= areaOf(base) || other.built.residual < OVERLAY_REPLACE_MIN) continue
         const over = fitOverlay(ctx, other.members, base.built, true)
         if (over === null || over.residual > OVERLAY_PREFER * other.built.residual) continue
         other.built = over
         overlays.push(other)
       }
       // An opaque ramp touching an overlay — a glow's core, which shipped as a
-      // radial of its own before its base existed — joins the overlay when the
-      // overlay fitted over both explains them at least as well.
+      // radial of its own before its base existed — joins the overlay when its
+      // own fit is visibly imperfect and the overlay fitted over both explains
+      // them at least as well.
       for (const o of overlays) {
         const inO = new Set(o.members)
         for (let grew = true; grew;) {
@@ -2061,6 +2184,7 @@ export function fitRegionGradients(
           for (const other of byArea) {
             if (other === base || other === o || other.built.translucent) continue
             if (dissolved.has(other) || areaOf(other) >= areaOf(base)) continue
+            if (other.built.residual < OVERLAY_REPLACE_MIN) continue
             if (!other.members.some((mem) => adj[mem].some((nb) => inO.has(nb)))) continue
             const union = fitOverlay(ctx, o.members.concat(other.members), base.built, true)
             if (union === null) continue
@@ -2071,13 +2195,13 @@ export function fitRegionGradients(
               inO.add(mem)
             }
             o.built = union
-            gradients[other.rep] = null
+            paintOf[other.rep] = null
             dissolved.add(other)
             grew = true
           }
         }
-        gradients[o.rep] = o.built.paint
-        underlays[o.rep] = base.rep
+        paintOf[o.rep] = o.built.paint
+        underOf[o.rep] = base.rep
         for (const mem of o.members) finalRep[mem] = o.rep
         stacked.push({ overlay: o, base })
       }
@@ -2096,14 +2220,14 @@ export function fitRegionGradients(
         if (union === null) continue
         base.members.push(...other.members)
         base.built = union
-        gradients[base.rep] = union.paint
-        gradients[other.rep] = null
+        paintOf[base.rep] = union.paint
+        paintOf[other.rep] = null
         for (const mem of other.members) finalRep[mem] = base.rep
         dissolved.add(other)
         const refit = fitOverlay(ctx, overlay.members, union, true)
         if (refit) {
           overlay.built = refit
-          gradients[overlay.rep] = refit.paint
+          paintOf[overlay.rep] = refit.paint
         }
       }
     }
@@ -2115,7 +2239,7 @@ export function fitRegionGradients(
   // whose edges read as seams. Largest touching ramp first. ----
   {
     const bySuper = new Map<number, Super>()
-    for (const s of supers) if (gradients[s.rep] && !s.built.translucent) bySuper.set(s.rep, s)
+    for (const s of supers) if (paintOf[s.rep] && !s.built.translucent) bySuper.set(s.rep, s)
     const area = new Map<number, number>()
     for (const [rep, s] of bySuper) {
       let a = 0
@@ -2152,15 +2276,71 @@ export function fitRegionGradients(
     }
   }
 
-  // ---- relabel merged bands onto their representative ----
-  let any = false
-  for (let l = 0; l < count; l++) if (finalRep[l] >= 0 && l !== finalRep[l]) any = true
-  if (any) {
-    for (let p = 0; p < data.length; p++) {
-      const l = data[p]
-      if (l >= 0 && finalRep[l] >= 0) data[p] = finalRep[l]
+  // ---- map units back to labels. A unit that joined a region takes the
+  // region's label; the others keep their own. A region's label is one of its
+  // members' labels every non-fragment component of which it holds (so no
+  // component of that label elsewhere inherits the paint), the
+  // representative's own first; a region that holds no such label — every
+  // label it holds also has a component elsewhere — gets a new label past the
+  // input count, with `parentLabel` naming the input label it came from. ----
+  const regionLabel = new Int32Array(count).fill(-1)
+  const usedLabel = new Uint8Array(labelCount)
+  const componentsOf = new Uint32Array(labelCount)
+  for (let u = 0; u < count; u++) if (fragmentUnit[unitLabel[u]] !== u) componentsOf[unitLabel[u]]++
+  const reps: number[] = []
+  for (let u = 0; u < count; u++) if (finalRep[u] === u && paintOf[u]) reps.push(u)
+  const held = new Map<number, Map<number, number>>()
+  for (let u = 0; u < count; u++) {
+    const rep = finalRep[u]
+    if (rep < 0 || fragmentUnit[unitLabel[u]] === u) continue
+    let h = held.get(rep)
+    if (!h) {
+      h = new Map()
+      held.set(rep, h)
+    }
+    h.set(unitLabel[u], (h.get(unitLabel[u]) ?? 0) + 1)
+  }
+  const parent: number[] = Array.from({ length: labelCount }, (_, l) => l)
+  for (const rep of reps) {
+    const h = held.get(rep) ?? new Map<number, number>()
+    const own = unitLabel[rep]
+    const candidates = [...h.keys()]
+      .filter((l) => !usedLabel[l] && h.get(l) === componentsOf[l])
+      .toSorted((a, b) => (a === own ? -1 : b === own ? 1 : a - b))
+    if (candidates.length > 0) {
+      regionLabel[rep] = candidates[0]
+      usedLabel[candidates[0]] = 1
+    } else {
+      regionLabel[rep] = parent.length
+      parent.push(own)
     }
   }
-
-  return { gradients, underlays }
+  const outLabel = new Int32Array(count)
+  let any = false
+  for (let u = 0; u < count; u++) {
+    const rep = finalRep[u]
+    const l = rep >= 0 && regionLabel[rep] >= 0 ? regionLabel[rep] : unitLabel[u]
+    outLabel[u] = l
+    if (l !== unitLabel[u]) any = true
+  }
+  const total = parent.length
+  const gradients: (GradientPaint | null)[] = new Array(total).fill(null)
+  const underlays = new Int32Array(total).fill(-1)
+  for (const rep of reps) {
+    const l = regionLabel[rep]
+    gradients[l] = paintOf[rep]
+    if (underOf[rep] >= 0) underlays[l] = regionLabel[underOf[rep]]
+  }
+  if (any) {
+    for (let p = 0; p < data.length; p++) {
+      const u = unit[p]
+      if (u >= 0) data[p] = outLabel[u]
+    }
+  }
+  return {
+    gradients,
+    underlays,
+    labels: total === labelCount ? labels : { width, height, data, count: total },
+    parentLabel: Int32Array.from(parent),
+  }
 }
