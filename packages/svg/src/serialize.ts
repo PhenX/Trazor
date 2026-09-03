@@ -30,6 +30,13 @@ export interface SvgShape {
    * island on top) and so must stay separate layers, not one merged color.
    */
   layerId?: number
+  /**
+   * This shape may overlap a neighboring shape of the same paint (an underlay
+   * beneath a semi-transparent overlay, over a sheet that already carries the
+   * same paint), so it is emitted as its own element rather than folded into
+   * one even-odd path where the overlap would punch a hole.
+   */
+  unfoldable?: boolean
 }
 
 /** A gradient paint server (`@trazor/core` `GradientPaint`) plus the `id` a shape
@@ -298,8 +305,9 @@ export function serializeSvg(doc: SvgDocument, opts: SerializeOptions): string {
 /**
  * Emit shapes as finished element strings. Consecutive optimized paths that
  * share identical paint fold into one `<path>` (same-paint shapes in our output
- * are disjoint, so the union renders identically); primitives and un-optimized
- * paths flush the pending run. Shapes that produce no output are dropped.
+ * are disjoint, so the union renders identically); primitives, un-optimized
+ * paths and `unfoldable` shapes flush the pending run. Shapes that produce no
+ * output are dropped.
  */
 function foldShapes(
   shapes: readonly SvgShape[],
@@ -321,6 +329,9 @@ function foldShapes(
     if (so.kind === 'element') {
       flush()
       out.push(so.svg)
+    } else if (shape.unfoldable === true) {
+      flush()
+      out.push(`<path d="${so.d}"${so.paint}/>`)
     } else if (pending !== null && pending.paint === so.paint) {
       pending.d += ` ${so.d}`
     } else {

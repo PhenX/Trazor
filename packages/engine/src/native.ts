@@ -892,7 +892,9 @@ async function colorPipeline(
     }
   }
   // A semi-transparent overlay composites over its base: the base's paint is
-  // emitted first with the overlay's own geometry, then the overlay on top.
+  // emitted first with the overlay's own geometry, then the overlay on top. The
+  // underlay may overlap a same-paint sheet beneath it, so it is never folded
+  // into one even-odd path with it.
   const underOf = (l: number): number => underlays?.[l] ?? -1
 
   if (run.tracing) {
@@ -968,6 +970,7 @@ async function colorPipeline(
           commands: region.commands,
           fill,
           fillRule: 'evenodd',
+          ...(label === under ? { unfoldable: true } : {}),
           ...(trapPx > 0
             ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
             : {}),
@@ -1140,6 +1143,7 @@ async function colorPipeline(
             fill: fillFor[l],
             fillRule: 'evenodd',
             layerId: i,
+            ...(l === under ? { unfoldable: true } : {}),
           })
         }
       }
@@ -1191,6 +1195,7 @@ async function colorPipeline(
               fill: fillFor[l],
               fillRule: 'evenodd',
               layerId: order.length + c,
+              ...(l === under ? { unfoldable: true } : {}),
             })
           }
         }

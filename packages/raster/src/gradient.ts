@@ -10,10 +10,12 @@
  * profiled along the model's scalar (axis projection or radius), the profile is
  * simplified to stops, and the pixels are scored against the stops they will be
  * painted with. A fit ships only when
- * - the profile is a ramp (populated, monotone, no hard step, color spread across
- *   the extent, not flat);
- * - the mean per-pixel Oklab error is below MAX_RESIDUAL (a 2-D field is not a
- *   ramp);
+ * - the profile is a ramp (populated, monotone, no hard step — neither one that
+ *   carries most of the path nor one far larger than the ramp's steps — color
+ *   spread across the extent, not flat);
+ * - the mean per-pixel Oklab error is below MAX_RESIDUAL, and a visible residual
+ *   is not a function of the cross-axis position (a ring or a spot painted as a
+ *   band is a 2-D field, not a ramp);
  * - it explains the pixels better than the members' own flat fills by
  *   MIN_IMPROVEMENT (model comparison, Favreau et al. 2017 §4). Bands that are
  *   flat inside — a cel-shaded or already posterized source — have nothing for
@@ -37,6 +39,9 @@
  * overlay and keeps its flat fill; the ramp pieces on either side of it still
  * merge (a pair sharing a neighbor is a candidate), and an opaque ramp that an
  * overlay explains as well joins the overlay.
+ *
+ * A small band left over next to a ramp that already paints it within the
+ * residual joins the ramp rather than staying a flat strip with seams for edges.
  *
  * Stops follow the pixel profile in Oklab and are simplified by Douglas–Peucker,
  * so a straight ramp keeps 2 stops and a curved one the few it needs. When the
@@ -164,6 +169,15 @@ const MAX_STOPS = 8
 /** Reject as a hard edge (not a ramp) when one adjacent-bin jump exceeds this fraction of the whole path. */
 const STEP_JUMP_FRAC = 0.5
 /**
+ * Reject as an edge when one adjacent-bin jump exceeds this many times the
+ * profile's mean step and MIN_EDGE_JUMP: two ramps stacked along one axis with
+ * a hard boundary between them (a sky over a hill) read as one path whose jump
+ * is a modest share of the whole, but far larger than any step of either ramp.
+ */
+const MAX_JUMP_RATIO = 4
+/** A jump below this (Oklab, or opacity) is never an edge, however flat the rest of the profile. */
+const MIN_EDGE_JUMP = 0.04
+/**
  * The offset span over which the middle 80% of a ramp's path is traversed, as a
  * fraction of its full offset range, must be at least this. A ramp changes
  * steadily across its extent; two flat regions meeting (two silhouettes with an
@@ -229,6 +243,25 @@ const OVERLAY_PREFER = 0.5
  * core, opaque enough to have shipped as a radial of its own, rejoins its skirt.
  */
 const OVERLAY_JOIN_TOLERANCE = 0.002
+/**
+ * Share of a linear fit's residual that a quadratic in the cross-axis position
+ * may explain, per bin, before the region reads as a 2-D field: a ramp's
+ * residual is noise, uncorrelated with position; a ring or a spot painted as a
+ * band leaves a residual that follows the position across the axis.
+ */
+const MAX_CROSS_COHERENCE = 0.25
+/**
+ * Mean squared residual (Oklab, summed over channels) below which cross-axis
+ * coherence is not judged: a residual that small (0.02 rms) is not visible,
+ * however structured — a ramp that follows a gently waving edge stays a ramp.
+ */
+const COHERENCE_MIN_VAR = 4e-4
+/** Fields per coherence bin: n, Σc, Σc², Σc³, Σc⁴, then per channel Σy, Σcy, Σc²y, Σy². */
+const COH_FIELDS = 17
+/** A band may be absorbed by a touching ramp only when it holds at most this share of the ramp's area. */
+const ABSORB_MAX_SHARE = 0.1
+/** An overlay end stop below this opacity fades out entirely, meeting the base beyond the region without a rim. */
+const RIM_FADE = 0.25
 /** An overlay's opacity must ramp by at least this much across its extent; a flat opacity is a flat object. */
 const MIN_ALPHA_SPAN = 0.2
 /**
@@ -585,11 +618,13 @@ interface Built {
   /** Mean per-pixel Oklab distance of the fitted pixels to the painted ramp. */
   residual: number
   /**
-   * Every populated profile bin as [offset, r, g, b] (sRGB, 0-1): the ramp
-   * before stop simplification, accurate to the noise, in the space an SVG
-   * renderer composites in — for fitting an overlay on top of it. The painted
-   * stops stay within STOP_TOLERANCE of it.
+   * Every populated profile bin as [offset, L, a, b] (composited Oklab) and as
+   * [offset, r, g, b] (sRGB, 0-1): the ramp before stop simplification,
+   * accurate to the noise — the Oklab one for judging pixels against the ramp,
+   * the sRGB one, the space an SVG renderer composites in, for fitting an
+   * overlay on top of it. The painted stops stay within STOP_TOLERANCE of it.
    */
+  fineLab: Float64Array
   fineRgb: Float64Array
   /** Any stop carries opacity (a fade of the source, or an overlay). */
   translucent: boolean
@@ -618,9 +653,10 @@ function offsetAtPath(offs: readonly number[], cum: readonly number[], target: n
 
 /**
  * Ramp-shape gates on a profile's adjacent-step lengths (`steps[i]` = distance
- * from point i to i+1): a hard step concentrates the whole change in one jump;
- * two flats meeting put the middle 80% of the change into a narrow band; a flat
- * has no change. Returns the path length, or -1 when the profile is not a ramp.
+ * from point i to i+1): a hard step concentrates the whole change in one jump,
+ * or in one jump far larger than the ramp's steps; two flats meeting put the
+ * middle 80% of the change into a narrow band; a flat has no change. Returns
+ * the path length, or -1 when the profile is not a ramp.
  */
 function rampShape(offs: readonly number[], steps: readonly number[], minSpread: number): number {
   let path = 0
@@ -632,6 +668,7 @@ function rampShape(offs: readonly number[], steps: readonly number[], minSpread:
     cum.push(path)
   }
   if (path <= 0 || maxJump > STEP_JUMP_FRAC * path) return -1
+  if (maxJump > MIN_EDGE_JUMP && maxJump > (MAX_JUMP_RATIO * path) / steps.length) return -1
   const range = offs[offs.length - 1] - offs[0]
   if (range < 1e-9) return -1
   const spread = offsetAtPath(offs, cum, 0.9 * path) - offsetAtPath(offs, cum, 0.1 * path)
@@ -905,6 +942,13 @@ function alphaProfileToStops(
     const opacity = opacityOf(v)
     stops.push(opacity === undefined ? { offset, color: hex } : { offset, color: hex, opacity })
   }
+  // Beyond the overlay's region only the base is painted, so the end where the
+  // overlay has all but faded meets the base continuously when it fades out
+  // entirely there; the last faint stretch inside is worth the seam it removes.
+  const first = stops[0]
+  const last = stops[nk - 1]
+  const faint = (first.opacity ?? 1) <= (last.opacity ?? 1) ? first : last
+  if ((faint.opacity ?? 1) < RIM_FADE) faint.opacity = 0
   return stops
 }
 
@@ -1123,6 +1167,50 @@ function accepts(sc: Score, n: number, memberN: Float64Array): boolean {
   return true
 }
 
+/**
+ * Share of the residual's sum of squares that a per-bin quadratic in the
+ * cross-axis position explains: a least-squares fit of `y ≈ b0 + b1·c + b2·c²`
+ * per bin and channel over the residuals y, summed over the bins that hold
+ * enough pixels (regression sum of squares βᵀXᵀy − (Σy)²/n against Σy²).
+ */
+function crossCoherence(coh: Float64Array): number {
+  let explained = 0
+  let total = 0
+  let pixels = 0
+  for (let b = 0; b < BIN_COUNT; b++) {
+    const o = b * COH_FIELDS
+    const n = coh[o]
+    if (n < 12) continue
+    pixels += n
+    const A = [
+      n,
+      coh[o + 1],
+      coh[o + 2],
+      coh[o + 1],
+      coh[o + 2],
+      coh[o + 3],
+      coh[o + 2],
+      coh[o + 3],
+      coh[o + 4],
+    ]
+    const rhs = [0, 1, 2].map((ch) => [
+      coh[o + 5 + ch * 4],
+      coh[o + 6 + ch * 4],
+      coh[o + 7 + ch * 4],
+    ])
+    const sol = solve(3, A, rhs)
+    for (let ch = 0; ch < 3; ch++) {
+      const r = rhs[ch]
+      total += coh[o + 8 + ch * 4]
+      if (!sol) continue
+      const reg = sol[ch][0] * r[0] + sol[ch][1] * r[1] + sol[ch][2] * r[2] - (r[0] * r[0]) / n
+      if (reg > 0) explained += reg
+    }
+  }
+  if (total <= pixels * COHERENCE_MIN_VAR) return 0
+  return total > 0 ? explained / total : 0
+}
+
 /** Per-member mean Oklab as a flat [L, a, b] table, from the moments. */
 function memberMeans(m: Float64Array, members: readonly number[]): Float64Array {
   const out = new Float64Array(members.length * 3)
@@ -1213,13 +1301,23 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
 
   // Pass 3: score each surviving model's profile — the ramp itself, which the
   // painted stops follow within STOP_TOLERANCE — and the members' own flat
-  // fills against the same pixels.
+  // fills against the same pixels. The linear model also collects its
+  // residual against the cross-axis position, per bin.
   const out = ctx.lab
   const scL = newScore(members.length)
   const scR = newScore(members.length)
   const memberN = new Float64Array(members.length)
   const means = memberMeans(m, members)
   let sampled = 0
+  const coh = profL ? new Float64Array(BIN_COUNT * COH_FIELDS) : null
+  const inv = 1 / n
+  const mx = sacc[1] * inv
+  const my = sacc[2] * inv
+  const crossMean = -dy * mx + dx * my
+  const Pxx = sacc[3] * inv - mx * mx
+  const Pxy = sacc[4] * inv - mx * my
+  const Pyy = sacc[5] * inv - my * my
+  const crossStd = Math.sqrt(Math.max(1e-9, dy * dy * Pxx - 2 * dx * dy * Pxy + dx * dx * Pyy))
   for (let i = 0; i < members.length; i++) {
     const mem = members[i]
     for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
@@ -1230,10 +1328,25 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
       memberN[i]++
       sampled++
       const f2 = flatError(ok, base, means, i)
-      if (profL) {
+      if (profL && coh) {
         const t = (dx * px + dy * py - smin) / span
         labAt(profL.fineLab, t, out)
         addError(scL, i, t, deltaEOkSq3(ok, base, out), f2)
+        const c = (-dy * px + dx * py - crossMean) / crossStd
+        const o = binOf(t) * COH_FIELDS
+        const c2 = c * c
+        coh[o] += 1
+        coh[o + 1] += c
+        coh[o + 2] += c2
+        coh[o + 3] += c2 * c
+        coh[o + 4] += c2 * c2
+        for (let ch = 0; ch < 3; ch++) {
+          const y = ok[base + ch] - out[ch]
+          coh[o + 5 + ch * 4] += y
+          coh[o + 6 + ch * 4] += c * y
+          coh[o + 7 + ch * 4] += c2 * y
+          coh[o + 8 + ch * 4] += y * y
+        }
       }
       if (profR) {
         const t = Math.hypot(px - rcx, py - rcy) / rmax
@@ -1243,12 +1356,14 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
     }
   }
   let best: Built | null = null
-  if (profL && accepts(scL, sampled, memberN)) {
+  const coherent = coh !== null && crossCoherence(coh) <= MAX_CROSS_COHERENCE
+  if (profL && coherent && accepts(scL, sampled, memberN)) {
     const cx = sacc[1] / n
     const cy = sacc[2] / n
     const sc = dx * cx + dy * cy
     best = {
       residual: scL.abs / sampled,
+      fineLab: profL.fineLab,
       fineRgb: profL.fineRgb,
       translucent: profL.translucent,
       paint: {
@@ -1265,6 +1380,7 @@ function fitOpaque(ctx: Ctx, members: readonly number[], final: boolean): Built 
     if (best === null || scR.abs < scL.abs) {
       best = {
         residual: scR.abs / sampled,
+        fineLab: profR.fineLab,
         fineRgb: profR.fineRgb,
         translucent: profR.translucent,
         paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: profR.stops },
@@ -1550,6 +1666,7 @@ function fitOverlay(
     const sc = dx * cx + dy * cy
     best = {
       residual: scL.abs / sampled,
+      fineLab: none,
       fineRgb: none,
       translucent: true,
       paint: {
@@ -1566,6 +1683,7 @@ function fitOverlay(
     if (best === null || scR.abs < scL.abs) {
       best = {
         residual: scR.abs / sampled,
+        fineLab: none,
         fineRgb: none,
         translucent: true,
         paint: { kind: 'radial', cx: rcx, cy: rcy, r: rmax, stops: stopsR },
@@ -1987,6 +2105,49 @@ export function fitRegionGradients(
           overlay.built = refit
           gradients[overlay.rep] = refit.paint
         }
+      }
+    }
+  }
+
+  // ---- absorb: a small unclaimed band that a touching ramp already paints
+  // within the residual — a thin strip the quantizer cut from the ramp with a
+  // color slightly off it — joins that ramp rather than staying a flat strip
+  // whose edges read as seams. Largest touching ramp first. ----
+  {
+    const bySuper = new Map<number, Super>()
+    for (const s of supers) if (gradients[s.rep] && !s.built.translucent) bySuper.set(s.rep, s)
+    const area = new Map<number, number>()
+    for (const [rep, s] of bySuper) {
+      let a = 0
+      for (const mem of s.members) a += counts[mem]
+      area.set(rep, a)
+    }
+    const out = ctx.lab
+    for (const l of seeds) {
+      if (claimed[l] >= 0 || counts[l] === 0) continue
+      const hosts = new Set<number>()
+      for (const nb of adj[l]) {
+        const rep = finalRep[nb]
+        if (rep >= 0 && bySuper.has(rep)) hosts.add(rep)
+      }
+      const ordered = [...hosts].toSorted((p, q) => area.get(q)! - area.get(p)! || p - q)
+      for (const rep of ordered) {
+        const host = bySuper.get(rep)!
+        if (counts[l] > ABSORB_MAX_SHARE * area.get(rep)!) continue
+        let err = 0
+        for (let k = offset[l], end = offset[l + 1]; k < end; k++) {
+          const p = bucket[k]
+          const px = (p % width) + 0.5
+          const py = (p - (p % width)) / width + 0.5
+          labAt(host.built.fineLab, scalarAt(host.built.paint, px, py), out)
+          err += Math.sqrt(deltaEOkSq3(ok, p * 3, out))
+        }
+        if (err / counts[l] > MAX_RESIDUAL) continue
+        claimed[l] = 1
+        finalRep[l] = rep
+        host.members.push(l)
+        area.set(rep, area.get(rep)! + counts[l])
+        break
       }
     }
   }

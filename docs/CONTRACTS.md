@@ -365,6 +365,7 @@ export interface SvgShape {
   strokeLinejoin?: 'miter' | 'round' | 'bevel'
   id?: string
   layerId?: number // stacking layer (paint order); groups a cut layer under groupByLayer
+  unfoldable?: boolean // may overlap a same-paint neighbor (an overlay's underlay): emitted as its own <path>, never folded into one even-odd path
 }
 // A gradient paint server plus the id a shape references it by (fill: 'url(#id)').
 export type SvgGradient = GradientPaint & { id: string }
