@@ -149,6 +149,13 @@ const SEGMENT_SIZE_BIAS = 0.8
 const GRADIENT_MIN_AREA = 64
 
 /**
+ * Long side (px) the gradient detection runs at on a large image; the decisions
+ * carry back to the full-resolution regions. The pixel-level ramp verification
+ * scales with the pixel count, so an interactive budget needs a cap here.
+ */
+const GRADIENT_DETECT_MAX = 384
+
+/**
  * Discretize an edge hint into a protect mask at the working resolution: resize
  * to (width, height) when needed, then threshold. The threshold is the
  * determinism boundary — a fixed cutoff, so upstream (possibly WebGPU) float
@@ -2082,6 +2089,11 @@ function applyGradients(
     // catches subtler ramps. 0.5 reproduces the neutral defaults.
     maxBacktrack: 0.06 + 0.18 * s,
     minColorSpan: 0.09 - 0.08 * s,
+    // The pixel-level ramp verification dominates on a large image; run the
+    // detection on a copy no larger than this on the long side and carry the
+    // decisions back to the full-resolution regions. Trades exact detection for
+    // a usable cost; the traced boundaries stay full-resolution.
+    detectMaxDimension: GRADIENT_DETECT_MAX,
   })
   if (!fitted.gradients.some((g) => g !== null)) return undefined
   // A label split off a quantization label (one component joined a ramp, another

@@ -78,6 +78,7 @@
 import { deltaEOk, oklabToHex, oklabToRgb, rgbToHex, srgbToLinear } from '@trazor/core'
 import type { GradientPaint, GradientStop, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
+import { resizeToFit } from './resize'
 
 export interface GradientOptions {
   /** Minimum pixel area of a merged ramp for it to become a gradient. Default 0. */
@@ -110,6 +111,18 @@ export interface GradientOptions {
    * {@link GradientResult.underlays}. Default true.
    */
   overlays?: boolean
+  /**
+   * When the image is larger than this on its long side, run the detection on a
+   * copy downscaled to it and carry the decisions back to the full-resolution
+   * label map (each full-resolution component takes the outcome its own pixels
+   * met at the reduced size), scaling the gradient geometry up. The pixel-level
+   * ramp verification then scans the downscaled pixel count, which is the cost
+   * that dominates on a large image, while the traced region boundaries stay at
+   * full resolution. 0 or absent detects at full resolution. The detected ramps
+   * can differ from the full-resolution detection, so this is a quality/speed
+   * trade-off, not an identity.
+   */
+  detectMaxDimension?: number
 }
 
 export interface GradientResult {
@@ -2156,6 +2169,173 @@ export function growRamps<T>(
  * the base label. Bands that do not form a ramp are left untouched, so a run with
  * no detectable ramp returns all-`null` and leaves `labels` unchanged.
  */
+/** Nearest-neighbor downscale of a label map to `sw`×`sh`, keeping label ids and -1. */
+function downscaleLabels(labels: LabelMap, sw: number, sh: number): Int32Array {
+  const { width, height, data } = labels
+  const out = new Int32Array(sw * sh)
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(height - 1, ((y * height) / sh) | 0)
+    for (let x = 0; x < sw; x++) {
+      out[y * sw + x] = data[sy * width + Math.min(width - 1, ((x * width) / sw) | 0)]
+    }
+  }
+  return out
+}
+
+/** Nearest-neighbor downscale of a per-pixel coverage plane to `sw`×`sh`. */
+function downscaleAlpha(
+  alpha: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  sw: number,
+  sh: number,
+): Uint8Array {
+  const out = new Uint8Array(sw * sh)
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(height - 1, ((y * height) / sh) | 0)
+    for (let x = 0; x < sw; x++) {
+      out[y * sw + x] = alpha[sy * width + Math.min(width - 1, ((x * width) / sw) | 0)]
+    }
+  }
+  return out
+}
+
+/**
+ * Detect ramps on a copy downscaled to `cap` on the long side, then carry the
+ * decisions back to the full-resolution label map. The reduced run returns the
+ * ramp paints, the overlay underlays, and its own relabeling of the small map;
+ * each full-resolution connected component is relabeled to the outcome its own
+ * pixels met at the reduced size (a majority vote over the small pixels that
+ * held the component's label), so the region boundaries the tracer sees stay at
+ * full resolution while only the small pixel count is verified. Gradient
+ * geometry is scaled from the reduced space back to full space.
+ */
+function detectDownscaled(
+  image: RasterImage,
+  labels: LabelMap,
+  opts: GradientOptions | undefined,
+  cap: number,
+): GradientResult {
+  const { width, height, data, count: labelCount } = labels
+  const scale = cap / Math.max(width, height)
+  const sw = Math.max(1, Math.round(width * scale))
+  const sh = Math.max(1, Math.round(height * scale))
+
+  const small = resizeToFit(image, cap)
+  const sData = downscaleLabels(labels, sw, sh)
+  const sOrig = sData.slice() // detection mutates sData in place; keep the input labels
+  const sAlpha = opts?.alpha ? downscaleAlpha(opts.alpha, width, height, sw, sh) : undefined
+  const sLabels: LabelMap = { width: sw, height: sh, data: sData, count: labelCount }
+
+  const res = fitRegionGradients(small, sLabels, {
+    ...opts,
+    detectMaxDimension: 0,
+    oklab: undefined,
+    alpha: sAlpha,
+  })
+
+  // Map each full-resolution pixel to its small pixel, and read the small
+  // outcome (`res.labels.data`) among the small pixels that held its own label.
+  const outData = new Int32Array(data.length)
+  const seen = new Int32Array(data.length).fill(-1)
+  const stack = new Int32Array(data.length)
+  const bag = new Int32Array(data.length)
+  // `own` counts the small outcomes of pixels that still held this component's
+  // label; `any` counts them regardless. A thin band that the downscale drops
+  // below one pixel has no `own` footprint, so it falls back to the outcome of
+  // the area it sits in — the ramp it belongs to — instead of staying flat.
+  const own = new Map<number, number>()
+  const any = new Map<number, number>()
+  for (let p0 = 0; p0 < data.length; p0++) {
+    if (data[p0] < 0) {
+      outData[p0] = -1
+      seen[p0] = p0
+      continue
+    }
+    if (seen[p0] >= 0) continue
+    const l = data[p0]
+    // Flood the full-resolution component of label `l`.
+    let sp = 0
+    let size = 0
+    stack[sp++] = p0
+    seen[p0] = p0
+    own.clear()
+    any.clear()
+    while (sp > 0) {
+      const p = stack[--sp]
+      bag[size++] = p
+      const x = p % width
+      const y = (p - x) / width
+      const sx = Math.min(sw - 1, ((x * sw) / width) | 0)
+      const sy = Math.min(sh - 1, ((y * sh) / height) | 0)
+      const si = sy * sw + sx
+      const out = sData[si]
+      any.set(out, (any.get(out) ?? 0) + 1)
+      if (sOrig[si] === l) own.set(out, (own.get(out) ?? 0) + 1)
+      if (x > 0 && data[p - 1] === l && seen[p - 1] < 0) {
+        seen[p - 1] = p0
+        stack[sp++] = p - 1
+      }
+      if (x + 1 < width && data[p + 1] === l && seen[p + 1] < 0) {
+        seen[p + 1] = p0
+        stack[sp++] = p + 1
+      }
+      if (p >= width && data[p - width] === l && seen[p - width] < 0) {
+        seen[p - width] = p0
+        stack[sp++] = p - width
+      }
+      if (p + width < data.length && data[p + width] === l && seen[p + width] < 0) {
+        seen[p + width] = p0
+        stack[sp++] = p + width
+      }
+    }
+    // The component takes the majority small outcome (ties to the smallest
+    // label) among the pixels that kept its label, or, when the downscale left
+    // it none, among its whole footprint; with no small footprint at all it
+    // keeps its own label.
+    const votes = own.size > 0 ? own : any
+    let best = l
+    let bestN = 0
+    for (const [lab, n] of votes) {
+      if (n > bestN || (n === bestN && lab < best)) {
+        bestN = n
+        best = lab
+      }
+    }
+    for (let k = 0; k < size; k++) outData[bag[k]] = best
+  }
+
+  data.set(outData)
+
+  // Scale the gradient geometry from the reduced space to full space.
+  const sxScale = width / sw
+  const syScale = height / sh
+  const rScale = (sxScale + syScale) / 2
+  const gradients = res.gradients.map((g) => scalePaint(g, sxScale, syScale, rScale))
+
+  const total = res.labels.count
+  return {
+    gradients,
+    underlays: res.underlays,
+    labels: total === labelCount ? labels : { width, height, data, count: total },
+    parentLabel: res.parentLabel,
+  }
+}
+
+/** A gradient paint with its user-space geometry scaled by the given factors. */
+function scalePaint(
+  g: GradientPaint | null,
+  sx: number,
+  sy: number,
+  sr: number,
+): GradientPaint | null {
+  if (g === null) return g
+  if (g.kind === 'linear') {
+    return { ...g, x1: g.x1 * sx, y1: g.y1 * sy, x2: g.x2 * sx, y2: g.y2 * sy }
+  }
+  return { ...g, cx: g.cx * sx, cy: g.cy * sy, r: g.r * sr }
+}
+
 export function fitRegionGradients(
   image: RasterImage,
   labels: LabelMap,
@@ -2170,6 +2350,9 @@ export function fitRegionGradients(
     parentLabel: Int32Array.from({ length: labelCount }, (_, l) => l),
   })
   if (labelCount < 1) return identity()
+
+  const cap = opts?.detectMaxDimension ?? 0
+  if (cap > 0 && Math.max(width, height) > cap) return detectDownscaled(image, labels, opts, cap)
 
   const minArea = opts?.minArea ?? 0
   const maxBacktrack = opts?.maxBacktrack ?? MAX_BACKTRACK
