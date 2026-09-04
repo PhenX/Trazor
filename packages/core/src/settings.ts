@@ -146,6 +146,15 @@ export interface VectorizeSettings {
    * regions flat and limit gradients to large smooth areas.
    */
   gradientMinArea: number
+  /**
+   * Long side (px) gradient detection runs at on a larger image (only when
+   * `gradients`); the detected ramps are carried back to the full-resolution
+   * regions. Detection cost scales with the pixel count, so a smaller value is
+   * far faster and finds fewer subtle ramps; a larger value is slower and more
+   * thorough. 0 detects at full resolution (slowest). The traced geometry is
+   * always full-resolution.
+   */
+  gradientMaxDimension: number
 
   // ---- Binarization (bw / centerline modes) ----
   /** 0-255, used when `thresholdMode` is `fixed`. */
@@ -236,6 +245,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   gradients: false,
   gradientStrength: 0.5,
   gradientMinArea: 0,
+  gradientMaxDimension: 384,
 
   threshold: 128,
   thresholdMode: 'auto',
@@ -300,6 +310,8 @@ export function normalizeSettings(
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)
   s.gradientStrength = clamp(s.gradientStrength, 0, 1)
   s.gradientMinArea = clampInt(s.gradientMinArea, 0, 1_000_000)
+  s.gradientMaxDimension =
+    s.gradientMaxDimension === 0 ? 0 : clampInt(s.gradientMaxDimension, 128, 4096)
   s.gapFill = clamp(s.gapFill, 0, 5)
   s.threshold = clampInt(s.threshold, 0, 255)
   s.adaptiveRadius = clampInt(s.adaptiveRadius, 2, 128)
