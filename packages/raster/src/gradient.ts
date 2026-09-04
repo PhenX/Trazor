@@ -78,6 +78,7 @@
 import { deltaEOk, oklabToHex, oklabToRgb, rgbToHex, srgbToLinear } from '@trazor/core'
 import type { GradientPaint, GradientStop, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
+import { resizeToFit } from './resize'
 
 export interface GradientOptions {
   /** Minimum pixel area of a merged ramp for it to become a gradient. Default 0. */
@@ -110,6 +111,18 @@ export interface GradientOptions {
    * {@link GradientResult.underlays}. Default true.
    */
   overlays?: boolean
+  /**
+   * When the image is larger than this on its long side, run the detection on a
+   * copy downscaled to it and carry the decisions back to the full-resolution
+   * label map (each full-resolution component takes the outcome its own pixels
+   * met at the reduced size), scaling the gradient geometry up. The pixel-level
+   * ramp verification then scans the downscaled pixel count, which is the cost
+   * that dominates on a large image, while the traced region boundaries stay at
+   * full resolution. 0 or absent detects at full resolution. The detected ramps
+   * can differ from the full-resolution detection, so this is a quality/speed
+   * trade-off, not an identity.
+   */
+  detectMaxDimension?: number
 }
 
 export interface GradientResult {
@@ -297,7 +310,7 @@ const OVERLAY_ITERATIONS = 2
 //  0:n 1:Σx 2:Σy 3:Σxx 4:Σxy 5:Σyy 6:ΣL 7:Σa 8:Σb 9:ΣLL 10:Σaa 11:Σbb
 // 12:ΣLx 13:ΣLy 14:Σax 15:Σay 16:Σbx 17:Σby
 // 18:Σx³ 19:Σx²y 20:Σxy² 21:Σy³ 22:Σx⁴ 23:Σx²y² 24:Σy⁴   25:ΣLu 26:Σau 27:Σbu  (u = x²+y²)
-const NM = 28
+export const NM = 28
 
 // Fields per profile bin: [count, ΣL, Σa, Σb, ΣLL, Σaa, Σbb, Σα, ΣPr, ΣPg, ΣPb, Σt]
 // (α = coverage in [0,1]; P = coverage-premultiplied sRGB, 0-255; t = scalar).
@@ -630,6 +643,16 @@ interface Ctx {
   sacc: Float64Array
   /** Scratch Oklab triple. */
   lab: Float64Array
+  /**
+   * Per-sample scratch, filled by an overlay fit's first pixel pass and reused by
+   * the rest: the base color under each sample (3 per sample), its pixel-center
+   * coordinates, and its overlay opacity at the final F. Sized so one pass over
+   * any union's sampled pixels fits.
+   */
+  sBc: Float64Array
+  sPx: Float64Array
+  sPy: Float64Array
+  sAl: Float64Array
 }
 
 /** A built paint together with what the overlay pass needs to paint over it. */
@@ -1533,7 +1556,7 @@ function fitOverlay(
   base: Built,
   final: boolean,
 ): Built | null {
-  const { m, sacc, offset, bucket, width, ok, rgb, lab: bcol } = ctx
+  const { m, sacc, offset, bucket, width, ok, rgb, lab: bcol, sBc, sPx, sPy, sAl } = ctx
   sumMembers(m, members, sacc)
   const n = sacc[0]
   if (n < 6) return null
@@ -1561,12 +1584,22 @@ function fitOverlay(
   let r2 = 0
   let farD2 = -1
   const F = new Float64Array(3)
+  // Pixel-center coordinates and base color under each sample are computed once
+  // here and reused by the passes below (the sample order is identical, so index
+  // `si` names the same pixel throughout).
+  let sampled = 0
   for (const mem of members) {
     for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
       const p = bucket[k]
       const px = (p % width) + 0.5
       const py = (p - (p % width)) / width + 0.5
       labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
+      sPx[sampled] = px
+      sPy[sampled] = py
+      sBc[sampled * 3] = bcol[0]
+      sBc[sampled * 3 + 1] = bcol[1]
+      sBc[sampled * 3 + 2] = bcol[2]
+      sampled++
       const q = p * 4
       const dr = rgb[q] * inv255 - bcol[0]
       const dg = rgb[q + 1] * inv255 - bcol[1]
@@ -1629,12 +1662,14 @@ function fitOverlay(
   for (let iter = 0; iter < OVERLAY_ITERATIONS; iter++) {
     let sa2 = 0
     const acc = [0, 0, 0]
+    let si = 0
     for (const mem of members) {
       for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
         const p = bucket[k]
-        const px = (p % width) + 0.5
-        const py = (p - (p % width)) / width + 0.5
-        labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
+        bcol[0] = sBc[si * 3]
+        bcol[1] = sBc[si * 3 + 1]
+        bcol[2] = sBc[si * 3 + 2]
+        si++
         const q = p * 4
         const a = Math.min(1, Math.max(0, alphaOf(q)))
         sa2 += a * a
@@ -1651,13 +1686,18 @@ function fitOverlay(
   const am = new Float64Array(NM)
   for (let j = 0; j < 6; j++) am[j] = sacc[j]
   for (let j = 18; j < 25; j++) am[j] = sacc[j]
+  let si2 = 0
   for (const mem of members) {
     for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
       const p = bucket[k]
-      const px = (p % width) + 0.5
-      const py = (p - (p % width)) / width + 0.5
-      labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
+      const px = sPx[si2]
+      const py = sPy[si2]
+      bcol[0] = sBc[si2 * 3]
+      bcol[1] = sBc[si2 * 3 + 1]
+      bcol[2] = sBc[si2 * 3 + 2]
       const a = alphaOf(p * 4)
+      sAl[si2] = a
+      si2++
       am[6] += a
       am[9] += a * a
       am[12] += a * px
@@ -1688,20 +1728,17 @@ function fitOverlay(
   let smin = Infinity
   let smax = -Infinity
   let rmax = 0
-  for (const mem of members) {
-    for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
-      const p = bucket[k]
-      const px = (p % width) + 0.5
-      const py = (p - (p % width)) / width + 0.5
-      if (useLin) {
-        const s = dx * px + dy * py
-        if (s < smin) smin = s
-        if (s > smax) smax = s
-      }
-      if (useRad) {
-        const r = Math.hypot(px - rcx, py - rcy)
-        if (r > rmax) rmax = r
-      }
+  for (let si = 0; si < sampled; si++) {
+    const px = sPx[si]
+    const py = sPy[si]
+    if (useLin) {
+      const s = dx * px + dy * py
+      if (s < smin) smin = s
+      if (s > smax) smax = s
+    }
+    if (useRad) {
+      const r = Math.hypot(px - rcx, py - rcy)
+      if (r > rmax) rmax = r
     }
   }
   const span = smax - smin
@@ -1712,13 +1749,14 @@ function fitOverlay(
   // Pass 4: opacity profile per model.
   const binsL = doLin ? new Float64Array(BIN_COUNT * ABIN_FIELDS) : null
   const binsR = doRad ? new Float64Array(BIN_COUNT * ABIN_FIELDS) : null
+  let si4 = 0
   for (const mem of members) {
     for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
       const p = bucket[k]
-      const px = (p % width) + 0.5
-      const py = (p - (p % width)) / width + 0.5
-      labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
-      const a = alphaOf(p * 4)
+      const px = sPx[si4]
+      const py = sPy[si4]
+      const a = sAl[si4]
+      si4++
       if (binsL) addToAlphaBin(binsL, (dx * px + dy * py - smin) / span, a, ok, p * 3)
       if (binsR) addToAlphaBin(binsR, Math.hypot(px - rcx, py - rcy) / rmax, a, ok, p * 3)
     }
@@ -1744,18 +1782,20 @@ function fitOverlay(
   const scR = newScore(members.length)
   const memberN = new Float64Array(members.length)
   const means = memberMeans(m, members)
-  let sampled = 0
   const comp = new Float64Array(3)
+  let si5 = 0
   for (let i = 0; i < members.length; i++) {
     const mem = members[i]
     for (let k = offset[mem], end = offset[mem + 1]; k < end; k += stride) {
       const p = bucket[k]
-      const px = (p % width) + 0.5
-      const py = (p - (p % width)) / width + 0.5
-      labAt(base.fineRgb, scalarAt(bp, px, py), bcol)
+      const px = sPx[si5]
+      const py = sPy[si5]
+      bcol[0] = sBc[si5 * 3]
+      bcol[1] = sBc[si5 * 3 + 1]
+      bcol[2] = sBc[si5 * 3 + 2]
+      si5++
       const q = p * 3
       memberN[i]++
-      sampled++
       const f2 = flatError(ok, q, means, i)
       if (alphaL) {
         const t = Math.min(1, Math.max(0, ((dx * px + dy * py - smin) / span - lLo) * lScale))
@@ -1831,27 +1871,121 @@ interface Cluster {
 }
 
 /**
+ * Binary min-heap of candidate pairs ordered by (score, a, b), backed by three
+ * parallel typed arrays that double on demand. Deletion is lazy: the caller
+ * pops the minimum and skips entries whose pair has since merged away or been
+ * rescreened (its score no longer matches the current one), so a pair whose
+ * score changes is re-pushed rather than repositioned.
+ */
+class PairHeap {
+  private s = new Float64Array(64)
+  private a = new Int32Array(64)
+  private b = new Int32Array(64)
+  private n = 0
+  /** The last popped entry. */
+  outScore = 0
+  outA = 0
+  outB = 0
+
+  get size(): number {
+    return this.n
+  }
+
+  private less(i: number, j: number): boolean {
+    if (this.s[i] !== this.s[j]) return this.s[i] < this.s[j]
+    if (this.a[i] !== this.a[j]) return this.a[i] < this.a[j]
+    return this.b[i] < this.b[j]
+  }
+
+  private swap(i: number, j: number): void {
+    const s = this.s[i]
+    this.s[i] = this.s[j]
+    this.s[j] = s
+    const a = this.a[i]
+    this.a[i] = this.a[j]
+    this.a[j] = a
+    const b = this.b[i]
+    this.b[i] = this.b[j]
+    this.b[j] = b
+  }
+
+  push(score: number, a: number, b: number): void {
+    if (this.n === this.s.length) {
+      const cap = this.n * 2
+      const s = new Float64Array(cap)
+      s.set(this.s)
+      this.s = s
+      const na = new Int32Array(cap)
+      na.set(this.a)
+      this.a = na
+      const nb = new Int32Array(cap)
+      nb.set(this.b)
+      this.b = nb
+    }
+    let i = this.n++
+    this.s[i] = score
+    this.a[i] = a
+    this.b[i] = b
+    while (i > 0) {
+      const p = (i - 1) >> 1
+      if (!this.less(i, p)) break
+      this.swap(i, p)
+      i = p
+    }
+  }
+
+  /** Remove the minimum into `outScore/outA/outB`; the caller checks `size > 0` first. */
+  pop(): void {
+    this.outScore = this.s[0]
+    this.outA = this.a[0]
+    this.outB = this.b[0]
+    const last = --this.n
+    this.s[0] = this.s[last]
+    this.a[0] = this.a[last]
+    this.b[0] = this.b[last]
+    let i = 0
+    for (;;) {
+      const l = 2 * i + 1
+      const r = l + 1
+      let min = i
+      if (l < this.n && this.less(l, min)) min = l
+      if (r < this.n && this.less(r, min)) min = r
+      if (min === i) break
+      this.swap(i, min)
+      i = min
+    }
+  }
+}
+
+/**
  * Agglomeratively merge bands into ramps: start one cluster per unclaimed
  * seed, then repeatedly merge the pair — adjacent, or sharing a neighbor —
  * whose union screens best (`screen` returns a score, Infinity to reject)
  * *and* verifies at the pixel level (`verify` returns the union's fit, or
  * null), until no acceptable merge remains. Merging the globally best pair first — rather than greedily
  * growing one seed to exhaustion — keeps a suboptimal early union from
- * fragmenting the rest. Verifications are cached per pair and invalidated when
- * either side changes (`verify(members, false)`). Every surviving cluster,
- * singletons included, is verified against the shipping gates
+ * fragmenting the rest.
+ *
+ * Each round picks the lowest (score, a, b) candidate whose verification passes,
+ * merges b into a, and continues. Screening scores and null verifications are
+ * cached per pair and invalidated only for keys incident to a merged side, so
+ * after a merge only pairs touching the merged cluster (and the neighbor pairs
+ * newly one hop apart through it) are rescreened; every other pair keeps its
+ * score. A min-heap yields the next candidate; a pair whose verification
+ * returned null stays excluded until one of its sides merges. Every surviving
+ * cluster, singletons included, is verified against the shipping gates
  * (`verify(members, true)`); those ≥ minArea are marked in `claimed` and returned.
  */
-function growRamps(
+export function growRamps<T>(
   m: Float64Array,
   adj: readonly number[][],
   seeds: readonly number[],
   claimed: Int32Array,
   minArea: number,
   screen: (trial: Float64Array, members: readonly number[]) => number,
-  verify: (members: readonly number[], final: boolean) => Built | null,
+  verify: (members: readonly number[], final: boolean) => T | null,
   count: number,
-): Super[] {
+): { members: number[]; rep: number; built: T }[] {
   const rootOf = new Map<number, number>()
   const clusters = new Map<number, Cluster>()
   for (const seed of seeds) {
@@ -1868,69 +2002,154 @@ function growRamps(
         if (nr !== undefined && nr !== root) c.adj.add(nr)
       }
 
+  // A pair is keyed `lo * count + hi` (lo < hi). `screenScore` holds the finite
+  // screen score of each candidate; `nullPairs` the pairs whose verification
+  // returned null (excluded until a side merges); `incident` maps each cluster
+  // to the keys touching it, so a merge invalidates only the merged clusters'
+  // incident keys — cost is their degree, not the whole cache.
   const trial = new Float64Array(NM)
-  const cache = new Map<number, Built | null>()
-  for (;;) {
-    const pairs: [number, number, number][] = []
-    const seen = new Set<number>()
-    const consider = (a: number, ca: Cluster, b: number): void => {
-      if (b <= a) return // each undirected pair once
-      const key = a * count + b
-      if (seen.has(key) || cache.get(key) === null) return
-      seen.add(key)
-      const cb = clusters.get(b)!
-      for (let j = 0; j < NM; j++) trial[j] = ca.acc[j] + cb.acc[j]
-      const score = screen(trial, ca.members.concat(cb.members))
-      if (Number.isFinite(score)) pairs.push([score, a, b])
+  const mscr: number[] = []
+  const screenScore = new Map<number, number>()
+  const nullPairs = new Set<number>()
+  const incident = new Map<number, Set<number>>()
+  const heap = new PairHeap()
+
+  // Fill the member scratch with a's members then b's — the order a `concat`
+  // would give, which the moment sums and pixel scans depend on.
+  const fillMembers = (ca: Cluster, cb: Cluster): void => {
+    mscr.length = 0
+    for (const x of ca.members) mscr.push(x)
+    for (const x of cb.members) mscr.push(x)
+  }
+  const addIncident = (root: number, key: number): void => {
+    let s = incident.get(root)
+    if (s === undefined) {
+      s = new Set()
+      incident.set(root, s)
     }
-    for (const [a, ca] of clusters) {
-      for (const b of ca.adj) consider(a, ca, b)
-      // Two ramp pieces separated by a band neither can take — a mixture band
-      // that quantization built from a ramp and a layer over it — still share
-      // that band as a neighbor; their union verifies like an adjacent one.
-      for (const x of ca.adj) for (const b of clusters.get(x)!.adj) if (b !== a) consider(a, ca, b)
+    s.add(key)
+  }
+  // Screen the pair (lo, hi), lo < hi; record it as a candidate when the score
+  // is finite. Depends only on the two clusters' moments and members.
+  const screenPair = (lo: number, hi: number): void => {
+    const ca = clusters.get(lo)!
+    const cb = clusters.get(hi)!
+    for (let j = 0; j < NM; j++) trial[j] = ca.acc[j] + cb.acc[j]
+    fillMembers(ca, cb)
+    const score = screen(trial, mscr)
+    if (Number.isFinite(score)) {
+      const key = lo * count + hi
+      screenScore.set(key, score)
+      addIncident(lo, key)
+      addIncident(hi, key)
+      heap.push(score, lo, hi)
     }
-    pairs.sort((p, q) => p[0] - q[0] || p[1] - q[1] || p[2] - q[2])
-    let merged = false
-    for (const [, a, b] of pairs) {
-      const key = a * count + b
-      const ca = clusters.get(a)!
-      const cb = clusters.get(b)!
-      let built = cache.get(key)
-      if (built === undefined) {
-        built = verify(ca.members.concat(cb.members), false)
-        cache.set(key, built)
-      }
-      if (built === null) continue
-      // Merge the higher root into the lower so `rep` stays stable and deterministic.
-      for (let j = 0; j < NM; j++) ca.acc[j] += cb.acc[j]
-      for (const mem of cb.members) {
-        ca.members.push(mem)
-        rootOf.set(mem, a)
-      }
-      ca.adj.delete(b)
-      cb.adj.delete(a)
-      for (const x of cb.adj) {
-        ca.adj.add(x)
-        const cx = clusters.get(x)!
-        cx.adj.delete(b)
-        cx.adj.add(a)
-      }
-      clusters.delete(b)
-      const stale: number[] = []
-      for (const k of cache.keys()) {
-        const ka = Math.floor(k / count)
-        const kb = k % count
-        if (ka === a || ka === b || kb === a || kb === b) stale.push(k)
-      }
-      for (const k of stale) cache.delete(k)
-      merged = true
-      break
-    }
-    if (!merged) break
   }
 
-  const supers: Super[] = []
+  // Initial candidate set: every within-distance-2 pair, screened once.
+  const seen = new Set<number>()
+  const considerInit = (a: number, b: number): void => {
+    if (b <= a) return // each undirected pair once
+    const key = a * count + b
+    if (seen.has(key)) return
+    seen.add(key)
+    screenPair(a, b)
+  }
+  for (const [a, ca] of clusters) {
+    for (const b of ca.adj) considerInit(a, b)
+    // Two ramp pieces separated by a band neither can take — a mixture band
+    // that quantization built from a ramp and a layer over it — still share
+    // that band as a neighbor; their union verifies like an adjacent one.
+    for (const x of ca.adj) for (const b of clusters.get(x)!.adj) if (b !== a) considerInit(a, b)
+  }
+
+  for (;;) {
+    // The lowest (score, a, b) candidate whose verification passes, skipping
+    // heap entries whose pair has merged away, verified null, or been rescreened.
+    let wa = -1
+    let wb = -1
+    while (heap.size > 0) {
+      heap.pop()
+      const pa = heap.outA
+      const pb = heap.outB
+      if (!clusters.has(pa) || !clusters.has(pb)) continue
+      const key = pa * count + pb
+      if (nullPairs.has(key)) continue
+      const s = screenScore.get(key)
+      if (s === undefined || s !== heap.outScore) continue
+      fillMembers(clusters.get(pa)!, clusters.get(pb)!)
+      const built = verify(mscr, false)
+      if (built === null) {
+        nullPairs.add(key)
+        screenScore.delete(key)
+        continue
+      }
+      wa = pa
+      wb = pb
+      break
+    }
+    if (wa < 0) break
+
+    const ca = clusters.get(wa)!
+    const cb = clusters.get(wb)!
+    const oldAdjA = new Set(ca.adj)
+
+    // Invalidate every cached score and null verification incident to either side.
+    const inv = new Set<number>()
+    const ia = incident.get(wa)
+    if (ia) for (const k of ia) inv.add(k)
+    const ib = incident.get(wb)
+    if (ib) for (const k of ib) inv.add(k)
+    for (const k of inv) {
+      screenScore.delete(k)
+      nullPairs.delete(k)
+      incident.get(Math.floor(k / count))?.delete(k)
+      incident.get(k % count)?.delete(k)
+    }
+    incident.delete(wb)
+
+    // Merge the higher root into the lower so `rep` stays stable and deterministic.
+    for (let j = 0; j < NM; j++) ca.acc[j] += cb.acc[j]
+    for (const mem of cb.members) {
+      ca.members.push(mem)
+      rootOf.set(mem, wa)
+    }
+    const newFromB: number[] = []
+    ca.adj.delete(wb)
+    cb.adj.delete(wa)
+    for (const x of cb.adj) {
+      if (!ca.adj.has(x)) newFromB.push(x)
+      ca.adj.add(x)
+      const cx = clusters.get(x)!
+      cx.adj.delete(wb)
+      cx.adj.add(wa)
+    }
+    clusters.delete(wb)
+
+    // Rescreen every pair incident to the merged cluster (its members changed):
+    // its first- and second-degree neighbors.
+    const affected = new Set<number>()
+    for (const x of ca.adj) {
+      affected.add(x)
+      for (const z of clusters.get(x)!.adj) if (z !== wa) affected.add(z)
+    }
+    for (const y of affected) screenPair(wa < y ? wa : y, wa < y ? y : wa)
+    // Neighbor pairs newly one hop apart through the merged cluster (each an old
+    // neighbor with one gained from b) become candidates; their scores are
+    // unchanged, so screen only those not already known.
+    if (newFromB.length > 0)
+      for (const u of oldAdjA) {
+        if (u === wb) continue
+        for (const v of newFromB) {
+          const lo = u < v ? u : v
+          const hi = u < v ? v : u
+          const key = lo * count + hi
+          if (!screenScore.has(key) && !nullPairs.has(key)) screenPair(lo, hi)
+        }
+      }
+  }
+
+  const supers: { members: number[]; rep: number; built: T }[] = []
   for (const [root, c] of clusters) {
     if (c.acc[0] < minArea) continue
     const built = verify(c.members, true)
@@ -1950,6 +2169,173 @@ function growRamps(
  * the base label. Bands that do not form a ramp are left untouched, so a run with
  * no detectable ramp returns all-`null` and leaves `labels` unchanged.
  */
+/** Nearest-neighbor downscale of a label map to `sw`×`sh`, keeping label ids and -1. */
+function downscaleLabels(labels: LabelMap, sw: number, sh: number): Int32Array {
+  const { width, height, data } = labels
+  const out = new Int32Array(sw * sh)
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(height - 1, ((y * height) / sh) | 0)
+    for (let x = 0; x < sw; x++) {
+      out[y * sw + x] = data[sy * width + Math.min(width - 1, ((x * width) / sw) | 0)]
+    }
+  }
+  return out
+}
+
+/** Nearest-neighbor downscale of a per-pixel coverage plane to `sw`×`sh`. */
+function downscaleAlpha(
+  alpha: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  sw: number,
+  sh: number,
+): Uint8Array {
+  const out = new Uint8Array(sw * sh)
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(height - 1, ((y * height) / sh) | 0)
+    for (let x = 0; x < sw; x++) {
+      out[y * sw + x] = alpha[sy * width + Math.min(width - 1, ((x * width) / sw) | 0)]
+    }
+  }
+  return out
+}
+
+/**
+ * Detect ramps on a copy downscaled to `cap` on the long side, then carry the
+ * decisions back to the full-resolution label map. The reduced run returns the
+ * ramp paints, the overlay underlays, and its own relabeling of the small map;
+ * each full-resolution connected component is relabeled to the outcome its own
+ * pixels met at the reduced size (a majority vote over the small pixels that
+ * held the component's label), so the region boundaries the tracer sees stay at
+ * full resolution while only the small pixel count is verified. Gradient
+ * geometry is scaled from the reduced space back to full space.
+ */
+function detectDownscaled(
+  image: RasterImage,
+  labels: LabelMap,
+  opts: GradientOptions | undefined,
+  cap: number,
+): GradientResult {
+  const { width, height, data, count: labelCount } = labels
+  const scale = cap / Math.max(width, height)
+  const sw = Math.max(1, Math.round(width * scale))
+  const sh = Math.max(1, Math.round(height * scale))
+
+  const small = resizeToFit(image, cap)
+  const sData = downscaleLabels(labels, sw, sh)
+  const sOrig = sData.slice() // detection mutates sData in place; keep the input labels
+  const sAlpha = opts?.alpha ? downscaleAlpha(opts.alpha, width, height, sw, sh) : undefined
+  const sLabels: LabelMap = { width: sw, height: sh, data: sData, count: labelCount }
+
+  const res = fitRegionGradients(small, sLabels, {
+    ...opts,
+    detectMaxDimension: 0,
+    oklab: undefined,
+    alpha: sAlpha,
+  })
+
+  // Map each full-resolution pixel to its small pixel, and read the small
+  // outcome (`res.labels.data`) among the small pixels that held its own label.
+  const outData = new Int32Array(data.length)
+  const seen = new Int32Array(data.length).fill(-1)
+  const stack = new Int32Array(data.length)
+  const bag = new Int32Array(data.length)
+  // `own` counts the small outcomes of pixels that still held this component's
+  // label; `any` counts them regardless. A thin band that the downscale drops
+  // below one pixel has no `own` footprint, so it falls back to the outcome of
+  // the area it sits in — the ramp it belongs to — instead of staying flat.
+  const own = new Map<number, number>()
+  const any = new Map<number, number>()
+  for (let p0 = 0; p0 < data.length; p0++) {
+    if (data[p0] < 0) {
+      outData[p0] = -1
+      seen[p0] = p0
+      continue
+    }
+    if (seen[p0] >= 0) continue
+    const l = data[p0]
+    // Flood the full-resolution component of label `l`.
+    let sp = 0
+    let size = 0
+    stack[sp++] = p0
+    seen[p0] = p0
+    own.clear()
+    any.clear()
+    while (sp > 0) {
+      const p = stack[--sp]
+      bag[size++] = p
+      const x = p % width
+      const y = (p - x) / width
+      const sx = Math.min(sw - 1, ((x * sw) / width) | 0)
+      const sy = Math.min(sh - 1, ((y * sh) / height) | 0)
+      const si = sy * sw + sx
+      const out = sData[si]
+      any.set(out, (any.get(out) ?? 0) + 1)
+      if (sOrig[si] === l) own.set(out, (own.get(out) ?? 0) + 1)
+      if (x > 0 && data[p - 1] === l && seen[p - 1] < 0) {
+        seen[p - 1] = p0
+        stack[sp++] = p - 1
+      }
+      if (x + 1 < width && data[p + 1] === l && seen[p + 1] < 0) {
+        seen[p + 1] = p0
+        stack[sp++] = p + 1
+      }
+      if (p >= width && data[p - width] === l && seen[p - width] < 0) {
+        seen[p - width] = p0
+        stack[sp++] = p - width
+      }
+      if (p + width < data.length && data[p + width] === l && seen[p + width] < 0) {
+        seen[p + width] = p0
+        stack[sp++] = p + width
+      }
+    }
+    // The component takes the majority small outcome (ties to the smallest
+    // label) among the pixels that kept its label, or, when the downscale left
+    // it none, among its whole footprint; with no small footprint at all it
+    // keeps its own label.
+    const votes = own.size > 0 ? own : any
+    let best = l
+    let bestN = 0
+    for (const [lab, n] of votes) {
+      if (n > bestN || (n === bestN && lab < best)) {
+        bestN = n
+        best = lab
+      }
+    }
+    for (let k = 0; k < size; k++) outData[bag[k]] = best
+  }
+
+  data.set(outData)
+
+  // Scale the gradient geometry from the reduced space to full space.
+  const sxScale = width / sw
+  const syScale = height / sh
+  const rScale = (sxScale + syScale) / 2
+  const gradients = res.gradients.map((g) => scalePaint(g, sxScale, syScale, rScale))
+
+  const total = res.labels.count
+  return {
+    gradients,
+    underlays: res.underlays,
+    labels: total === labelCount ? labels : { width, height, data, count: total },
+    parentLabel: res.parentLabel,
+  }
+}
+
+/** A gradient paint with its user-space geometry scaled by the given factors. */
+function scalePaint(
+  g: GradientPaint | null,
+  sx: number,
+  sy: number,
+  sr: number,
+): GradientPaint | null {
+  if (g === null) return g
+  if (g.kind === 'linear') {
+    return { ...g, x1: g.x1 * sx, y1: g.y1 * sy, x2: g.x2 * sx, y2: g.y2 * sy }
+  }
+  return { ...g, cx: g.cx * sx, cy: g.cy * sy, r: g.r * sr }
+}
+
 export function fitRegionGradients(
   image: RasterImage,
   labels: LabelMap,
@@ -1964,6 +2350,9 @@ export function fitRegionGradients(
     parentLabel: Int32Array.from({ length: labelCount }, (_, l) => l),
   })
   if (labelCount < 1) return identity()
+
+  const cap = opts?.detectMaxDimension ?? 0
+  if (cap > 0 && Math.max(width, height) > cap) return detectDownscaled(image, labels, opts, cap)
 
   const minArea = opts?.minArea ?? 0
   const maxBacktrack = opts?.maxBacktrack ?? MAX_BACKTRACK
@@ -2131,6 +2520,12 @@ export function fitRegionGradients(
     minColorSpan,
     sacc: new Float64Array(NM),
     lab: new Float64Array(3),
+    // One pass samples at most MAX_SAMPLE pixels plus one per member (each
+    // member's stride rounds up), so cap the scratch at MAX_SAMPLE + units.
+    sBc: new Float64Array((MAX_SAMPLE + count) * 3),
+    sPx: new Float64Array(MAX_SAMPLE + count),
+    sPy: new Float64Array(MAX_SAMPLE + count),
+    sAl: new Float64Array(MAX_SAMPLE + count),
   }
   // A band's own fit is the same wherever it is tried; verify it once.
   const single = new Map<number, Built | null>()
@@ -2153,7 +2548,7 @@ export function fitRegionGradients(
   const finalRep = new Int32Array(count).fill(-1)
   const paintOf: (GradientPaint | null)[] = new Array(count).fill(null)
   const underOf = new Int32Array(count).fill(-1)
-  const supers = growRamps(
+  const supers: Super[] = growRamps<Built>(
     m,
     adj,
     seeds,

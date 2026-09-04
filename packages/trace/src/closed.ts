@@ -1,6 +1,6 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
+import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
-import { decomposeMask, ringBounds, ringContains } from './crack'
 import { adjustVertices } from './potrace/adjust'
 import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
@@ -50,49 +50,53 @@ export interface TracedShape {
  * boundary, holes grouped under their smallest enclosing shape.
  */
 export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape[] {
-  const paths = decomposeMask(mask, opts.turnPolicy, Math.max(1, opts.minArea))
+  return shapesFromPaths(decomposeMask(mask, opts.turnPolicy, Math.max(1, opts.minArea)), opts)
+}
 
-  const outers: {
-    path: CrackPath
-    commands: PathCommand[]
-    bounds: [number, number, number, number]
-    holes: PathCommand[][]
-  }[] = []
-  const holes: CrackPath[] = []
-  for (const path of paths) {
+/**
+ * Decomposed crack paths → filled shapes: the curve chain per ring, holes
+ * grouped under their smallest enclosing outer ring (evenodd), shapes ordered
+ * by descending area. Decomposition depends only on the mask, the turn policy
+ * and the area floor, so a caller that keeps the paths can re-run this alone
+ * when only the curve options change.
+ *
+ * `polygons` are the adjusted polygons of `paths` (same length, same order) from
+ * {@link ringPolygon}: supplying them skips the polygon stages, so a caller that
+ * keeps them re-runs only smoothing and curve optimization. They must have been
+ * built against the same sub-pixel field as `opts.coverage`.
+ */
+export function shapesFromPaths(
+  paths: CrackPath[],
+  opts: TraceCurveOptions,
+  polygons?: readonly (FlatPoints | null)[],
+): TracedShape[] {
+  const commandsOf = (path: CrackPath, i: number): PathCommand[] =>
+    polygons
+      ? polygonToCommands(path.points, polygons[i], opts)
+      : closedPathToCommands(path.points, opts)
+
+  const outers: { area: number; commands: PathCommand[]; holes: PathCommand[][] }[] = []
+  // Decomposition index → index in `outers`. Each hole carries the smallest
+  // outer ring enclosing it, and an enclosing ring is always decomposed before
+  // the paths it contains, so its entry is already in place here.
+  const outerOf = new Int32Array(paths.length)
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i]
     if (path.area > 0) {
+      outerOf[i] = outers.length
       outers.push({
-        path,
-        commands: closedPathToCommands(path.points, opts),
-        bounds: ringBounds(path.points),
+        area: path.area,
+        commands: commandsOf(path, i),
         holes: [],
       })
-    } else {
-      holes.push(path)
-    }
-  }
-
-  // Group each hole under the smallest outer ring containing its interior.
-  const byArea = outers
-    .map((o, index) => ({ index, area: o.path.area }))
-    .toSorted((a, b) => a.area - b.area)
-  for (const hole of holes) {
-    const px = hole.interiorX + 0.5
-    const py = hole.interiorY + 0.5
-    for (const { index } of byArea) {
-      const outer = outers[index]
-      const [minX, minY, maxX, maxY] = outer.bounds
-      if (px < minX || px > maxX || py < minY || py > maxY) continue
-      if (ringContains(outer.path.points, px, py)) {
-        outer.holes.push(closedPathToCommands(hole.points, opts))
-        break
-      }
+    } else if (path.parent >= 0) {
+      outers[outerOf[path.parent]].holes.push(commandsOf(path, i))
     }
   }
 
   const shapes: TracedShape[] = outers.map((o) => ({
     commands: o.commands.concat(...o.holes),
-    area: o.path.area,
+    area: o.area,
     holeCount: o.holes.length,
   }))
   shapes.sort((a, b) => b.area - a.area)
@@ -100,9 +104,9 @@ export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape
 }
 
 /**
- * Full curve chain for one closed crack ring. The ring starts at a guaranteed
- * convex corner (decomposition invariant), so the cycle is linearized there
- * for the straightness/DP stages, while adjustment and smoothing stay cyclic.
+ * Full curve chain for one closed crack ring: the polygon stages followed by the
+ * curve stages. `field` (a color-boundary field for cutout loops) takes
+ * precedence over the mode-level `coverage` (the bw threshold field).
  */
 export function closedPathToCommands(
   ring: FlatPoints,
@@ -110,36 +114,63 @@ export function closedPathToCommands(
   field?: SignedField,
 ): PathCommand[] {
   if (opts.curveMode === 'pixel') return pixelCommands(ring)
+  return polygonToCommands(ring, ringPolygon(ring, field ?? opts.coverage), opts)
+}
 
+/**
+ * The polygon half of the chain for one closed ring (Selinger 2003, §2.2 +
+ * §2.3.1): optimal polygon, then least-squares vertex adjustment. The ring
+ * starts at a guaranteed convex corner (decomposition invariant), so the cycle
+ * is linearized there for the straightness/DP stages. Returns the adjusted
+ * vertices with the first repeated as the last, or `null` for a ring too short
+ * to carry a polygon (the caller falls back to the exact lattice path).
+ *
+ * It depends on the ring and the optional sub-pixel `field` only — never on
+ * smoothing, curve optimization or the corner threshold — so a caller may
+ * compute it once and re-fit it many times through {@link polygonToCommands}.
+ */
+export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null {
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
   ext.push(ring[0], ring[1])
 
   const vertexIdx = optimalPolyline(ext)
-  if (vertexIdx.length < 4) return pixelCommands(ring)
+  if (vertexIdx.length < 4) return null
 
   // The optimal polygon picks vertices on the integer lattice (its straightness
   // analysis needs unit steps); sub-pixel refinement then feeds only the moment
   // sums and vertex adjustment, so each segment's best-fit line tracks the true
-  // edge rather than the staircase. `field` (a color-boundary field for cutout
-  // loops) takes precedence over the mode-level `coverage` (bw threshold field).
-  const sampler = field ?? opts.coverage
-  const geom = sampler ? refineRingToField(ext, sampler) : ext
+  // edge rather than the staircase.
+  const geom = field ? refineRingToField(ext, field) : ext
   const sums = computeSums(geom)
-  const adjusted = adjustVertices(geom, sums, vertexIdx, true)
+  return adjustVertices(geom, sums, vertexIdx, true)
+}
+
+/**
+ * The curve half of the chain (Selinger 2003, §2.3.2 + §2.4): an adjusted
+ * polygon from {@link ringPolygon} → commands under the curve settings, with
+ * adjustment and smoothing cyclic. `pixel` curveMode and a null polygon emit the
+ * exact rectilinear ring instead.
+ */
+export function polygonToCommands(
+  ring: FlatPoints,
+  polygon: FlatPoints | null,
+  opts: TraceCurveOptions,
+): PathCommand[] {
+  if (opts.curveMode === 'pixel' || polygon === null) return pixelCommands(ring)
 
   if (opts.curveMode === 'polygon') {
-    const out: PathCommand[] = [{ type: 'M', x: adjusted[0], y: adjusted[1] }]
+    const out: PathCommand[] = [{ type: 'M', x: polygon[0], y: polygon[1] }]
     // Last adjusted vertex duplicates the first — skip it.
-    for (let i = 1; i < (adjusted.length >> 1) - 1; i++) {
-      out.push({ type: 'L', x: adjusted[i * 2], y: adjusted[i * 2 + 1] })
+    for (let i = 1; i < (polygon.length >> 1) - 1; i++) {
+      out.push({ type: 'L', x: polygon[i * 2], y: polygon[i * 2 + 1] })
     }
     out.push({ type: 'Z' })
     return out
   }
 
   // Drop the duplicated last vertex for the cyclic stages.
-  const ringVerts = adjusted.slice(0, adjusted.length - 2)
+  const ringVerts = polygon.slice(0, polygon.length - 2)
   const alphamax = (opts.smoothing * 4) / 3
   const pieces = smoothClosed(ringVerts, alphamax, opts.cornerThreshold)
 

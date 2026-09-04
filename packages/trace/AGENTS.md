@@ -14,8 +14,10 @@ TypeScript, no DOM, deterministic, hot-loop-conscious (images reach 4096²).
 ## The contracts you can break
 
 1. **Public API** — everything re-exported from `src/index.ts`: `traceMask`, `traceLabelMap`, `traceCenterline` and
-   their option/result types, plus the lower-level `decomposeMask`, `optimalPolyline`, `fitOpenPolyline`,
-   `simplifyOpen`, `reverseCommands`, `refineRingToField`. The engine calls these; changing a signature is a cross-package change — update
+   their option/result types, plus the lower-level `decomposeMask`, `shapesFromPaths`, `ringPolygon`,
+   `polygonToCommands`, `extractChains`, `fitChain`, `fitChains`, `assembleRegions`, `optimalPolyline`,
+   `fitOpenPolyline`, `simplifyOpen`, `reverseCommands`, `refineRingToField`.
+   The engine calls these; changing a signature is a cross-package change — update
    [`../../docs/CONTRACTS.md`](../../docs/CONTRACTS.md) and the engine in the same commit.
 2. **Geometry conventions** — crack/boundary coordinates are integers at pixel corners (`[0..w] × [0..h]`); centerline
    points are pixel centers (`+0.5`). Path coordinates are source-pixel space, y-down. Downstream code and every test
@@ -34,7 +36,9 @@ TypeScript, no DOM, deterministic, hot-loop-conscious (images reach 4096²).
 - **The seam-free guarantee is sacred.** In `traceLabelMap` (cutout), a boundary edge shared by two regions is fitted
   **once** and reused by both, with junction corners pinned to exact lattice points. Never fit a region's outline
   independently in cutout mode — that reintroduces the hairline gaps this package exists to eliminate. `boundary.test.ts`
-  asserts adjacent regions share every interior anchor exactly.
+  asserts adjacent regions share every interior anchor exactly. The chain fit is exported per chain (`fitChain`) so a
+  caller can compute the fits elsewhere and hand them to `assembleRegions`; keep that split honest — a chain must stay a
+  pure function of the network plus the options, and the assembler must never fit anything itself.
 - **Closed rings anchor at a guaranteed corner.** Decomposition starts each ring at a convex corner so the cyclic chain
   can be linearized for the straightness/DP stages; the smoothing and adjustment stages stay cyclic.
 - **Numerical care.** Prefix-moment sums (`potrace/sums.ts`) subtract an origin for conditioning; integer offset

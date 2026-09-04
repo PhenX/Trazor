@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import type { BinaryMask, PathCommand } from '@trazor/core'
-import { optimalPolyline, traceMask } from '@trazor/trace'
+import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
+import {
+  closedPathToCommands,
+  decomposeMask,
+  optimalPolyline,
+  polygonToCommands,
+  ringPolygon,
+  shapesFromPaths,
+  traceMask,
+} from '@trazor/trace'
 
 function circleMask(size: number, r: number): BinaryMask {
   const data = new Uint8Array(size * size)
@@ -154,6 +162,24 @@ describe('traceMask', () => {
     expect(a).toBe(b)
   })
 
+  it('splits into decomposition + curve fitting with identical output', () => {
+    // A shape with a hole and a speck below the area floor, in every curve mode,
+    // so grouping, the hole hierarchy and the speck filter are all covered.
+    const mask = rectMask(40, 40, 3, 3, 37, 37)
+    for (let y = 12; y < 24; y++) {
+      for (let x = 12; x < 24; x++) mask.data[y * 40 + x] = 0
+    }
+    mask.data[30 * 40 + 30] = 0
+    for (const curveMode of ['spline', 'polygon', 'pixel'] as const) {
+      const opts = { ...OPTS, curveMode, minArea: 4 }
+      const paths = decomposeMask(mask, opts.turnPolicy, opts.minArea)
+      const shapes = shapesFromPaths(paths, opts)
+      expect(shapes).toEqual(traceMask(mask, opts))
+      expect(shapes).toHaveLength(1)
+      expect(shapes[0].holeCount).toBe(1)
+    }
+  })
+
   it('pixel mode reproduces exact rectilinear geometry', () => {
     const shapes = traceMask(rectMask(10, 10, 2, 3, 7, 8), { ...OPTS, curveMode: 'pixel' })
     expect(shapes).toHaveLength(1)
@@ -161,6 +187,63 @@ describe('traceMask', () => {
     expect(pts).toHaveLength(4)
     const set = new Set(pts.map(([x, y]) => `${x},${y}`))
     expect(set).toEqual(new Set(['2,3', '7,3', '7,8', '2,8']))
+  })
+})
+
+describe('curve chain split', () => {
+  /** Signed coverage field of a disk: 0 on the true edge, ±0.5 well inside/outside. */
+  function diskField(size: number, r: number): GrayImage {
+    const data = new Float32Array(size * size)
+    const c = size / 2
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const d = Math.hypot(x + 0.5 - c, y + 0.5 - c)
+        data[y * size + x] = Math.max(-0.5, Math.min(0.5, r - d))
+      }
+    }
+    return { width: size, height: size, data }
+  }
+
+  it('reproduces closedPathToCommands in every curve mode, with and without a field', () => {
+    // A disk with a hole, so both ring orientations go through the split.
+    const mask = circleMask(60, 22)
+    for (let y = 24; y < 36; y++) {
+      for (let x = 24; x < 36; x++) mask.data[y * 60 + x] = 0
+    }
+    const paths = decomposeMask(mask, OPTS.turnPolicy, 1)
+    expect(paths.length).toBe(2)
+    const field = diskField(60, 22)
+    for (const curveMode of ['spline', 'polygon', 'pixel'] as const) {
+      for (const coverage of [undefined, field]) {
+        const opts = { ...OPTS, curveMode, coverage }
+        for (const path of paths) {
+          const polygon = ringPolygon(path.points, coverage)
+          expect(polygonToCommands(path.points, polygon, opts)).toEqual(
+            closedPathToCommands(path.points, opts),
+          )
+        }
+      }
+    }
+  })
+
+  it('refines the polygon onto the field, so the field is not ignored', () => {
+    const mask = circleMask(60, 22)
+    const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
+    const lattice = ringPolygon(ring) as number[]
+    const refined = ringPolygon(ring, diskField(60, 22)) as number[]
+    expect(refined).not.toEqual(lattice)
+    // Same polygon, moved off the lattice: vertex count is unchanged.
+    expect(refined.length).toBe(lattice.length)
+  })
+
+  it('feeds shapesFromPaths the same shapes as its own polygon stages', () => {
+    const mask = rectMask(40, 40, 3, 3, 37, 37)
+    for (let y = 12; y < 24; y++) {
+      for (let x = 12; x < 24; x++) mask.data[y * 40 + x] = 0
+    }
+    const paths = decomposeMask(mask, OPTS.turnPolicy, 1)
+    const polygons = paths.map((p) => ringPolygon(p.points))
+    expect(shapesFromPaths(paths, OPTS, polygons)).toEqual(shapesFromPaths(paths, OPTS))
   })
 })
 

@@ -22,14 +22,14 @@ exports[`gradient scenes > 'disc fading to transparent' 1`] = `
 
 exports[`gradient scenes > 'dusk landscape (studio sample, illust…' 1`] = `
 {
-  "colors": 9,
+  "colors": 12,
   "gradients": [
-    "g0 linear (233,365)->(235,-1) 0:#e9956c 0.36:#8f5383 1:#18286e",
-    "g1 linear (249,391)->(250,480) 0:#2c2146 1:#100c22",
-    "g3 linear (251,335)->(251,406) 0:#6f4872 1:#593862",
-    "g2 radial c(298,202) r43 0:#fff6d6 1:#ffbe60",
+    "g0 linear (233,365)->(235,0) 0:#df8e6d 0.11:#ce8173 0.36:#8f5383 1:#18286e",
+    "g1 linear (249,391)->(249,479) 0:#2c2246 1:#100c22",
+    "g3 linear (251,337)->(252,405) 0:#6f4771 0.95:#583963 1:#462f56",
+    "g2 radial c(298,202) r27 0:#fff6d6 1:#ffd48d",
   ],
-  "paths": 4,
+  "paths": 5,
 }
 `;
 

@@ -97,8 +97,11 @@ decode (consumer)
 - **`svg`** — `SvgDocument`/`SvgShape` → compact, valid SVG (px/mm units, evenodd holes, gap-fill strokes,
   `<defs>` gradient paint servers, metadata), plus a regex-based `analyzeSvg` for path/node/color/byte stats.
 - **`engine`** — the four mode pipelines, stage timing + progress + cooperative cancellation, result warnings (stencil
-  islands, tiny mm features, node counts), and the worker protocol: `installWorkerHandler` (worker side) +
-  `TrazorClient` (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+  islands, tiny mm features, node counts), the worker-owned `StageCache` (preprocessed image, palette/label entries, the
+  bw mask, the stacked layering plan, and the decomposed boundary rings with their adjusted polygons, each keyed by the
+  settings that shape it, so tuning one stage's settings reuses the stages before it), the optional **helper pool**
+  (below), and the worker protocol: `installWorkerHandler` (worker side) + `TrazorClient`
+  (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
   `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
   (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so a consumer works without it.
@@ -108,6 +111,36 @@ decode (consumer)
   (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
   round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; a consumer pairs it with the
   engine's `TrazorPool` to trace and score candidates. Exact API: [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
+
+## Parallel tracing (optional)
+
+Tracing and the per-shape half of serialization can run across **helper workers**. The vectorizer worker is the
+coordinator; a consumer transfers it one `MessagePort` per helper (`{ type: 'helpers', ports }`) and the other end of
+each port runs `installHelperHandler`. With no helpers — the default — the identical code path runs everything on the
+coordinator.
+
+The parallel unit is chosen per mode, always something whose result is a function of shared, immutable state:
+
+| Mode       | Unit                                               | Stays on the coordinator                                      |
+| ---------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| stacked    | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
+| bw         | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
+| cutout     | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
+| centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
+
+The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
+routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it. A
+stacked layer painted over an underlay (a semi-transparent gradient overlay and its base) emits its geometry twice, once
+per paint, so its unit carries both paints and comes back with two serialized shapes per traced one.
+
+A helper is a stateful engine instance: it receives the working image, the layering plan, the rings or its share of the
+chain network **once per key** and keeps its own ring/polygon caches, so a warm curve tweak re-fits inside the helper
+without shipping or recomputing geometry. Units are partitioned round-robin by unit index — deterministic, so a re-run
+reaches the same helper's caches — and results are placed strictly **by unit index**, so the shapes array, `document`
+and the SVG text are byte-identical to a sequential run. Geometry crosses as transferred `Float64Array` runs, never as
+structured-cloned arrays of arrays; helpers answer in batches and yield between them, so cancellation still interleaves.
+Each helper holds its own copy of the image and label map, so a consumer sizes the pool for the image, not only for the
+core count.
 
 ## Cross-cutting invariants
 
