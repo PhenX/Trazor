@@ -163,8 +163,13 @@ async function main(): Promise<void> {
     const original = readRgba(join(args.data, file))
     const image = args.maxDim > 0 ? resizeToFit(original, args.maxDim) : original
     let settings: VectorizeSettings
-    if (args.profile) settings = normalizeSettings(getProfile(args.profile).patch)
-    else settings = normalizeSettings(recommendSettings(analyzeImage(image)).settings)
+    if (args.profile) {
+      settings = normalizeSettings(getProfile(args.profile).patch)
+    } else {
+      // Profile patch first, recommendation patch on top, both over defaults.
+      const rec = recommendSettings(analyzeImage(image))
+      settings = normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch })
+    }
     if (args.sets.length > 0) {
       const patch: Record<string, unknown> = {}
       for (const [k, v] of args.sets) patch[k] = coerce(k, v)
