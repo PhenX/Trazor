@@ -29,9 +29,11 @@ piece in the browser (WebAssembly, WebGPU, SIMD). The measurements reproduce wit
   four native cores (2.8 s on one) and **0.44 s at 256²**; a WASM port lands at 1.5–3× that. That is an explicit
   export-time "polish" step at a reduced working scale, not an interactive stage. WebGPU brings it under a second per
   image but is Tier-2 by construction (see [Determinism](#determinism-and-the-two-tier-contract)).
-- **A side finding on the recommender.** On the Fluent 3D emoji and the Iconfont illustrations the recommendation
-  routes to region growing, which scores 1.9 dB and 0.6 dB below forced quantization at 32 colors with
-  `autoPaletteSize`. Twelve images of two families are not a verdict; `eval:ab` on the representative corpus is.
+- **A side finding on the recommender, confirmed on the representative corpus.** The recommendation routes flat
+  illustrations to region growing; forcing quantization instead is an `eval:ab` **PASS** (illustration ΔE −28 %,
+  spurious hue −14 %, no family regressed) at the price of +87 % nodes on that family. Region growing forced
+  everywhere is a **FAIL**. The trade-off is fidelity against file size, so it is a human call, documented in
+  [the sweep](#follow-up-the-eval-ab-sweep-on-the-representative-corpus).
 
 ## What AdaVec is
 
@@ -167,6 +169,42 @@ median of 36.8 dB for AdaVec. Second, the `optTolerance` sweep shows why AdaVec'
 approach AdaVec's ≈ 258 segments per Noto emoji only by dropping to 28 dB, whereas AdaVec keeps 37 dB at that count
 because it **re-fits the thinned curve to the pixels** afterwards. Simplify-then-refit is the recipe; simplification
 alone is a loss.
+
+### Follow-up: the `eval:ab` sweep on the representative corpus
+
+The `scripts/eval/corpus-vtracer` set (four illustrations, one photo, one line drawing, traced at 1600 px), one
+`tracer-compare` report per configuration, each judged against the auto-recommended baseline with `ab-report.ts`. The
+line drawing is traced in bw and never moves; the baseline routes `Gum Tree Vector` and `vectorstock_31191940` to
+region growing and the rest to quantization, at 24 colors with `autoPaletteSize` for illustrations and 32 for the photo.
+
+| Configuration (forced on every image)  | Verdict  | Illustration ΔE / spurious / nodes | Photo ΔE / spurious / nodes | Overall ΔE / spurious / nodes |
+| -------------------------------------- | -------- | ---------------------------------- | --------------------------- | ----------------------------- |
+| baseline (auto recommendation)         | —        | 0.0159 / 0.0092 / 10 146           | 0.0283 / 0.0125 / 121 914   | 0.0244 / 0.0124 / 29 498      |
+| `segmentation=quantize`                | **PASS** | −28 % / −14 % / **+87 %**          | unchanged                   | −12 % / −7 % / +20 %          |
+| `segmentation=regions`                 | **FAIL** | +80 % / +73 % / −13 %              | **+286 %** / +168 % / −91 % | +90 % / +64 % / −65 %         |
+| quantize, 24 colors, `autoPaletteSize` | MIXED    | −26 % / −9 % / +87 %               | +4 % / +7 % / −32 %         | −11 % / −4 % / −2 %           |
+| quantize, 32 colors, `autoPaletteSize` | **PASS** | −30 % / −18 % / **+127 %**         | unchanged                   | −13 % / −9 % / +29 %          |
+| quantize, 16 colors, fixed             | FAIL     | −19 % / +13 % / +61 %              | +17 % / +15 % / −51 %       | −5 % / +9 % / −21 %           |
+| quantize, 24 colors, fixed             | MIXED    | −25 % / −10 % / +167 %             | +4 % / +7 % / −32 %         | −10 % / −4 % / +17 %          |
+| quantize, 32 colors, fixed             | PASS     | −29 % / −20 % / +214 %             | unchanged                   | −13 % / −10 % / +49 %         |
+| quantize, 48 colors, fixed             | PASS     | −31 % / −27 % / **+375 %**         | −8 % / −15 % / +66 %        | −15 % / −16 % / +131 %        |
+
+What it settles:
+
+- **Region growing loses on fidelity on this corpus too**, and on its own metric: on the two images the recommender
+  sends there, forced quantization lowers spurious hue (`Gum Tree Vector` 0.0081 → 0.0049, `vectorstock` 0.0177 →
+  0.0158) as well as ΔE (−61 % and −41 %). Forcing region growing on the rest is a large regression (the photo's ΔE
+  nearly quadruples).
+- **The cost is size, which the verdict engine does not gate on.** `vectorstock_31191940` goes from 19.5 k nodes and
+  414 KB to 52.5 k nodes and 1.1 MB under quantization at 24 colors, and to 67.9 k nodes and 1.4 MB at 32; `Gum Tree
+Vector` from 6.8 k to 9.0 k nodes. That is the bloat [`VTRACER_COMPARISON.md`](VTRACER_COMPARISON.md) chose to
+  avoid, and the reason the recommender routes flat art to region growing. Every palette above 24 is the same
+  trade-off, steeper.
+- **Sixteen fixed colors is a FAIL** (spurious hue up on illustrations and on the photo), so the engine default is not
+  a candidate; the recommender's floors already do better.
+- **The decision is not made here.** Two illustrations carried the region-growing result on this corpus, and the
+  emoji sets pointed the same way; the routing is worth revisiting with a size term in the objective (the `tune`
+  package's weighted score is the natural place), not by flipping the default on fidelity alone.
 
 ### Visual notes
 
@@ -336,9 +374,9 @@ rest better".
 3. **WebGPU as the fast path afterwards**, behind the same interface, under the precision-grid rule.
 4. **Segment-everything as a separate product item**: SlimSAM grid prompts plus AdaVec's merge rule for object-per-layer
    output. Measure editability, not ΔE — it will not improve fidelity.
-5. **Check the recommender's region-growing routing** on the representative corpus with `eval:ab`
-   (`--sweep segmentation=quantize,regions` and `paletteSize=24,32`): on the shaded emoji and the illustrations here,
-   forced quantization at 32 colors with `autoPaletteSize` beat the recommended region growing by 0.6–1.9 dB.
+5. **Decide the region-growing routing with a size term.** The sweep above shows quantization wins on every fidelity
+   metric where the recommender picks region growing, at two to three times the nodes; weigh the two in the `tune`
+   objective and re-run `eval:ab` before changing the default.
 
 ## Reproducing
 
