@@ -179,6 +179,24 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   win came from palette budgeting instead (`packages/assist/src/recommend.ts`).
   Informed the stacked/cutout layering vocabulary; cutouts use the shared
   boundary-graph approach for seam-freedom.
+- **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
+  Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
+  <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,
+  VTracer initialization, heuristic control-point simplification with a Chamfer
+  refit, then 100 iterations of DiffVG refinement. Studied component by component
+  against Trazor, with a measured comparison on its own test images and a
+  browser-feasibility assessment, in [`ADAVEC_STUDY.md`](ADAVEC_STUDY.md). Its
+  repository carries no license, so only the published method is usable.
+- **O. Hirschorn, A. Jevnisek & S. Avidan, “Optimize & Reduce: A Top-Down
+  Approach for Image Vectorization”, _AAAI_ 2024.** The differentiable geometric
+  loss (control-polygon self-intersection, orientation and angle penalties)
+  AdaVec reuses; relevant only inside a refinement pass.
+- **X. Liu, C. Zhou, N. Zhao & S. Huang, “Bézier Splatting for Fast and
+  Differentiable Vector Graphics Rendering”, _NeurIPS_ 2025.**
+  <https://arxiv.org/abs/2503.16424> — a splatting-based differentiable
+  rasterizer reported 6×/18× (forward/backward) faster than DiffVG on closed
+  shapes; the reference point for the cost of an in-app refinement pass
+  ([`ADAVEC_STUDY.md`](ADAVEC_STUDY.md)).
 - **T. Xia, B. Liao & Y. Yu, “Patch-based Image Vectorization with Automatic
   Curvilinear Feature Alignment”, _SIGGRAPH Asia_ 2009**, and
   **J. Kopf & D. Lischinski, “Depixelizing Pixel Art”, _SIGGRAPH_ 2011** —
