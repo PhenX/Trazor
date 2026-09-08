@@ -84,6 +84,76 @@ describe('segmentRegions — region growing', () => {
   })
 })
 
+const WHITE: Rgba = [255, 255, 255, 255]
+
+/** Perceptual lightness (Oklab L) of a palette entry, from its RGB bytes. */
+function paletteL(seg: ReturnType<typeof segmentRegions>, label: number): number {
+  const r = seg.paletteRgb[label * 3] / 255
+  const g = seg.paletteRgb[label * 3 + 1] / 255
+  const b = seg.paletteRgb[label * 3 + 2] / 255
+  // Rec. 601 luma is enough to tell "dark" from "light" here.
+  return 0.299 * r + 0.587 * g + 0.114 * b
+}
+
+describe('segmentRegions — rescuing marker-less thin features', () => {
+  // A 2px black bar across a white field: too thin to hold a flat core, so it
+  // gets no marker of its own. Without the rescue pass the flood dissolves it
+  // into the white on either side and it vanishes (one region); the rescue pass
+  // seeds it as its own marker so it survives as a distinct dark region.
+  function thinBarImage(w = 40, h = 40): ReturnType<typeof rasterOf> {
+    const mid = h >> 1
+    return rasterOf(w, h, (_x, y) => (y === mid || y === mid + 1 ? BLACK : WHITE))
+  }
+
+  it('keeps a thin coreless bar instead of dissolving it into the field', () => {
+    const w = 40
+    const h = 40
+    const seg = segmentRegions(thinBarImage(w, h))
+    expect(seg.labels.count).toBe(2)
+    const corner = seg.labels.data[0]
+    const bar = seg.labels.data[(h >> 1) * w + (w >> 1)]
+    expect(bar).not.toBe(corner) // the bar is not painted with the background
+    expect(paletteL(seg, bar)).toBeLessThan(0.2) // and it stays dark
+    expect(paletteL(seg, corner)).toBeGreaterThan(0.8)
+  })
+
+  it('rescues the feature as one region (deterministically)', () => {
+    const img = thinBarImage()
+    const a = segmentRegions(img)
+    const b = segmentRegions(img)
+    expect(b.labels.count).toBe(a.labels.count)
+    expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
+  })
+
+  it('does not invent a third color on a genuine black↔white ramp', () => {
+    // The mirror case: a two-sided ramp borders two different colors and must
+    // still split between them — the rescue pass must not seed the mid-gray band
+    // as its own region. Checked across ramp widths (a wide, hard edge is the
+    // case whose near-endpoint sliver most tempts the rescue).
+    for (const width of [2, 4, 6, 8]) {
+      const w = 60
+      const ramp = rasterOf(w, 20, (x) => {
+        const t = Math.min(1, Math.max(0, (x - (w / 2 - width / 2)) / width))
+        const v = Math.round(t * 255)
+        return [v, v, v, 255] as Rgba
+      })
+      expect(segmentRegions(ramp).labels.count).toBe(2)
+    }
+  })
+
+  it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
+    // A faint bar (ΔE well under the rescue contrast gate) is one the flood
+    // renders acceptably; it must not be seeded as its own region.
+    const w = 40
+    const h = 40
+    const mid = h >> 1
+    const faint = rasterOf(w, h, (_x, y) =>
+      y === mid || y === mid + 1 ? [232, 232, 232, 255] : WHITE,
+    )
+    expect(segmentRegions(faint).labels.count).toBe(1)
+  })
+})
+
 /** An Oklab color as an 8-bit clamped RGBA pixel. */
 function okPixel(L: number, a: number, b: number): Rgba {
   const [r, g, bl] = oklabToRgb(L, a, b)
