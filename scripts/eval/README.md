@@ -196,22 +196,3 @@ own and takes minutes on a 24 MP photo, so this keeps the comparison fair and co
 writes `index.html` next to the assets it references: `source/` (the resized input both tracers saw), `trazor/` and
 `vtracer/` (each tracer's SVG). The page itself shows fast, uncropped PNG thumbnails; open the on-disk SVGs to inspect
 the real vector output.
-
-## AdaVec comparison (`eval:adavec`)
-
-`adavec-compare.ts` is the harness behind [`docs/ADAVEC_STUDY.md`](../../docs/ADAVEC_STUDY.md): it traces a folder tree
-of PNGs (one sub-folder per dataset) at native resolution with the auto-recommended settings, rasterizes each SVG with
-resvg over white, and scores it under **AdaVec's own protocol** — gray MSE at 256 px, RGB PSNR, gray SSIM (7×7 uniform
-window, sample covariance) — next to Trazor's Oklab panel (mean / edge / p95 / spurious hue). With `--renders`, another
-tool's renders of the same images are scored under the identical protocol, so the two columns compare like for like.
-
-```sh
-git clone --depth 1 https://github.com/IMU-Group/AdaVec.git /tmp/adavec
-npm run eval:adavec -- --data /tmp/adavec/metrics/groundtruth --renders /tmp/adavec/metrics/results/ours \
-    --out adavec-out --json adavec.json
-# force a routing or a knob for every image, as with the bench:
-npm run eval:adavec -- --data /tmp/adavec/metrics/groundtruth --set segmentation=regions --set gradients=true
-```
-
-Per dataset it prints Trazor's mean and median scores, the other tool's, and how many images the other tool wins on
-MSE / PSNR / SSIM — read the medians and the win counts, not only the means: one failed image moves a 15-image mean.

@@ -84,7 +84,7 @@ From the repo root:
 | `npm run lint` / `lint:fix`             | oxlint                                                                |
 | `npm run fmt` / `fmt:check`             | oxfmt                                                                 |
 | `npm run check`                         | lint + fmt:check + typecheck + test (the CI gate)                     |
-| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation and comparisons   |
+| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation                   |
 | `npm run bench`                         | per-stage timing + SVG hash over a corpus (`scripts/bench/README.md`) |
 
 Run a single package's tests with `npx vitest run packages/<name>`.

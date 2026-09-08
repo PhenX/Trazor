@@ -225,14 +225,6 @@ browser contract (normalized in → [0,1] out) — worth it but validate at expo
   constrained by snapping refined coordinates to the serializer precision grid (WASM for reproducible mode). Tier-1-
   touching and high risk — gate carefully behind reproducible mode.
 
-**Measured (AdaVec study).** [`ADAVEC_STUDY.md`](ADAVEC_STUDY.md) puts numbers on 6b: 100 DiffVG iterations on
-Trazor's own recommended trace of a Noto emoji take PSNR from 33.6 to 43.6 dB and edge ΔE from 0.0154 to 0.0053, and
-the gain is carried by the control points alone — colors contribute almost nothing. Most of it arrives within 20–30
-iterations. DiffVG's CPU path costs 1.8 s per iteration at 512² on four native cores (2.8 s on one), 0.44 s at 256²; a
-WASM port lands at 1.5–3× that, so the pass is an explicit export-time polish at a ≤512-px working scale, points-only,
-colors fixed, per-shape tiles, snapped to the precision grid — not an interactive stage. WebGPU brings it under a
-second but is Tier-2 by construction. Sequencing and the classical alternatives are in the study.
-
 **Docs.** `docs/REFINEMENT_PASS.md` when built.
 
 ## Backlog (lower priority)

@@ -113,8 +113,7 @@ The `scripts/` tooling (dataset generation, corpus fetch, tracer evaluation) sup
 - Plotter niceties: pen-travel path ordering, SVG → HPGL/G-code hints
 - Kerf/offset compensation (polygon offsetting) for cutting
 - Semantic layering with SAM masks (object-per-layer SVG)
-- Differentiable refinement pass against the source image — gain and cost measured in
-  [`docs/ADAVEC_STUDY.md`](docs/ADAVEC_STUDY.md)
+- Differentiable refinement pass (WebGPU) against the source image
 
 Shipped recently: an opt-in step-tracer hook on the engine (`EngineContext.onTrace`) that streams per-stage
 snapshots and metrics for pipeline inspection — see [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
