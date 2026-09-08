@@ -4,7 +4,7 @@ exports[`gradient scenes > 'diagonal ramp on a wide canvas' 1`] = `
 {
   "colors": 3,
   "gradients": [
-    "g0 linear (30,-29)->(150,89) 0:#1e3c78 0.45:#7d858a 1:#f0dca0",
+    "g0 linear (30,-29)->(150,90) 0:#1e3c78 0.45:#7d858a 1:#f0dca0",
   ],
   "paths": 1,
 }
@@ -55,7 +55,7 @@ exports[`gradient scenes > 'glow over a sky ramp (stacked overlay)' 1`] = `
 {
   "colors": 7,
   "gradients": [
-    "g0 linear (118,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
+    "g0 linear (119,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
     "g1 radial c(151,61) r26 0:#fff078 1:#fff078@0",
     "url(#g1) over url(#g0)",
   ],
@@ -125,7 +125,7 @@ exports[`gradient scenes > 'ramp with a flat block inside' 1`] = `
 {
   "colors": 4,
   "gradients": [
-    "g0 linear (0,30)->(160,30) 0:#3c301e 0.42:#886d44 1:#f0c078",
+    "g0 linear (1,30)->(160,30) 0:#3c301e 0.42:#886d44 1:#f0c078",
   ],
   "paths": 2,
 }

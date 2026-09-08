@@ -198,7 +198,7 @@ export interface VectorizeSettings {
   // ---- Output ----
   /** Paint color for bw and centerline modes. */
   fillColor: string
-  /** Decimal places for SVG coordinates. */
+  /** Decimal places for SVG coordinates: 1 in px units; the mm-unit profiles set 3. */
   precision: number
   /** Compact path data with relative + H/V commands (identical geometry, smaller file). */
   optimizeSvg: boolean
@@ -266,7 +266,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   pruneLength: 8,
 
   fillColor: '#000000',
-  precision: 2,
+  precision: 1,
   optimizeSvg: true,
   groupByColor: false,
   unit: 'px',
