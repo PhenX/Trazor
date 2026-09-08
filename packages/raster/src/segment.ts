@@ -89,31 +89,32 @@ const SRM_FLOOR = 0.03
  * disturbing genuine anti-aliased edges — which sit *between two* colors and must
  * still split.
  */
-// Oklab ΔE two neighboring unmarked pixels must be within to grow the same
-// feature. Anti-aliasing/compression 4-connects every edge in the image into one
-// web; growing only through near-equal colors carves the coherent glyph strokes
-// (a near-uniform dark blob) back out of it, cut off at the ramp to the field.
+// Oklab ΔE an unmarked pixel must be within of a growing blob's *running mean*
+// to join it. Anti-aliasing/compression 4-connects every edge in the image into
+// one web, and a soft rim (navy → teal → blue) is a chain of small steps, so a
+// step-to-step bound would drift right across it; bounding to the mean instead
+// keeps a blob color-tight — a glyph's strokes come out as one near-uniform
+// blob, cut off where the rim begins.
 const RESCUE_COHERENCE = 0.2
-// Chebyshev radius the enclosing color is censused over. A feature carries a thin
-// transition rim of its own, so its flat neighbor is a pixel or two out, not
-// strictly 4-adjacent; this reaches past the rim without reaching other features.
-const RESCUE_DILATE = 2
-// Fraction of that surround that must be a single color for the blob to count as
-// a starved feature rather than a two-sided ramp. A ramp borders its two colors
-// in ~equal measure; an enclosed feature is surrounded almost entirely by one.
-const RESCUE_ENCLOSURE = 0.85
+// Farthest a pixel looks, in each of the four directions and over any unmarked
+// pixel, for the marker on that side (the field). Only a feature's own rim lies
+// between it and its field; anything farther has no field to be enclosed by.
+const RESCUE_REACH = 24
+// Share of a blob's pixels that must meet the same color on *both* ends of an
+// axis for it to count as enclosed by that color. This is what tells a feature
+// from a ramp: a stroke has its field on opposite sides, while a sliver of a soft
+// edge has one color on one side and the other color on the other — however far
+// it sits from either, so no contrast threshold is needed to reject it.
+const RESCUE_ENCLOSURE = 0.8
 // Oklab ΔE within which two markers count as the same color when measuring the
 // surround (so a divider between two patches of one color still reads as enclosed,
 // and near-duplicate markers do not split the dominant). ~JND, the near-duplicate floor.
 const RESCUE_GROUP = SRM_FLOOR
-// Oklab ΔE a feature's color must exceed its enclosing color by to be rescued.
-// A soft edge assigns each pixel to its nearer side at an error up to about half
-// the edge's ΔE (≈0.5 for the hardest black↔white edge), so a sliver of a ramp
-// can sit this far from the one side it is enclosed by; the gate is set past that
-// band. A real detail against its field (black glyph on white ≈ 0.9) clears it
-// easily; only low-contrast thin features (which the flood renders acceptably)
-// are left alone.
-const RESCUE_MIN_CONTRAST = 0.5
+// Oklab ΔE a feature's color must exceed its enclosing field by to be rescued.
+// Ramps are rejected by enclosure, so this only screens a same-color halo the
+// flood absorbs anyway; a dark stroke on a mid-tone field (fur, a facial line,
+// ≈0.4) clears it, and a black glyph on white (≈0.9) easily.
+const RESCUE_MIN_CONTRAST = 0.25
 
 /** Oklab distance between interleaved-buffer index `i` and a mean triple. */
 function distToMean(ok: Float32Array, i: number, mL: number, mA: number, mB: number): number {
@@ -491,18 +492,21 @@ interface RescuedFeature {
  *
  * Finding those features is not just a matter of connected components: on an
  * anti-aliased or compressed image every edge in the picture is 4-connected into
- * one unmarked web, so the "&" is not an island. Growing only through *near-equal*
- * colors (`RESCUE_COHERENCE`) carves each coherent feature — a glyph's near-uniform
- * strokes — back out of that web, stopping where the color ramps toward the field.
+ * one unmarked web, so the "&" is not an island. Each blob is grown color-tight —
+ * a pixel joins only while within `RESCUE_COHERENCE` of the blob's running mean —
+ * which carves a coherent feature (a glyph's near-uniform strokes) back out of
+ * that web and stops where the color ramps toward the field, even when the ramp
+ * is a chain of small steps.
  *
  * A blob is rescued as its own marker (seeded with its mean color) when it spans
- * at least `minArea` pixels; a single color fills at least `RESCUE_ENCLOSURE` of
- * the markers around it (censused over a `RESCUE_DILATE` window, since a feature
- * carries its own thin rim — same color on both sides of a divider counts as one
- * enclosure, so a bar splitting a field is rescued too); and its color differs
- * from that enclosing color by at least `RESCUE_MIN_CONTRAST`. A genuine edge ramp
- * fails the enclosure test (it borders its two colors in ~equal measure) and is
- * left for the flood to split — the no-third-color guarantee holds.
+ * at least `minArea` pixels; its field — the first marker found walking out from
+ * each pixel, over any unmarked pixel, in each of the four directions — is one
+ * color on *both* ends of an axis for at least `RESCUE_ENCLOSURE` of its pixels
+ * (same color on both sides of a divider counts, so a bar splitting a field is
+ * rescued too); and its color differs from that field by at least
+ * `RESCUE_MIN_CONTRAST`. A sliver of a genuine edge ramp has one color on one side
+ * and the other color on the other, however far it sits from either, so it fails
+ * enclosure and is left for the flood to split — the no-third-color guarantee holds.
  *
  * Blobs are rescued most-contrasting first and each promotion is written into
  * `region`, so a feature's own rim — evaluated later, now bordered by the just-
@@ -526,10 +530,10 @@ function rescueMarkerlessFeatures(
   const coh2 = RESCUE_COHERENCE * RESCUE_COHERENCE
   const contrast2 = RESCUE_MIN_CONTRAST * RESCUE_MIN_CONTRAST
   const group2 = RESCUE_GROUP * RESCUE_GROUP
-  const R = RESCUE_DILATE
 
-  // ---- 1. Carve color-coherent blobs out of the unmarked web ----
-  // `order` holds each blob's pixels contiguously in [start, start+len).
+  // ---- 1. Carve color-tight blobs out of the unmarked web ----
+  // `order` holds each blob's pixels contiguously in [start, start+len). A pixel
+  // joins a blob only while within RESCUE_COHERENCE of the blob's running mean.
   const blobId = new Int32Array(n).fill(-1)
   const order = new Int32Array(n)
   const stack = new Int32Array(n)
@@ -551,23 +555,30 @@ function rescueMarkerlessFeatures(
     }
     const id = blobs++
     const start = pos
+    let sumL = 0
+    let sumA = 0
+    let sumB = 0
     let sp = 0
     stack[sp++] = s
     blobId[s] = id
     while (sp > 0) {
       const p = stack[--sp]
       order[pos++] = p
-      const pL = ok[p * 3]
-      const pA = ok[p * 3 + 1]
-      const pB = ok[p * 3 + 2]
+      sumL += ok[p * 3]
+      sumA += ok[p * 3 + 1]
+      sumB += ok[p * 3 + 2]
+      const count = pos - start
+      const bL = sumL / count
+      const bA = sumA / count
+      const bB = sumB / count
       const x = p - ((p / w) | 0) * w
-      // Grow to an unmarked in-mask neighbor within RESCUE_COHERENCE of this pixel.
+      // Grow to an unmarked in-mask neighbor within RESCUE_COHERENCE of the running mean.
       if (x > 0) {
         const q = p - 1
         if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - pL
-          const da = ok[q * 3 + 1] - pA
-          const db = ok[q * 3 + 2] - pB
+          const dl = ok[q * 3] - bL
+          const da = ok[q * 3 + 1] - bA
+          const db = ok[q * 3 + 2] - bB
           if (dl * dl + da * da + db * db < coh2) {
             blobId[q] = id
             stack[sp++] = q
@@ -577,9 +588,9 @@ function rescueMarkerlessFeatures(
       if (x < w - 1) {
         const q = p + 1
         if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - pL
-          const da = ok[q * 3 + 1] - pA
-          const db = ok[q * 3 + 2] - pB
+          const dl = ok[q * 3] - bL
+          const da = ok[q * 3 + 1] - bA
+          const db = ok[q * 3 + 2] - bB
           if (dl * dl + da * da + db * db < coh2) {
             blobId[q] = id
             stack[sp++] = q
@@ -589,9 +600,9 @@ function rescueMarkerlessFeatures(
       if (p >= w) {
         const q = p - w
         if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - pL
-          const da = ok[q * 3 + 1] - pA
-          const db = ok[q * 3 + 2] - pB
+          const dl = ok[q * 3] - bL
+          const da = ok[q * 3 + 1] - bA
+          const db = ok[q * 3 + 2] - bB
           if (dl * dl + da * da + db * db < coh2) {
             blobId[q] = id
             stack[sp++] = q
@@ -601,9 +612,9 @@ function rescueMarkerlessFeatures(
       if (p < n - w) {
         const q = p + w
         if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - pL
-          const da = ok[q * 3 + 1] - pA
-          const db = ok[q * 3 + 2] - pB
+          const dl = ok[q * 3] - bL
+          const da = ok[q * 3 + 1] - bA
+          const db = ok[q * 3 + 2] - bB
           if (dl * dl + da * da + db * db < coh2) {
             blobId[q] = id
             stack[sp++] = q
@@ -650,38 +661,52 @@ function rescueMarkerlessFeatures(
   const total = regionCount + cand.length
   const census = new Int32Array(total)
   const seenList = new Int32Array(total)
+  // The field met on each side of every pixel of the blob under study (4 per pixel).
+  let maxLen = 0
+  for (const id of cand) if (blobLen[id] > maxLen) maxLen = blobLen[id]
+  const ends = new Int32Array(maxLen * 4)
+
+  /** The first marker met walking from (x, y) in direction (dx, dy), or -1 within `RESCUE_REACH`. */
+  const walk = (x: number, y: number, dx: number, dy: number): number => {
+    for (let k = 1; k <= RESCUE_REACH; k++) {
+      const xx = x + dx * k
+      const yy = y + dy * k
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) return -1
+      const r = region[yy * w + xx]
+      if (r >= 0) return r
+    }
+    return -1
+  }
 
   /**
-   * Census the markers in a `RESCUE_DILATE` window around blob `id` over the
-   * current `region`, then return the mass fraction held by the dominant color
-   * (same-color markers summed) and that color's ΔE² to the blob's mean.
+   * Find the field around blob `id` over the current `region`: the first marker
+   * met walking out of each pixel in each of the four directions. Returns the
+   * share of pixels that meet the dominant color (near-duplicates included) on
+   * *both* ends of an axis — enclosure by that color — and that color's ΔE² to
+   * the blob's mean.
    */
   const surround = (id: number): { enclosure: number; contrast2: number; dom: number } => {
     const start = blobStart[id]
-    const end = start + blobLen[id]
+    const len = blobLen[id]
     let seen = 0
     let mass = 0
-    for (let k = start; k < end; k++) {
-      const p = order[k]
+    for (let k = 0; k < len; k++) {
+      const p = order[start + k]
       const px = p - ((p / w) | 0) * w
       const py = (p / w) | 0
-      for (let dy = -R; dy <= R; dy++) {
-        const yy = py + dy
-        if (yy < 0 || yy >= h) continue
-        for (let dx = -R; dx <= R; dx++) {
-          const xx = px + dx
-          if (xx < 0 || xx >= w) continue
-          const r = region[yy * w + xx]
-          if (r < 0) continue
-          mass++
-          if (census[r]++ === 0) seenList[seen++] = r
-        }
+      const e = k * 4
+      ends[e] = walk(px, py, -1, 0)
+      ends[e + 1] = walk(px, py, 1, 0)
+      ends[e + 2] = walk(px, py, 0, -1)
+      ends[e + 3] = walk(px, py, 0, 1)
+      for (let d = 0; d < 4; d++) {
+        const r = ends[e + d]
+        if (r < 0) continue
+        mass++
+        if (census[r]++ === 0) seenList[seen++] = r
       }
     }
-    if (mass === 0) {
-      for (let t = 0; t < seen; t++) census[seenList[t]] = 0
-      return { enclosure: 0, contrast2: 0, dom: -1 }
-    }
+    if (mass === 0) return { enclosure: 0, contrast2: 0, dom: -1 }
     let dom = -1
     let domCnt = 0
     for (let t = 0; t < seen; t++) {
@@ -690,24 +715,32 @@ function rescueMarkerlessFeatures(
         domCnt = census[r]
         dom = r
       }
+      census[r] = 0
     }
     const dL = markerColor(dom, promL, mL)
     const dA = markerColor(dom, promA, mA)
     const dB = markerColor(dom, promB, mB)
-    let sameColor = 0
-    for (let t = 0; t < seen; t++) {
-      const r = seenList[t]
-      const c = census[r]
-      census[r] = 0
+    const isField = (r: number): boolean => {
+      if (r < 0) return false
       const el = markerColor(r, promL, mL) - dL
       const ea = markerColor(r, promA, mA) - dA
       const eb = markerColor(r, promB, mB) - dB
-      if (el * el + ea * ea + eb * eb < group2) sameColor += c
+      return el * el + ea * ea + eb * eb < group2
+    }
+    let twoSided = 0
+    for (let k = 0; k < len; k++) {
+      const e = k * 4
+      if (
+        (isField(ends[e]) && isField(ends[e + 1])) ||
+        (isField(ends[e + 2]) && isField(ends[e + 3]))
+      ) {
+        twoSided++
+      }
     }
     const bl = cmL[id] - dL
     const ba = cmA[id] - dA
     const bb = cmB[id] - dB
-    return { enclosure: sameColor / mass, contrast2: bl * bl + ba * ba + bb * bb, dom }
+    return { enclosure: twoSided / len, contrast2: bl * bl + ba * ba + bb * bb, dom }
   }
 
   // Extremeness for ordering: contrast to the surround over the original markers.

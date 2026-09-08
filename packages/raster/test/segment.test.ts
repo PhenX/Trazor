@@ -141,6 +141,31 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
     }
   })
 
+  it('rescues thin line-art on a colored field despite its soft rim (fur, facial strokes)', () => {
+    // A 2px navy stroke on a mid-blue field, wrapped in an anti-aliased rim: the
+    // rim is a chain of small color steps that joins the stroke to the field's
+    // edge web, and navy-on-blue is far below black-on-white contrast. The stroke
+    // must still come out as its own dark region, with the field on both sides.
+    const FIELD: Rgba = [70, 150, 200, 255]
+    const STROKE: Rgba = [20, 40, 70, 255]
+    const RIM: Rgba = [58, 122, 168, 255] // 25% stroke / 75% field
+    const w = 40
+    const h = 40
+    const mid = h >> 1
+    const img = rasterOf(w, h, (_x, y) => {
+      if (y === mid || y === mid + 1) return STROKE
+      if (y === mid - 1 || y === mid + 2) return RIM
+      return FIELD
+    })
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(2)
+    const corner = seg.labels.data[0]
+    const stroke = seg.labels.data[mid * w + (w >> 1)]
+    expect(stroke).not.toBe(corner)
+    expect(paletteL(seg, stroke)).toBeLessThan(0.3) // navy, not a rim-diluted teal
+    expect(paletteL(seg, corner)).toBeGreaterThan(0.45)
+  })
+
   it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
     // A faint bar (ΔE well under the rescue contrast gate) is one the flood
     // renders acceptably; it must not be seeded as its own region.
