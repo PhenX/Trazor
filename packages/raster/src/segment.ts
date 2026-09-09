@@ -13,13 +13,16 @@
  *   1. Oklab gradient magnitude per pixel.
  *   2. Flat interiors (gradient below `flatThreshold`) are the markers — one
  *      region per 4-connected component, seeded with its mean color.
- *   2b. A feature too thin to hold a flat interior (a hairline glyph like an "&")
- *      gets no marker in step 2 and would be swallowed by the flood; each such
- *      enclosed, contrasting blob is rescued as its own marker first (see
+ *   2b. A feature too thin to hold a flat interior (a hairline glyph like an "&",
+ *      a fur stroke, a contour line) gets no marker in step 2 and would be
+ *      swallowed by the flood; each such blob that is a color extreme between
+ *      its sides is rescued as its own marker first (see
  *      {@link rescueMarkerlessFeatures}).
  *   3. A priority flood grows the markers over the remaining (edge/ramp) pixels,
  *      always claiming the cheapest pixel next (smallest Oklab distance to the
- *      claiming region's mean); the boundary settles on the ramp crest.
+ *      claiming region's mean); the boundary settles on the ramp crest. A region
+ *      then takes its color from its flat interior (`CORE_MIN_PIXELS`), so the
+ *      rim the flood attached never tints it toward a neighbor.
  *   4. A region-adjacency-graph merge folds near-duplicate neighbors and small
  *      regions together (agglomerative, closest pair first) down to the real
  *      colors, optionally capped at `maxRegions`.
@@ -82,6 +85,26 @@ const DEFAULT_MIN_AREA = 16
 const SRM_FLOOR = 0.03
 
 /**
+ * A region's palette color is the mean of its *flat interior* pixels — its core —
+ * when that core can speak for it: an anti-aliased rim is a mixture of two
+ * colors, and letting it into the mean tints every region toward its neighbors
+ * (a coral next to a black outline darkens, a white counter inside a glyph
+ * greys). The core speaks when it is at least `CORE_MIN_PIXELS` and at least
+ * `CORE_MIN_SHARE` of the region: a *shaded* region — a mouth's shadow, a
+ * gradient — is almost entirely non-flat (a few percent of it is flat), and its
+ * flattest patch is not its color; it keeps the mean over all its pixels, as does
+ * a rescued feature (no core at all). A flat region that compression has
+ * roughened keeps well over a tenth flat, so the share sits between the two.
+ */
+const CORE_MIN_PIXELS = 4
+const CORE_MIN_SHARE = 0.05
+
+/** Whether a flat core of `coreN` pixels speaks for a region of `size` pixels. */
+function coreSpeaks(coreN: number, size: number): boolean {
+  return coreN >= CORE_MIN_PIXELS && coreN >= CORE_MIN_SHARE * size
+}
+
+/**
  * Thin features (a hairline glyph like an "&", a dot, a thin serif) have no flat
  * interior, so step 2 gives them no marker and the flood dissolves them into the
  * regions around them. These knobs govern rescuing such a feature as its own
@@ -100,20 +123,26 @@ const RESCUE_COHERENCE = 0.2
 // pixel, for the marker on that side (the field). Only a feature's own rim lies
 // between it and its field; anything farther has no field to be enclosed by.
 const RESCUE_REACH = 24
-// Share of a blob's pixels that must meet the same color on *both* ends of an
-// axis for it to count as enclosed by that color. This is what tells a feature
-// from a ramp: a stroke has its field on opposite sides, while a sliver of a soft
-// edge has one color on one side and the other color on the other — however far
-// it sits from either, so no contrast threshold is needed to reject it.
-const RESCUE_ENCLOSURE = 0.8
-// Oklab ΔE within which two markers count as the same color when measuring the
-// surround (so a divider between two patches of one color still reads as enclosed,
-// and near-duplicate markers do not split the dominant). ~JND, the near-duplicate floor.
-const RESCUE_GROUP = SRM_FLOOR
-// Oklab ΔE a feature's color must exceed its enclosing field by to be rescued.
-// Ramps are rejected by enclosure, so this only screens a same-color halo the
-// flood absorbs anyway; a dark stroke on a mid-tone field (fur, a facial line,
-// ≈0.4) clears it, and a black glyph on white (≈0.9) easily.
+// A side of the blob's own color met within this many pixels is the region the
+// blob is the *edge of* — its anti-aliased rim, or a shade of it — so the pixel
+// is that region's, not a feature's. Met farther away, the same color is where a
+// line *ends* against an outline or a shadow, and says nothing about the line.
+const RESCUE_ADJACENT = 3
+// Share of a blob's pixels that must be a color *extreme* between the two sides
+// met on some axis. A mixture of its sides — a sliver of a soft edge — lies
+// between them in color, so ΔE(b,F1) + ΔE(b,F2) ≈ ΔE(F1,F2); a real feature lies
+// outside that segment: a glyph on one field (F1 = F2), a divider between two
+// patches of one color, or a contour line between two different colors is
+// farther from both sides than they are from each other. This is what tells a
+// feature from a ramp, at any contrast, so no ramp threshold is needed. A clear
+// majority is demanded: a clean line scores well above it, while a web that
+// mixes outline with the rims it drags along (a whole mouth's contour network)
+// scores just above half and must not be seeded as one muddy region.
+const RESCUE_ENCLOSURE = 0.7
+// Oklab ΔE a feature's color must exceed *each* side by, and the excess
+// ΔE(b,F1) + ΔE(b,F2) − ΔE(F1,F2) must reach, for a pixel to count as an extreme.
+// Screens a same-color halo the flood absorbs anyway; a dark stroke on a mid-tone
+// field (fur, a facial line, ≈0.4) clears it, a black glyph on white (≈0.9) easily.
 const RESCUE_MIN_CONTRAST = 0.25
 
 /** Oklab distance between interleaved-buffer index `i` and a mean triple. */
@@ -277,24 +306,42 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   // ---- 3. Priority flood: grow markers over edge/ramp pixels ----
   floodRegions(ok, region, w, n, mask, mL, mA, mB)
 
-  // Recompute means/sizes over the grown regions (ramp pixels shifted them).
-  mL.fill(0, 0, regionCount)
-  mA.fill(0, 0, regionCount)
-  mB.fill(0, 0, regionCount)
+  // Recompute means/sizes over the grown regions, keeping both the sum over every
+  // pixel and the sum over the flat core: a region whose core speaks for it (see
+  // `coreSpeaks`) takes its color from the core alone — the rim the flood
+  // attached is a mixture that would tint it toward its neighbors — while a
+  // shaded region, or a rescued feature with no core, uses every pixel.
   size.fill(0, 0, regionCount)
+  const fullL = new Float64Array(regionCount)
+  const fullA = new Float64Array(regionCount)
+  const fullB = new Float64Array(regionCount)
+  const coreL = new Float64Array(regionCount)
+  const coreA = new Float64Array(regionCount)
+  const coreB = new Float64Array(regionCount)
+  const coreN = new Int32Array(regionCount)
   for (let p = 0; p < n; p++) {
     const r = region[p]
     if (r < 0) continue
-    mL[r] += ok[p * 3]
-    mA[r] += ok[p * 3 + 1]
-    mB[r] += ok[p * 3 + 2]
+    fullL[r] += ok[p * 3]
+    fullA[r] += ok[p * 3 + 1]
+    fullB[r] += ok[p * 3 + 2]
     size[r]++
+    if (grad[p] < flatThreshold) {
+      coreL[r] += ok[p * 3]
+      coreA[r] += ok[p * 3 + 1]
+      coreB[r] += ok[p * 3 + 2]
+      coreN[r]++
+    }
   }
   for (let r = 0; r < regionCount; r++) {
-    if (size[r] > 0) {
-      mL[r] /= size[r]
-      mA[r] /= size[r]
-      mB[r] /= size[r]
+    if (coreSpeaks(coreN[r], size[r])) {
+      mL[r] = coreL[r] / coreN[r]
+      mA[r] = coreA[r] / coreN[r]
+      mB[r] = coreB[r] / coreN[r]
+    } else if (size[r] > 0) {
+      mL[r] = fullL[r] / size[r]
+      mA[r] = fullA[r] / size[r]
+      mB[r] = fullB[r] / size[r]
     }
   }
 
@@ -308,6 +355,13 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     mA,
     mB,
     size,
+    fullL,
+    fullA,
+    fullB,
+    coreL,
+    coreA,
+    coreB,
+    coreN,
     mergeThreshold,
     sizeBias,
     minArea,
@@ -499,14 +553,15 @@ interface RescuedFeature {
  * is a chain of small steps.
  *
  * A blob is rescued as its own marker (seeded with its mean color) when it spans
- * at least `minArea` pixels; its field — the first marker found walking out from
- * each pixel, over any unmarked pixel, in each of the four directions — is one
- * color on *both* ends of an axis for at least `RESCUE_ENCLOSURE` of its pixels
- * (same color on both sides of a divider counts, so a bar splitting a field is
- * rescued too); and its color differs from that field by at least
- * `RESCUE_MIN_CONTRAST`. A sliver of a genuine edge ramp has one color on one side
- * and the other color on the other, however far it sits from either, so it fails
- * enclosure and is left for the flood to split — the no-third-color guarantee holds.
+ * at least `minArea` pixels and, for at least `RESCUE_ENCLOSURE` of its pixels, it
+ * is a color extreme between the two sides met on some axis — the first markers
+ * found walking out from the pixel, over any unmarked pixel, in opposite
+ * directions: at least `RESCUE_MIN_CONTRAST` from each, and farther from both
+ * than they are from each other. That covers a glyph on one field, a divider
+ * between two patches of one color, and a contour line between two different
+ * colors. A sliver of a genuine edge ramp is a mixture of its two sides and lies
+ * between them in color, however far it sits from either, so it fails and is left
+ * for the flood to split — the no-third-color guarantee holds.
  *
  * Blobs are rescued most-contrasting first and each promotion is written into
  * `region`, so a feature's own rim — evaluated later, now bordered by the just-
@@ -528,8 +583,6 @@ function rescueMarkerlessFeatures(
   minArea: number,
 ): RescuedFeature[] {
   const coh2 = RESCUE_COHERENCE * RESCUE_COHERENCE
-  const contrast2 = RESCUE_MIN_CONTRAST * RESCUE_MIN_CONTRAST
-  const group2 = RESCUE_GROUP * RESCUE_GROUP
 
   // ---- 1. Carve color-tight blobs out of the unmarked web ----
   // `order` holds each blob's pixels contiguously in [start, start+len). A pixel
@@ -658,101 +711,101 @@ function rescueMarkerlessFeatures(
   const promL = new Float64Array(cand.length)
   const promA = new Float64Array(cand.length)
   const promB = new Float64Array(cand.length)
-  const total = regionCount + cand.length
-  const census = new Int32Array(total)
-  const seenList = new Int32Array(total)
-  // The field met on each side of every pixel of the blob under study (4 per pixel).
-  let maxLen = 0
-  for (const id of cand) if (blobLen[id] > maxLen) maxLen = blobLen[id]
-  const ends = new Int32Array(maxLen * 4)
-
-  /** The first marker met walking from (x, y) in direction (dx, dy), or -1 within `RESCUE_REACH`. */
+  /**
+   * The first marker met walking from (x, y) in direction (dx, dy), or -1 within
+   * `RESCUE_REACH`; `walked` is left holding how far it was.
+   */
+  let walked = 0
   const walk = (x: number, y: number, dx: number, dy: number): number => {
     for (let k = 1; k <= RESCUE_REACH; k++) {
       const xx = x + dx * k
       const yy = y + dy * k
       if (xx < 0 || yy < 0 || xx >= w || yy >= h) return -1
       const r = region[yy * w + xx]
-      if (r >= 0) return r
+      if (r >= 0) {
+        walked = k
+        return r
+      }
     }
     return -1
   }
 
   /**
-   * Find the field around blob `id` over the current `region`: the first marker
-   * met walking out of each pixel in each of the four directions. Returns the
-   * share of pixels that meet the dominant color (near-duplicates included) on
-   * *both* ends of an axis — enclosure by that color — and that color's ΔE² to
-   * the blob's mean.
+   * Judge blob `id` against the sides of its pixels over the current `region`:
+   * the first markers met walking out in opposite directions. A pixel is an
+   * *extreme* on an axis when its blob is at least `RESCUE_MIN_CONTRAST` from
+   * both sides and farther from both than they are from each other — a mixture
+   * of its sides (a ramp sliver) is not. Returns the share of pixels that are an
+   * extreme on some axis, and the mean distance to the nearer side (for ordering).
    */
-  const surround = (id: number): { enclosure: number; contrast2: number; dom: number } => {
+  const judge = (id: number): { extreme: number; contrast: number } => {
     const start = blobStart[id]
     const len = blobLen[id]
+    const bL = cmL[id]
+    const bA = cmA[id]
+    const bB = cmB[id]
+    const toBlob = (r: number): number => {
+      const dl = markerColor(r, promL, mL) - bL
+      const da = markerColor(r, promA, mA) - bA
+      const db = markerColor(r, promB, mB) - bB
+      return Math.sqrt(dl * dl + da * da + db * db)
+    }
+    const apart = (r1: number, r2: number): number => {
+      const dl = markerColor(r1, promL, mL) - markerColor(r2, promL, mL)
+      const da = markerColor(r1, promA, mA) - markerColor(r2, promA, mA)
+      const db = markerColor(r1, promB, mB) - markerColor(r2, promB, mB)
+      return Math.sqrt(dl * dl + da * da + db * db)
+    }
+    let extreme = 0
+    let sum = 0
     let seen = 0
-    let mass = 0
     for (let k = 0; k < len; k++) {
       const p = order[start + k]
       const px = p - ((p / w) | 0) * w
       const py = (p / w) | 0
-      const e = k * 4
-      ends[e] = walk(px, py, -1, 0)
-      ends[e + 1] = walk(px, py, 1, 0)
-      ends[e + 2] = walk(px, py, 0, -1)
-      ends[e + 3] = walk(px, py, 0, 1)
-      for (let d = 0; d < 4; d++) {
-        const r = ends[e + d]
-        if (r < 0) continue
-        mass++
-        if (census[r]++ === 0) seenList[seen++] = r
+      // Each axis with both sides found says one of four things. A side of the
+      // blob's own color met within RESCUE_ADJACENT is the region this pixel is
+      // the edge of — it vetoes the pixel. The same color met farther away is
+      // where a line ends against an outline or a shadow, and that axis says
+      // nothing. Otherwise the blob is either an extreme between the two sides
+      // or a mixture of them (a rim), and one mixture axis vetoes the pixel: a
+      // rim ring is given away by its across-axis whatever its along-axis says,
+      // while a real line has no axis that calls it a mixture.
+      let tested = 0
+      let agreed = 0
+      let edge = false
+      for (let axis = 0; axis < 2; axis++) {
+        const f1 = axis === 0 ? walk(px, py, -1, 0) : walk(px, py, 0, -1)
+        const k1 = walked
+        const f2 = axis === 0 ? walk(px, py, 1, 0) : walk(px, py, 0, 1)
+        const k2 = walked
+        if (f1 < 0 || f2 < 0) continue
+        const d1 = toBlob(f1)
+        const d2 = toBlob(f2)
+        const near = d1 < d2 ? d1 : d2
+        sum += near
+        seen++
+        if (near < RESCUE_MIN_CONTRAST) {
+          if ((d1 <= d2 ? k1 : k2) <= RESCUE_ADJACENT) edge = true
+          continue
+        }
+        tested++
+        if (d1 + d2 - apart(f1, f2) >= RESCUE_MIN_CONTRAST) agreed++
       }
+      if (!edge && tested > 0 && agreed === tested) extreme++
     }
-    if (mass === 0) return { enclosure: 0, contrast2: 0, dom: -1 }
-    let dom = -1
-    let domCnt = 0
-    for (let t = 0; t < seen; t++) {
-      const r = seenList[t]
-      if (census[r] > domCnt) {
-        domCnt = census[r]
-        dom = r
-      }
-      census[r] = 0
-    }
-    const dL = markerColor(dom, promL, mL)
-    const dA = markerColor(dom, promA, mA)
-    const dB = markerColor(dom, promB, mB)
-    const isField = (r: number): boolean => {
-      if (r < 0) return false
-      const el = markerColor(r, promL, mL) - dL
-      const ea = markerColor(r, promA, mA) - dA
-      const eb = markerColor(r, promB, mB) - dB
-      return el * el + ea * ea + eb * eb < group2
-    }
-    let twoSided = 0
-    for (let k = 0; k < len; k++) {
-      const e = k * 4
-      if (
-        (isField(ends[e]) && isField(ends[e + 1])) ||
-        (isField(ends[e + 2]) && isField(ends[e + 3]))
-      ) {
-        twoSided++
-      }
-    }
-    const bl = cmL[id] - dL
-    const ba = cmA[id] - dA
-    const bb = cmB[id] - dB
-    return { enclosure: twoSided / len, contrast2: bl * bl + ba * ba + bb * bb, dom }
+    return { extreme: extreme / len, contrast: seen > 0 ? sum / seen : 0 }
   }
 
-  // Extremeness for ordering: contrast to the surround over the original markers.
+  // Order most-contrasting first (judged against the original markers).
   const ext = new Float64Array(blobs)
-  for (const id of cand) ext[id] = surround(id).contrast2
+  for (const id of cand) ext[id] = judge(id).contrast
   cand.sort((x, y) => ext[y] - ext[x] || x - y)
 
   // ---- 3. Promote each qualifying blob, writing it into `region` as it goes ----
   const out: RescuedFeature[] = []
   for (const id of cand) {
-    const s = surround(id)
-    if (s.dom < 0 || s.enclosure < RESCUE_ENCLOSURE || s.contrast2 < contrast2) continue
+    if (judge(id).extreme < RESCUE_ENCLOSURE) continue
     const newId = regionCount + out.length
     const start = blobStart[id]
     const end = start + blobLen[id]
@@ -768,10 +821,17 @@ function rescueMarkerlessFeatures(
 /**
  * Agglomerative region-adjacency-graph merge. Union-find over regions; each
  * round folds every adjacent pair whose mean-color ΔE is under `mergeThreshold`
- * or where either side is below `minArea`, closest pair first, updating the
- * surviving mean as a size-weighted average. A final pass enforces `maxRegions`
- * by merging the globally closest adjacent pair until the cap is met. Returns
- * the parent array (each region's representative root).
+ * or where either side is below `minArea`, closest pair first. Adjacent pairs
+ * are judged on their means over *every* pixel, rims included: a sliver the
+ * flood grew from a lone flat pixel is rim material (a chroma-bled speck of
+ * black along a pupil), and what folds it into the region it lies against is
+ * the tint of that region's own rim — which its flat core would hide. The
+ * surviving *color* is that of the merged flat cores when they speak for the
+ * region (see `coreSpeaks` — so the rims a region gathers never tint it, and a
+ * white counter split into specks by compression still reads white), else the
+ * mean over every pixel; consolidation and the `maxRegions` cap compare those
+ * rendered colors, so two regions that would paint the same become one palette
+ * entry. Returns the parent array (each region's representative root).
  */
 function mergeRegions(
   region: Int32Array,
@@ -782,6 +842,13 @@ function mergeRegions(
   mA: Float64Array,
   mB: Float64Array,
   size: Float64Array,
+  fullL: Float64Array,
+  fullA: Float64Array,
+  fullB: Float64Array,
+  coreL: Float64Array,
+  coreA: Float64Array,
+  coreB: Float64Array,
+  coreN: Int32Array,
   mergeThreshold: number,
   sizeBias: number,
   minArea: number,
@@ -799,10 +866,19 @@ function mergeRegions(
     }
     return r
   }
+  // ΔE between the colors two regions are rendered with.
   const meanDelta = (a: number, b: number): number => {
     const dl = mL[a] - mL[b]
     const da = mA[a] - mA[b]
     const db = mB[a] - mB[b]
+    return Math.sqrt(dl * dl + da * da + db * db)
+  }
+  // ΔE between two regions' means over every pixel, rims included — what the
+  // adjacency rounds merge on.
+  const fullDelta = (a: number, b: number): number => {
+    const dl = fullL[a] / size[a] - fullL[b] / size[b]
+    const da = fullA[a] / size[a] - fullA[b] / size[b]
+    const db = fullB[a] / size[a] - fullB[b] / size[b]
     return Math.sqrt(dl * dl + da * da + db * db)
   }
   // Size-aware merge tolerance (Nock & Nielsen 2004). Off (`sizeBias === 0`) it
@@ -820,10 +896,22 @@ function mergeRegions(
     const keep = size[a] >= size[b] ? a : b
     const drop = keep === a ? b : a
     const nn = size[a] + size[b]
-    if (nn > 0) {
-      mL[keep] = (mL[a] * size[a] + mL[b] * size[b]) / nn
-      mA[keep] = (mA[a] * size[a] + mA[b] * size[b]) / nn
-      mB[keep] = (mB[a] * size[a] + mB[b] * size[b]) / nn
+    fullL[keep] += fullL[drop]
+    fullA[keep] += fullA[drop]
+    fullB[keep] += fullB[drop]
+    coreL[keep] += coreL[drop]
+    coreA[keep] += coreA[drop]
+    coreB[keep] += coreB[drop]
+    coreN[keep] += coreN[drop]
+    if (coreSpeaks(coreN[keep], nn)) {
+      // The merged flat interior speaks for the region; the rims it gathered do not.
+      mL[keep] = coreL[keep] / coreN[keep]
+      mA[keep] = coreA[keep] / coreN[keep]
+      mB[keep] = coreB[keep] / coreN[keep]
+    } else if (nn > 0) {
+      mL[keep] = fullL[keep] / nn
+      mA[keep] = fullA[keep] / nn
+      mB[keep] = fullB[keep] / nn
     }
     size[keep] = nn
     parent[drop] = keep
@@ -875,7 +963,7 @@ function mergeRegions(
     const edges = collectEdges()
     // Candidates ordered by ΔE, then region ids, for a deterministic sequence.
     const cand = edges
-      .map(([a, b]): [number, number, number] => [a, b, meanDelta(a, b)])
+      .map(([a, b]): [number, number, number] => [a, b, fullDelta(a, b)])
       .toSorted((p, q) => p[2] - q[2] || p[0] - q[0] || p[1] - q[1])
     let merged = false
     for (const [a, b, d] of cand) {

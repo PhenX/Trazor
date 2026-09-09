@@ -166,6 +166,23 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
     expect(paletteL(seg, corner)).toBeGreaterThan(0.45)
   })
 
+  it('keeps a dark contour line between two different colors', () => {
+    // A 2px black line where a red field meets a blue one — a cartoon outline,
+    // a tooth separator. It is not a mixture of its two sides (it is farther from
+    // both than they are from each other), so it must survive as its own dark
+    // region instead of being split between red and blue and vanishing.
+    const RED: Rgba = [220, 30, 30, 255]
+    const BLUE: Rgba = [40, 60, 220, 255]
+    const w = 40
+    const img = rasterOf(w, 40, (x) => (x === 19 || x === 20 ? BLACK : x < 19 ? RED : BLUE))
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(3)
+    const line = seg.labels.data[20 * w + 19]
+    expect(line).not.toBe(seg.labels.data[0])
+    expect(line).not.toBe(seg.labels.data[w - 1])
+    expect(paletteL(seg, line)).toBeLessThan(0.2)
+  })
+
   it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
     // A faint bar (ΔE well under the rescue contrast gate) is one the flood
     // renders acceptably; it must not be seeded as its own region.
@@ -176,6 +193,28 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
       y === mid || y === mid + 1 ? [232, 232, 232, 255] : WHITE,
     )
     expect(segmentRegions(faint).labels.count).toBe(1)
+  })
+})
+
+describe('segmentRegions — palette colors come from flat interiors', () => {
+  it('does not let an absorbed rim tint a region toward its neighbor', () => {
+    // A white square on black with a 1px anti-aliased rim (the 50% mixture every
+    // rim pixel of a real edge is). The rim has no flat interior, so the flood
+    // hands it to the nearer region (white) — correct, no third color — but the
+    // square's palette entry must stay white, taken from its flat interior, not
+    // a rim-darkened grey.
+    const GREY: Rgba = [128, 128, 128, 255]
+    const w = 60
+    const img = rasterOf(w, 60, (x, y) => {
+      const inSquare = x >= 20 && x < 40 && y >= 20 && y < 40
+      const inRim = x >= 19 && x < 41 && y >= 19 && y < 41
+      return inSquare ? WHITE : inRim ? GREY : BLACK
+    })
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(2)
+    const square = seg.labels.data[30 * w + 30]
+    expect(paletteL(seg, square)).toBeGreaterThan(0.98)
+    expect(paletteL(seg, seg.labels.data[0])).toBeLessThan(0.02)
   })
 })
 
