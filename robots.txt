@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Model weights are large binaries with no page value — don't spend crawl budget.
+Disallow: /models/
+
+Sitemap: https://trazor.studio/sitemap.xml
