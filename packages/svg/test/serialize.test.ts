@@ -1,7 +1,7 @@
 import type { PathCommand } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { buildPathData, formatNumber, serializeSvg } from '../src/index'
-import type { SvgDocument } from '../src/index'
+import type { SvgDocument, SvgText } from '../src/index'
 
 const square = (x0: number, y0: number, x1: number, y1: number): PathCommand[] => [
   { type: 'M', x: x0, y: y0 },
@@ -250,6 +250,152 @@ describe('serializeSvg', () => {
     const green = /<g id="layer-2">.*?<\/g>/s.exec(svg)![0]
     expect((red.match(/<path /g) ?? []).length).toBe(2)
     expect((green.match(/<path /g) ?? []).length).toBe(1)
+  })
+
+  it('emits recovered <text> after the shapes, with escaped content and family', () => {
+    const doc: SvgDocument = {
+      ...goldenDoc(),
+      texts: [
+        {
+          content: 'Fish & Chips',
+          x: 3,
+          y: 20,
+          fontSize: 12,
+          fontFamily: 'Times New Roman',
+          fontWeight: 700,
+          fill: '#123456',
+        },
+      ],
+    }
+    const svg = serializeSvg(doc, { precision: 2 })
+    expect(svg).toContain(
+      '<text x="3" y="20" font-family="Times New Roman" font-size="12"' +
+        ' font-weight="700" fill="#123456">Fish &amp; Chips</text>',
+    )
+    // Text comes after both traced paths and before the closing tag.
+    expect(svg.indexOf('<text ')).toBeGreaterThan(svg.lastIndexOf('<path '))
+    expect(svg.indexOf('<text ')).toBeLessThan(svg.indexOf('</svg>'))
+  })
+
+  it('a text-free document serializes byte-identically to before the field existed', () => {
+    const base = serializeSvg(goldenDoc(), { precision: 2 })
+    expect(serializeSvg({ ...goldenDoc(), texts: undefined }, { precision: 2 })).toBe(base)
+    expect(serializeSvg({ ...goldenDoc(), texts: [] }, { precision: 2 })).toBe(base)
+    // A text whose content is empty contributes nothing either.
+    expect(
+      serializeSvg(
+        {
+          ...goldenDoc(),
+          texts: [
+            {
+              content: '',
+              x: 0,
+              y: 0,
+              fontSize: 10,
+              fontFamily: 'Arial',
+              fontWeight: 400,
+              fill: '#000000',
+            },
+          ],
+        },
+        { precision: 2 },
+      ),
+    ).toBe(base)
+  })
+
+  it('emits text-anchor only when not the start default, and angle as a rotate transform', () => {
+    const mk = (anchor: SvgText['anchor'], angle?: number): string =>
+      serializeSvg(
+        {
+          width: 40,
+          height: 20,
+          unit: 'px',
+          shapes: [],
+          texts: [
+            {
+              content: 'Hi',
+              x: 20,
+              y: 10,
+              fontSize: 8,
+              fontFamily: 'Arial',
+              fontWeight: 400,
+              fill: '#000000',
+              anchor,
+              angle,
+            },
+          ],
+        },
+        { precision: 2 },
+      )
+    expect(mk('start')).not.toContain('text-anchor')
+    expect(mk('middle')).toContain('text-anchor="middle"')
+    expect(mk('middle', 90)).toContain('transform="rotate(90 20 10)"')
+    expect(mk('start', 0)).not.toContain('transform')
+  })
+
+  it('emits font-style only for italic text', () => {
+    const t = {
+      content: 'Hi',
+      x: 1,
+      y: 1,
+      fontSize: 8,
+      fontFamily: 'Arial',
+      fontWeight: 400,
+      fill: '#000000',
+    }
+    const svg = (style?: 'normal' | 'italic'): string =>
+      serializeSvg(
+        { width: 4, height: 4, unit: 'px', shapes: [], texts: [{ ...t, fontStyle: style }] },
+        { precision: 2 },
+      )
+    expect(svg('italic')).toContain('font-style="italic"')
+    expect(svg('normal')).not.toContain('font-style')
+    expect(svg(undefined)).not.toContain('font-style')
+  })
+
+  it('throws on an unsafe text fill instead of emitting broken XML', () => {
+    const doc: SvgDocument = {
+      width: 4,
+      height: 4,
+      unit: 'px',
+      shapes: [],
+      texts: [
+        {
+          content: 'x',
+          x: 0,
+          y: 0,
+          fontSize: 4,
+          fontFamily: 'Arial',
+          fontWeight: 400,
+          fill: '"><script>',
+        },
+      ],
+    }
+    expect(() => serializeSvg(doc, { precision: 2 })).toThrow(/unsafe text fill/)
+  })
+
+  it('pretty mode puts each <text> on its own indented line after the shapes', () => {
+    const lines = serializeSvg(
+      {
+        ...goldenDoc(),
+        texts: [
+          {
+            content: 'A',
+            x: 1,
+            y: 1,
+            fontSize: 6,
+            fontFamily: 'Arial',
+            fontWeight: 400,
+            fill: '#000000',
+          },
+        ],
+      },
+      { precision: 2, pretty: true },
+    ).split('\n')
+    const textLine = lines.findIndex((l) => l.startsWith('  <text '))
+    const lastPath = lines.map((l) => l.trimStart().startsWith('<path ')).lastIndexOf(true)
+    expect(textLine).toBeGreaterThan(lastPath)
+    expect(lines[lines.length - 2]).toBe('</svg>')
   })
 
   it('folds a color layer to a single <path> when optimizing, and drops empty layers', () => {

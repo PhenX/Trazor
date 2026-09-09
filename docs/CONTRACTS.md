@@ -483,6 +483,21 @@ export interface SvgShape {
 }
 // A gradient paint server plus the id a shape references it by (fill: 'url(#id)').
 export type SvgGradient = GradientPaint & { id: string }
+// A native <text> run, emitted after the shapes (drawn on top). App-produced
+// only — the engine never creates one; this lets a document carry & serialize
+// text a consumer recovered (the studio's OCR text layer). x/y/fontSize are user units.
+export interface SvgText {
+  content: string
+  x: number
+  y: number
+  fontSize: number
+  fontFamily: string
+  fontWeight: number // 100..900
+  fontStyle?: 'normal' | 'italic' // 'italic' ⇒ font-style="italic"; absent/normal ⇒ upright
+  fill: string // #rrggbb
+  anchor?: 'start' | 'middle' | 'end' // start when absent
+  angle?: number // degrees about (x,y) ⇒ rotate transform; absent ⇒ upright
+}
 export interface SvgDocument {
   width: number // px viewBox size
   height: number
@@ -492,6 +507,9 @@ export interface SvgDocument {
   desc?: string
   defs?: SvgGradient[] // gradient paint servers referenced by shape fills (emitted in <defs>)
   shapes: SvgShape[]
+  // Native text runs, emitted after the shapes. Absent or empty ⇒ no <text>, so a
+  // text-free document serializes byte-identically (the engine's own docs never set it).
+  texts?: SvgText[]
 }
 export interface SerializeOptions {
   precision: number // decimals 0..4
@@ -850,6 +868,22 @@ export interface VectorDocument {
   widthMm?: number
   shapes: VectorShape[]
   gradients?: VectorGradient[] // referenced by a shape's fill: 'url(#id)'
+  texts?: VectorText[] // optional recovered text runs, drawn after the shapes; App-produced, never set by the engine
+}
+// A recovered text run, serialized as a native <text> (see SvgText). App-produced
+// only — the deterministic engine never creates one; this type lets a document
+// carry text a consumer recovered. x/y/fontSize are in the document's user units.
+export interface VectorText {
+  content: string
+  x: number
+  y: number
+  fontSize: number
+  fontFamily: string
+  fontWeight: number // 100..900
+  fontStyle?: 'normal' | 'italic' // 'italic' ⇒ slanted; absent/normal ⇒ upright
+  fill: string // #rrggbb
+  anchor?: 'start' | 'middle' | 'end'
+  angle?: number // degrees about (x,y); absent ⇒ upright
 }
 export interface VectorShape {
   commands: PathCommand[]
