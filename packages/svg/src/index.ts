@@ -9,4 +9,11 @@ export { arcToCubics, fitArcs } from './arc'
 export { detectPrimitive } from './primitive'
 export type { Primitive } from './primitive'
 export { serializeSvg, shapeOut } from './serialize'
-export type { SerializeOptions, ShapeOut, SvgDocument, SvgGradient, SvgShape } from './serialize'
+export type {
+  SerializeOptions,
+  ShapeOut,
+  SvgDocument,
+  SvgGradient,
+  SvgShape,
+  SvgText,
+} from './serialize'

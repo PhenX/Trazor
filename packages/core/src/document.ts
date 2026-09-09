@@ -28,6 +28,29 @@ export interface VectorGradient {
   stops: { offset: number; color: string; opacity?: number }[]
 }
 
+/**
+ * A recovered text run, emitted as a native `<text>` element drawn after the
+ * shapes. **App-produced only** — the deterministic engine never creates one;
+ * this type merely lets a document *carry and serialize* text a consumer
+ * recovered (e.g. the studio's on-device OCR text layer). `x`/`y`/`fontSize`
+ * are in the document's user units, matching {@link VectorDocument.width}.
+ */
+export interface VectorText {
+  content: string
+  x: number
+  y: number
+  fontSize: number
+  fontFamily: string
+  /** 100..900. */
+  fontWeight: number
+  /** `#rrggbb`. */
+  fill: string
+  /** Text anchor; `start` when absent. */
+  anchor?: 'start' | 'middle' | 'end'
+  /** Rotation in degrees about (`x`,`y`); absent ⇒ upright. */
+  angle?: number
+}
+
 /** The whole document: shapes in paint order, in user (px) coordinates, y-down. */
 export interface VectorDocument {
   /** viewBox width/height in px (user units). */
@@ -40,4 +63,9 @@ export interface VectorDocument {
   shapes: VectorShape[]
   /** Gradient paint servers referenced by `fill: 'url(#id)'`. */
   gradients?: VectorGradient[]
+  /**
+   * Optional recovered text runs, drawn after the shapes. Absent ⇒ no text —
+   * the engine's own output never sets it, so a traced document is unchanged.
+   */
+  texts?: VectorText[]
 }

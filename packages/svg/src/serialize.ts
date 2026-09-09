@@ -46,6 +46,27 @@ export interface SvgShape {
  *  namespace these ids first, or every `url(#g0)` resolves to the first one. */
 export type SvgGradient = GradientPaint & { id: string }
 
+/**
+ * A native `<text>` element, drawn after every shape so it sits on top. The
+ * engine never produces one — this is carried in when a consumer (the studio's
+ * OCR text layer) recovers editable words. `x`/`y`/`fontSize` are user units.
+ */
+export interface SvgText {
+  content: string
+  x: number
+  y: number
+  fontSize: number
+  fontFamily: string
+  /** 100..900. */
+  fontWeight: number
+  /** `#rrggbb`. */
+  fill: string
+  /** Text anchor; `start` (the SVG default) when absent. */
+  anchor?: 'start' | 'middle' | 'end'
+  /** Rotation in degrees about (`x`,`y`); absent ⇒ upright. */
+  angle?: number
+}
+
 export interface SvgDocument {
   /** px viewBox size. */
   width: number
@@ -58,6 +79,12 @@ export interface SvgDocument {
   /** Gradient paint servers referenced by shape fills (`fill: 'url(#id)'`). */
   defs?: SvgGradient[]
   shapes: SvgShape[]
+  /**
+   * Native text runs, emitted after the shapes so they render on top. Absent or
+   * empty ⇒ no `<text>`, so a text-free document serializes byte-identically to
+   * before this field existed (the engine's own documents never set it).
+   */
+  texts?: SvgText[]
 }
 
 export interface SerializeOptions {
@@ -161,6 +188,27 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
       return `<polygon points="${points}"${paint}/>`
     }
   }
+}
+
+/**
+ * A recovered text run as a `<text>` element. Content and `font-family` are
+ * XML-escaped; `fill` is asserted attribute-safe (it is a `#rrggbb` from the
+ * app). `text-anchor` is emitted only when not the `start` default; a non-zero
+ * `angle` becomes a `rotate(deg x y)` transform. Returns `''` for empty content
+ * so a stray word contributes nothing (mirroring empty shapes being skipped).
+ */
+function textElement(t: SvgText, precision: number): string {
+  if (t.content === '') return ''
+  const n = (v: number): string => formatNumber(v, precision)
+  let attrs = `x="${n(t.x)}" y="${n(t.y)}"`
+  if (t.angle !== undefined && Math.abs(t.angle) > 0.05) {
+    attrs += ` transform="rotate(${n(t.angle)} ${n(t.x)} ${n(t.y)})"`
+  }
+  attrs += ` font-family="${xmlEscape(t.fontFamily)}" font-size="${n(t.fontSize)}"`
+  attrs += ` font-weight="${formatNumber(t.fontWeight, 0)}"`
+  if (t.anchor !== undefined && t.anchor !== 'start') attrs += ` text-anchor="${t.anchor}"`
+  attrs += ` fill="${assertAttrSafe(t.fill, 'text fill')}"`
+  return `<text ${attrs}>${xmlEscape(t.content)}</text>`
 }
 
 /**
@@ -313,6 +361,16 @@ export function serializeSvg(
     const all = doc.shapes.map((_, i) => i)
     for (const child of foldShapes(doc.shapes, all, precision, optimize, roundPrimitives, parts)) {
       children.push(child)
+    }
+  }
+
+  // Recovered text runs render last so they sit on top of the traced geometry.
+  // No `texts` ⇒ this loop adds nothing and the output is byte-identical to a
+  // text-free document (the engine's own trace never sets the field).
+  if (doc.texts !== undefined) {
+    for (const t of doc.texts) {
+      const el = textElement(t, precision)
+      if (el !== '') children.push(el)
     }
   }
 
