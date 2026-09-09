@@ -127,13 +127,6 @@ const TRACE_SNAPSHOTS = 10
 const CLUSTER_EDGE_THRESHOLD = 40
 
 /**
- * Oklab ΔE below which region-growing segmentation folds two regions into one
- * color. Perceptual-distance gated, so it merges near-duplicates and splits of
- * one color but never collapses genuinely different hues together.
- */
-const SEGMENT_MERGE_THRESHOLD = 0.1
-
-/**
  * Size-aware merge strength for region growing (Nock & Nielsen 2004). The merge
  * tolerance shrinks with region area, so a small anti-alias sliver still folds
  * into its neighbor while two large regions merge only when near-identical —
@@ -547,6 +540,10 @@ function palKeyOf(s: VectorizeSettings): string {
     s.palette ? s.palette.join(',') : '-',
     s.minRegionArea,
     s.preserveDetails,
+    s.segmentation === 'regions' ? s.rescueThinFeatures : '-',
+    s.segmentation === 'regions' ? s.rescueSensitivity : 0,
+    s.segmentation === 'regions' ? s.regionMergeTolerance : 0,
+    s.segmentation === 'regions' ? s.regionFlatThreshold : 0,
     s.dissolveBands,
     s.colorCoherence,
     s.omitBackground,
@@ -919,10 +916,13 @@ async function colorPipeline(
     // a third rim color. `paletteSize` is a budget (soft cap), not an exact
     // count; autoPaletteSize lets the merge thresholds decide the count.
     const seg = segmentRegions(image, {
-      mergeThreshold: SEGMENT_MERGE_THRESHOLD,
+      flatThreshold: settings.regionFlatThreshold,
+      mergeThreshold: settings.regionMergeTolerance,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
       maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
+      rescueThinFeatures: settings.rescueThinFeatures,
+      rescueSensitivity: settings.rescueSensitivity,
       mask: opaque,
     })
     await run.tick()

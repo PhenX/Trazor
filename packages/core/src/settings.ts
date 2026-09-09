@@ -92,6 +92,35 @@ export interface VectorizeSettings {
    */
   preserveDetails: boolean
   /**
+   * Region growing only. Rescue thin marker-less features — a hairline glyph, a
+   * contour line, a web of strokes — as their own regions before the flood,
+   * instead of letting them dissolve into the area around them. On by default;
+   * turn off for the plainest flat art where the rescue only adds slivers.
+   */
+  rescueThinFeatures: boolean
+  /**
+   * Region growing only. How eagerly `rescueThinFeatures` promotes a thin
+   * feature (0-1; 0.5 is the neutral default). Higher rescues fainter, lower
+   * contrast lines — a dark web on a dark fill, a stroke on a shadow — at the
+   * cost of more spurious slivers; lower keeps only strong, clearly enclosed
+   * lines. No effect when `rescueThinFeatures` is off.
+   */
+  rescueSensitivity: number
+  /**
+   * Region growing only. Perceptual color distance (Oklab ΔE) below which two
+   * adjacent regions merge into one. Lower keeps close colors apart (more
+   * regions, more retained detail); higher fuses them (fewer, flatter regions).
+   * 0.1 is the default.
+   */
+  regionMergeTolerance: number
+  /**
+   * Region growing only. Oklab gradient magnitude below which a pixel seeds a
+   * flat region (a marker). Lower demands flatter interiors, so more of the
+   * image is grown by the flood; higher seeds more, smaller regions. 0.02 is the
+   * default.
+   */
+  regionFlatThreshold: number
+  /**
    * Rounds of thin mislabeled-band cleanup (color/grayscale): dissolve a hairline
    * strip of a wrong color between two regions — an anti-aliased/JPEG rim quantized
    * to a third color — into the region it borders. 0 disables (byte-identical).
@@ -238,6 +267,10 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   layering: 'stacked',
   minRegionArea: 6,
   preserveDetails: false,
+  rescueThinFeatures: true,
+  rescueSensitivity: 0.5,
+  regionMergeTolerance: 0.1,
+  regionFlatThreshold: 0.02,
   dissolveBands: 0,
   colorCoherence: 0,
   gapFill: 0,
@@ -306,6 +339,9 @@ export function normalizeSettings(
   }
   s.segmentation = s.segmentation === 'regions' ? 'regions' : 'quantize'
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
+  s.rescueSensitivity = clamp(s.rescueSensitivity, 0, 1)
+  s.regionMergeTolerance = clamp(s.regionMergeTolerance, 0.02, 0.3)
+  s.regionFlatThreshold = clamp(s.regionFlatThreshold, 0.005, 0.06)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)
   s.gradientStrength = clamp(s.gradientStrength, 0, 1)

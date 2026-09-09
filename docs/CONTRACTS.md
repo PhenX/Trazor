@@ -182,6 +182,8 @@ export interface SegmentOptions {
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
   maxRegions?: number // soft cap: fold the closest pair (within 2·mergeThreshold) until met; 0 = none
+  rescueThinFeatures?: boolean // rescue thin marker-less features as their own regions before the flood; default true (false = pre-rescue path)
+  rescueSensitivity?: number // 0..1; how eagerly thin features are promoted; 0.5 (default) = calibrated gates (byte-identical), higher rescues fainter dark-on-dark lines
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
 }
 export interface SegmentResult {

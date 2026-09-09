@@ -194,6 +194,37 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
     )
     expect(segmentRegions(faint).labels.count).toBe(1)
   })
+
+  it('can be turned off (rescueThinFeatures)', () => {
+    // Off, the 2px bar has no marker and the flood dissolves it into the white on
+    // either side — one region, exactly the pre-rescue path.
+    const img = thinBarImage()
+    expect(segmentRegions(img, { rescueThinFeatures: false }).labels.count).toBe(1)
+    expect(segmentRegions(img).labels.count).toBe(2) // on by default
+  })
+
+  it('sensitivity 0.5 is the byte-identical default', () => {
+    const img = thinBarImage()
+    const a = segmentRegions(img)
+    const b = segmentRegions(img, { rescueSensitivity: 0.5 })
+    expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
+  })
+
+  it('sensitivity moves the contrast gate both ways', () => {
+    const w = 40
+    const h = 40
+    const mid = h >> 1
+    const bar = (g: number): ReturnType<typeof rasterOf> =>
+      rasterOf(w, h, (_x, y) => (y === mid || y === mid + 1 ? [g, g, g, 255] : WHITE))
+    // A faint line (grey 180) the flood keeps at the default gate is rescued once
+    // sensitivity is raised — the dark-on-dark / faint-line recovery.
+    expect(segmentRegions(bar(180)).labels.count).toBe(1)
+    expect(segmentRegions(bar(180), { rescueSensitivity: 1 }).labels.count).toBe(2)
+    // A stronger line (grey 160) rescued by default is left to the flood when
+    // sensitivity is lowered — the knob tightens as well as loosens.
+    expect(segmentRegions(bar(160)).labels.count).toBe(2)
+    expect(segmentRegions(bar(160), { rescueSensitivity: 0 }).labels.count).toBe(1)
+  })
 })
 
 describe('segmentRegions — palette colors come from flat interiors', () => {

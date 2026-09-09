@@ -58,6 +58,21 @@ export interface SegmentOptions {
   minRegionArea?: number
   /** Hard cap on the final region count: keep merging the closest adjacent pair until at most this many remain. 0 = no cap. */
   maxRegions?: number
+  /**
+   * Rescue thin marker-less features (hairline glyphs, contour lines, a web of
+   * strokes) as their own regions before the flood. Default `true`; `false`
+   * skips the rescue pass entirely (byte-identical to the pre-rescue path).
+   */
+  rescueThinFeatures?: boolean
+  /**
+   * How eagerly the rescue pass promotes a thin feature, 0..1. `0.5` (default)
+   * is the calibrated point and is byte-identical to the fixed thresholds.
+   * Higher lowers the contrast and enclosure gates together, so fainter, lower
+   * contrast lines are rescued — a dark web on a dark fill, a shadow-side
+   * stroke — at the cost of more spurious slivers; lower keeps only strong,
+   * clearly enclosed lines. No effect when `rescueThinFeatures` is `false`.
+   */
+  rescueSensitivity?: number
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
   mask?: BinaryMask | null
 }
@@ -144,6 +159,19 @@ const RESCUE_ENCLOSURE = 0.7
 // Screens a same-color halo the flood absorbs anyway; a dark stroke on a mid-tone
 // field (fur, a facial line, ≈0.4) clears it, a black glyph on white (≈0.9) easily.
 const RESCUE_MIN_CONTRAST = 0.25
+// Default rescue sensitivity. At this value the two gates below are exactly
+// `RESCUE_MIN_CONTRAST` / `RESCUE_ENCLOSURE`, so `segmentRegions` is
+// byte-identical when the option is absent.
+const DEFAULT_RESCUE_SENSITIVITY = 0.5
+// How far a unit of sensitivity moves each gate from its default. Sensitivity
+// `s` sets minContrast = RESCUE_MIN_CONTRAST + (0.5 − s)·SPAN and enclosure =
+// RESCUE_ENCLOSURE + (0.5 − s)·SPAN, so s=1 opens the gates (minContrast 0.06,
+// enclosure 0.45 — a faint dark-on-dark web is rescued) and s=0 tightens them
+// (0.44 / 0.95 — only bold, fully enclosed lines). The subtraction makes higher
+// mean *more* eager. Spans are chosen so s=1 reaches the empirically useful
+// floor without either gate crossing 0.
+const RESCUE_CONTRAST_SPAN = 0.38
+const RESCUE_ENCLOSURE_SPAN = 0.5
 
 /** Oklab distance between interleaved-buffer index `i` and a mean triple. */
 function distToMean(ok: Float32Array, i: number, mL: number, mA: number, mB: number): number {
@@ -162,6 +190,13 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const sizeBias = Math.min(1, Math.max(0, opts.mergeSizeBias ?? 0))
   const minArea = Math.max(0, opts.minRegionArea ?? DEFAULT_MIN_AREA)
   const maxRegions = Math.max(0, opts.maxRegions ?? 0)
+  const rescueThinFeatures = opts.rescueThinFeatures ?? true
+  const rescueSensitivity = Math.min(
+    1,
+    Math.max(0, opts.rescueSensitivity ?? DEFAULT_RESCUE_SENSITIVITY),
+  )
+  const rescueMinContrast = RESCUE_MIN_CONTRAST + (0.5 - rescueSensitivity) * RESCUE_CONTRAST_SPAN
+  const rescueEnclosure = RESCUE_ENCLOSURE + (0.5 - rescueSensitivity) * RESCUE_ENCLOSURE_SPAN
   const mask = opts.mask?.data ?? null
 
   const ok = toOklabBuffer(image)
@@ -281,26 +316,30 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   // A feature too thin to hold a flat core would otherwise be dissolved by the
   // flood into the field around it; give each such isolated component its own
   // marker, seeded with its own mean color, so the flood grows it as itself.
-  const rescued = rescueMarkerlessFeatures(
-    ok,
-    region,
-    w,
-    h,
-    n,
-    mask,
-    mL,
-    mA,
-    mB,
-    regionCount,
-    Math.max(1, minArea),
-  )
-  for (const f of rescued) {
-    const id = regionCount++
-    grow(id)
-    mL[id] = f.mL
-    mA[id] = f.mA
-    mB[id] = f.mB
-    size[id] = f.size
+  if (rescueThinFeatures) {
+    const rescued = rescueMarkerlessFeatures(
+      ok,
+      region,
+      w,
+      h,
+      n,
+      mask,
+      mL,
+      mA,
+      mB,
+      regionCount,
+      Math.max(1, minArea),
+      rescueMinContrast,
+      rescueEnclosure,
+    )
+    for (const f of rescued) {
+      const id = regionCount++
+      grow(id)
+      mL[id] = f.mL
+      mA[id] = f.mA
+      mB[id] = f.mB
+      size[id] = f.size
+    }
   }
 
   // ---- 3. Priority flood: grow markers over edge/ramp pixels ----
@@ -553,10 +592,10 @@ interface RescuedFeature {
  * is a chain of small steps.
  *
  * A blob is rescued as its own marker (seeded with its mean color) when it spans
- * at least `minArea` pixels and, for at least `RESCUE_ENCLOSURE` of its pixels, it
- * is a color extreme between the two sides met on some axis — the first markers
- * found walking out from the pixel, over any unmarked pixel, in opposite
- * directions: at least `RESCUE_MIN_CONTRAST` from each, and farther from both
+ * at least `minArea` pixels and, for at least the `enclosure` fraction of its
+ * pixels, it is a color extreme between the two sides met on some axis — the
+ * first markers found walking out from the pixel, over any unmarked pixel, in
+ * opposite directions: at least `minContrast` from each, and farther from both
  * than they are from each other. That covers a glyph on one field, a divider
  * between two patches of one color, and a contour line between two different
  * colors. A sliver of a genuine edge ramp is a mixture of its two sides and lies
@@ -581,6 +620,8 @@ function rescueMarkerlessFeatures(
   mB: Float64Array,
   regionCount: number,
   minArea: number,
+  minContrast: number,
+  enclosure: number,
 ): RescuedFeature[] {
   const coh2 = RESCUE_COHERENCE * RESCUE_COHERENCE
 
@@ -733,7 +774,7 @@ function rescueMarkerlessFeatures(
   /**
    * Judge blob `id` against the sides of its pixels over the current `region`:
    * the first markers met walking out in opposite directions. A pixel is an
-   * *extreme* on an axis when its blob is at least `RESCUE_MIN_CONTRAST` from
+   * *extreme* on an axis when its blob is at least `minContrast` from
    * both sides and farther from both than they are from each other — a mixture
    * of its sides (a ramp sliver) is not. Returns the share of pixels that are an
    * extreme on some axis, and the mean distance to the nearer side (for ordering).
@@ -785,12 +826,12 @@ function rescueMarkerlessFeatures(
         const near = d1 < d2 ? d1 : d2
         sum += near
         seen++
-        if (near < RESCUE_MIN_CONTRAST) {
+        if (near < minContrast) {
           if ((d1 <= d2 ? k1 : k2) <= RESCUE_ADJACENT) edge = true
           continue
         }
         tested++
-        if (d1 + d2 - apart(f1, f2) >= RESCUE_MIN_CONTRAST) agreed++
+        if (d1 + d2 - apart(f1, f2) >= minContrast) agreed++
       }
       if (!edge && tested > 0 && agreed === tested) extreme++
     }
@@ -805,7 +846,7 @@ function rescueMarkerlessFeatures(
   // ---- 3. Promote each qualifying blob, writing it into `region` as it goes ----
   const out: RescuedFeature[] = []
   for (const id of cand) {
-    if (judge(id).extreme < RESCUE_ENCLOSURE) continue
+    if (judge(id).extreme < enclosure) continue
     const newId = regionCount + out.length
     const start = blobStart[id]
     const end = start + blobLen[id]
