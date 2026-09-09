@@ -43,6 +43,8 @@ export interface VectorText {
   fontFamily: string
   /** 100..900. */
   fontWeight: number
+  /** `italic` for slanted text; `normal` (or absent) upright. */
+  fontStyle?: 'normal' | 'italic'
   /** `#rrggbb`. */
   fill: string
   /** Text anchor; `start` when absent. */

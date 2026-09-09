@@ -493,6 +493,7 @@ export interface SvgText {
   fontSize: number
   fontFamily: string
   fontWeight: number // 100..900
+  fontStyle?: 'normal' | 'italic' // 'italic' ⇒ font-style="italic"; absent/normal ⇒ upright
   fill: string // #rrggbb
   anchor?: 'start' | 'middle' | 'end' // start when absent
   angle?: number // degrees about (x,y) ⇒ rotate transform; absent ⇒ upright
@@ -879,6 +880,7 @@ export interface VectorText {
   fontSize: number
   fontFamily: string
   fontWeight: number // 100..900
+  fontStyle?: 'normal' | 'italic' // 'italic' ⇒ slanted; absent/normal ⇒ upright
   fill: string // #rrggbb
   anchor?: 'start' | 'middle' | 'end'
   angle?: number // degrees about (x,y); absent ⇒ upright

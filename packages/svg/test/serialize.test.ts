@@ -333,6 +333,26 @@ describe('serializeSvg', () => {
     expect(mk('start', 0)).not.toContain('transform')
   })
 
+  it('emits font-style only for italic text', () => {
+    const t = {
+      content: 'Hi',
+      x: 1,
+      y: 1,
+      fontSize: 8,
+      fontFamily: 'Arial',
+      fontWeight: 400,
+      fill: '#000000',
+    }
+    const svg = (style?: 'normal' | 'italic'): string =>
+      serializeSvg(
+        { width: 4, height: 4, unit: 'px', shapes: [], texts: [{ ...t, fontStyle: style }] },
+        { precision: 2 },
+      )
+    expect(svg('italic')).toContain('font-style="italic"')
+    expect(svg('normal')).not.toContain('font-style')
+    expect(svg(undefined)).not.toContain('font-style')
+  })
+
   it('throws on an unsafe text fill instead of emitting broken XML', () => {
     const doc: SvgDocument = {
       width: 4,

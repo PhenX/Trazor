@@ -59,6 +59,8 @@ export interface SvgText {
   fontFamily: string
   /** 100..900. */
   fontWeight: number
+  /** `italic` for slanted text; `normal` (or absent) upright. */
+  fontStyle?: 'normal' | 'italic'
   /** `#rrggbb`. */
   fill: string
   /** Text anchor; `start` (the SVG default) when absent. */
@@ -206,6 +208,7 @@ function textElement(t: SvgText, precision: number): string {
   }
   attrs += ` font-family="${xmlEscape(t.fontFamily)}" font-size="${n(t.fontSize)}"`
   attrs += ` font-weight="${formatNumber(t.fontWeight, 0)}"`
+  if (t.fontStyle === 'italic') attrs += ` font-style="italic"`
   if (t.anchor !== undefined && t.anchor !== 'start') attrs += ` text-anchor="${t.anchor}"`
   attrs += ` fill="${assertAttrSafe(t.fill, 'text fill')}"`
   return `<text ${attrs}>${xmlEscape(t.content)}</text>`
