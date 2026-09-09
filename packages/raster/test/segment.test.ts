@@ -84,6 +84,140 @@ describe('segmentRegions — region growing', () => {
   })
 })
 
+const WHITE: Rgba = [255, 255, 255, 255]
+
+/** Perceptual lightness (Oklab L) of a palette entry, from its RGB bytes. */
+function paletteL(seg: ReturnType<typeof segmentRegions>, label: number): number {
+  const r = seg.paletteRgb[label * 3] / 255
+  const g = seg.paletteRgb[label * 3 + 1] / 255
+  const b = seg.paletteRgb[label * 3 + 2] / 255
+  // Rec. 601 luma is enough to tell "dark" from "light" here.
+  return 0.299 * r + 0.587 * g + 0.114 * b
+}
+
+describe('segmentRegions — rescuing marker-less thin features', () => {
+  // A 2px black bar across a white field: too thin to hold a flat core, so it
+  // gets no marker of its own. Without the rescue pass the flood dissolves it
+  // into the white on either side and it vanishes (one region); the rescue pass
+  // seeds it as its own marker so it survives as a distinct dark region.
+  function thinBarImage(w = 40, h = 40): ReturnType<typeof rasterOf> {
+    const mid = h >> 1
+    return rasterOf(w, h, (_x, y) => (y === mid || y === mid + 1 ? BLACK : WHITE))
+  }
+
+  it('keeps a thin coreless bar instead of dissolving it into the field', () => {
+    const w = 40
+    const h = 40
+    const seg = segmentRegions(thinBarImage(w, h))
+    expect(seg.labels.count).toBe(2)
+    const corner = seg.labels.data[0]
+    const bar = seg.labels.data[(h >> 1) * w + (w >> 1)]
+    expect(bar).not.toBe(corner) // the bar is not painted with the background
+    expect(paletteL(seg, bar)).toBeLessThan(0.2) // and it stays dark
+    expect(paletteL(seg, corner)).toBeGreaterThan(0.8)
+  })
+
+  it('rescues the feature as one region (deterministically)', () => {
+    const img = thinBarImage()
+    const a = segmentRegions(img)
+    const b = segmentRegions(img)
+    expect(b.labels.count).toBe(a.labels.count)
+    expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
+  })
+
+  it('does not invent a third color on a genuine black↔white ramp', () => {
+    // The mirror case: a two-sided ramp borders two different colors and must
+    // still split between them — the rescue pass must not seed the mid-gray band
+    // as its own region. Checked across ramp widths (a wide, hard edge is the
+    // case whose near-endpoint sliver most tempts the rescue).
+    for (const width of [2, 4, 6, 8]) {
+      const w = 60
+      const ramp = rasterOf(w, 20, (x) => {
+        const t = Math.min(1, Math.max(0, (x - (w / 2 - width / 2)) / width))
+        const v = Math.round(t * 255)
+        return [v, v, v, 255] as Rgba
+      })
+      expect(segmentRegions(ramp).labels.count).toBe(2)
+    }
+  })
+
+  it('rescues thin line-art on a colored field despite its soft rim (fur, facial strokes)', () => {
+    // A 2px navy stroke on a mid-blue field, wrapped in an anti-aliased rim: the
+    // rim is a chain of small color steps that joins the stroke to the field's
+    // edge web, and navy-on-blue is far below black-on-white contrast. The stroke
+    // must still come out as its own dark region, with the field on both sides.
+    const FIELD: Rgba = [70, 150, 200, 255]
+    const STROKE: Rgba = [20, 40, 70, 255]
+    const RIM: Rgba = [58, 122, 168, 255] // 25% stroke / 75% field
+    const w = 40
+    const h = 40
+    const mid = h >> 1
+    const img = rasterOf(w, h, (_x, y) => {
+      if (y === mid || y === mid + 1) return STROKE
+      if (y === mid - 1 || y === mid + 2) return RIM
+      return FIELD
+    })
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(2)
+    const corner = seg.labels.data[0]
+    const stroke = seg.labels.data[mid * w + (w >> 1)]
+    expect(stroke).not.toBe(corner)
+    expect(paletteL(seg, stroke)).toBeLessThan(0.3) // navy, not a rim-diluted teal
+    expect(paletteL(seg, corner)).toBeGreaterThan(0.45)
+  })
+
+  it('keeps a dark contour line between two different colors', () => {
+    // A 2px black line where a red field meets a blue one — a cartoon outline,
+    // a tooth separator. It is not a mixture of its two sides (it is farther from
+    // both than they are from each other), so it must survive as its own dark
+    // region instead of being split between red and blue and vanishing.
+    const RED: Rgba = [220, 30, 30, 255]
+    const BLUE: Rgba = [40, 60, 220, 255]
+    const w = 40
+    const img = rasterOf(w, 40, (x) => (x === 19 || x === 20 ? BLACK : x < 19 ? RED : BLUE))
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(3)
+    const line = seg.labels.data[20 * w + 19]
+    expect(line).not.toBe(seg.labels.data[0])
+    expect(line).not.toBe(seg.labels.data[w - 1])
+    expect(paletteL(seg, line)).toBeLessThan(0.2)
+  })
+
+  it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
+    // A faint bar (ΔE well under the rescue contrast gate) is one the flood
+    // renders acceptably; it must not be seeded as its own region.
+    const w = 40
+    const h = 40
+    const mid = h >> 1
+    const faint = rasterOf(w, h, (_x, y) =>
+      y === mid || y === mid + 1 ? [232, 232, 232, 255] : WHITE,
+    )
+    expect(segmentRegions(faint).labels.count).toBe(1)
+  })
+})
+
+describe('segmentRegions — palette colors come from flat interiors', () => {
+  it('does not let an absorbed rim tint a region toward its neighbor', () => {
+    // A white square on black with a 1px anti-aliased rim (the 50% mixture every
+    // rim pixel of a real edge is). The rim has no flat interior, so the flood
+    // hands it to the nearer region (white) — correct, no third color — but the
+    // square's palette entry must stay white, taken from its flat interior, not
+    // a rim-darkened grey.
+    const GREY: Rgba = [128, 128, 128, 255]
+    const w = 60
+    const img = rasterOf(w, 60, (x, y) => {
+      const inSquare = x >= 20 && x < 40 && y >= 20 && y < 40
+      const inRim = x >= 19 && x < 41 && y >= 19 && y < 41
+      return inSquare ? WHITE : inRim ? GREY : BLACK
+    })
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(2)
+    const square = seg.labels.data[30 * w + 30]
+    expect(paletteL(seg, square)).toBeGreaterThan(0.98)
+    expect(paletteL(seg, seg.labels.data[0])).toBeLessThan(0.02)
+  })
+})
+
 /** An Oklab color as an 8-bit clamped RGBA pixel. */
 function okPixel(L: number, a: number, b: number): Rgba {
   const [r, g, bl] = oklabToRgb(L, a, b)
