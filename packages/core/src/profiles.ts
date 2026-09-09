@@ -74,6 +74,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     ],
     patch: {
       mode: 'color',
+      segmentation: 'regions',
       paletteSize: 8,
       autoPaletteSize: true,
       layering: 'knockout',
@@ -94,6 +95,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     ],
     patch: {
       mode: 'color',
+      segmentation: 'regions',
       paletteSize: 6,
       layering: 'trap',
       groupByColor: true,
@@ -153,6 +155,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     ],
     patch: {
       mode: 'color',
+      segmentation: 'regions',
       paletteSize: 6,
       autoPaletteSize: true,
       layering: 'trap',
