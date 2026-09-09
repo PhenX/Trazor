@@ -49,8 +49,8 @@ const BASE: Partial<VectorizeSettings> = {
   groupByColor: true,
   maxDimension: 0,
 }
-const STACKED = normalizeSettings({ ...BASE, layering: 'stacked' })
-const CUTOUT = normalizeSettings({ ...BASE, layering: 'cutout' })
+const STACKED = normalizeSettings({ ...BASE, layering: 'solid-base' })
+const CUTOUT = normalizeSettings({ ...BASE, layering: 'knockout' })
 
 /** Split a grouped SVG into one standalone tile per `<g>` layer, in paint order. */
 function peelLayers(svg: string, w: number, h: number): { color: string; svg: string }[] {

@@ -107,7 +107,7 @@ describe('native engine pipeline', () => {
   it('produces a seam-free cutout with shared boundaries', async () => {
     const result = await vectorize(
       redSquareOnWhite(),
-      settings({ mode: 'color', paletteSize: 4, layering: 'cutout', gapFill: 0 }),
+      settings({ mode: 'color', paletteSize: 4, layering: 'knockout', gapFill: 0 }),
     )
     expect(result.palette.length).toBe(2)
     expect(result.stats.pathCount).toBe(2)
@@ -121,7 +121,7 @@ describe('native engine pipeline', () => {
       settings({
         mode: 'color',
         paletteSize: 4,
-        layering: 'cutout',
+        layering: 'trap',
         unit: 'mm',
         gapFill: 0.2,
         precision: 2,
@@ -137,7 +137,7 @@ describe('native engine pipeline', () => {
       settings({
         mode: 'color',
         paletteSize: 4,
-        layering: 'cutout',
+        layering: 'trap',
         unit: 'px',
         gapFill: 0.2,
         precision: 2,
@@ -215,7 +215,7 @@ describe('native engine pipeline', () => {
   it('groups color output into one <g> layer per color when groupByColor is set', async () => {
     const result = await vectorize(
       redSquareOnWhite(),
-      settings({ mode: 'color', paletteSize: 4, layering: 'stacked', groupByColor: true }),
+      settings({ mode: 'color', paletteSize: 4, layering: 'solid-base', groupByColor: true }),
     )
     // Two colors (red + white) → two layers, balanced open/close tags.
     const layers = result.svg.match(/<g id="layer-\d+">/g) ?? []
@@ -512,7 +512,7 @@ describe('stacked layer masks (E1)', () => {
 
 describe('stacked base layer', () => {
   it('pins the most-bordering color as the base, not the largest or darkest', async () => {
-    const base = { mode: 'color' as const, paletteSize: 6, layering: 'stacked' as const }
+    const base = { mode: 'color' as const, paletteSize: 6, layering: 'solid-base' as const }
     const result = await vectorize(ringedIcon(), settings(base))
     expect(result.palette.length).toBeGreaterThanOrEqual(3)
     const gray = nearestHex(result.palette, [140, 140, 140]) // most bordering (the ring)
@@ -532,6 +532,45 @@ describe('stacked base layer', () => {
     expect(firstTitle).toBe(gray)
     // Reordering never changes the rendered pixels: every color still appears.
     for (const hex of result.palette) expect(result.svg).toContain(hex)
+  })
+
+  it('baseColor "darkest" pins the darkest color as the base (a black cartoon base)', async () => {
+    const result = await vectorize(
+      ringedIcon(),
+      settings({ mode: 'color', paletteSize: 6, layering: 'solid-base', baseColor: 'darkest' }),
+    )
+    const black = nearestHex(result.palette, [10, 10, 10]) // darkest, tiny
+    const gray = nearestHex(result.palette, [140, 140, 140]) // most bordering
+    // The base is painted first, so it is the first fill: the darkest, not the connective ring.
+    const firstFill = /fill="(#[0-9a-f]{6})"/.exec(result.svg)?.[1]
+    expect(firstFill).toBe(black)
+    expect(firstFill).not.toBe(gray)
+  })
+})
+
+describe('layering families', () => {
+  it('warns when solid-base stacks past maxLayers, but knockout and tuck do not', async () => {
+    // The eye is four sheets deep under a full underlay (black base, blue, white,
+    // pupil); a mm-unit build past maxLayers gets the too-thick warning.
+    const mm = { mode: 'color' as const, unit: 'mm' as const, maxLayers: 3 }
+    const solid = await vectorize(eyeIcon(), settings({ ...mm, layering: 'solid-base' }))
+    expect(solid.warnings.some((w) => w.code === 'stack-depth')).toBe(true)
+    // Knockout is a flat partition (one sheet), tuck caps the underlay at a
+    // margin — neither stacks past the limit.
+    const knockout = await vectorize(eyeIcon(), settings({ ...mm, layering: 'knockout' }))
+    expect(knockout.warnings.some((w) => w.code === 'stack-depth')).toBe(false)
+    const tuck = await vectorize(eyeIcon(), settings({ ...mm, layering: 'tuck', gapFill: 0.3 }))
+    expect(tuck.warnings.some((w) => w.code === 'stack-depth')).toBe(false)
+  })
+
+  it('tuck and solid-base reproduce every color but cut different geometry', async () => {
+    // Order only sets which sheet backs which — the rendered colors are unchanged
+    // — but the underlay masks differ, so the two SVGs are not identical.
+    const base = { mode: 'color' as const, paletteSize: 6, optimizeSvg: false }
+    const solid = await vectorize(eyeIcon(), settings({ ...base, layering: 'solid-base' }))
+    const tuck = await vectorize(eyeIcon(), settings({ ...base, layering: 'tuck', gapFill: 2 }))
+    for (const hex of solid.palette) expect(tuck.svg).toContain(hex)
+    expect(tuck.svg).not.toBe(solid.svg)
   })
 })
 
@@ -561,7 +600,7 @@ describe('stacked islands on top', () => {
     // Fixed palette so the pupil and outline share one exact black.
     const s = settings({
       mode: 'color',
-      layering: 'stacked',
+      layering: 'solid-base',
       groupByColor: true,
       preserveDetails: true,
       palette: ['#0a0a0a', '#286ebe', '#ebebeb'],
@@ -610,7 +649,7 @@ describe('stacked islands on top', () => {
     }
     const s = settings({
       mode: 'color',
-      layering: 'stacked',
+      layering: 'solid-base',
       groupByColor: true,
       preserveDetails: true,
       palette: ['#0a0a0a', '#286ebe'],
@@ -658,7 +697,7 @@ describe('stacked drops redundant underlay', () => {
   it('does not back a disconnected, fully-covered region the layer never touches', async () => {
     const s = settings({
       mode: 'color',
-      layering: 'stacked',
+      layering: 'solid-base',
       groupByColor: true,
       optimizeSvg: false,
       palette: ['#8c8c8c', '#c82828', '#28a03c'],
@@ -707,7 +746,7 @@ describe('stage cache (E3)', () => {
   it('a trace-only change reuses the cache and stays byte-identical to a fresh run', async () => {
     const img = scene()
     const cache: StageCache = {}
-    const base = { mode: 'color' as const, paletteSize: 6, layering: 'cutout' as const }
+    const base = { mode: 'color' as const, paletteSize: 6, layering: 'knockout' as const }
 
     await run(img, { ...base, smoothing: 0.5 }, cache) // warms preprocess + palette
     const cached = await run(img, { ...base, smoothing: 0.9, optTolerance: 0.4 }, cache)
@@ -764,7 +803,7 @@ describe('stage cache (E3)', () => {
   it('keeps several palettes warm so alternating them hits the cache (byte-identical)', async () => {
     const img = scene()
     const cache: StageCache = {}
-    const base = { mode: 'color' as const, layering: 'cutout' as const }
+    const base = { mode: 'color' as const, layering: 'knockout' as const }
     // Warm two distinct palettes, then revisit each: a single-slot cache would
     // have evicted the first, but the LRU keeps both.
     await run(img, { ...base, paletteSize: 4 }, cache)

@@ -44,7 +44,7 @@ describe('engine tracer', () => {
       [
         'cutout',
         swatches(),
-        normalizeSettings({ mode: 'color', layering: 'cutout', paletteSize: 6 }),
+        normalizeSettings({ mode: 'color', layering: 'knockout', paletteSize: 6 }),
       ],
       ['bw', ring(), normalizeSettings({ mode: 'bw' })],
       ['centerline', ring(), normalizeSettings({ mode: 'centerline' })],
@@ -108,7 +108,7 @@ describe('engine tracer', () => {
   it('streams stacked trace snapshots with a non-decreasing shape count', async () => {
     const steps = await trace(
       swatches(),
-      normalizeSettings({ mode: 'color', layering: 'stacked', paletteSize: 6 }),
+      normalizeSettings({ mode: 'color', layering: 'solid-base', paletteSize: 6 }),
     )
     const traceSteps = steps.filter((s) => s.code === 'trace')
     // Intermediate snapshots as the shapes build up, plus the final summary.

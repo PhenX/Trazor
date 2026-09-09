@@ -166,7 +166,7 @@ describe('gradient detection — engine', () => {
     expect(res.stats.pathCount).toBe(1)
   })
 
-  for (const layering of ['cutout', 'stacked'] as const) {
+  for (const layering of ['knockout', 'solid-base'] as const) {
     it(`paints a glow over a sky as an opacity overlay above an underlay (${layering})`, async () => {
       const res = await vectorize(
         glowImage(),

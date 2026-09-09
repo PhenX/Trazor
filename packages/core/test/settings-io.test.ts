@@ -91,6 +91,24 @@ describe('settings import', () => {
     expect(restored.settings.invert).toBe(DEFAULT_SETTINGS.invert)
   })
 
+  it('maps the legacy layering values onto the new families', () => {
+    // `stacked` was a full underlay; `cutout` was a partition (a trap when it
+    // carried an overlap), so persisted settings keep their behavior.
+    expect(normalizeSettings({ layering: 'stacked' as never }).layering).toBe('solid-base')
+    expect(normalizeSettings({ layering: 'cutout' as never }).layering).toBe('knockout')
+    expect(normalizeSettings({ layering: 'cutout' as never, gapFill: 0.3 }).layering).toBe('trap')
+    expect(normalizeSettings({ layering: 'bogus' as never }).layering).toBe('solid-base')
+  })
+
+  it('validates the base-color choice and clamps maxLayers', () => {
+    expect(normalizeSettings({ baseColor: 'darkest' }).baseColor).toBe('darkest')
+    expect(normalizeSettings({ baseColor: 'bogus' as never }).baseColor).toBe('most-connective')
+    expect(normalizeSettings({ baseColorValue: '#ABCDEF' }).baseColorValue).toBe('#abcdef')
+    expect(normalizeSettings({ baseColorValue: 'nope' }).baseColorValue).toBe('#000000')
+    expect(normalizeSettings({ maxLayers: 999 }).maxLayers).toBe(32)
+    expect(normalizeSettings({ maxLayers: -5 }).maxLayers).toBe(0)
+  })
+
   it('drops an unknown profile id on import', () => {
     const restored = parseSettingsImport(
       JSON.stringify({ settings: { mode: 'bw' }, activeProfileId: 'ghost', profileModified: true }),

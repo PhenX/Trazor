@@ -3,15 +3,36 @@ import { clamp, clampInt } from './utils'
 export type VectorizeMode = 'color' | 'grayscale' | 'bw' | 'centerline'
 
 /**
- * How color layers relate to each other:
- * - `stacked`: layers are painted back-to-front and lower layers extend under
- *   upper ones. Forgiving (no seams by construction), slight overdraw.
- * - `cutout`: an exact partition of the plane. Regions are assembled from a
- *   shared boundary graph so adjacent shapes reuse mathematically identical
- *   edges — no hairline gaps, no overlaps. Best for cutting machines and
- *   editing in vector tools.
+ * How color layers relate to each other — two families crossed by the shared
+ * `gapFill` overlap. `knockout`/`trap` keep every color flat on the substrate
+ * (the vinyl "knockout" build — thinnest, each sheet bonds directly); `tuck`/
+ * `solid-base` physically stack in paint order.
+ * - `knockout`: exact partition, colors butt on a shared edge. No overlap, no
+ *   stacking — one sheet thick everywhere. Registration-critical (a shift shows
+ *   substrate). The seam-free boundary graph, `gapFill` forced to 0.
+ * - `trap`: `knockout` plus a `gapFill` overlap along every seam, so a slight
+ *   misregistration never opens a gap. Flat, with a hairline two-ply ribbon only
+ *   at the seams. The recommended layered-vinyl default.
+ * - `tuck`: stacked in paint order, but each lower color reaches under its
+ *   neighbours by only `gapFill` (a bounded underlap), so bulk caps at two
+ *   sheets at any seam. Dimensional; paint order matters.
+ * - `solid-base`: stacked with a full cumulative underlay — the base color is a
+ *   solid full-silhouette sheet and every layer extends under all above it.
+ *   Maximum forgiveness, maximum bulk (a cartoon's black base). Paper/cardstock
+ *   layering, or a deliberate full backing sheet.
  */
-export type LayeringMode = 'stacked' | 'cutout'
+export type LayeringMode = 'knockout' | 'trap' | 'tuck' | 'solid-base'
+
+/**
+ * Which color is pinned to the bottom as the base sheet (layered families only —
+ * `tuck`/`solid-base`; a `knockout`/`trap` partition has no base):
+ * - `most-connective`: the color with the largest total region perimeter — the
+ *   outline/backdrop threading between the others (the standard cartoon build).
+ * - `largest`: the color covering the most pixels.
+ * - `darkest`: the darkest palette color (a guaranteed black cartoon base).
+ * - `manual`: the palette color nearest `baseColorValue`.
+ */
+export type BaseColorMode = 'most-connective' | 'largest' | 'darkest' | 'manual'
 
 /**
  * - `spline`: full curve chain (optimal polygon → corner analysis → cubic
@@ -105,15 +126,31 @@ export interface VectorizeSettings {
    */
   colorCoherence: number
   /**
-   * Trap (registration overlap) for cutout output: each region is spread outward
-   * along its shared seams by this much — emitted as a same-color stroke — so
-   * neighbouring colors keep butting even when screens/vinyl sheets misregister
-   * on press, instead of revealing a hairline of substrate. The width is in the
-   * document `unit`: millimetres when `unit` is `'mm'` (print/cut profiles),
-   * pixels otherwise. An mm trap is physical — it converts to the right stroke at
-   * any trace resolution. 0 disables (byte-identical). Cutout only.
+   * Seam overlap (registration slack), shared by the overlapping layering modes.
+   * With `trap` each region is spread outward along its shared seams by this much
+   * — emitted as a same-color stroke — so neighbouring colors keep butting even
+   * when screens/vinyl sheets misregister on press, instead of revealing a
+   * hairline of substrate. With `tuck` it is the width each lower color reaches
+   * under the sheets above it. The width is in the document `unit`: millimetres
+   * when `unit` is `'mm'` (print/cut profiles), pixels otherwise. An mm overlap is
+   * physical — it converts to the right stroke/underlap at any trace resolution. 0
+   * disables (byte-identical). Ignored by `knockout` (a pure butt joint) and
+   * `solid-base` (a full underlay).
    */
   gapFill: number
+  /**
+   * Which color is the base sheet in the layered families (`tuck`/`solid-base`).
+   * Ignored by the `knockout`/`trap` partition, which has no base.
+   */
+  baseColor: BaseColorMode
+  /** Target color ('#rrggbb') for `baseColor: 'manual'` — the nearest palette entry becomes the base. */
+  baseColorValue: string
+  /**
+   * Warn when the layered families stack more than this many sheets at any point
+   * (a physical thickness limit — smooth HTV layers ~4 deep before it stiffens).
+   * 0 disables the check. Only meaningful for `tuck`/`solid-base` in `mm` output.
+   */
+  maxLayers: number
   /** Drop the layer matching the detected background color (stickers, cut files). */
   omitBackground: boolean
   /**
@@ -235,12 +272,15 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   colorSpace: 'oklab',
   quantizeQuality: 5,
   palette: null,
-  layering: 'stacked',
+  layering: 'solid-base',
   minRegionArea: 6,
   preserveDetails: false,
   dissolveBands: 0,
   colorCoherence: 0,
   gapFill: 0,
+  baseColor: 'most-connective',
+  baseColorValue: '#000000',
+  maxLayers: 4,
   omitBackground: false,
   gradients: false,
   gradientStrength: 0.5,
@@ -275,6 +315,9 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   detectIslands: false,
 } satisfies VectorizeSettings)
 
+const LAYERING_MODES = new Set<LayeringMode>(['knockout', 'trap', 'tuck', 'solid-base'])
+const BASE_COLOR_MODES = new Set<BaseColorMode>(['most-connective', 'largest', 'darkest', 'manual'])
+
 /**
  * Merge a partial settings patch over the defaults (or a given base) and clamp
  * every numeric field to its valid range.
@@ -284,6 +327,18 @@ export function normalizeSettings(
   base: VectorizeSettings = DEFAULT_SETTINGS as VectorizeSettings,
 ): VectorizeSettings {
   const s: VectorizeSettings = { ...base, ...patch }
+  // Back-compat: the old two-value layering (`stacked`/`cutout`) maps onto the
+  // new families, so persisted settings and external callers keep working —
+  // `cutout` with an overlap was already a trap, so it becomes `trap`.
+  const rawLayering = s.layering as string
+  if (rawLayering === 'stacked') s.layering = 'solid-base'
+  else if (rawLayering === 'cutout') s.layering = s.gapFill > 0 ? 'trap' : 'knockout'
+  else if (!LAYERING_MODES.has(s.layering)) s.layering = 'solid-base'
+  if (!BASE_COLOR_MODES.has(s.baseColor)) s.baseColor = 'most-connective'
+  s.baseColorValue = /^#[0-9a-f]{6}$/i.test(s.baseColorValue)
+    ? s.baseColorValue.toLowerCase()
+    : '#000000'
+  s.maxLayers = clampInt(s.maxLayers, 0, 32)
   s.maxDimension = s.maxDimension === 0 ? 0 : clampInt(s.maxDimension, 64, 8192)
   s.blurRadius = clamp(s.blurRadius, 0, 10)
   s.alphaThreshold = clampInt(s.alphaThreshold, 0, 255)

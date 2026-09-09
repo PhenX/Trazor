@@ -205,7 +205,7 @@ export const TUNABLE_PARAMS: readonly ParamSpec[] = [
   {
     key: 'layering',
     kind: 'enum',
-    values: ['stacked', 'cutout'],
+    values: ['knockout', 'trap', 'tuck', 'solid-base'],
     modes: COLOR_MODES,
     group: 'curve',
     optIn: true,

@@ -54,28 +54,34 @@ decode (consumer)
   → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
                       gradients: merge ramp bands → linear/radial gradient paint [raster] (opt-in)
-                      stacked:  per-layer Potrace chain           trace
-                      cutout:   shared boundary graph  [trace]
+                      knockout/trap:   shared boundary graph partition (+ seam trap) [trace]
+                      tuck/solid-base: per-layer Potrace chain, bounded/full underlay  trace
   → bw:               Otsu/adaptive threshold → despeckle → trace [raster+trace]
                       (global threshold also builds a signed coverage field → sub-pixel edge refinement)
   → centerline:       threshold → Zhang-Suen thin → graph walk → Schneider fit [raster+trace]
   → serialize → analyze → warn                  [svg+engine]     svg
 ```
 
-- **stacked** layering paints regions back-to-front, each layer covering itself plus everything above it, so lower
-  shapes extend underneath and edges never crack. The most connective color — the one whose regions have the largest
-  total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
-  standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
-  on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
-  A region fully enclosed by one other color and buried **two or more** sheets below that surround (a base-colored
-  pupil under the eye white and the face) is relabeled into its surround for the solid base layers, then repainted on
-  top as its own island layer — so the layers below stay whole instead of each carrying a floating hole that would
-  drift out of alignment. A pocket with only one sheet over it keeps its single hole (it weeds and aligns fine). Because
-  a color can then recur (base outline + pupil island), grouped stacked output groups by paint **layer**, not by color,
-  so the two stay separate, correctly-ordered cut layers.
-- **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
-  reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
-  [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
+Layering is two families crossed by one `gapFill` overlap, chosen for how the sheets physically stack (`packages/core`
+`LayeringMode`):
+
+- **knockout / trap** (the vinyl default) is an exact partition traced through the shared boundary graph: the label-map
+  boundary network is fitted **once** and both adjacent regions reuse the identical curve (junction points pinned), so
+  colors butt at one height — one sheet thick, each bonding straight to the substrate. `knockout` is a pure butt joint;
+  `trap` spreads each region outward by `gapFill` (a same-color stroke) so a slight misregistration never shows the
+  substrate. See [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
+- **tuck / solid-base** paint regions back-to-front, each lower layer extending underneath the ones above so edges never
+  crack — bounded to a `gapFill` margin for **tuck** (bulk caps at two sheets at a seam) or a full cumulative underlay
+  for **solid-base** (the base is a solid full-silhouette sheet, the standard cartoon build). The base sheet is chosen by
+  `baseColor` — most-connective (the outline threading between the colors), largest, darkest (a guaranteed black base),
+  or a manual color; the rest stack by descending area. Paint order sets only which sheet is the base — never the
+  rendered pixels. A region fully enclosed by one other color and buried **two or more** sheets below that surround (a
+  base-colored pupil under the eye white and the face) is relabeled into its surround for the solid base layers, then
+  repainted on top as its own island layer — so the layers below stay whole instead of each carrying a floating hole
+  that would drift out of alignment. A pocket with only one sheet over it keeps its single hole (it weeds and aligns
+  fine). Because a color can then recur (base outline + pupil island), grouped output for these families groups by paint
+  **layer**, not by color, so the two stay separate, correctly-ordered cut layers. A build that stacks past `maxLayers`
+  raises a warning (mm output).
 
 ## Package responsibilities
 
@@ -121,12 +127,12 @@ coordinator.
 
 The parallel unit is chosen per mode, always something whose result is a function of shared, immutable state:
 
-| Mode       | Unit                                               | Stays on the coordinator                                      |
-| ---------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| stacked    | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
-| bw         | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
-| cutout     | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
-| centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
+| Mode            | Unit                                               | Stays on the coordinator                                      |
+| --------------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| tuck/solid-base | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
+| bw              | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
+| knockout/trap   | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
+| centerline      | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
 
 The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
 routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it. A

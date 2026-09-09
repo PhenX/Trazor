@@ -18,6 +18,7 @@ import type {
 import { fitArcs, shapeOut } from '@trazor/svg'
 import type { ShapeOut } from '@trazor/svg'
 import { flatTransferables, packCommands, runAt, runCount } from './flat'
+import { floodStackLayer } from './stack'
 import type {
   HelperChainsMessage,
   HelperCurveOptions,
@@ -321,37 +322,17 @@ export function installHelperHandler(scope: WorkerScope): void {
 
     advanceUnion(st, layer)
     const label = st.order[layer]
-    const union = st.union
-    const flood = st.flood
-    const nPix = width * height
-    let sp = 0
-    for (let k = st.offset[label]; k < st.offset[label + 1]; k++) {
-      const p = st.bucket[k]
-      if (cut[p] === 0) {
-        cut[p] = 1
-        flood[sp++] = p
-      }
-    }
-    while (sp > 0) {
-      const p = flood[--sp]
-      const x = p - ((p / width) | 0) * width
-      if (x > 0 && union[p - 1] === 1 && cut[p - 1] === 0) {
-        cut[p - 1] = 1
-        flood[sp++] = p - 1
-      }
-      if (x < width - 1 && union[p + 1] === 1 && cut[p + 1] === 0) {
-        cut[p + 1] = 1
-        flood[sp++] = p + 1
-      }
-      if (p >= width && union[p - width] === 1 && cut[p - width] === 0) {
-        cut[p - width] = 1
-        flood[sp++] = p - width
-      }
-      if (p < nPix - width && union[p + width] === 1 && cut[p + width] === 0) {
-        cut[p + width] = 1
-        flood[sp++] = p + width
-      }
-    }
+    floodStackLayer(
+      cut,
+      st.union,
+      st.flood,
+      st.bucket,
+      st.offset[label],
+      st.offset[label + 1],
+      width,
+      height,
+      st.msg.reachPx,
+    )
     return decomposeMask(st.mask, turnPolicy, floor)
   }
 }

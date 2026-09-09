@@ -126,7 +126,7 @@ const BASE = {
   mode: 'color' as const,
   paletteSize: 24,
   quantizeQuality: 6,
-  layering: 'stacked' as const,
+  layering: 'solid-base' as const,
   smoothing: 0.85,
   minRegionArea: 8,
 }

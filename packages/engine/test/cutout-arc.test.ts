@@ -93,8 +93,11 @@ describe('cutout arc fitting — shared-chain seam consistency', () => {
   })
 
   it('emits arcs in a cutout SVG when optimize is on, and none when off', async () => {
-    const on = await vectorize(discRaster(), settings({ layering: 'cutout', optimizeSvg: true }))
-    const off = await vectorize(discRaster(), settings({ layering: 'cutout', optimizeSvg: false }))
+    const on = await vectorize(discRaster(), settings({ layering: 'knockout', optimizeSvg: true }))
+    const off = await vectorize(
+      discRaster(),
+      settings({ layering: 'knockout', optimizeSvg: false }),
+    )
     expect(svgHasArc(on.svg)).toBe(true)
     expect(svgHasArc(off.svg)).toBe(false)
     // No full-shape <circle> element in cutout — the boundary is a shared path.

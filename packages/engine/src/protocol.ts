@@ -155,6 +155,12 @@ export interface HelperStackMessage {
   turnPolicy: TurnPolicy
   /** Speck floor: boundaries enclosing fewer pixels are dropped. */
   minArea: number
+  /**
+   * Underlay reach in px: a lower layer extends under the sheets above it by at
+   * most this many pixels (`tuck`). Negative means unlimited — the layer floods
+   * the whole union component its color reaches (`solid-base`).
+   */
+  reachPx: number
 }
 
 /**

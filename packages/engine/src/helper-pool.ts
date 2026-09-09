@@ -31,6 +31,8 @@ export interface StackPlanPayload {
   islandOffsets: Int32Array
   turnPolicy: TurnPolicy
   minArea: number
+  /** Underlay reach in px for a bounded (`tuck`) stack; negative = unlimited (`solid-base`). */
+  reachPx: number
 }
 
 /** The bw mask's lattice rings, as the coordinator decomposed them. */
@@ -200,6 +202,7 @@ export class HelperPool {
           islandOffsets,
           turnPolicy: plan.turnPolicy,
           minArea: plan.minArea,
+          reachPx: plan.reachPx,
         },
         [stackLabels, order, islandLabels, islandPixels, islandOffsets],
       )

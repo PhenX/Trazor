@@ -226,7 +226,7 @@ export const scenes: Scene[] = [
     settings: {
       paletteSize: 24,
       autoPaletteSize: true,
-      layering: 'stacked',
+      layering: 'solid-base',
       minRegionArea: 4,
       smoothing: 0.85,
     },

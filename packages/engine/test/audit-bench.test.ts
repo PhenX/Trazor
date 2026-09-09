@@ -123,8 +123,8 @@ describe('audit bench', () => {
     }
 
     await run('color stacked k16', { mode: 'color', paletteSize: 16 })
-    await run('color cutout k16', { mode: 'color', paletteSize: 16, layering: 'cutout' })
-    await run('color cutout k10 (pure)', { mode: 'color', paletteSize: 10, layering: 'cutout' })
+    await run('color cutout k16', { mode: 'color', paletteSize: 16, layering: 'knockout' })
+    await run('color cutout k10 (pure)', { mode: 'color', paletteSize: 10, layering: 'knockout' })
     await run('color stacked k10 (pure)', { mode: 'color', paletteSize: 10 })
     await run('color stacked k32', { mode: 'color', paletteSize: 32 })
     await run('bw auto', { mode: 'bw' })

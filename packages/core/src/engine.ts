@@ -15,6 +15,7 @@ export type WarningCode =
   | 'tiny-features'
   | 'centerline-input'
   | 'gradient-spot-color'
+  | 'stack-depth'
   | 'mode-note'
 
 export interface VectorizeWarning {

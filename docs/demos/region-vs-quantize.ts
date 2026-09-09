@@ -147,7 +147,7 @@ const BASE = {
   paletteSize: 24,
   autoPaletteSize: true,
   quantizeQuality: 7,
-  layering: 'stacked' as const,
+  layering: 'solid-base' as const,
   smoothing: 0.8,
   colorCoherence: 0.5,
   minRegionArea: 16,

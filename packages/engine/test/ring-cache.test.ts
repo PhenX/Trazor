@@ -62,7 +62,7 @@ describe('ring cache', () => {
     {
       name: 'color cutout',
       image: scene,
-      base: { mode: 'color', paletteSize: 6, layering: 'cutout' },
+      base: { mode: 'color', paletteSize: 6, layering: 'knockout' },
     },
     { name: 'bw', image: inkArt, base: { mode: 'bw' } },
     { name: 'grayscale', image: scene, base: { mode: 'grayscale', paletteSize: 5 } },
@@ -152,8 +152,8 @@ describe('ring cache', () => {
     const cache: StageCache = {}
     const base = { mode: 'color' as const, paletteSize: 6 }
     await run(img, base, cache)
-    const cut = await run(img, { ...base, layering: 'cutout' }, cache)
-    expect(cut.svg).toBe((await run(img, { ...base, layering: 'cutout' })).svg)
+    const cut = await run(img, { ...base, layering: 'knockout' }, cache)
+    expect(cut.svg).toBe((await run(img, { ...base, layering: 'knockout' })).svg)
     // Cutout traces the shared boundary graph and never consults the rings.
     expect(stats(cache).ringHits).toBe(0)
     const back = await run(img, { ...base, smoothing: 0.9 }, cache)

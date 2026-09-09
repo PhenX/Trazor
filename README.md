@@ -24,9 +24,13 @@ Selinger's 2003 paper — clean-room, no GPL code) and applies it **per color la
 
 On top of that, three things most tracers don't do:
 
-- **Seam-free cutout mode.** In `cutout` layering the color segmentation's boundary network is fitted **once** —
-  every edge shared by two regions is a single curve reused by both (junction points pinned exactly). Adjacent shapes
-  are mathematically identical along their shared border: **no hairline gaps, no overlaps**, ever.
+- **Vinyl-aware layering.** Four modes across two families: `knockout`/`trap` cut an exact partition so colors butt at
+  one height (thin, each sheet bonds straight to the substrate — the pro layered-vinyl build), and `tuck`/`solid-base`
+  physically stack, reaching under the sheets above by a bounded margin or a full silhouette base (a cartoon's black
+  backing). `knockout`/`trap` fit the color segmentation's boundary network **once** — every edge shared by two regions
+  is a single curve reused by both (junction points pinned exactly), so adjacent shapes are mathematically identical
+  along their shared border: **no hairline gaps, no overlaps**, ever. `trap` adds a physical `gapFill` overlap for press
+  misregistration.
 - **Centerline tracing.** For pen plotters and engraving, strokes follow the _middle_ of drawn lines (Zhang-Suen
   skeleton → graph walk → junction merging → Schneider Bézier fitting), with automatic stroke-width estimation.
 - **Honest fidelity scoring.** Every result is re-rasterized and compared to the source with a mean ΔE in Oklab.
@@ -68,7 +72,7 @@ import type { RasterImage } from '@trazor/core'
 // RGBA pixels (Uint8ClampedArray) from a canvas, `pngjs`, `sharp`, …
 const image: RasterImage = { width, height, data }
 
-const settings = normalizeSettings({ mode: 'color', paletteSize: 12, layering: 'cutout' })
+const settings = normalizeSettings({ mode: 'color', paletteSize: 12, layering: 'knockout' })
 const result = await vectorize(image, settings)
 
 result.svg // → the SVG string
@@ -82,7 +86,7 @@ batched work, `@trazor/engine` also ships a Web Worker protocol (`installWorkerH
 `TrazorPool`; see [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
 **Pipeline**: decode → resize → denoise → flatten alpha → _(color)_ Oklab k-means++ → region cleanup → _(opt)_
-gradient detection → per-layer Potrace chain (stacked) or shared boundary graph (cutout) → _(bw)_ threshold →
+gradient detection → per-layer Potrace chain (tuck / solid-base) or shared boundary graph (knockout / trap) → _(bw)_ threshold →
 despeckle → trace → _(centerline)_ threshold → thin → graph → fit → serialize → analyze → warn. Every stage is
 deterministic: the same image + settings ⇒ byte-identical SVG.
 

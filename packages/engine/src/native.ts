@@ -9,11 +9,13 @@ import {
   rgbToOklab,
 } from '@trazor/core'
 import type {
+  BaseColorMode,
   BinaryMask,
   EngineContext,
   GradientPaint,
   GrayImage,
   LabelMap,
+  LayeringMode,
   PathCommand,
   RasterImage,
   StageId,
@@ -85,6 +87,7 @@ import type { ChainFit, CrackPath, FlatPoints, RegionShape, TracedShape } from '
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import type { HelperPool, StackPlanPayload } from './helper-pool'
+import { floodStackLayer } from './stack'
 import type {
   HelperCurveOptions,
   HelperSerializeOptions,
@@ -103,6 +106,34 @@ const DETAIL_CONTRAST = 0.1
  * the pocket). One sheet's single hole weeds and aligns fine; two or more drift.
  */
 const MIN_LIFT_DEPTH = 2
+
+/**
+ * The knockout family (`knockout`/`trap`) is an exact color partition traced
+ * through the shared boundary graph — colors butt at one height. The layered
+ * family (`tuck`/`solid-base`) stacks flat masks in paint order.
+ */
+function isKnockoutLayering(l: LayeringMode): boolean {
+  return l === 'knockout' || l === 'trap'
+}
+
+/**
+ * The seam overlap (`gapFill`) as viewBox px: an mm overlap converts through the
+ * document's mm-per-px so it means the same on press at any trace resolution; a
+ * px overlap is already viewBox px. 0 when there is no overlap.
+ */
+function overlapPx(settings: VectorizeSettings, imageWidth: number): number {
+  if (settings.gapFill <= 0) return 0
+  if (settings.unit === 'mm') {
+    const scale = mmPerPx(imageWidth, settings.widthMm)
+    return scale > 0 ? settings.gapFill / scale : 0
+  }
+  return settings.gapFill
+}
+
+/** Underlay reach in px for the layered families: bounded for `tuck`, unlimited (−1) for `solid-base`. */
+function stackReachPx(settings: VectorizeSettings, imageWidth: number): number {
+  return settings.layering === 'tuck' ? overlapPx(settings, imageWidth) : -1
+}
 
 /** Coherence relaxation strength (squared-Oklab per disagreeing neighbor) at colorCoherence 1. */
 const COHERENCE_LAMBDA = 0.03
@@ -304,11 +335,13 @@ interface PaletteEntry {
   rings?: LayerRings
   /**
    * The stacked layering plan (base label map, paint order, lifted islands),
-   * which follows from this entry's labels and counts alone. Retained alongside
-   * the rings so a re-run — sequential or across helpers — skips the enclosed-
-   * component scan and the stacking sort.
+   * which follows from this entry's labels, counts and the base-color choice.
+   * Retained alongside the rings so a re-run — sequential or across helpers —
+   * skips the enclosed-component scan and the stacking sort.
    */
   stack?: StackPlan
+  /** Base-color signature the held `stack` was built for; a change re-plans. */
+  stackSig?: string
 }
 
 /**
@@ -560,14 +593,21 @@ function palKeyOf(s: VectorizeSettings): string {
 
 /**
  * Settings that change the stacked layers' decomposed rings, beyond the label
- * map they are cut from (the palette entry's own key). The layer masks follow
- * from the labels and counts alone — the stacking order, the lifted islands and
- * the per-layer union flood are all derived from them — so only the tracer's own
- * decomposition inputs are left. `traceMinArea` already folds in
- * `preserveDetails`; an edge hint disables caching altogether.
+ * map they are cut from (the palette entry's own key). The masks follow from the
+ * labels, the stacking order (which the base-color choice re-seats) and each
+ * layer's underlay reach (the `tuck` overlap), plus the tracer's own inputs.
+ * `traceMinArea` already folds in `preserveDetails`; an edge hint disables
+ * caching altogether.
  */
 function ringKeyOf(s: VectorizeSettings, traceMinArea: number): string {
-  return [s.layering, s.turnPolicy, traceMinArea].join('|')
+  return [
+    s.layering,
+    s.layering === 'tuck' ? s.gapFill : 0,
+    s.baseColor,
+    s.baseColor === 'manual' ? s.baseColorValue : '-',
+    s.turnPolicy,
+    traceMinArea,
+  ].join('|')
 }
 
 /** Settings that change the binarized ink mask and its sub-pixel coverage field. */
@@ -694,7 +734,7 @@ export async function vectorize(
   // for cutout — an element can't be shared with a neighbor's path edge. Arc
   // fitting for cutout happens seam-safely per shared chain instead (the
   // `refineChain` passed to the tracer).
-  const roundPrimitives = settings.optimizeSvg && settings.layering !== 'cutout'
+  const roundPrimitives = settings.optimizeSvg && !isKnockoutLayering(settings.layering)
   // Exactly the per-shape settings the serializer would apply, so a helper's
   // output drops into the document unchanged.
   const shapeSerialize: HelperSerializeOptions = {
@@ -776,12 +816,12 @@ export async function vectorize(
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
       roundPrimitives,
-      // One <g> per cut layer (color layers only). Cutout is a color partition,
-      // so group by color; stacked paints in layer order and a color can recur
-      // at two heights (a base outline and a pupil island above it), so group by
-      // paint layer to keep those separate and correctly ordered.
-      groupByColor: grouped && settings.layering === 'cutout',
-      groupByLayer: grouped && settings.layering !== 'cutout',
+      // One <g> per cut layer (color layers only). A knockout/trap partition is
+      // by color, so group by color; the layered families paint in layer order
+      // and a color can recur at two heights (a base outline and a pupil island
+      // above it), so group by paint layer to keep those separate and ordered.
+      groupByColor: grouped && isKnockoutLayering(settings.layering),
+      groupByLayer: grouped && !isKnockoutLayering(settings.layering),
     },
     shapeParts.length === shapes.length ? shapeParts : undefined,
   )
@@ -1147,7 +1187,7 @@ async function colorPipeline(
   // every helper key a miss.
   const labelScope = palKey !== undefined ? `${helperCtx.scope}|${palKey}` : `#${helperCtx.serial}`
 
-  if (settings.layering === 'cutout') {
+  if (isKnockoutLayering(settings.layering)) {
     // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
     // true anti-aliased edge between its two region colors. Skipped in pixel
     // mode (exact lattice) and when the palette is degenerate.
@@ -1181,18 +1221,10 @@ async function colorPipeline(
       })
     }
     regions.sort((a, b) => b.area - a.area)
-    // Trap width in viewBox px. An mm-unit output carries a physical millimetre
-    // trap: convert it through the document's mm-per-px so the overlap means the
-    // same on press at any trace resolution; a px-unit trap is already viewBox px.
-    const trapScale = mmPerPx(image.width, settings.widthMm)
-    const trapPx =
-      settings.gapFill <= 0
-        ? 0
-        : settings.unit === 'mm'
-          ? trapScale > 0
-            ? settings.gapFill / trapScale
-            : 0
-          : settings.gapFill
+    // Seam overlap as a same-color stroke (a registration trap). `knockout` is a
+    // pure butt joint (no overlap); `trap` spreads each region outward by the
+    // physical `gapFill`, so neighbours keep butting under slight misregistration.
+    const trapPx = settings.layering === 'trap' ? overlapPx(settings, image.width) : 0
     for (const region of regions) {
       const under = underOf(region.label)
       for (const label of under >= 0 ? [under, region.label] : [region.label]) {
@@ -1211,6 +1243,35 @@ async function colorPipeline(
     }
     run.progress(1)
   } else {
+    // Which color is the base sheet, and how far each lower layer reaches under
+    // the sheets above it (a full underlay for `solid-base`, a bounded margin
+    // for `tuck`). The plan (base label map, paint order, lifted islands) is
+    // computed once and shared by the cached, sequential and helper paths.
+    const baseChoice: BaseChoice = {
+      strategy: settings.baseColor,
+      value: settings.baseColorValue,
+      paletteRgb,
+    }
+    const reachPx = stackReachPx(settings, image.width)
+    const plan = stackPlanFor(
+      labels,
+      counts,
+      paletteEntry,
+      canCachePal ? cache : undefined,
+      baseChoice,
+    )
+    // Flag a build that stacks more sheets than a press can take (mm output only).
+    if (settings.unit === 'mm' && settings.maxLayers > 0) {
+      const depth = maxStackDepth(labels, plan, reachPx)
+      if (depth > settings.maxLayers) {
+        warnings.push({
+          code: 'stack-depth',
+          severity: 'warning',
+          message: `Stacks up to ${depth} vinyl sheets — most HTV lifts past ${settings.maxLayers}. Switch to Knockout or Trap layering, or reduce colors.`,
+          params: { depth, max: settings.maxLayers },
+        })
+      }
+    }
     // Stacked layers are decomposed once per ring key and re-fitted on every
     // run, so changing only the curve settings skips the layer floods, the crack
     // decomposition and the polygon stages, and replays smoothing and curve
@@ -1309,12 +1370,14 @@ async function colorPipeline(
       // flood from the shared plan, decomposes it, fits the curve chain and
       // serializes its shapes. Units come back in layer order, so the paint
       // order — and with it every `layerId` and the SVG text — is unchanged.
-      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
       const labelOf = (unit: number): number =>
         unit < plan.order.length ? plan.order[unit] : plan.islands[unit - plan.order.length].label
       const total = plan.order.length + plan.islands.length
       const stackKey = `${labelScope}|${ringKey}`
-      helpers.setStackPlan(stackKey, stackPayload(labels, plan, settings.turnPolicy, traceMinArea))
+      helpers.setStackPlan(
+        stackKey,
+        stackPayload(labels, plan, settings.turnPolicy, traceMinArea, reachPx),
+      )
       startLayers(total)
       for await (const out of helpers.dispatch({
         kind: 'trace-layers',
@@ -1359,9 +1422,10 @@ async function colorPipeline(
         layers && wantPolygons ? [] : undefined
       await decomposeStackedLayers(
         labels,
-        stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined),
+        plan,
         settings.turnPolicy,
         traceMinArea,
+        reachPx,
         startLayers,
         async (label, paths) => {
           const polygons = wantPolygons ? layerPolygons(paths) : undefined
@@ -1393,6 +1457,20 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
   return paths.map((p) => ringPolygon(p.points))
 }
 
+/** How the base sheet is chosen for a stacked plan (see {@link stackingOrder}). */
+interface BaseChoice {
+  strategy: BaseColorMode
+  /** Target color for `manual`. */
+  value: string
+  /** Per-label palette RGB (interleaved), for `darkest`/`manual`. */
+  paletteRgb: Uint8Array
+}
+
+/** Signature of a base choice, for the plan cache — the map itself is keyed by the palette entry. */
+function baseSig(base: BaseChoice): string {
+  return base.strategy === 'manual' ? `manual:${base.value}` : base.strategy
+}
+
 /**
  * How stacked layering will paint a label map (Selinger-independent bookkeeping):
  * the base layers' order, the label map they are cut from, and the enclosed
@@ -1400,17 +1478,13 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
  *
  * Each layer covers itself plus the sheets above that its own color actually
  * reaches, so lower shapes extend underneath their neighbours and edges cannot
- * crack — without dragging in far regions already covered by their own sheets
- * (see the per-layer flood in {@link decomposeStackedLayers}). The most
- * connective color — the one whose regions have the largest total perimeter,
- * i.e. that borders the most other regions — is pinned to the bottom as the
- * base, so it reads as the outline/backdrop showing between the colors stacked
- * on top: the standard layered-vinyl build (a cartoon's black outline, a flat
- * design's background). A thin outline threading between regions outscores a
- * compact blob of the same color, and a tiny dark speck never wins. The rest
- * stack by descending area (large fields low, small details on top). Order sets
- * only which sheet is the full base and the layer/group order — never the
- * rendered pixels, since each pixel's topmost layer is its own.
+ * crack — bounded to a margin for `tuck`, unbounded for `solid-base` (see the
+ * per-layer flood in {@link decomposeStackedLayers}). The base sheet — pinned to
+ * the bottom, showing as the outline/backdrop between the colors stacked on it —
+ * is chosen by {@link stackingOrder} from `base` (most-connective by default, or
+ * largest/darkest/manual); the rest stack by descending area. Order sets only
+ * which sheet is the base and the layer/group order — never the rendered pixels,
+ * since each pixel's topmost layer is its own.
  *
  * An enclosed island whose color sits below its surround punches a floating
  * hole in every layer stacked over it. Because the island is ringed by a single
@@ -1424,8 +1498,8 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
  * show through and the rendered pixels are unchanged — only the cut layers get
  * cleaner.
  */
-function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
-  const order0 = stackingOrder(labels, counts)
+function stackPlan(labels: LabelMap, counts: Uint32Array, base: BaseChoice): StackPlan {
+  const order0 = stackingOrder(labels, counts, base)
   const position0 = new Int32Array(counts.length).fill(-1)
   order0.forEach((l, i) => (position0[l] = i))
   const enclosed = findEnclosedComponents(labels).filter((c) => {
@@ -1450,6 +1524,7 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
     order = stackingOrder(
       { width: labels.width, height: labels.height, data: painted, count: labels.count },
       stackCounts,
+      base,
     )
   }
 
@@ -1471,27 +1546,37 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
   return { stackLabels, labelCount: counts.length, order, islands }
 }
 
-/** The stacked plan for this label map, from the palette entry when it holds one. */
+/**
+ * The stacked plan for this label map, from the palette entry when it holds a
+ * plan built for the same base choice; the base strategy re-seats the order, so
+ * a changed `base` re-plans (the label map itself is fixed by the entry).
+ */
 function stackPlanFor(
   labels: LabelMap,
   counts: Uint32Array,
   entry: PaletteEntry | undefined,
   cache: StageCache | undefined,
+  base: BaseChoice,
 ): StackPlan {
+  const sig = baseSig(base)
   const held = entry?.stack
-  if (held) {
+  if (held && entry?.stackSig === sig) {
     if (cache) cacheStats(cache).stackHits++
     return held
   }
   if (cache) cacheStats(cache).stackMisses++
-  const plan = stackPlan(labels, counts)
+  const plan = stackPlan(labels, counts, base)
   if (entry) {
     // One plan at a time, like the rings: the older entries keep their labels
     // (cheap to re-plan from) but drop the base label map, which is the bulk.
     for (const other of cache?.palette?.values() ?? []) {
-      if (other !== entry) other.stack = undefined
+      if (other !== entry) {
+        other.stack = undefined
+        other.stackSig = undefined
+      }
     }
     entry.stack = plan
+    entry.stackSig = sig
   }
   return plan
 }
@@ -1502,6 +1587,7 @@ function stackPayload(
   plan: StackPlan,
   turnPolicy: TurnPolicy,
   minArea: number,
+  reachPx: number,
 ): StackPlanPayload {
   const islandOffsets = new Int32Array(plan.islands.length + 1)
   for (let i = 0; i < plan.islands.length; i++) {
@@ -1524,21 +1610,25 @@ function stackPayload(
     islandOffsets,
     turnPolicy,
     minArea,
+    reachPx,
   }
 }
 
 /**
  * Stacked layering: build each cut layer's mask from `plan` and decompose it
  * into boundary rings, handing them to `onLayer` in paint order (base layers
- * bottom-up, then the lifted island layers). `startLayers` reports the layer
- * total first, so a caller can drive progress; `onLayer` is awaited, so the
- * caller controls where the loop yields.
+ * bottom-up, then the lifted island layers). `reachPx` bounds each layer's
+ * underlay — negative for a full underlay (`solid-base`), a pixel margin for a
+ * bounded one (`tuck`). `startLayers` reports the layer total first, so a caller
+ * can drive progress; `onLayer` is awaited, so the caller controls where the
+ * loop yields.
  */
 async function decomposeStackedLayers(
   labels: LabelMap,
   plan: StackPlan,
   turnPolicy: TurnPolicy,
   minArea: number,
+  reachPx: number,
   startLayers: (total: number) => void,
   onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
 ): Promise<void> {
@@ -1594,43 +1684,26 @@ async function decomposeStackedLayers(
   }
   const cut = cutMask.data
   const flood = new Int32Array(nPix)
-  const w = labels.width
 
   // The paint order is the base layers followed by the island layers on top.
   startLayers(order.length + plan.islands.length)
   for (let i = 0; i < order.length; i++) {
     const label = order[i]
-    // Seed the flood from this layer's own pixels, then grow through the
-    // union; `cut` ends up as exactly the union components its color reaches.
+    // Seed the flood from this layer's own pixels, then grow through the union.
+    // With an unlimited reach `cut` ends up as exactly the union components its
+    // color reaches; a bounded reach (`tuck`) stops it a fixed margin above.
     cut.fill(0)
-    let sp = 0
-    for (let k = offset[label]; k < offset[label + 1]; k++) {
-      const p = bucket[k]
-      if (cut[p] === 0) {
-        cut[p] = 1
-        flood[sp++] = p
-      }
-    }
-    while (sp > 0) {
-      const p = flood[--sp]
-      const x = p - ((p / w) | 0) * w
-      if (x > 0 && union[p - 1] === 1 && cut[p - 1] === 0) {
-        cut[p - 1] = 1
-        flood[sp++] = p - 1
-      }
-      if (x < w - 1 && union[p + 1] === 1 && cut[p + 1] === 0) {
-        cut[p + 1] = 1
-        flood[sp++] = p + 1
-      }
-      if (p >= w && union[p - w] === 1 && cut[p - w] === 0) {
-        cut[p - w] = 1
-        flood[sp++] = p - w
-      }
-      if (p < nPix - w && union[p + w] === 1 && cut[p + w] === 0) {
-        cut[p + w] = 1
-        flood[sp++] = p + w
-      }
-    }
+    floodStackLayer(
+      cut,
+      union,
+      flood,
+      bucket,
+      offset[label],
+      offset[label + 1],
+      labels.width,
+      labels.height,
+      reachPx,
+    )
     const paths = decomposeMask(cutMask, turnPolicy, floor)
     // Remove this layer's own pixels so the next union is the layers below it.
     for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
@@ -2013,33 +2086,132 @@ function regionPerimeters(labels: LabelMap): Float64Array {
 }
 
 /**
- * Stacking order for a label map, base first: the most connective color (max
- * region perimeter — it borders the most other regions) is pinned to the bottom
- * as the full-silhouette base; the rest follow by descending pixel count. Labels
- * with no pixels are omitted. Only the base is re-seated, so the deterministic
- * area order is otherwise preserved.
+ * Stacking order for a label map, base first: the rest follow by descending
+ * pixel count and only the base is re-seated, so the deterministic area order is
+ * otherwise preserved. The base is chosen by `base.strategy`:
+ * - `most-connective`: max region perimeter — the color bordering the most
+ *   others (an outline/backdrop). The default.
+ * - `largest`: the color covering the most pixels (already order[0]).
+ * - `darkest`: the darkest palette color (a guaranteed black cartoon base).
+ * - `manual`: the palette color nearest `base.value`.
+ *
+ * Labels with no pixels are omitted.
  */
-function stackingOrder(labels: LabelMap, counts: Uint32Array): number[] {
+function stackingOrder(labels: LabelMap, counts: Uint32Array, base: BaseChoice): number[] {
   const order: number[] = []
   for (let l = 0; l < counts.length; l++) if (counts[l] > 0) order.push(l)
   order.sort((a, b) => counts[b] - counts[a])
   if (order.length > 1) {
-    const perim = regionPerimeters(labels)
-    let base = order[0]
-    let bestPerim = perim[base]
-    for (const l of order) {
-      if (perim[l] > bestPerim) {
-        bestPerim = perim[l]
-        base = l
-      }
-    }
-    const at = order.indexOf(base)
+    const baseLabel = pickBaseLabel(order, labels, base)
+    const at = order.indexOf(baseLabel)
     if (at > 0) {
       order.splice(at, 1)
-      order.unshift(base)
+      order.unshift(baseLabel)
     }
   }
   return order
+}
+
+/** The base label for a stacking order under `base.strategy` (order is descending pixel count). */
+function pickBaseLabel(order: number[], labels: LabelMap, base: BaseChoice): number {
+  const rgb = base.paletteRgb
+  if (base.strategy === 'largest') return order[0]
+  if (base.strategy === 'darkest') {
+    let best = order[0]
+    let bestL = Infinity
+    for (const l of order) {
+      const [L] = rgbToOklab(rgb[l * 3] / 255, rgb[l * 3 + 1] / 255, rgb[l * 3 + 2] / 255)
+      if (L < bestL) {
+        bestL = L
+        best = l
+      }
+    }
+    return best
+  }
+  if (base.strategy === 'manual') {
+    const target = hexToRgb(base.value)
+    if (target) {
+      const [tL, ta, tb] = rgbToOklab(target[0] / 255, target[1] / 255, target[2] / 255)
+      let best = order[0]
+      let bestD = Infinity
+      for (const l of order) {
+        const [L, a, b] = rgbToOklab(rgb[l * 3] / 255, rgb[l * 3 + 1] / 255, rgb[l * 3 + 2] / 255)
+        const d = deltaEOkSq(L, a, b, tL, ta, tb)
+        if (d < bestD) {
+          bestD = d
+          best = l
+        }
+      }
+      return best
+    }
+  }
+  // most-connective (default): the color with the largest total region perimeter.
+  const perim = regionPerimeters(labels)
+  let best = order[0]
+  let bestPerim = perim[best]
+  for (const l of order) {
+    if (perim[l] > bestPerim) {
+      bestPerim = perim[l]
+      best = l
+    }
+  }
+  return best
+}
+
+/**
+ * The deepest vinyl stack the layered plan produces at any pixel — the count of
+ * layers whose cut mask covers it (base layers flooded with `reachPx`, plus any
+ * island layers). Drives the too-many-sheets warning. Mirrors
+ * {@link decomposeStackedLayers}' masks but only counts, so it is path- and
+ * cache-independent.
+ */
+function maxStackDepth(labels: LabelMap, plan: StackPlan, reachPx: number): number {
+  const stackData = plan.stackLabels
+  const nPix = stackData.length
+  const labelCount = plan.labelCount
+  const stackCounts = new Uint32Array(labelCount)
+  for (let p = 0; p < nPix; p++) {
+    const l = stackData[p]
+    if (l >= 0) stackCounts[l]++
+  }
+  const offset = new Int32Array(labelCount + 1)
+  for (let l = 0; l < labelCount; l++) offset[l + 1] = offset[l] + stackCounts[l]
+  const bucket = new Int32Array(offset[labelCount])
+  const cursor = offset.slice(0, labelCount)
+  for (let p = 0; p < nPix; p++) {
+    const l = stackData[p]
+    if (l >= 0) bucket[cursor[l]++] = p
+  }
+  const union = new Uint8Array(nPix)
+  for (let p = 0; p < nPix; p++) union[p] = stackData[p] >= 0 ? 1 : 0
+  const cut = new Uint8Array(nPix)
+  const flood = new Int32Array(nPix)
+  const depth = new Uint16Array(nPix)
+  let max = 0
+  for (const label of plan.order) {
+    cut.fill(0)
+    floodStackLayer(
+      cut,
+      union,
+      flood,
+      bucket,
+      offset[label],
+      offset[label + 1],
+      labels.width,
+      labels.height,
+      reachPx,
+    )
+    for (let p = 0; p < nPix; p++) {
+      if (cut[p] === 1 && ++depth[p] > max) max = depth[p]
+    }
+    for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
+  }
+  for (const island of plan.islands) {
+    for (const p of island.pixels) {
+      if (++depth[p] > max) max = depth[p]
+    }
+  }
+  return max
 }
 
 /**

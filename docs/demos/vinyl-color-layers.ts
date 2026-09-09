@@ -49,7 +49,7 @@ function badge(): RasterImage {
 const BEFORE = normalizeSettings({
   mode: 'bw',
   thresholdMode: 'auto',
-  layering: 'cutout',
+  layering: 'knockout',
   minRegionArea: 48,
   smoothing: 0.7,
   curveOptimize: true,
