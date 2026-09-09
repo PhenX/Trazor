@@ -173,17 +173,18 @@ describe('gradient detection — engine', () => {
         normalizeSettings({ paletteSize: 24, gradients: true, layering }),
       )
       expect(res.svg).toContain('stop-opacity=')
-      // The overlay shape is painted right after a shape of identical geometry
-      // carrying its base's paint, so the two paint servers composite.
+      // The overlay shape is painted directly over its underlay: a gradient-filled
+      // shape immediately follows one carrying a different (its base's) gradient,
+      // so the two paint servers composite over the same region.
       const paths = pathsOf(res.svg)
-      const overlaid = paths.some(
+      const composited = paths.some(
         (p, i) =>
           i > 0 &&
-          paths[i - 1].d === p.d &&
-          paths[i - 1].fill !== p.fill &&
-          p.fill.startsWith('url(#'),
+          p.fill.startsWith('url(#') &&
+          paths[i - 1].fill.startsWith('url(#') &&
+          paths[i - 1].fill !== p.fill,
       )
-      expect(overlaid).toBe(true)
+      expect(composited).toBe(true)
       // The sky behind the glow is one gradient, not pieces around it.
       expect(res.svg.match(/<linearGradient/g)).toHaveLength(1)
       expect(analyzeSvg(res.svg).width).toBe(240)

@@ -16,10 +16,11 @@ export type VectorizeMode = 'color' | 'grayscale' | 'bw' | 'centerline'
  * - `tuck`: stacked in paint order, but each lower color reaches under its
  *   neighbours by only `gapFill` (a bounded underlap), so bulk caps at two
  *   sheets at any seam. Dimensional; paint order matters.
- * - `solid-base`: stacked with a full cumulative underlay — the base color is a
- *   solid full-silhouette sheet and every layer extends under all above it.
- *   Maximum forgiveness, maximum bulk (a cartoon's black base). Paper/cardstock
- *   layering, or a deliberate full backing sheet.
+ * - `solid-base`: the base color floods to a solid full-silhouette backing sheet
+ *   (a cartoon's black base), and each color above extends under only the regions
+ *   nested inside it — two colors that merely sit side by side butt at their seam,
+ *   backed by the base, instead of one sheeting under the other. A deliberate full
+ *   backing sheet with the least redundant stacking.
  */
 export type LayeringMode = 'knockout' | 'trap' | 'tuck' | 'solid-base'
 

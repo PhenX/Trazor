@@ -31,7 +31,7 @@ export interface StackPlanPayload {
   islandOffsets: Int32Array
   turnPolicy: TurnPolicy
   minArea: number
-  /** Underlay reach in px for a bounded (`tuck`) stack; negative = unlimited (`solid-base`). */
+  /** Underlay reach in px for a bounded (`tuck`) stack; negative = enclosure-limited (`solid-base`). */
   reachPx: number
 }
 

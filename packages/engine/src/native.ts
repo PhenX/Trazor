@@ -130,7 +130,7 @@ function overlapPx(settings: VectorizeSettings, imageWidth: number): number {
   return settings.gapFill
 }
 
-/** Underlay reach in px for the layered families: bounded for `tuck`, unlimited (−1) for `solid-base`. */
+/** Underlay reach in px for the layered families: a bounded margin for `tuck`, enclosure-limited (−1) for `solid-base`. */
 function stackReachPx(settings: VectorizeSettings, imageWidth: number): number {
   return settings.layering === 'tuck' ? overlapPx(settings, imageWidth) : -1
 }
@@ -1476,10 +1476,10 @@ function baseSig(base: BaseChoice): string {
  * the base layers' order, the label map they are cut from, and the enclosed
  * pockets lifted onto their own top layers.
  *
- * Each layer covers itself plus the sheets above that its own color actually
- * reaches, so lower shapes extend underneath their neighbours and edges cannot
- * crack — bounded to a margin for `tuck`, unbounded for `solid-base` (see the
- * per-layer flood in {@link decomposeStackedLayers}). The base sheet — pinned to
+ * Each layer covers itself plus the sheets above it — a bounded margin for
+ * `tuck`, or the regions it encloses for `solid-base` (so side-by-side siblings
+ * butt rather than sheet under each other; see the per-layer flood in
+ * {@link floodStackLayer}). The base sheet — pinned to
  * the bottom, showing as the outline/backdrop between the colors stacked on it —
  * is chosen by {@link stackingOrder} from `base` (most-connective by default, or
  * largest/darkest/manual); the rest stack by descending area. Order sets only
@@ -1618,8 +1618,8 @@ function stackPayload(
  * Stacked layering: build each cut layer's mask from `plan` and decompose it
  * into boundary rings, handing them to `onLayer` in paint order (base layers
  * bottom-up, then the lifted island layers). `reachPx` bounds each layer's
- * underlay — negative for a full underlay (`solid-base`), a pixel margin for a
- * bounded one (`tuck`). `startLayers` reports the layer total first, so a caller
+ * underlay — negative for the enclosure-limited underlay (`solid-base`), a pixel
+ * margin for a bounded one (`tuck`). `startLayers` reports the layer total first, so a caller
  * can drive progress; `onLayer` is awaited, so the caller controls where the
  * loop yields.
  */

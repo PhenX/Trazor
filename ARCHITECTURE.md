@@ -71,8 +71,10 @@ Layering is two families crossed by one `gapFill` overlap, chosen for how the sh
   `trap` spreads each region outward by `gapFill` (a same-color stroke) so a slight misregistration never shows the
   substrate. See [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
 - **tuck / solid-base** paint regions back-to-front, each lower layer extending underneath the ones above so edges never
-  crack — bounded to a `gapFill` margin for **tuck** (bulk caps at two sheets at a seam) or a full cumulative underlay
-  for **solid-base** (the base is a solid full-silhouette sheet, the standard cartoon build). The base sheet is chosen by
+  crack — bounded to a `gapFill` margin for **tuck** (bulk caps at two sheets at a seam) or enclosure-limited for
+  **solid-base**, where the base color floods to a solid full-silhouette sheet (the cartoon build) and each color backs
+  only the regions nested inside it, so two colors that merely sit side by side butt at their seam instead of one
+  sheeting under the other. The base sheet is chosen by
   `baseColor` — most-connective (the outline threading between the colors), largest, darkest (a guaranteed black base),
   or a manual color; the rest stack by descending area. Paint order sets only which sheet is the base — never the
   rendered pixels. A region fully enclosed by one other color and buried **two or more** sheets below that surround (a

@@ -157,8 +157,9 @@ export interface HelperStackMessage {
   minArea: number
   /**
    * Underlay reach in px: a lower layer extends under the sheets above it by at
-   * most this many pixels (`tuck`). Negative means unlimited — the layer floods
-   * the whole union component its color reaches (`solid-base`).
+   * most this many pixels (`tuck`). Negative selects the enclosure-limited
+   * underlay (`solid-base`): the layer backs only the regions it encloses, so
+   * the base floods to a full silhouette while adjacent siblings butt.
    */
   reachPx: number
 }

@@ -563,6 +563,49 @@ describe('layering families', () => {
     expect(tuck.warnings.some((w) => w.code === 'stack-depth')).toBe(false)
   })
 
+  it('solid-base butts directly-adjacent non-base colors instead of sheeting one under the other', async () => {
+    // A black frame (the base) around a red left half meeting a blue right half at
+    // the vertical midline, with no base color between them. Red must not extend a
+    // full sheet under blue — the base already backs the seam, so they butt.
+    const W = 120
+    function twoHalves(): RasterImage {
+      const img = createRaster(W, W)
+      fillRaster(img, 20, 20, 20) // black surround = the connective base
+      for (let y = 30; y < 90; y++) {
+        for (let x = 30; x < 90; x++) {
+          if (x < 60)
+            setPixel(img, x, y, 210, 60, 50) // red left half
+          else setPixel(img, x, y, 40, 110, 190) // blue right half, touching at x=60
+        }
+      }
+      return img
+    }
+    const s = settings({
+      mode: 'color',
+      palette: ['#141414', '#d23c32', '#286ebe'],
+      layering: 'solid-base',
+      groupByColor: true,
+      curveMode: 'polygon',
+      optimizeSvg: false,
+      minRegionArea: 8,
+    })
+    const res = await vectorize(twoHalves(), s)
+    // Max/min X of a color's cut layer (polygon paths are absolute `M x y L x y …`).
+    const spanX = (hex: string): { minX: number; maxX: number } => {
+      const g = new RegExp(`<g id="layer-\\d+"><title>${hex}</title>(.*?)</g>`, 's').exec(res.svg)
+      const xs = [...(g?.[1] ?? '').matchAll(/[ML]\s*(-?[\d.]+)\s+-?[\d.]+/g)].map((m) =>
+        Number(m[1]),
+      )
+      return { minX: Math.min(...xs), maxX: Math.max(...xs) }
+    }
+    const red = spanX('#d23c32')
+    const blue = spanX('#286ebe')
+    // Red stays in its own (left) half; blue in its own (right) half — they butt at
+    // the midline (~60) rather than one covering the whole interior (~18..102).
+    expect(red.maxX).toBeLessThan(72)
+    expect(blue.minX).toBeGreaterThan(48)
+  })
+
   it('tuck and solid-base reproduce every color but cut different geometry', async () => {
     // Order only sets which sheet backs which — the rendered colors are unchanged
     // — but the underlay masks differ, so the two SVGs are not identical.
