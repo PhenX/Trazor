@@ -12,6 +12,8 @@ function report(rows: Array<{ family: string; image: string } & Partial<TrazorMe
         edgeDE: r.edgeDE ?? 0.03,
         p95: r.p95 ?? 0.04,
         spurious: r.spurious ?? 0.015,
+        keyDE: r.keyDE ?? 0.02,
+        bf: r.bf ?? 0.8,
         nodes: r.nodes ?? 1000,
         bytes: r.bytes ?? 10000,
       },
@@ -20,6 +22,36 @@ function report(rows: Array<{ family: string; image: string } & Partial<TrazorMe
 }
 
 describe('A/B verdict', () => {
+  it('FAILs a better mean bought with a dropped key color', () => {
+    // The pixel mean improves while a small region lost its color: key ΔE up.
+    const base = report([{ family: 'illustration', image: 'a.png', dE: 0.021, keyDE: 0.02 }])
+    const cand = report([{ family: 'illustration', image: 'a.png', dE: 0.019, keyDE: 0.03 }])
+    expect(compareReports(base, cand).verdict).toBe('FAIL')
+  })
+
+  it('reads the boundary F-score as higher-is-better', () => {
+    const base = report([{ family: 'illustration', image: 'a.png', bf: 0.8 }])
+    const up = report([{ family: 'illustration', image: 'a.png', bf: 0.85 }])
+    const down = report([{ family: 'illustration', image: 'a.png', bf: 0.75 }])
+    expect(compareReports(base, up).verdict).toBe('PASS')
+    expect(compareReports(base, down).verdict).toBe('FAIL')
+  })
+
+  it('holds a metric a report predates as unchanged', () => {
+    const strip = (r: ReturnType<typeof report>) => ({
+      rows: r.rows.map(({ trazor: { keyDE: _k, bf: _b, ...rest }, ...row }) => ({
+        ...row,
+        trazor: rest,
+      })),
+    })
+    const base = strip(report([{ family: 'illustration', image: 'a.png', dE: 0.02 }]))
+    const cand = strip(report([{ family: 'illustration', image: 'a.png', dE: 0.017 }]))
+    const res = compareReports(base, cand)
+    expect(res.overall.metrics.keyDE.dir).toBe('held')
+    expect(res.overall.metrics.bf.dir).toBe('held')
+    expect(res.verdict).toBe('PASS')
+  })
+
   it('PASSes a clean win — both primaries improve, none regress', () => {
     const base = report([{ family: 'illustration', image: 'a.png', dE: 0.02, spurious: 0.015 }])
     const cand = report([{ family: 'illustration', image: 'a.png', dE: 0.017, spurious: 0.012 }])

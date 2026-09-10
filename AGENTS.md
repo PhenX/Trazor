@@ -172,8 +172,9 @@ A change to color, palette, segmentation or the tracer is only "better" if it is
   and prints **PASS / MIXED / FAIL** (`scripts/eval/README.md`). A change ships only on **PASS**; a **MIXED** is a real
   trade-off to weigh out loud with the user, and a **FAIL** does not ship. Don't hand-compare two runs by eye.
 - **Read the whole metric panel, not the mean.** Whole-image mean ΔE dilutes local damage; a change can lower the mean
-  while raising **spurious hue** (a saturated color invented at a seam). `eval:ab` judges on ΔE _and_ spurious hue for
-  exactly this reason — a better mean bought with worse spurious hue is not an improvement.
+  while raising **spurious hue** (a saturated color invented at a seam), dropping a small region's color (**key-color
+  ΔE**, one vote per color) or breaking an outline into pieces (**boundary F-score**). `eval:ab` judges on all four for
+  exactly this reason — a better mean bought with a worse one of the others is not an improvement.
 - **Gate at the routing you actually changed.** A palette (quantize) change shows nothing on images the recommender
   routes to region growing, and vice-versa; force the path (`--set segmentation=quantize`) or sweep a setting
   (`--sweep segmentation=quantize,regions`, or `--sweep 6,8,12` for `paletteSize`) so the change is exercised where it

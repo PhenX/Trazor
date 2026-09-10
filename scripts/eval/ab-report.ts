@@ -5,11 +5,14 @@
  * The point is to turn "eyeball two runs" into an explicit **PASS / MIXED /
  * FAIL** so a quality change can't ship on a diluted whole-image mean while a
  * localized metric regresses. It diffs every fidelity metric the harness
- * records — mean ΔE, the banding-aware edge ΔE, the p95 tail, and the
- * spurious-hue score — per image, per family, and overall, and judges the run
- * on the two that matter most: **mean ΔE and spurious-hue**. A change that
- * lowers the mean but raises spurious hue (a saturated color invented at a
- * seam) is not an improvement, and this catches exactly that.
+ * records — mean ΔE, the banding-aware edge ΔE, the p95 tail, the spurious-hue
+ * score, the key-color ΔE and the boundary F-score — per image, per family, and
+ * overall, and judges the run on the four that matter most: **mean ΔE,
+ * spurious hue, key-color ΔE and boundary F-score**. A change that lowers the
+ * mean but raises spurious hue (a saturated color invented at a seam), drops a
+ * small region's color (key ΔE up) or fragments an outline (boundary F down) is
+ * not an improvement, and this catches exactly that. Reports written before a
+ * metric existed read as unchanged on it.
  *
  * Deterministic and pure: it only reads the two JSON blobs. Used both as the
  * verdict step of `npm run eval:ab` and directly (`tsx ab-report.ts a.json
@@ -23,6 +26,10 @@ export interface TrazorMetrics {
   edgeDE: number
   p95: number
   spurious: number
+  /** Key-color ΔE (one vote per flat-region color of the reference). */
+  keyDE?: number
+  /** Boundary F-score at a 1-px tolerance; higher is better. */
+  bf?: number
   nodes: number
   bytes: number
   ms?: number
@@ -34,15 +41,21 @@ interface Row {
   trazor: TrazorMetrics
 }
 
-/** The metrics compared, in report order. `primary` ones decide the verdict. */
+/**
+ * The metrics compared, in report order. `primary` ones decide the verdict;
+ * `higher` marks the one where more is better (the boundary F-score).
+ */
 const METRICS = [
-  { key: 'dE', label: 'ΔE', primary: true },
-  { key: 'spurious', label: 'spurious', primary: true },
-  { key: 'edgeDE', label: 'band', primary: false },
-  { key: 'p95', label: 'p95', primary: false },
-  { key: 'nodes', label: 'nodes', primary: false },
+  { key: 'dE', label: 'ΔE', primary: true, higher: false },
+  { key: 'spurious', label: 'spurious', primary: true, higher: false },
+  { key: 'keyDE', label: 'key', primary: true, higher: false },
+  { key: 'bf', label: 'bf', primary: true, higher: true },
+  { key: 'edgeDE', label: 'band', primary: false, higher: false },
+  { key: 'p95', label: 'p95', primary: false, higher: false },
+  { key: 'nodes', label: 'nodes', primary: false, higher: false },
 ] as const
 type MetricKey = (typeof METRICS)[number]['key']
+const HIGHER_IS_BETTER = new Set<MetricKey>(METRICS.filter((m) => m.higher).map((m) => m.key))
 
 /**
  * A metric only counts as changed when it moves by more than `REL` (relative)
@@ -53,6 +66,8 @@ const REL = 0.02
 const ABS_FLOOR: Record<MetricKey, number> = {
   dE: 0.0005,
   spurious: 0.0005,
+  keyDE: 0.0005,
+  bf: 0.002,
   edgeDE: 0.0005,
   p95: 0.001,
   nodes: 20,
@@ -61,19 +76,31 @@ const ABS_FLOOR: Record<MetricKey, number> = {
 export type Direction = 'better' | 'worse' | 'held'
 export type Verdict = 'PASS' | 'MIXED' | 'FAIL'
 
+/**
+ * A higher-is-better score is judged on its shortfall from 1 (the boundary
+ * F-score's missing share of edges), so the relative threshold measures the
+ * error that moved, not the score that stayed near 1.
+ */
 function direction(key: MetricKey, base: number, cand: number): Direction {
-  const abs = cand - base
+  const higher = HIGHER_IS_BETTER.has(key)
+  const b = higher ? 1 - base : base
+  const c = higher ? 1 - cand : cand
+  const abs = c - b
   if (Math.abs(abs) < ABS_FLOOR[key]) return 'held'
-  if (base !== 0 && Math.abs(abs / base) < REL) return 'held'
-  // Every metric here is lower-is-better.
+  if (b !== 0 && Math.abs(abs / b) < REL) return 'held'
   return abs < 0 ? 'better' : 'worse'
+}
+
+/** A row's value for `key`; a metric a report predates reads as 0 (held against 0). */
+function valueOf(r: Row, key: MetricKey): number {
+  return r.trazor[key] ?? 0
 }
 
 /** Mean of `key` over a set of rows. */
 function mean(rows: Row[], key: MetricKey): number {
   if (rows.length === 0) return 0
   let s = 0
-  for (const r of rows) s += r.trazor[key]
+  for (const r of rows) s += valueOf(r, key)
   return s / rows.length
 }
 
@@ -105,16 +132,16 @@ export function overallVerdict(overall: GroupVerdict, families: GroupVerdict[]):
   let overallWorse = false
   let overallBetter = false
   for (const k of primaries) {
-    if (overall.metrics[k].dir === 'worse') overallWorse = true
-    if (overall.metrics[k].dir === 'better') overallBetter = true
+    if (overall.metrics[k]?.dir === 'worse') overallWorse = true
+    if (overall.metrics[k]?.dir === 'better') overallBetter = true
   }
   let familiesRegressed = 0
   let familyBetter = false
   for (const f of families) {
     let worse = false
     for (const k of primaries) {
-      if (f.metrics[k].dir === 'worse') worse = true
-      if (f.metrics[k].dir === 'better') familyBetter = true
+      if (f.metrics[k]?.dir === 'worse') worse = true
+      if (f.metrics[k]?.dir === 'better') familyBetter = true
     }
     if (worse) familiesRegressed++
   }
@@ -171,7 +198,8 @@ function pct(base: number, cand: number): string {
 }
 
 function fmt(v: number, key: MetricKey): string {
-  return key === 'nodes' ? String(Math.round(v)) : v.toFixed(4)
+  if (key === 'nodes') return String(Math.round(v))
+  return key === 'bf' ? v.toFixed(3) : v.toFixed(4)
 }
 
 function renderGroup(g: GroupVerdict): string {
@@ -197,6 +225,8 @@ function renderPerImage(res: AbResult): string[] {
       [
         cell('dE', r.base.dE, r.cand.dE, 'ΔE'),
         cell('spurious', r.base.spurious, r.cand.spurious, 'spur'),
+        cell('keyDE', r.base.keyDE ?? 0, r.cand.keyDE ?? 0, 'key'),
+        cell('bf', r.base.bf ?? 0, r.cand.bf ?? 0, 'bf'),
         cell('nodes', r.base.nodes, r.cand.nodes, 'nodes'),
       ].join('   ')
     )
@@ -222,7 +252,7 @@ export function renderReport(res: AbResult): string {
   lines.push(`  VERDICT: ${res.verdict}   ${banner}`)
   lines.push('')
   lines.push(
-    '  primary metrics: ΔE (mean fidelity) · spurious (invented hue at seams). lower is better.',
+    '  primary metrics: ΔE (mean fidelity) · spurious (invented hue at seams) · key (key-color ΔE, one vote per color) — lower is better; bf (boundary F-score) — higher is better.',
   )
   return lines.join('\n')
 }

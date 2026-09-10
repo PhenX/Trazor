@@ -6,7 +6,10 @@
  * SVGs with resvg over white, and reports, bucketed by image family:
  *
  *   - fidelity   — mean Oklab ΔE against the source, plus a banding-aware
- *                  edge-zone ΔE and a p95 worst-tail (lower is better).
+ *                  edge-zone ΔE, a p95 worst-tail and a spurious-hue score (lower
+ *                  is better); key-color ΔE (one vote per flat-region color, so a
+ *                  dropped small color shows) and the boundary F-score (edges the
+ *                  render invents or loses), from `lib.ts`.
  *   - node count — path complexity of the SVG (@trazor/svg analyzeSvg).
  *   - bytes      — serialized SVG size.
  *   - time       — wall-clock per tracer.
@@ -24,7 +27,9 @@
  *   npm run eval:corpus                 # write the default corpus first
  *   npm run eval:tracers                # compare over scripts/eval/corpus
  *   npm run eval:tracers -- --data <dir> --montage --json report.json
- *     --data <dir>     folder of PNG/JPEG images (+ optional families.json); default scripts/eval/corpus
+ *     --data <dir>     folder of PNG/JPEG images (+ optional families.json); default scripts/eval/corpus.
+ *                      A `<dir>/clean/<name>.png` next to an image is its clean reference (the
+ *                      artwork before compression): the image is traced, the reference is scored.
  *     --max-dim N      resize inputs so the longest side ≤ N before tracing both (default
  *                      1600; 0 = native — VTracer has no downscale and takes minutes on a 24 MP photo)
  *     --out <dir>      where SVGs / montage are written; default eval-artifacts/tracers
@@ -164,30 +169,44 @@ function resolveVtracer(override?: string): string | null {
   }
 }
 
-interface TraceResult {
+interface Fidelity {
   dE: number
   edgeDE: number
   p95: number
   spurious: number
+  keyDE: number
+  keyWorst: number
+  keyMissed: number
+  keyCount: number
+  bfPrecision: number
+  bfRecall: number
+  bf: number
   nodes: number
   bytes: number
+}
+
+interface TraceResult extends Fidelity {
   ms: number
   svg: string
 }
 
-/** Banding-aware fidelity of a rendered SVG vs. the source, aligned by size. */
-function fidelity(
-  svg: string,
-  srcWhite: RasterImage,
-): { dE: number; edgeDE: number; p95: number; spurious: number; nodes: number; bytes: number } {
-  const render = rasterizeSvg(svg, srcWhite.width)
-  const ref = resampleNearest(srcWhite, render.width, render.height)
+/** Fidelity of a rendered SVG vs. the scoring reference (opaque over white), aligned by size. */
+function fidelity(svg: string, refWhite: RasterImage): Fidelity {
+  const render = rasterizeSvg(svg, refWhite.width)
+  const ref = resampleNearest(refWhite, render.width, render.height)
   const q = qualityStats(render, ref)
   return {
     dE: q.mean,
     edgeDE: q.edge,
     p95: q.p95,
     spurious: q.spurious,
+    keyDE: q.keyDE,
+    keyWorst: q.keyWorst,
+    keyMissed: q.keyMissed,
+    keyCount: q.keyCount,
+    bfPrecision: q.bfPrecision,
+    bfRecall: q.bfRecall,
+    bf: q.bf,
     nodes: analyzeSvg(svg).nodeCount,
     bytes: Buffer.byteLength(svg, 'utf8'),
   }
@@ -222,13 +241,13 @@ function trazorSettings(
 
 async function traceTrazor(
   image: RasterImage,
-  srcWhite: RasterImage,
+  refWhite: RasterImage,
   settings: VectorizeSettings,
 ): Promise<TraceResult> {
   const t0 = performance.now()
   const result = await vectorize(image, settings)
   const ms = performance.now() - t0
-  const f = fidelity(result.svg, srcWhite)
+  const f = fidelity(result.svg, refWhite)
   return { ...f, ms, svg: result.svg }
 }
 
@@ -236,7 +255,7 @@ function traceVtracer(
   bin: string,
   inPath: string,
   outSvg: string,
-  srcWhite: RasterImage,
+  refWhite: RasterImage,
   args: string[],
 ): TraceResult {
   const t0 = performance.now()
@@ -246,13 +265,15 @@ function traceVtracer(
   })
   const ms = performance.now() - t0
   const svg = readFileSync(outSvg, 'utf8')
-  return { ...fidelity(svg, srcWhite), ms, svg }
+  return { ...fidelity(svg, refWhite), ms, svg }
 }
 
 interface Row {
   family: string
   name: string
   profile: ProfileId
+  /** What the trace was scored against: the traced input, or its clean reference. */
+  reference: 'input' | 'clean'
   trazor: TraceResult
   vtracer: TraceResult | null
 }
@@ -271,6 +292,11 @@ function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
     edgeDE: mean((t) => t.edgeDE),
     p95: mean((t) => t.p95),
     spurious: mean((t) => t.spurious),
+    keyDE: mean((t) => t.keyDE),
+    keyMissed: mean((t) => t.keyMissed),
+    bfPrecision: mean((t) => t.bfPrecision),
+    bfRecall: mean((t) => t.bfRecall),
+    bf: mean((t) => t.bf),
     nodes: mean((t) => t.nodes),
     bytes: mean((t) => t.bytes),
     ms: mean((t) => t.ms),
@@ -293,7 +319,19 @@ function printTable(rows: Row[], hasV: boolean): void {
         'ms T',
         'ms V',
       ]
-    : ['family', 'image', 'ΔE T', 'spurious T', 'nodes T', 'bytes T', 'ms T']
+    : [
+        'family',
+        'image',
+        'ΔE',
+        'spurious',
+        'key ΔE',
+        'lost',
+        'bf P',
+        'bf R',
+        'nodes',
+        'bytes',
+        'ms',
+      ]
   const body: string[][] = []
   for (const r of rows) {
     const t = r.trazor
@@ -316,9 +354,13 @@ function printTable(rows: Row[], hasV: boolean): void {
     } else {
       body.push([
         r.family,
-        r.name,
+        r.reference === 'clean' ? `${r.name} *` : r.name,
         fmt(t.dE),
         fmt(t.spurious),
+        fmt(t.keyDE),
+        `${t.keyMissed}/${t.keyCount}`,
+        fmt(t.bfPrecision, 3),
+        fmt(t.bfRecall, 3),
         String(Math.round(t.nodes)),
         String(t.bytes),
         String(Math.round(t.ms)),
@@ -346,7 +388,8 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
       const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
         `  ${fam.padEnd(12)} ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}` +
-          `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
+          `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   key ΔE T ${fmt(t.keyDE)} V ${fmt(v.keyDE)}` +
+          `   bf T ${fmt(t.bf, 3)} V ${fmt(v.bf, 3)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
       )
     } else {
       // Show band + spurious + p95 alongside the mean: a change can lower the
@@ -354,7 +397,8 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
       // alone would hide that, so never print it alone.
       console.log(
         `  ${fam.padEnd(12)} ΔE ${fmt(t.dE)}   band ${fmt(t.edgeDE)}   spurious ${fmt(t.spurious)}` +
-          `   p95 ${fmt(t.p95)}   nodes ${Math.round(t.nodes)}`,
+          `   p95 ${fmt(t.p95)}   key ΔE ${fmt(t.keyDE)}   lost ${t.keyMissed.toFixed(1)}` +
+          `   bf ${fmt(t.bf, 3)} (P ${fmt(t.bfPrecision, 3)} R ${fmt(t.bfRecall, 3)})   nodes ${Math.round(t.nodes)}`,
       )
     }
   }
@@ -364,7 +408,7 @@ const THUMB_W = 520
 
 function metaLine(t: TraceResult | null): string {
   return t
-    ? `ΔE ${fmt(t.dE, 4)} · band ${fmt(t.edgeDE, 4)} · spurious ${fmt(t.spurious, 4)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB`
+    ? `ΔE ${fmt(t.dE, 4)} · band ${fmt(t.edgeDE, 4)} · spurious ${fmt(t.spurious, 4)} · key ΔE ${fmt(t.keyDE, 4)} (${t.keyMissed}/${t.keyCount} lost) · bf ${fmt(t.bf, 3)} · ${Math.round(t.nodes)} nodes · ${(t.bytes / 1024).toFixed(1)} KB`
     : '—'
 }
 
@@ -417,6 +461,12 @@ ${rows.map(cell).join('\n')}`
   writeFileSync(join(outDir, 'index.html'), html)
 }
 
+/** The metrics a report row carries (everything but the SVG text). */
+function metricsOf(t: TraceResult): Omit<TraceResult, 'svg'> {
+  const { svg: _svg, ...rest } = t
+  return rest
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   if (!existsSync(args.data)) {
@@ -459,7 +509,24 @@ async function main(): Promise<void> {
     const src = args.maxDim > 0 ? resizeToFit(original, args.maxDim) : original
     const srcPng = join(srcDir, `${base}.png`)
     writePng(srcPng, src)
-    const srcWhite = flattenOverWhite(src)
+    // Score against the clean reference when the corpus carries one for this
+    // image (the artwork before compression, resized exactly like the input), so
+    // a trace is rewarded for recovering the artwork, not its artifacts.
+    const cleanPath = join(args.data, 'clean', `${base}.png`)
+    let reference: Row['reference'] = 'input'
+    let refWhite = flattenOverWhite(src)
+    if (existsSync(cleanPath)) {
+      const cleanOriginal = readRgba(cleanPath)
+      const clean = args.maxDim > 0 ? resizeToFit(cleanOriginal, args.maxDim) : cleanOriginal
+      if (clean.width === src.width && clean.height === src.height) {
+        refWhite = flattenOverWhite(clean)
+        reference = 'clean'
+      } else {
+        console.error(
+          `  ! ${name}: clean reference is ${clean.width}×${clean.height}, input is ${src.width}×${src.height} — scoring against the input`,
+        )
+      }
+    }
 
     // Trazor uses its own auto-recommendation per image (what the app applies on
     // load) unless --profile forces one; vtracer gets the matching-intent flags.
@@ -468,7 +535,7 @@ async function main(): Promise<void> {
     const vtracerArgs = PROFILE_VTRACER[profile] ?? DEFAULT_VTRACER
 
     // oxlint-disable-next-line no-await-in-loop -- sequential: one engine run at a time
-    const trazor = await traceTrazor(src, srcWhite, settings)
+    const trazor = await traceTrazor(src, refWhite, settings)
     writeFileSync(join(outTrazor, `${base}.svg`), trazor.svg)
 
     let vt: TraceResult | null = null
@@ -478,7 +545,7 @@ async function main(): Promise<void> {
           vbin as string,
           srcPng,
           join(outVtracer, `${base}.svg`),
-          srcWhite,
+          refWhite,
           vtracerArgs,
         )
       } catch (err) {
@@ -486,10 +553,12 @@ async function main(): Promise<void> {
         console.error(`  ! vtracer failed on ${name}: ${err instanceof Error ? err.message : err}`)
       }
     }
-    rows.push({ family, name, profile, trazor, vtracer: vt })
+    rows.push({ family, name, profile, reference, trazor, vtracer: vt })
   }
 
   printTable(rows, hasV)
+  const cleanCount = rows.filter((r) => r.reference === 'clean').length
+  if (cleanCount > 0) console.log(`\n  * scored against the clean reference in ${args.data}/clean/`)
   printFamilySummary(rows, hasV)
 
   if (hasV) {
@@ -518,26 +587,9 @@ async function main(): Promise<void> {
       family: r.family,
       image: r.name,
       profile: r.profile,
-      trazor: {
-        dE: r.trazor.dE,
-        edgeDE: r.trazor.edgeDE,
-        p95: r.trazor.p95,
-        spurious: r.trazor.spurious,
-        nodes: r.trazor.nodes,
-        bytes: r.trazor.bytes,
-        ms: r.trazor.ms,
-      },
-      vtracer: r.vtracer
-        ? {
-            dE: r.vtracer.dE,
-            edgeDE: r.vtracer.edgeDE,
-            p95: r.vtracer.p95,
-            spurious: r.vtracer.spurious,
-            nodes: r.vtracer.nodes,
-            bytes: r.vtracer.bytes,
-            ms: r.vtracer.ms,
-          }
-        : null,
+      reference: r.reference,
+      trazor: metricsOf(r.trazor),
+      vtracer: r.vtracer ? metricsOf(r.vtracer) : null,
     }))
     mkdirSync(join(args.json, '..'), { recursive: true })
     writeFileSync(

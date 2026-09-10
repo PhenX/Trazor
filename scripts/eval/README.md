@@ -86,11 +86,38 @@ useful sanity check, not a target — a trained model predicts a sparser, denois
 `tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
 tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
 each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
-reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, and a **spurious-hue**
-score — each traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam
-(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus node
-count, byte size, and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
-global k-means on color content.
+reports, per family, mean **ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, a **spurious-hue** score — each
+traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam (a wrong-colored
+band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — the **key-color ΔE** and the
+**boundary F-score** (below), plus node count, byte size, and wall-clock time. It's the one axis where VTracer's
+spatially-coherent clustering beats Trazor's global k-means on color content.
+
+Every ΔE is measured in **toe-Oklab** — Oklab with the lightness toe (`lightnessToe`, `@trazor/core`). Plain Oklab
+spreads the darkest colors so far apart that sRGB (0,0,0) and (6,6,6) sit as far apart as a real hue change: the
+compression noise inside a black outline, and a trace that paints that outline black, would count as color errors on a
+par with a wrong hue. The studio's on-screen fidelity score uses the same space.
+
+### The two flat-art indicators
+
+The pixel-weighted mean forgives exactly what a viewer notices first on a cartoon: a small region painted the wrong
+color, and an outline that breaks up. Two indicators, both in `lib.ts`, charge those directly:
+
+- **Key-color ΔE** (`key ΔE`, `lost`). The reference's key colors are the distinct colors of its flat regions of
+  meaningful area (flat pixels — gradient under 0.02, eroded by one pixel — grouped into 4-connected components,
+  components closer than 0.05 merged into one color, a color qualifying with at least `max(24, 0.01 %)` of the pixels).
+  Each key color is scored as the mean ΔE between the render and that color over the color's own flat pixels, and
+  the colors are averaged **with one vote each**: a bow tie's orange dropped from the palette costs as much as the
+  backdrop would. `lost` counts the key colors rendered more than 0.08 from themselves.
+- **Boundary F-score** (`bf`, `bf P`, `bf R`; Csurka, Larlus & Perronnin 2013). Both images are reduced to
+  one-pixel-wide edge maps (forward-difference gradient, non-maximum suppression along the dominant axis, threshold
+  0.06) and matched within one pixel. **Precision** falls when the render draws edges the reference lacks — a
+  fragmented outline, a rim band, speckle; **recall** falls when the render lost edges the reference has — a
+  merged-away detail, a thin line. `bf` is their harmonic mean.
+
+A corpus may carry a **clean reference** for an image: `<data>/clean/<name>.png`, the artwork before compression
+(a PNG render of the vector original, say), with the identical size as the input. The image is traced as it is and
+scored against the reference, so a trace is rewarded for recovering the artwork rather than its artifacts; the table
+marks such rows with `*`.
 
 It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
 segmentation. Re-run it after either and watch the photo/gradient gap close **without** regressing the flat / line-art
@@ -149,18 +176,20 @@ npm run eval:ab -- --data <dir> --profile illustration
 ```
 
 The verdict prints **per image** (biggest ΔE move first, so a lone regression stands out), then per
-family, then overall — no hand-diffing two runs to find which image moved. `--sweep <key>=<v1,v2,…>`
+family, then overall — no hand-diffing two runs to find which image moved. The metrics that decide it are the
+four that matter most: **mean ΔE, spurious hue, key-color ΔE** (lower is better) and the **boundary F-score**
+(higher is better); a report written before a metric existed reads as unchanged on it. `--sweep <key>=<v1,v2,…>`
 re-runs the whole A/B at each value of any setting and prints one verdict per value; a bare `--sweep
 6,8,12` is shorthand for `paletteSize`. To sweep a tunable that is a code constant rather than a
 setting, either thread it through `VectorizeSettings` while prototyping (then `--sweep` reaches it) or
 edit the constant and re-run `eval:ab` once per value.
 
 It requires uncommitted changes (the candidate) to compare against HEAD (the baseline); because the packages export TS
-source with no build step, stashing the source and re-running is a true baseline. The verdict rests on the two metrics
-that matter most — **mean ΔE and spurious-hue** — judged per family and overall:
+source with no build step, stashing the source and re-running is a true baseline. The verdict rests on the four primary metrics —
+**mean ΔE, spurious hue, key-color ΔE and the boundary F-score** — judged per family and overall:
 
 - **PASS** — a primary metric improved and **no** family regressed. Ships.
-- **FAIL** — a primary metric (ΔE or spurious hue) regressed overall, or on two-plus families. Does **not** ship.
+- **FAIL** — a primary metric regressed overall, or on two-plus families. Does **not** ship.
 - **MIXED** — a genuine trade-off (some families win, some lose). A human weighs it.
 
 `ab-report.ts` is the pure verdict engine (unit-tested in `ab-report.test.ts`) and also runs standalone on any two
