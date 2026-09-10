@@ -54,3 +54,29 @@ describe('hex parsing', () => {
     expect(rgbToHex(300, -5, 12.4)).toBe('#ff000c')
   })
 })
+
+describe('lightness toe', () => {
+  it('maps [0, 1] onto [0, 1], monotonically, and inverts exactly', async () => {
+    const { lightnessToe, lightnessToeInverse } = await import('@trazor/core')
+    expect(lightnessToe(0)).toBe(0)
+    expect(lightnessToe(1)).toBeCloseTo(1, 6)
+    let prev = -1
+    for (let i = 0; i <= 100; i++) {
+      const L = i / 100
+      const Lr = lightnessToe(L)
+      expect(Lr).toBeGreaterThan(prev)
+      expect(lightnessToeInverse(Lr)).toBeCloseTo(L, 9)
+      prev = Lr
+    }
+  })
+
+  it('pulls the darkest colors together and leaves light tones nearly alone', async () => {
+    const { lightnessToe } = await import('@trazor/core')
+    const near = rgbToOklab(6 / 255, 6 / 255, 6 / 255)[0]
+    // Plain Oklab: (6,6,6) sits far from black; the toe brings it within a hair.
+    expect(near).toBeGreaterThan(0.1)
+    expect(lightnessToe(near)).toBeLessThan(0.05)
+    const light = rgbToOklab(230 / 255, 230 / 255, 230 / 255)[0]
+    expect(Math.abs(lightnessToe(light) - light)).toBeLessThan(0.03)
+  })
+})

@@ -31,6 +31,7 @@ export function suggestPalettes(
       quality: 4,
       seed: SUGGEST_SEED,
       autoK: true,
+      regionSeeds: true,
     }).paletteHex
 
   if (distinct >= 2 && distinct <= 32) {

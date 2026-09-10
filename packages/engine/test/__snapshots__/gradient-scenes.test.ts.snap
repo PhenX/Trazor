@@ -24,10 +24,10 @@ exports[`gradient scenes > 'dusk landscape (studio sample, illust…' 1`] = `
 {
   "colors": 12,
   "gradients": [
-    "g0 linear (233,365)->(235,0) 0:#df8e6d 0.11:#ce8173 0.36:#8f5383 1:#18286e",
-    "g1 linear (249,391)->(249,479) 0:#2c2246 1:#100c22",
-    "g3 linear (251,337)->(252,405) 0:#6f4771 0.95:#583963 1:#462f56",
-    "g2 radial c(298,202) r27 0:#fff6d6 1:#ffd48d",
+    "g0 linear (233,365)->(235,0) 0:#e08f6d 0.11:#ce8173 0.36:#8f5383 1:#18286e",
+    "g1 linear (252,335)->(252,405) 0:#704872 0.95:#583963 1:#482f57",
+    "g2 linear (249,391)->(249,479) 0:#2c2246 1:#100c22",
+    "g3 radial c(298,202) r33 0:#fff6d6 1:#ffcc7d",
   ],
   "paths": 5,
 }
@@ -53,10 +53,12 @@ exports[`gradient scenes > 'gentle low-contrast ramp' 1`] = `
 
 exports[`gradient scenes > 'glow over a sky ramp (stacked overlay)' 1`] = `
 {
-  "colors": 7,
+  "colors": 11,
   "gradients": [
-    "g0 linear (119,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
-    "g1 radial c(151,61) r26 0:#fff078 1:#fff078@0",
+    "g0 linear (119,0)->(119,180) 0:#141e5a 0.45:#7c504c 1:#fa8c3c",
+    "g3 linear (151,38)->(151,88) 0:#65565a 0.39:#7c6359 1:#88594d",
+    "g1 radial c(151,61) r26 0:#c7b26a 1:#c7b26a@0",
+    "g2 radial c(151,61) r11 0:#fff179 1:#c4ad68",
     "url(#g1) over url(#g0)",
   ],
   "paths": 7,
@@ -87,7 +89,7 @@ exports[`gradient scenes > 'noisy ramp' 1`] = `
 {
   "colors": 4,
   "gradients": [
-    "g0 linear (0,31)->(160,30) 0:#1c1c1c 0.3:#5a5a5a 0.67:#a5a5a5 1:#e6e6e6",
+    "g0 linear (0,31)->(160,30) 0:#1c1c1c 0.14:#3a3a3a 0.39:#6c6c6c 1:#e6e6e6",
   ],
   "paths": 1,
 }

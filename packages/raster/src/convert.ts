@@ -6,7 +6,7 @@
  * sRGB→linear LUT so converting a whole image allocates nothing per pixel and
  * produces bit-identical values to calling the core helper.
  */
-import { srgbToLinear } from '@trazor/core'
+import { lightnessToe, srgbToLinear } from '@trazor/core'
 import type { GrayImage, RasterImage } from '@trazor/core'
 
 /** `srgbToLinear(v / 255)` for every byte value. */
@@ -32,6 +32,20 @@ export function toOklabBuffer(image: RasterImage): Float32Array {
     out[o + 1] = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s
     out[o + 2] = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
   }
+  return out
+}
+
+/**
+ * Toe-Oklab: interleaved [Lr, a, b] per pixel, length `width * height * 3`,
+ * where `Lr` is Oklab L through the lightness toe (`lightnessToe`). The feature
+ * space of color segmentation (k-means quantization, region growing and the label
+ * cleanup passes): Oklab alone stretches the darkest end so far that the
+ * compression noise inside a black outline spans the distance of a real hue
+ * change, splitting one black into several palette colors. Alpha is ignored.
+ */
+export function toToeOklabBuffer(image: RasterImage): Float32Array {
+  const out = toOklabBuffer(image)
+  for (let o = 0; o < out.length; o += 3) out[o] = lightnessToe(out[o])
   return out
 }
 

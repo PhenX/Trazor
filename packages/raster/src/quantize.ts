@@ -5,14 +5,20 @@
  *   are labeled with the nearest palette entry (palette order preserved).
  * - exact: at most `k` distinct colors in the image → the palette is exactly
  *   those colors with direct label assignment (pixel-art fidelity).
- * - k-means++ (Arthur & Vassilvitskii 2007) seeded by mulberry32 on a
- *   deterministic pixel sample, Lloyd iterations scaled by `quality`.
+ * - k-means in toe-Oklab (Oklab with the lightness toe, `lightnessToe`, so the
+ *   compression noise inside a black outline is not a spread of colors): seeded
+ *   from the colors of the image's flat regions (`regionSeeds`, salient first)
+ *   and then by greedy k-means++ (Arthur & Vassilvitskii 2007; Celebi, Kingravi
+ *   & Vela 2013) on a deterministic pixel sample drawn with mulberry32, Lloyd
+ *   iterations scaled by `quality`, then near-duplicate (`autoK`) and
+ *   thin-variant (`mergeThinVariants`) palette merges.
  *
  * Everything is deterministic for a given input and seed.
  */
-import { clampInt, hexToRgb, mulberry32, rgbToHex, rgbToOklab } from '@trazor/core'
+import { clampInt, hexToRgb, lightnessToe, mulberry32, rgbToHex, rgbToOklab } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
-import { toOklabBuffer } from './convert'
+import { toToeOklabBuffer } from './convert'
+import { chamferDistance } from './thin'
 
 export interface QuantizeOptions {
   /** Target palette size, 2..64. Ignored when `fixedPalette` is used. */
@@ -36,6 +42,23 @@ export interface QuantizeOptions {
   /** Merge near-duplicate centroids (Oklab distance < 0.03) after k-means. */
   autoK?: boolean
   /**
+   * Seed the centroids from the colors of the image's flat regions before
+   * k-means++ draws the rest: every distinct color that owns a flat interior of
+   * meaningful area gets a centroid of its own, most distinct and largest first,
+   * so a small but distinct region (a bow tie, a highlight) is never outvoted by
+   * a large region's shading or compression noise. Oklab only; a photograph with
+   * no flat regions seeds exactly as without. Absent ⇒ pure k-means++ seeding.
+   */
+  regionSeeds?: boolean
+  /**
+   * After clustering, fold a palette color that exists only as thin slivers —
+   * no interior of its own, the color a compressed outline bleeds into or an
+   * anti-aliased rim mixes — into the color it lies against, when the two are
+   * close. A palette entry spent on such a variant fragments the outline it
+   * lives in into two colors. Absent ⇒ no merge.
+   */
+  mergeThinVariants?: boolean
+  /**
    * Non-empty ⇒ skip clustering: the palette is exactly these '#rrggbb'
    * colors in the given order (invalid entries dropped; if none are valid the
    * normal clustering path runs). Zero-count entries keep their label slot.
@@ -55,6 +78,42 @@ export interface QuantizeResult {
 
 /** Oklab distance below which `autoK` merges two centroids. */
 const MERGE_DIST = 0.03
+
+/** Toe-Oklab gradient below which a pixel is a flat-region interior (`regionSeeds`). */
+const SEED_FLAT_T = 0.02
+/** Flat area a region color needs to seed a centroid: `max(SEED_MIN_AREA, SEED_MIN_AREA_FRAC · pixels)`. */
+const SEED_MIN_AREA = 16
+const SEED_MIN_AREA_FRAC = 1e-4
+/** Flat components smaller than this are noise for seeding purposes. */
+const SEED_COMP_MIN = 4
+/** Most distinct flat-region colors tracked while grouping components. */
+const SEED_MAX_MODES = 4096
+
+/**
+ * `mergeThinVariants`: a label none of whose pixels lies farther than this
+ * from another label — strokes, rims and specks, never a solid region — folds
+ * into the one close color (within `VARIANT_MAX_DIST`, toe-Oklab) it lies
+ * against, provided no other label it borders substantially (at least
+ * `VARIANT_NEIGHBOR_SHARE` of its boundary) is close as well: a band of a
+ * posterized ramp sits between two close bands and is a step of the ramp, not
+ * a variant. The radius scales with the image so an outline drawn a few pixels
+ * wide at any size still reads as a stroke: `max(STROKE_MIN_RADIUS,
+ * STROKE_RADIUS_FRAC · longest side)`.
+ */
+const STROKE_MIN_RADIUS = 3
+const STROKE_RADIUS_FRAC = 0.004
+const VARIANT_MAX_DIST = 0.12
+const VARIANT_NEIGHBOR_SHARE = 0.2
+
+/**
+ * A palette color is the mean of its label's interior pixels (all four
+ * neighbors the same label) when at least `CORE_MIN_PIXELS` and
+ * `CORE_MIN_SHARE` of the label are interior; a rim the label gathered along
+ * its edges is a mixture that would tint it toward its neighbors. A label that
+ * is all rim keeps the mean over every pixel.
+ */
+const CORE_MIN_PIXELS = 16
+const CORE_MIN_SHARE = 0.05
 
 // ---- hue-flip guard (Oklab k-means labeling) ----
 // A diverging ramp (red→white→blue) crosses through neutral, where k-means
@@ -262,7 +321,7 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
         paletteHex.push(rgbToHex(r, g, b))
         if (useOklab) {
           const [L, A, B] = rgbToOklab(r / 255, g / 255, b / 255)
-          cent[c * 3] = L
+          cent[c * 3] = lightnessToe(L)
           cent[c * 3 + 1] = A
           cent[c * 3 + 2] = B
         } else {
@@ -271,7 +330,7 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
           cent[c * 3 + 2] = b / 255
         }
       }
-      const feat = useOklab ? toOklabBuffer(image) : null
+      const feat = useOklab ? toToeOklabBuffer(image) : null
       // Fixed palette is an explicit, exact "nearest of these colors" contract —
       // no hue guard (it would silently override the user's chosen mapping).
       const counts = assignNearest(labelData, cent, m, data, feat, mask, n, null, false)
@@ -366,7 +425,7 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   }
 
   // ---- k-means path ----
-  const feat = useOklab ? toOklabBuffer(image) : null
+  const feat = useOklab ? toToeOklabBuffer(image) : null
   const rng = mulberry32(opts.seed)
 
   // Optional edge-aware pool: pixels eligible to train the centroids. Built
@@ -434,43 +493,80 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
     }
   }
 
-  // k-means++ seeding (D² weighting).
+  // Seeds: the flat-region colors first, then greedy k-means++ for the rest.
   const cent = new Float32Array(k * 3)
+  let seeded = 0
+  if (feat !== null && opts.regionSeeds === true) {
+    const seeds = flatRegionSeeds(feat, mask, width, height, k)
+    cent.set(seeds)
+    seeded = seeds.length / 3
+  }
+  if (seeded === 0) {
+    const first = ((rng() * sampleN) | 0) * 3
+    cent[0] = sf[first]
+    cent[1] = sf[first + 1]
+    cent[2] = sf[first + 2]
+    seeded = 1
+  }
+  // Squared distance from each sample to its nearest seed so far.
   const minD2 = new Float64Array(sampleN).fill(Infinity)
-  const first = ((rng() * sampleN) | 0) * 3
-  cent[0] = sf[first]
-  cent[1] = sf[first + 1]
-  cent[2] = sf[first + 2]
-  for (let c = 1; c < k; c++) {
-    const px = cent[(c - 1) * 3]
-    const py = cent[(c - 1) * 3 + 1]
-    const pz = cent[(c - 1) * 3 + 2]
-    let total = 0
+  const lowerMinD2 = (c: number): void => {
+    const px = cent[c * 3]
+    const py = cent[c * 3 + 1]
+    const pz = cent[c * 3 + 2]
     for (let s = 0, o = 0; s < sampleN; s++, o += 3) {
       const dx = sf[o] - px
       const dy = sf[o + 1] - py
       const dz = sf[o + 2] - pz
       const d2 = dx * dx + dy * dy + dz * dz
       if (d2 < minD2[s]) minD2[s] = d2
-      total += minD2[s]
     }
+  }
+  for (let c = 0; c < seeded; c++) lowerMinD2(c)
+  // Greedy k-means++: each further seed is the best of a few D²-weighted draws
+  // — the one that lowers the total potential most — so one unlucky draw into
+  // the noise of a region already covered cannot cost a distinct color its seed.
+  const trials = 2 + Math.floor(Math.log(k))
+  for (let c = seeded; c < k; c++) {
+    let total = 0
+    for (let s = 0; s < sampleN; s++) total += minD2[s]
     let pick = sampleN - 1
-    if (total > 0) {
-      const target = rng() * total
-      let acc = 0
-      for (let s = 0; s < sampleN; s++) {
-        acc += minD2[s]
-        if (acc >= target) {
-          pick = s
-          break
+    if (total <= 0) {
+      pick = (rng() * sampleN) | 0
+    } else {
+      let bestPotential = Infinity
+      for (let t = 0; t < trials; t++) {
+        const target = rng() * total
+        let cand = sampleN - 1
+        let acc = 0
+        for (let s = 0; s < sampleN; s++) {
+          acc += minD2[s]
+          if (acc >= target) {
+            cand = s
+            break
+          }
+        }
+        const px = sf[cand * 3]
+        const py = sf[cand * 3 + 1]
+        const pz = sf[cand * 3 + 2]
+        let potential = 0
+        for (let s = 0, o = 0; s < sampleN; s++, o += 3) {
+          const dx = sf[o] - px
+          const dy = sf[o + 1] - py
+          const dz = sf[o + 2] - pz
+          const d2 = dx * dx + dy * dy + dz * dz
+          potential += d2 < minD2[s] ? d2 : minD2[s]
+        }
+        if (potential < bestPotential) {
+          bestPotential = potential
+          pick = cand
         }
       }
-    } else {
-      pick = (rng() * sampleN) | 0
     }
     cent[c * 3] = sf[pick * 3]
     cent[c * 3 + 1] = sf[pick * 3 + 1]
     cent[c * 3 + 2] = sf[pick * 3 + 2]
+    lowerMinD2(c)
   }
 
   // Lloyd iterations, early exit on convergence.
@@ -564,7 +660,7 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
         lab[c * 3 + 2] = cent[c * 3 + 2]
       } else {
         const [L, A, B] = rgbToOklab(cent[c * 3], cent[c * 3 + 1], cent[c * 3 + 2])
-        lab[c * 3] = L
+        lab[c * 3] = lightnessToe(L)
         lab[c * 3 + 1] = A
         lab[c * 3 + 2] = B
       }
@@ -647,6 +743,38 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
     }
   }
 
+  // Thin-variant merge: fold a sliver-only color into the color it lies against.
+  if (opts.mergeThinVariants === true && m > 1) {
+    const m2 = mergeThinVariants(labelData, width, height, m, cent, rgbSums, fullCounts)
+    if (m2 < m) {
+      fullCounts = fullCounts.slice(0, m2)
+      m = m2
+    }
+  }
+
+  // Palette color = exact mean RGB of the label's pixels (works for both color
+  // spaces and never leaves the sRGB gamut) — over its interior when the
+  // interior speaks for it (see `CORE_MIN_PIXELS`), so the rims a label
+  // gathered along its edges never tint it toward its neighbors.
+  const coreSums = new Float64Array(m * 3)
+  const coreCounts = new Uint32Array(m)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x
+      const a = labelData[i]
+      if (a < 0) continue
+      if (x > 0 && labelData[i - 1] !== a) continue
+      if (x < width - 1 && labelData[i + 1] !== a) continue
+      if (y > 0 && labelData[i - width] !== a) continue
+      if (y < height - 1 && labelData[i + width] !== a) continue
+      const p = i * 4
+      coreSums[a * 3] += data[p]
+      coreSums[a * 3 + 1] += data[p + 1]
+      coreSums[a * 3 + 2] += data[p + 2]
+      coreCounts[a]++
+    }
+  }
+
   // Palette ordered by pixel count descending.
   const order = orderByCountDesc(fullCounts, m)
   const rank = new Int32Array(m)
@@ -656,12 +784,13 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   for (let pos = 0; pos < m; pos++) {
     const src = order[pos]
     rank[src] = pos
-    // Palette color = exact mean RGB of the cluster's pixels (works for both
-    // color spaces and never leaves the sRGB gamut).
-    const inv = 1 / fullCounts[src]
-    const r = Math.round(rgbSums[src * 3] * inv)
-    const g = Math.round(rgbSums[src * 3 + 1] * inv)
-    const b = Math.round(rgbSums[src * 3 + 2] * inv)
+    const coreSpeaks =
+      coreCounts[src] >= CORE_MIN_PIXELS && coreCounts[src] >= CORE_MIN_SHARE * fullCounts[src]
+    const colorSums = coreSpeaks ? coreSums : rgbSums
+    const inv = 1 / (coreSpeaks ? coreCounts[src] : fullCounts[src])
+    const r = Math.round(colorSums[src * 3] * inv)
+    const g = Math.round(colorSums[src * 3 + 1] * inv)
+    const b = Math.round(colorSums[src * 3 + 2] * inv)
     paletteRgb[pos * 3] = r
     paletteRgb[pos * 3 + 1] = g
     paletteRgb[pos * 3 + 2] = b
@@ -673,4 +802,313 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   }
   const labels: LabelMap = { width, height, data: labelData, count: m }
   return { labels, paletteHex, paletteRgb, counts }
+}
+
+/**
+ * Flat-region seeds for `regionSeeds`: up to `k` toe-Oklab colors, interleaved.
+ * Flat pixels (gradient under `SEED_FLAT_T`) form 4-connected components; the
+ * components are grouped into distinct colors (closer than `MERGE_DIST` is one
+ * color) and a color qualifies with at least `max(SEED_MIN_AREA,
+ * SEED_MIN_AREA_FRAC · n)` flat pixels. The largest color seeds first; each
+ * further seed is the qualifying color maximizing (squared distance to the
+ * nearest seed so far) × (flat area) — the deterministic counterpart of the
+ * D²-weighted k-means++ draw, one seed per distinct region color.
+ */
+function flatRegionSeeds(
+  feat: Float32Array,
+  mask: Uint8Array | null,
+  w: number,
+  h: number,
+  k: number,
+): Float32Array {
+  const n = w * h
+  // Flat pixels: max toe-Oklab distance to the right/down neighbors, both ways.
+  const flat = new Uint8Array(n)
+  const limit2 = SEED_FLAT_T * SEED_FLAT_T
+  for (let i = 0; i < n; i++) flat[i] = mask === null || mask[i] !== 0 ? 1 : 0
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      const o = i * 3
+      if (x + 1 < w) {
+        const dl = feat[o] - feat[o + 3]
+        const da = feat[o + 1] - feat[o + 4]
+        const db = feat[o + 2] - feat[o + 5]
+        if (dl * dl + da * da + db * db >= limit2) {
+          flat[i] = 0
+          flat[i + 1] = 0
+        }
+      }
+      if (y + 1 < h) {
+        const q = (i + w) * 3
+        const dl = feat[o] - feat[q]
+        const da = feat[o + 1] - feat[q + 1]
+        const db = feat[o + 2] - feat[q + 2]
+        if (dl * dl + da * da + db * db >= limit2) {
+          flat[i] = 0
+          flat[i + w] = 0
+        }
+      }
+    }
+  }
+  // 4-connected flat components: mean color and area.
+  const comp = new Int32Array(n).fill(-1)
+  const stack = new Int32Array(n)
+  const compL: number[] = []
+  const compA: number[] = []
+  const compB: number[] = []
+  const compArea: number[] = []
+  for (let s = 0; s < n; s++) {
+    if (flat[s] === 0 || comp[s] !== -1) continue
+    const id = compL.length
+    let sp = 0
+    stack[sp++] = s
+    comp[s] = id
+    let sumL = 0
+    let sumA = 0
+    let sumB = 0
+    let c = 0
+    while (sp > 0) {
+      const p = stack[--sp]
+      sumL += feat[p * 3]
+      sumA += feat[p * 3 + 1]
+      sumB += feat[p * 3 + 2]
+      c++
+      const x = p - ((p / w) | 0) * w
+      if (x > 0 && flat[p - 1] !== 0 && comp[p - 1] === -1) {
+        comp[p - 1] = id
+        stack[sp++] = p - 1
+      }
+      if (x < w - 1 && flat[p + 1] !== 0 && comp[p + 1] === -1) {
+        comp[p + 1] = id
+        stack[sp++] = p + 1
+      }
+      if (p >= w && flat[p - w] !== 0 && comp[p - w] === -1) {
+        comp[p - w] = id
+        stack[sp++] = p - w
+      }
+      if (p < n - w && flat[p + w] !== 0 && comp[p + w] === -1) {
+        comp[p + w] = id
+        stack[sp++] = p + w
+      }
+    }
+    compL.push(sumL / c)
+    compA.push(sumA / c)
+    compB.push(sumB / c)
+    compArea.push(c)
+  }
+  // Group the components into distinct colors, largest component first.
+  const order: number[] = []
+  for (let i = 0; i < compL.length; i++) if (compArea[i] >= SEED_COMP_MIN) order.push(i)
+  order.sort((a, b) => compArea[b] - compArea[a] || a - b)
+  const modeL: number[] = []
+  const modeA: number[] = []
+  const modeB: number[] = []
+  const modeArea: number[] = []
+  const merge2 = MERGE_DIST * MERGE_DIST
+  for (const c of order) {
+    let hit = -1
+    for (let m = 0; m < modeL.length; m++) {
+      const dl = compL[c] - modeL[m]
+      const da = compA[c] - modeA[m]
+      const db = compB[c] - modeB[m]
+      if (dl * dl + da * da + db * db < merge2) {
+        hit = m
+        break
+      }
+    }
+    if (hit < 0) {
+      if (modeL.length >= SEED_MAX_MODES) continue
+      modeL.push(compL[c])
+      modeA.push(compA[c])
+      modeB.push(compB[c])
+      modeArea.push(compArea[c])
+      continue
+    }
+    const t = modeArea[hit] + compArea[c]
+    modeL[hit] = (modeL[hit] * modeArea[hit] + compL[c] * compArea[c]) / t
+    modeA[hit] = (modeA[hit] * modeArea[hit] + compA[c] * compArea[c]) / t
+    modeB[hit] = (modeB[hit] * modeArea[hit] + compB[c] * compArea[c]) / t
+    modeArea[hit] = t
+  }
+  const minArea = Math.max(SEED_MIN_AREA, SEED_MIN_AREA_FRAC * n)
+  const eligible: number[] = []
+  for (let m = 0; m < modeL.length; m++) if (modeArea[m] >= minArea) eligible.push(m)
+  if (eligible.length === 0 || k <= 0) return new Float32Array(0)
+  eligible.sort((a, b) => modeArea[b] - modeArea[a] || a - b)
+  // Farthest-first with the flat area as weight, from the largest color.
+  const chosen: number[] = [eligible[0]]
+  const minD2 = new Float64Array(eligible.length).fill(Infinity)
+  const taken = new Uint8Array(eligible.length)
+  taken[0] = 1
+  while (chosen.length < k) {
+    const last = chosen[chosen.length - 1]
+    let best = -1
+    let bestScore = 0
+    for (let e = 0; e < eligible.length; e++) {
+      if (taken[e] !== 0) continue
+      const m = eligible[e]
+      const dl = modeL[m] - modeL[last]
+      const da = modeA[m] - modeA[last]
+      const db = modeB[m] - modeB[last]
+      const d2 = dl * dl + da * da + db * db
+      if (d2 < minD2[e]) minD2[e] = d2
+      const score = minD2[e] * modeArea[m]
+      if (score > bestScore) {
+        bestScore = score
+        best = e
+      }
+    }
+    if (best < 0) break
+    taken[best] = 1
+    chosen.push(eligible[best])
+  }
+  const out = new Float32Array(chosen.length * 3)
+  for (let i = 0; i < chosen.length; i++) {
+    out[i * 3] = modeL[chosen[i]]
+    out[i * 3 + 1] = modeA[chosen[i]]
+    out[i * 3 + 2] = modeB[chosen[i]]
+  }
+  return out
+}
+
+/**
+ * `mergeThinVariants`: fold each stroke-like label — one whose farthest pixel
+ * from any other label is within the stroke radius, so it is all outline, rim
+ * or speck — into the one close color (within `VARIANT_MAX_DIST` in toe-Oklab)
+ * among the labels it borders substantially. A compressed image bleeds the color
+ * next to a dark outline into the outline (chroma is stored at half
+ * resolution), so one black ink comes back as a brownish black beside orange and
+ * a bluish black beside blue, and the outline breaks into pieces where it
+ * crosses from one to the other; each bleed is a stroke close to black and far
+ * from the orange or blue on its other side, and folds back into black. A thin
+ * feature of a genuinely different color (a dark line on a light field) is far
+ * from everything it touches and is kept; a band of a posterized ramp is close
+ * to the bands on both sides and is kept as a step of the ramp. Merges relabel
+ * the map and pool the centroid, RGB sums and counts; labels are then
+ * compacted. Returns the new label count. Deterministic: the narrowest label is
+ * judged first, ties by id.
+ */
+function mergeThinVariants(
+  labelData: Int32Array,
+  w: number,
+  h: number,
+  m: number,
+  cent: Float32Array,
+  rgbSums: Float64Array,
+  counts: Uint32Array,
+): number {
+  const n = w * h
+  const strokeRadius = Math.max(STROKE_MIN_RADIUS, STROKE_RADIUS_FRAC * Math.max(w, h))
+  const own: BinaryMask = { width: w, height: h, data: new Uint8Array(n) }
+  const adj = new Float64Array(m * m)
+  const reach = new Float64Array(m)
+  const judged = new Uint8Array(m)
+  const toe = (c: number): [number, number, number] => {
+    const inv = 1 / counts[c]
+    const [L, a, b] = rgbToOklab(
+      (rgbSums[c * 3] * inv) / 255,
+      (rgbSums[c * 3 + 1] * inv) / 255,
+      (rgbSums[c * 3 + 2] * inv) / 255,
+    )
+    return [lightnessToe(L), a, b]
+  }
+  for (;;) {
+    adj.fill(0)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        const a = labelData[i]
+        if (a < 0) continue
+        const r = x < w - 1 ? labelData[i + 1] : a
+        const d = y < h - 1 ? labelData[i + w] : a
+        if (r >= 0 && r !== a) {
+          adj[a * m + r]++
+          adj[r * m + a]++
+        }
+        if (d >= 0 && d !== a) {
+          adj[a * m + d]++
+          adj[d * m + a]++
+        }
+      }
+    }
+    // Each unjudged label's reach: how far its farthest pixel lies from any
+    // other label (masked-out pixels count as other).
+    for (let c = 0; c < m; c++) {
+      if (judged[c] !== 0 || counts[c] === 0) continue
+      for (let i = 0; i < n; i++) own.data[i] = labelData[i] === c ? 1 : 0
+      const dist = chamferDistance(own)
+      let far = 0
+      for (let i = 0; i < n; i++) if (dist[i] > far) far = dist[i]
+      reach[c] = far
+    }
+    // The narrowest unjudged stroke-like label.
+    let x = -1
+    let xReach = strokeRadius
+    for (let c = 0; c < m; c++) {
+      if (judged[c] !== 0 || counts[c] === 0) continue
+      if (reach[c] < xReach) {
+        xReach = reach[c]
+        x = c
+      }
+    }
+    if (x < 0) break
+    judged[x] = 1
+    // The one close color among the labels it borders substantially.
+    const [xl, xa, xb] = toe(x)
+    let boundary = 0
+    for (let c = 0; c < m; c++) boundary += adj[x * m + c]
+    let y = -1
+    let yAdj = 0
+    let close = 0
+    for (let c = 0; c < m; c++) {
+      const shared = adj[x * m + c]
+      if (c === x || counts[c] === 0 || shared < VARIANT_NEIGHBOR_SHARE * boundary) continue
+      const [cl, ca, cb] = toe(c)
+      const dl = xl - cl
+      const da = xa - ca
+      const db = xb - cb
+      if (dl * dl + da * da + db * db >= VARIANT_MAX_DIST * VARIANT_MAX_DIST) continue
+      close++
+      if (shared > yAdj) {
+        yAdj = shared
+        y = c
+      }
+    }
+    if (y < 0 || close > 1) continue
+    // Merge x into y.
+    for (let i = 0; i < n; i++) if (labelData[i] === x) labelData[i] = y
+    const wx = counts[x]
+    const wy = counts[y]
+    const wt = wx + wy
+    cent[y * 3] = (cent[y * 3] * wy + cent[x * 3] * wx) / wt
+    cent[y * 3 + 1] = (cent[y * 3 + 1] * wy + cent[x * 3 + 1] * wx) / wt
+    cent[y * 3 + 2] = (cent[y * 3 + 2] * wy + cent[x * 3 + 2] * wx) / wt
+    rgbSums[y * 3] += rgbSums[x * 3]
+    rgbSums[y * 3 + 1] += rgbSums[x * 3 + 1]
+    rgbSums[y * 3 + 2] += rgbSums[x * 3 + 2]
+    counts[y] = wt
+    counts[x] = 0
+    // A merged-into label changed shape; judge it afresh.
+    judged[y] = 0
+  }
+  // Compact the surviving labels.
+  const remap = new Int32Array(m).fill(-1)
+  let m2 = 0
+  for (let c = 0; c < m; c++) {
+    if (counts[c] === 0) continue
+    remap[c] = m2
+    cent[m2 * 3] = cent[c * 3]
+    cent[m2 * 3 + 1] = cent[c * 3 + 1]
+    cent[m2 * 3 + 2] = cent[c * 3 + 2]
+    rgbSums[m2 * 3] = rgbSums[c * 3]
+    rgbSums[m2 * 3 + 1] = rgbSums[c * 3 + 1]
+    rgbSums[m2 * 3 + 2] = rgbSums[c * 3 + 2]
+    counts[m2] = counts[c]
+    m2++
+  }
+  if (m2 < m) {
+    for (let i = 0; i < n; i++) if (labelData[i] >= 0) labelData[i] = remap[labelData[i]]
+  }
+  return m2
 }

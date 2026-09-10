@@ -31,9 +31,9 @@
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
  * result mirrors {@link QuantizeResult} so the engine consumes it identically.
  */
-import { createLabelMap, oklabToRgb, rgbToHex } from '@trazor/core'
+import { createLabelMap, lightnessToeInverse, oklabToRgb, rgbToHex } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
-import { toOklabBuffer } from './convert'
+import { toToeOklabBuffer } from './convert'
 
 export interface SegmentOptions {
   /**
@@ -56,6 +56,13 @@ export interface SegmentOptions {
   mergeSizeBias?: number
   /** Regions smaller than this many pixels are merged into their most similar neighbor. */
   minRegionArea?: number
+  /**
+   * Keep a region below `minRegionArea` when its color is at least this far
+   * (toe-Oklab ΔE) from the closest neighbor it would fold into — a clock's
+   * numerals, a highlight, a logo dot — while a low-contrast speck (compression
+   * ringing, an anti-alias sliver) still folds. Absent ⇒ every small region folds.
+   */
+  keepContrast?: number
   /** Hard cap on the final region count: keep merging the closest adjacent pair until at most this many remain. 0 = no cap. */
   maxRegions?: number
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
@@ -75,6 +82,12 @@ export interface SegmentResult {
 const DEFAULT_FLAT = 0.02
 const DEFAULT_MERGE = 0.1
 const DEFAULT_MIN_AREA = 16
+/**
+ * Smallest blob the marker rescue considers, whatever `minRegionArea` says: a
+ * numeral or a dot a few pixels across has to become a marker to survive the
+ * flood at all; whether it then survives the size merge is `keepContrast`'s call.
+ */
+const RESCUE_MIN_AREA = 4
 
 /**
  * Oklab ΔE two *large* regions must be within to merge under size-aware merging
@@ -161,10 +174,11 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const mergeThreshold = opts.mergeThreshold ?? DEFAULT_MERGE
   const sizeBias = Math.min(1, Math.max(0, opts.mergeSizeBias ?? 0))
   const minArea = Math.max(0, opts.minRegionArea ?? DEFAULT_MIN_AREA)
+  const keepContrast = opts.keepContrast ?? 0
   const maxRegions = Math.max(0, opts.maxRegions ?? 0)
   const mask = opts.mask?.data ?? null
 
-  const ok = toOklabBuffer(image)
+  const ok = toToeOklabBuffer(image)
 
   // ---- 1. Oklab gradient magnitude (max ΔE to any 4-neighbor) ----
   const grad = new Float32Array(n)
@@ -292,7 +306,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     mA,
     mB,
     regionCount,
-    Math.max(1, minArea),
+    Math.max(1, Math.min(minArea, RESCUE_MIN_AREA)),
   )
   for (const f of rescued) {
     const id = regionCount++
@@ -365,6 +379,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     mergeThreshold,
     sizeBias,
     minArea,
+    keepContrast,
     maxRegions,
   )
 
@@ -394,7 +409,11 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   for (let r = 0; r < regionCount; r++) {
     const lab = rootLabel[parent[r]]
     if (lab < 0 || paletteHex[lab] !== undefined) continue
-    const [rr, gg, bb] = oklabToRgb(mL[parent[r]], mA[parent[r]], mB[parent[r]])
+    const [rr, gg, bb] = oklabToRgb(
+      lightnessToeInverse(mL[parent[r]]),
+      mA[parent[r]],
+      mB[parent[r]],
+    )
     const R = Math.round(rr * 255)
     const G = Math.round(gg * 255)
     const B = Math.round(bb * 255)
@@ -820,18 +839,23 @@ function rescueMarkerlessFeatures(
 
 /**
  * Agglomerative region-adjacency-graph merge. Union-find over regions; each
- * round folds every adjacent pair whose mean-color ΔE is under `mergeThreshold`
- * or where either side is below `minArea`, closest pair first. Adjacent pairs
- * are judged on their means over *every* pixel, rims included: a sliver the
- * flood grew from a lone flat pixel is rim material (a chroma-bled speck of
- * black along a pupil), and what folds it into the region it lies against is
- * the tint of that region's own rim — which its flat core would hide. The
- * surviving *color* is that of the merged flat cores when they speak for the
- * region (see `coreSpeaks` — so the rims a region gathers never tint it, and a
- * white counter split into specks by compression still reads white), else the
- * mean over every pixel; consolidation and the `maxRegions` cap compare those
- * rendered colors, so two regions that would paint the same become one palette
- * entry. Returns the parent array (each region's representative root).
+ * round folds every adjacent pair whose color ΔE is under `mergeThreshold`
+ * or where either side is below `minArea`, closest pair first. A pair of
+ * regions whose flat cores both speak for them (see `coreSpeaks`) is judged on
+ * those core colors — a ridge a few pixels wide on a pumpkin is its own shade,
+ * and the rim it gathered along both edges must not average it into the body.
+ * Any other pair is judged on the means over *every* pixel, rims included: a
+ * sliver the flood grew from a lone flat pixel is rim material (a chroma-bled
+ * speck of black along a pupil), and what folds it into the region it lies
+ * against is the tint of that region's own rim. A region below `minArea` is
+ * spared the size fold when it sits at least `keepContrast` from the closest
+ * neighbor (a numeral on a clock face). The surviving *color* is that of the
+ * merged flat cores when they speak for the region — so the rims a region
+ * gathers never tint it, and a white counter split into specks by compression
+ * still reads white — else the mean over every pixel; consolidation and the
+ * `maxRegions` cap compare those rendered colors, so two regions that would
+ * paint the same become one palette entry. Returns the parent array (each
+ * region's representative root).
  */
 function mergeRegions(
   region: Int32Array,
@@ -852,6 +876,7 @@ function mergeRegions(
   mergeThreshold: number,
   sizeBias: number,
   minArea: number,
+  keepContrast: number,
   maxRegions: number,
 ): Int32Array {
   const parent = new Int32Array(regionCount)
@@ -958,19 +983,26 @@ function mergeRegions(
     return edges
   }
 
+  // ΔE a pair is judged on: the core colors when both cores speak, else the
+  // rim-inclusive means.
+  const pairDelta = (a: number, b: number): number =>
+    coreSpeaks(coreN[a], size[a]) && coreSpeaks(coreN[b], size[b])
+      ? meanDelta(a, b)
+      : fullDelta(a, b)
   let activeRegions = regionCount
   for (let round = 0; round < 64; round++) {
     const edges = collectEdges()
     // Candidates ordered by ΔE, then region ids, for a deterministic sequence.
     const cand = edges
-      .map(([a, b]): [number, number, number] => [a, b, fullDelta(a, b)])
+      .map(([a, b]): [number, number, number] => [a, b, pairDelta(a, b)])
       .toSorted((p, q) => p[2] - q[2] || p[0] - q[0] || p[1] - q[1])
     let merged = false
     for (const [a, b, d] of cand) {
       const ra = find(a)
       const rb = find(b)
       if (ra === rb) continue
-      if (d < mergeLimit(ra, rb) || size[ra] < minArea || size[rb] < minArea) {
+      const small = size[ra] < minArea || size[rb] < minArea
+      if (d < mergeLimit(ra, rb) || (small && (keepContrast <= 0 || d < keepContrast))) {
         union(ra, rb)
         activeRegions--
         merged = true
@@ -1002,7 +1034,9 @@ function mergeRegions(
     }
     if (repFor === -1) reps.push(r)
     else {
-      union(r, repFor)
+      // The representative stays the root: `union` keeps its first argument
+      // when the two sizes tie, and a representative is never the smaller.
+      union(repFor, r)
       activeRegions--
     }
   }

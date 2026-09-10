@@ -356,3 +356,115 @@ describe('quantize — fixed palette', () => {
     expect(res.paletteHex).toEqual([rgbToHex(0xaa, 0xbb, 0xcc), '#ffffff'])
   })
 })
+
+describe('quantize — flat-region seeds, thin variants and interior colors', () => {
+  /**
+   * A shaded 60×60 field (two close greens, jittered) with a small 8×8 orange
+   * square: the orange is 1.8 % of the pixels, the field's two shades are far
+   * larger, so a tight palette is decided by where the seeds land.
+   */
+  function shadedFieldWithSquare(): ReturnType<typeof rasterOf> {
+    const rng = mulberry32(7)
+    const j = (): number => ((rng() * 5) | 0) - 2
+    return rasterOf(60, 60, (x, y) => {
+      if (x >= 40 && x < 48 && y >= 40 && y < 48) return [240, 140, 30, 255] as Rgba
+      const base: [number, number, number] = y < 30 ? [60, 150, 70] : [70, 165, 80]
+      return [
+        clampByte(base[0] + j()),
+        clampByte(base[1] + j()),
+        clampByte(base[2] + j()),
+        255,
+      ] as Rgba
+    })
+  }
+
+  const nearestTo = (res: ReturnType<typeof quantize>, rgb: [number, number, number]): number => {
+    let best = Infinity
+    for (let c = 0; c < res.paletteHex.length; c++) {
+      const d =
+        Math.abs(res.paletteRgb[c * 3] - rgb[0]) +
+        Math.abs(res.paletteRgb[c * 3 + 1] - rgb[1]) +
+        Math.abs(res.paletteRgb[c * 3 + 2] - rgb[2])
+      best = Math.min(best, d)
+    }
+    return best
+  }
+
+  it('region seeds give a small distinct flat region its own palette color', () => {
+    const img = shadedFieldWithSquare()
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const res = quantize(img, { ...baseOpts, k: 3, seed, regionSeeds: true })
+      expect(nearestTo(res, [240, 140, 30])).toBeLessThan(12)
+    }
+  })
+
+  it('region seeds are deterministic and do nothing on an image with no flat region', () => {
+    const rng = mulberry32(3)
+    const noise = rasterOf(40, 40, () => [
+      (rng() * 256) | 0,
+      (rng() * 256) | 0,
+      (rng() * 256) | 0,
+      255,
+    ])
+    const a = quantize(noise, { ...baseOpts, k: 6, seed: 9 })
+    const b = quantize(noise, { ...baseOpts, k: 6, seed: 9, regionSeeds: true })
+    expect(b.paletteHex).toEqual(a.paletteHex)
+    expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
+  })
+
+  it('folds a stroke-only color close to the color it lies against (a bleed) into it', () => {
+    // A black field meets an orange field; the two-pixel border on the black
+    // side is a dark brown (orange bled into the black), a distinct third color
+    // that exists only as a stroke. It must fold into black, not stay a color.
+    const rng = mulberry32(11)
+    const j = (): number => ((rng() * 5) | 0) - 2
+    const img = rasterOf(60, 40, (x) => {
+      const base: [number, number, number] =
+        x < 28 ? [10, 5, 5] : x < 30 ? [40, 12, 6] : [235, 145, 40]
+      return [
+        clampByte(base[0] + j()),
+        clampByte(base[1] + j()),
+        clampByte(base[2] + j()),
+        255,
+      ] as Rgba
+    })
+    const plain = quantize(img, { ...baseOpts, k: 3, seed: 1 })
+    const merged = quantize(img, { ...baseOpts, k: 3, seed: 1, mergeThinVariants: true })
+    expect(plain.paletteHex.length).toBe(3)
+    expect(merged.paletteHex.length).toBe(2)
+    // The strip is now the black label, and the black stays black.
+    const at = (x: number): number => merged.labels.data[20 * 60 + x]
+    expect(at(29)).toBe(at(5))
+    expect(merged.paletteRgb[at(5) * 3]).toBeLessThan(20)
+  })
+
+  it('keeps a thin feature of a genuinely different color', () => {
+    // A dark line two pixels wide across a light field is a stroke, but far
+    // from everything it touches: it keeps its palette color.
+    const img = rasterOf(60, 40, (_x, y) =>
+      y >= 19 && y < 21 ? [20, 20, 20, 255] : [230, 230, 230, 255],
+    )
+    const rng = mulberry32(5)
+    for (let i = 0; i < img.data.length; i += 4)
+      img.data[i] = clampByte(img.data[i] + ((rng() * 3) | 0) - 1)
+    const res = quantize(img, { ...baseOpts, k: 4, seed: 1, mergeThinVariants: true })
+    expect(nearestTo(res, [20, 20, 20])).toBeLessThan(8)
+  })
+
+  it('takes a palette color from the label interior, not its rims', () => {
+    // A blue square whose one-pixel rim is a light mixture with the white
+    // around it; the rim is labeled blue, but must not lighten the blue.
+    const img = rasterOf(60, 60, (x, y) => {
+      const inside = x >= 20 && x < 40 && y >= 20 && y < 40
+      const rim = !inside && x >= 19 && x < 41 && y >= 19 && y < 41
+      if (inside) return [30, 60, 200, 255]
+      if (rim) return [110, 130, 220, 255]
+      return [255, 255, 255, 255]
+    })
+    const rng = mulberry32(2)
+    for (let i = 0; i < img.data.length; i += 4)
+      img.data[i + 1] = clampByte(img.data[i + 1] + ((rng() * 3) | 0) - 1)
+    const res = quantize(img, { ...baseOpts, k: 2, seed: 1 })
+    expect(nearestTo(res, [30, 60, 200])).toBeLessThan(12)
+  })
+})

@@ -51,7 +51,8 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 ```
 decode (consumer)
   → resize → denoise → flatten alpha            [raster]         preprocess
-  → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
+  → color/grayscale:  toe-Oklab k-means (flat-region seeds + greedy k-means++,
+                      thin-variant merge), or region growing [raster]         palette
                       region cleanup             [raster]         segment
                       gradients: merge ramp bands → linear/radial gradient paint [raster] (opt-in)
                       stacked:  per-layer Potrace chain           trace
@@ -83,7 +84,10 @@ decode (consumer)
   `normalizeSettings` clamping) and `TARGET_PROFILES`, Oklab color math, geometry helpers, `mulberry32`, and the
   `TrazorEngine`/`VectorizeResult`/progress/warning types every layer speaks.
 - **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
-  bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
+  bilateral filters, alpha flattening, deterministic k-means quantization in toe-Oklab (Oklab with a lightness toe, so
+  the compression noise inside a black outline is one black), seeded from the image's flat-region colors so a small
+  but distinct region keeps its color, with a thin-variant merge that folds a compressed outline's chroma bleed back
+  into its ink (plus exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
   quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and

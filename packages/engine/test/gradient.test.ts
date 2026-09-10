@@ -70,11 +70,16 @@ function fadeImage(w = 120, h = 120): RasterImage {
   return img
 }
 
-/** Every `<path>`'s `d` and `fill`, in document order. */
+/**
+ * Every shape element's geometry and `fill`, in document order — a `<path>`'s
+ * `d`, or a recognized primitive's (`<circle>`, `<ellipse>`, `<rect>`) own
+ * attributes — so an overlay painted over an underlay of identical geometry is
+ * found whichever element the serializer chose for the shape.
+ */
 function pathsOf(svg: string): { d: string; fill: string }[] {
-  return [...svg.matchAll(/<path\b[^>]*>/g)].map((m) => ({
-    d: /\bd="([^"]*)"/.exec(m[0])?.[1] ?? '',
-    fill: /\bfill="([^"]*)"/.exec(m[0])?.[1] ?? '',
+  return [...svg.matchAll(/<(?:path|circle|ellipse|rect)\b[^>]*>/g)].map((m) => ({
+    d: m[0].replace(/\s*fill="[^"]*"/, ''),
+    fill: (m[0].match(/\bfill="([^"]*)"/) ?? [])[1] ?? '',
   }))
 }
 
@@ -168,9 +173,12 @@ describe('gradient detection — engine', () => {
 
   for (const layering of ['cutout', 'stacked'] as const) {
     it(`paints a glow over a sky as an opacity overlay above an underlay (${layering})`, async () => {
+      // 16 colors: the scene's sky and glow posterize into bands the overlay
+      // explains as one ramp under one glow; a larger budget cuts the glow's
+      // skirt into bands of its own that ship as a second ramp.
       const res = await vectorize(
         glowImage(),
-        normalizeSettings({ paletteSize: 24, gradients: true, layering }),
+        normalizeSettings({ paletteSize: 16, gradients: true, layering }),
       )
       expect(res.svg).toContain('stop-opacity=')
       // The overlay shape is painted right after a shape of identical geometry

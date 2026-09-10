@@ -58,12 +58,34 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Björn Ottosson, “A perceptual color space for image processing” (Oklab), 2020.** <https://bottosson.github.io/posts/oklab/>
   All perceptual color math: clustering distances, palette merging, ΔE
   fidelity scoring (`packages/core/src/color.ts`).
+- **Björn Ottosson, “Two new color spaces for color picking: Okhsv and Okhsl”, 2021.** <https://bottosson.github.io/posts/colorpicker/>
+  The lightness toe (its `toe` / `toe_inv` functions): Oklab L through a
+  toe that pulls the darkest end in toward CIELAB's L*, so the compression
+  noise inside a black outline no longer spans the distance of a real hue
+  change (`lightnessToe` in `packages/core/src/color.ts`). Toe-Oklab is the
+  feature space of color segmentation — k-means quantization, region growing
+  and the label cleanup passes (`packages/raster/src/convert.ts`
+  `toToeOklabBuffer`) — and of the evaluation harness's ΔE panel
+  (`scripts/eval/lib.ts`).
 - **Stuart P. Lloyd, “Least squares quantization in PCM”, _IEEE Trans.
   Information Theory_ 28(2), 1982.** The assign/update iterations the k-means
   refinement runs after seeding (`packages/raster/src/quantize.ts`).
 - **David Arthur & Sergei Vassilvitskii, “k-means++: The Advantages of Careful
   Seeding”, _SODA_ 2007.** Palette clustering seeding
-  (`packages/raster/src/quantize.ts`).
+  (`packages/raster/src/quantize.ts`), in its greedy form — each further seed
+  is the best of a few D²-weighted draws — as evaluated in **M. Emre Celebi,
+  Hassan A. Kingravi & Patricio A. Vela, “A comparative study of efficient
+  initialization methods for the k-means clustering algorithm”, _Expert
+  Systems with Applications_ 40(1), 2013.** The seeds themselves come first
+  from the colors of the image's flat regions, largest and then farthest
+  (weighted by area) first — the deterministic counterpart of the same D²
+  draw, one seed per distinct region color (`regionSeeds`).
+- **Gunilla Borgefors, “Distance transformations in digital images”, _Computer
+  Vision, Graphics, and Image Processing_ 34, 1986.** The chamfer distance also
+  tells a stroke-like palette color (no pixel farther than a few pixels from
+  another color: an outline, a rim, a speck) from a region, for the
+  thin-variant palette merge that folds a compressed outline's chroma bleed
+  back into its ink (`mergeThinVariants` in `packages/raster/src/quantize.ts`).
 - **Nobuyuki Otsu, “A Threshold Selection Method from Gray-Level Histograms”,
   _IEEE Trans. SMC_ 9(1), 1979.** Automatic binarization threshold
   (`packages/raster/src/threshold.ts`).
@@ -204,3 +226,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   produced are discussed in [`ML_STRATEGY.md`](ML_STRATEGY.md). Citations move
   into this file once the corresponding code ships — as the learned edge
   pre-pass now has (above).
+
+## Evaluation (scripts/eval)
+
+- **Gabriela Csurka, Diane Larlus & Florent Perronnin, “What is a good
+  evaluation measure for semantic segmentation?”, _BMVC_ 2013.** The boundary
+  F-score (BF score): precision and recall of a result's edge pixels against
+  the reference's within a pixel tolerance, the harness's indicator for
+  borders that are followed (edges the trace invents lower precision, edges it
+  loses lower recall) — `boundaryStats` in `scripts/eval/lib.ts`, edges thinned
+  by non-maximum suppression along their dominant axis.

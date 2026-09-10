@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS,
   deltaEOkSq,
   hexToRgb,
+  lightnessToe,
   mmPerPx,
   normalizeSettings,
   nowMs,
@@ -70,6 +71,7 @@ import {
   smoothLabelsSpatial,
   toGrayscale,
   toOklabBuffer,
+  toToeOklabBuffer,
   zhangSuenThin,
 } from '@trazor/raster'
 import {
@@ -94,8 +96,13 @@ import type {
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
-/** Oklab ΔE above which a small region counts as a keep-worthy detail. */
-const DETAIL_CONTRAST = 0.1
+/**
+ * Toe-Oklab ΔE above which a small region counts as a keep-worthy detail under
+ * `preserveDetails` — a numeral on a clock face, a highlight, a logo dot — while
+ * a speck of compression ringing or an anti-alias sliver, which sits within a
+ * tenth or two of what surrounds it, still folds away.
+ */
+const DETAIL_CONTRAST = 0.25
 
 /**
  * Stacked layering lifts an enclosed pocket onto its own top layer only when at
@@ -922,6 +929,7 @@ async function colorPipeline(
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
+      keepContrast: settings.preserveDetails ? DETAIL_CONTRAST : undefined,
       maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
       mask: opaque,
     })
@@ -978,6 +986,8 @@ async function colorPipeline(
       mask: opaque,
       sampleMask: clusterSample,
       autoK: settings.autoPaletteSize,
+      regionSeeds: true,
+      mergeThinVariants: true,
       fixedPalette: settings.palette,
     }
     const q = quantize(image, quantOpts)
@@ -995,8 +1005,8 @@ async function colorPipeline(
     if (settings.colorCoherence > 0) {
       smoothLabelsSpatial(
         q.labels,
-        toOklabBuffer(image),
-        paletteToOklab(q.paletteRgb),
+        toToeOklabBuffer(image),
+        paletteToToeOklab(q.paletteRgb),
         settings.colorCoherence * COHERENCE_LAMBDA,
         COHERENCE_ROUNDS,
         protect ?? undefined,
@@ -1011,19 +1021,8 @@ async function colorPipeline(
     // `protect` (hoisted above) lets an edge hint keep small regions on a
     // predicted boundary; with no hint this is byte-identical to the plain merge.
     if (settings.preserveDetails) {
-      const oklab = new Float32Array(q.paletteHex.length * 3)
-      for (let i = 0; i < q.paletteHex.length; i++) {
-        const [L, a, b] = rgbToOklab(
-          q.paletteRgb[i * 3] / 255,
-          q.paletteRgb[i * 3 + 1] / 255,
-          q.paletteRgb[i * 3 + 2] / 255,
-        )
-        oklab[i * 3] = L
-        oklab[i * 3 + 1] = a
-        oklab[i * 3 + 2] = b
-      }
       mergeSmallRegions(q.labels, settings.minRegionArea, {
-        oklab,
+        oklab: paletteToToeOklab(q.paletteRgb),
         keepContrast: DETAIL_CONTRAST,
         protect: protect ?? undefined,
       })
@@ -2141,6 +2140,13 @@ function paletteToOklab(paletteRgb: Uint8Array): Float32Array {
     out[i * 3 + 1] = a
     out[i * 3 + 2] = b
   }
+  return out
+}
+
+/** The palette in toe-Oklab — the space the label cleanup passes judge colors in. */
+function paletteToToeOklab(paletteRgb: Uint8Array): Float32Array {
+  const out = paletteToOklab(paletteRgb)
+  for (let o = 0; o < out.length; o += 3) out[o] = lightnessToe(out[o])
   return out
 }
 

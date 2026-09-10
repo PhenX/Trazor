@@ -129,6 +129,9 @@ export function borderDominantColor(image: RasterImage): [number, number, number
 
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
+// Toe-Oklab: Oklab with L through the lightness toe (core `lightnessToe`) — the
+// feature space of quantize, segmentRegions and the label cleanup passes.
+export function toToeOklabBuffer(image: RasterImage): Float32Array // length w*h*3
 export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
 
 // quantize.ts
@@ -144,6 +147,15 @@ export interface QuantizeOptions {
   // remain eligible. Absent ⇒ byte-identical to sampling all in-mask pixels.
   sampleMask?: BinaryMask | null
   autoK?: boolean // merge near-duplicate centroids afterwards
+  // Seed the centroids from the colors of the image's flat regions (one per
+  // distinct region color, largest and farthest first, as many seeds as the
+  // regions' share of the image) before k-means++ draws the rest. Oklab only;
+  // an image with no flat region seeds as without. Absent ⇒ pure k-means++.
+  regionSeeds?: boolean
+  // After clustering, fold a stroke-like palette color (no pixel farther than
+  // the stroke radius from another color) into the one close color it borders
+  // — a compressed outline's chroma bleed back into its ink. Absent ⇒ no merge.
+  mergeThinVariants?: boolean
   /**
    * Non-empty ⇒ skip clustering: palette is exactly these '#rrggbb' colors in
    * order (invalid entries dropped; all invalid ⇒ fall back to clustering);
@@ -165,14 +177,20 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
 
 - First count distinct opaque colors (cap the scan at 1 << 16 distinct). If
   distinct ≤ k: exact palette, direct label assignment (pixel-art fidelity).
-- Otherwise k-means++ seeded by `mulberry32(seed)` on a deterministic pixel
-  sample (`min(pixels, 20000 + quality * 20000)`), iterations `8 + 3 * quality`,
-  early exit when max centroid movement < 1e-4. Distances in `colorSpace`
-  (oklab: convert via core; rgb: normalized [0,1] channels).
+- Otherwise k-means on a deterministic pixel sample
+  (`min(pixels, 20000 + quality * 20000)`): seeds from the flat-region colors
+  when `regionSeeds`, the rest by greedy k-means++ drawn with `mulberry32(seed)`
+  (`2 + ⌊ln k⌋` candidates per seed, the one lowering the potential most),
+  iterations `8 + 3 * quality`, early exit when max centroid movement < 1e-4.
+  Distances in `colorSpace` (oklab: toe-Oklab via `toToeOklabBuffer`; rgb:
+  normalized [0,1] channels).
 - Final pass labels every in-mask pixel by nearest centroid.
-- `autoK`: after convergence, greedily merge centroid pairs with Oklab distance
-  < 0.03 (weighted average), relabel.
-- Palette ordered by pixel count descending. Hex via core `rgbToHex`.
+- `autoK`: after convergence, greedily merge centroid pairs with distance
+  < 0.03 (weighted average), relabel. `mergeThinVariants`: fold each stroke-like
+  label into the one close color (toe-Oklab ΔE < 0.12) it borders, relabel.
+- Palette color = mean RGB of the label's interior pixels (all four neighbors
+  the same label) when at least 16 and 5 % of the label are interior, else of
+  every pixel. Palette ordered by pixel count descending. Hex via core `rgbToHex`.
 
 ```ts
 // segment.ts — region-growing alternative to global quantization (flat art)
@@ -181,6 +199,7 @@ export interface SegmentOptions {
   mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
+  keepContrast?: number // spare a region below minRegionArea whose toe-Oklab ΔE to the closest neighbor is ≥ this; absent = every small region folds
   maxRegions?: number // soft cap: fold the closest pair (within 2·mergeThreshold) until met; 0 = none
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
 }
@@ -230,14 +249,19 @@ export function fitRegionGradients(
 
 `segmentRegions` requirements (marker-controlled watershed; Meyer 1991):
 
-- Oklab gradient = max ΔE to any 4-neighbor. Markers are 4-connected components
-  of in-mask pixels with gradient < `flatThreshold`, each seeded with its mean.
+- Toe-Oklab gradient = max ΔE to any 4-neighbor. Markers are 4-connected
+  components of in-mask pixels with gradient < `flatThreshold`, each seeded with
+  its mean; a thin feature with no flat interior is rescued as its own marker
+  when it is a color extreme between its sides (from 4 px up, whatever
+  `minRegionArea` says).
 - A priority flood (binary min-heap keyed by Oklab distance to the claiming
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
   no third color is ever created on a boundary.
-- A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
-  regions under `minRegionArea` (closest first), then consolidates non-adjacent
+- A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold`
+  (judged on the flat-core colors when both cores speak for their regions, else
+  on the rim-inclusive means) and regions under `minRegionArea` (closest first;
+  spared when `keepContrast` is set and met), then consolidates non-adjacent
   near-duplicates globally; `maxRegions` folds the closest pair only within a
   perceptual ceiling, so a budget never collapses genuinely different hues. With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large

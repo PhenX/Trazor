@@ -269,3 +269,54 @@ describe('segmentRegions — size-aware merge (SRM)', () => {
     expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
 })
+
+describe('segmentRegions — contrasted details', () => {
+  const ORANGE: Rgba = [245, 124, 0, 255]
+  const RIDGE: Rgba = [255, 152, 0, 255]
+
+  /** A ridge 6 px wide of a slightly lighter orange across an orange field, with 1px soft rims. */
+  function ridgeImage(w = 60, h = 60): ReturnType<typeof rasterOf> {
+    return rasterOf(w, h, (x) => {
+      const inRidge = x >= 27 && x < 33
+      const inRim = x === 26 || x === 33
+      if (inRidge) return RIDGE
+      if (inRim) return [250, 138, 0, 255]
+      return ORANGE
+    })
+  }
+
+  it('keeps a ridge of a close shade that its rims would average into the field', () => {
+    const seg = segmentRegions(ridgeImage(), { mergeSizeBias: 0.8 })
+    expect(seg.labels.count).toBe(2)
+    const field = seg.labels.data[30 * 60 + 5]
+    const ridge = seg.labels.data[30 * 60 + 30]
+    expect(ridge).not.toBe(field)
+  })
+
+  /** Small dark numerals (3×5 px) on a white face, plus a low-contrast speck. */
+  function numeralsImage(w = 60, h = 40): ReturnType<typeof rasterOf> {
+    const digitAt = (x: number, y: number): boolean => {
+      for (const ox of [10, 20, 30]) {
+        if (x >= ox && x < ox + 3 && y >= 10 && y < 15) return true
+      }
+      return false
+    }
+    return rasterOf(w, h, (x, y) => {
+      if (digitAt(x, y)) return [30, 30, 30, 255]
+      if (x >= 45 && x < 48 && y >= 25 && y < 28) return [225, 225, 225, 255] // a faint speck
+      return WHITE
+    })
+  }
+
+  it('spares small regions of strong contrast from the size fold, not faint specks', () => {
+    const folded = segmentRegions(numeralsImage(), { minRegionArea: 16 })
+    expect(folded.labels.count).toBe(1)
+    const kept = segmentRegions(numeralsImage(), { minRegionArea: 16, keepContrast: 0.25 })
+    expect(kept.labels.count).toBe(2)
+    const digit = kept.labels.data[12 * 60 + 11]
+    const speck = kept.labels.data[26 * 60 + 46]
+    const face = kept.labels.data[0]
+    expect(digit).not.toBe(face)
+    expect(speck).toBe(face)
+  })
+})

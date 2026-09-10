@@ -56,6 +56,26 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v
 }
 
+// Oklab lightness toe (Ottosson 2021, "Okhsv and Okhsl"). Oklab's L is a cube
+// root of luminance, so its darkest end is stretched: sRGB (0,0,0) and (6,6,6)
+// sit 0.12 apart, as far as a real hue change, though no display shows a
+// difference. The toe pulls that end in toward CIELAB's L* while leaving mid and
+// light tones nearly as they are, and maps [0, 1] onto [0, 1].
+const TOE_K1 = 0.206
+const TOE_K2 = 0.03
+const TOE_K3 = (1 + TOE_K1) / (1 + TOE_K2)
+
+/** Oklab L → toe lightness `Lr` (perceptual lightness estimate, [0, 1] → [0, 1]). */
+export function lightnessToe(L: number): number {
+  const t = TOE_K3 * L - TOE_K1
+  return 0.5 * (t + Math.sqrt(t * t + 4 * TOE_K2 * TOE_K3 * L))
+}
+
+/** Toe lightness `Lr` → Oklab L; the exact inverse of {@link lightnessToe}. */
+export function lightnessToeInverse(Lr: number): number {
+  return (Lr * Lr + TOE_K1 * Lr) / (TOE_K3 * (Lr + TOE_K2))
+}
+
 /** Squared Euclidean distance in Oklab — cheap perceptual difference. */
 export function deltaEOkSq(
   L1: number,
