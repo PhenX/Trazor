@@ -308,19 +308,45 @@ describe('recommendSettings', () => {
   it('routes an achromatic high-contrast sketch to B&W', () => {
     const rec = recommendSettings(analyzeImage(inkOnWhite()))
     expect(rec.profileId).toBe('bw-sketch')
+    expect(rec.patch.mode).toBe('bw')
   })
 
-  it('routes a shaded achromatic line drawing (not two-tone) to B&W', () => {
+  it('traces a shaded achromatic line drawing (not two-tone) as grayscale, not over-inked B&W', () => {
     const a = analyzeImage(inkDrawing())
+    // The tell: real mid-gray (not two-tone) with no color — bw would flood its
+    // hatching solid black, so it must trace as grayscale tonal layers instead.
     expect(a.twoToneCoverage).toBeLessThan(0.92)
     expect(a.colorfulness).toBeLessThan(0.03)
-    expect(recommendSettings(a).profileId).toBe('bw-sketch')
+    const rec = recommendSettings(a)
+    expect(rec.profileId).not.toBe('bw-sketch')
+    expect(rec.patch.mode).toBe('grayscale')
+    // A small tone count posterizes the paper texture instead of tracing it.
+    expect(rec.patch.paletteSize).toBeLessThanOrEqual(6)
+    expect(rec.patch.autoPaletteSize).toBe(false)
   })
 
   it('keeps a saturated two-tone mark in color rather than B&W', () => {
     const rec = recommendSettings(analyzeImage(navyOnWhite()))
     expect(rec.profileId).not.toBe('bw-sketch')
     expect(['logo', 'illustration']).toContain(rec.profileId)
+  })
+
+  it('scopes the grayscale ink reroute to bright-paper line art — other inputs are untouched', () => {
+    // The reroute must fire only for achromatic bright-paper line art; every
+    // other input keeps the exact routing (profile + mode) it had before it
+    // existed, so their traced output stays byte-identical.
+    const cases: [ReturnType<typeof flatLogo>, string, string][] = [
+      [flatLogo(), 'logo', 'color'],
+      [navyOnWhite(), 'logo', 'color'],
+      [grayPhoto(), 'photo', 'grayscale'], // mid-tone gray photo, not bright paper
+      [compressedFlat(), 'illustration', 'color'],
+      [inkOnWhite(), 'bw-sketch', 'bw'], // genuinely bilevel — still B&W
+    ]
+    for (const [img, profileId, mode] of cases) {
+      const rec = recommendSettings(analyzeImage(img))
+      expect(rec.profileId).toBe(profileId)
+      expect(rec.patch.mode).toBe(mode)
+    }
   })
 
   it('keeps anti-aliased flat art as a color illustration, not a photo', () => {
