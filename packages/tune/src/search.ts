@@ -84,6 +84,14 @@ export interface TuneOptions {
    * incumbent between them and automatic while keeping its tuned parameters.
    */
   palettes?: readonly (readonly string[])[]
+  /**
+   * Staged descent (experimental, measured behind this flag by
+   * `scripts/bench/tune-bench.ts`): probe only the high-sensitivity axes until
+   * they converge, then release the low-sensitivity tail for one closing sweep,
+   * instead of ranking every free axis together each round. Sensitivity is the
+   * seed-round main effect on the score. Off reproduces the shipped search.
+   */
+  staged?: boolean
 }
 
 interface ParamState {
@@ -109,6 +117,8 @@ const STALL_LIMIT = 3
 const EXPLORE_COEF = 0.02
 /** Scales a seed-round sensitivity (|correlation|, 0..1) into an initial priority. */
 const SENSITIVITY_SCALE = 0.05
+/** Staged descent: an axis is "primary" when its seed sensitivity is at least this fraction of the most sensitive axis'. */
+const PRIMARY_FRAC = 0.35
 
 /** Deterministic index for stable priority tiebreaks. */
 const PARAM_ORDER = new Map<TunableKey, number>(TUNABLE_PARAMS.map((p, i) => [p.key, i]))
@@ -151,6 +161,10 @@ export class TuneSearch {
   private incumbent: ScoredCandidate | null = null
   private readonly paramState = new Map<TunableKey, ParamState>()
 
+  /** Staged descent: the high-sensitivity axes probed before the tail is released. */
+  private readonly staged: boolean
+  private stagedPrimary: Set<TunableKey> | null = null
+
   /** Categorical palette choices ([null=auto, ...suggested]); empty when disabled. */
   private readonly paletteChoices: readonly (readonly string[] | null)[]
   /** Palette choices already proposed as a descent swap (keyed by {@link paletteKey}). */
@@ -160,6 +174,7 @@ export class TuneSearch {
     this.base = normalizeSettings(base)
     this.mode = this.base.mode
     this.opts = opts
+    this.staged = opts.staged ?? false
     this.rand = mulberry32(opts.seed >>> 0)
     const free = opts.free ?? DEFAULT_FREE
     // Keep only keys that can apply in this mode at all (any `when` state).
@@ -369,13 +384,17 @@ export class TuneSearch {
 
     const specs = applicableParams(this.freeKeys, this.mode, inc.settings)
     const ranked = this.rankParams(specs)
+    // Staged descent probes only the still-improvable primary axes until every
+    // one is exhausted, then falls through to the low-sensitivity tail for one
+    // closing sweep (reachability is preserved, so the final score is not lost).
+    const pool = this.stagedPool(ranked)
 
     // Reserve room for a recombination, a palette swap, and (when stalling) a restart.
     const nextPalette = this.nextUntriedPalette(inc.settings)
     const reserve = 1 + (this.stall > 0 ? 1 : 0) + (nextPalette !== undefined ? 1 : 0)
     const probeBudget = Math.max(1, Math.min(budget, this.opts.roundSize) - reserve)
 
-    for (const spec of ranked) {
+    for (const spec of pool) {
       if (out.length >= probeBudget) break
       this.probesFor(spec, inc.settings, propose)
     }
@@ -481,6 +500,17 @@ export class TuneSearch {
     propose(settings, 'restart')
   }
 
+  /**
+   * The axes to probe this round under staged descent: the still-improvable
+   * primary axes while any remain, else the whole ranked pool (the tail sweep).
+   * A no-op (returns `ranked`) when staging is off or no primary set was built.
+   */
+  private stagedPool(ranked: readonly ParamSpec[]): readonly ParamSpec[] {
+    if (!this.staged || !this.stagedPrimary) return ranked
+    const active = ranked.filter((s) => this.stagedPrimary!.has(s.key))
+    return active.length > 0 ? active : ranked
+  }
+
   /** Priority = recent gain + an exploration bonus for least-recently-tried params. */
   private rankParams(specs: readonly ParamSpec[]): ParamSpec[] {
     return specs
@@ -514,19 +544,44 @@ export class TuneSearch {
     const scored = this.ledger.filter((c) => c.rejected !== 'empty')
     if (scored.length < 3) return
     const specs = applicableParams(this.freeKeys, this.mode, this.incumbent?.settings ?? this.base)
+    const scores = scored.map((c) => c.score)
+    const sens = new Map<TunableKey, number>()
     for (const spec of specs) {
-      if (spec.kind !== 'number' && spec.kind !== 'int') continue
-      const st = this.paramState.get(spec.key)
-      if (!st) continue
-      const units: number[] = []
-      const scores: number[] = []
-      for (const c of scored) {
-        units.push(toUnit(spec, c.settings[spec.key] as number))
-        scores.push(c.score)
+      const s = this.seedSensitivityOf(spec, scored, scores)
+      if (!Number.isFinite(s)) continue
+      sens.set(spec.key, s)
+      // Numeric/int axes carry their sensitivity into the descent priority.
+      if (spec.kind === 'number' || spec.kind === 'int') {
+        const st = this.paramState.get(spec.key)
+        if (st) st.gain = SENSITIVITY_SCALE * s
       }
-      const r = Math.abs(pearson(units, scores))
-      if (Number.isFinite(r)) st.gain = SENSITIVITY_SCALE * r
     }
+    if (this.staged) this.stagedPrimary = primaryAxes(sens)
+  }
+
+  /**
+   * One axis' seed-round main effect on the score, in 0..1: the correlation
+   * magnitude for a numeric/int axis, or the square root of the one-way variance
+   * of the score explained by the value for an enum/bool axis (so both scales
+   * are comparable).
+   */
+  private seedSensitivityOf(
+    spec: ParamSpec,
+    scored: readonly ScoredCandidate[],
+    scores: readonly number[],
+  ): number {
+    if (spec.kind === 'number' || spec.kind === 'int') {
+      const units = scored.map((c) => toUnit(spec, c.settings[spec.key] as number))
+      return Math.abs(pearson(units, scores))
+    }
+    const buckets = new Map<string, number[]>()
+    for (let i = 0; i < scored.length; i++) {
+      const key = String(scored[i].settings[spec.key])
+      const b = buckets.get(key)
+      if (b) b.push(scores[i])
+      else buckets.set(key, [scores[i]])
+    }
+    return Math.sqrt(varianceExplained(scores, [...buckets.values()]))
   }
 
   private adaptSteps(seen: Set<TunableKey>, improved: Map<TunableKey, boolean>): void {
@@ -700,6 +755,60 @@ function withParam(
 /** A stable key for a palette choice (null = automatic), for dedup and tried-tracking. */
 function paletteKey(choice: readonly string[] | null): string {
   return choice === null ? 'auto' : choice.map((c) => c.toLowerCase()).join(',')
+}
+
+/**
+ * The set of primary axes for staged descent: every axis whose seed sensitivity
+ * is at least {@link PRIMARY_FRAC} of the most sensitive one, and never empty
+ * (the single most sensitive axis is always primary). Falls back to all axes
+ * when no axis showed any sensitivity.
+ */
+function primaryAxes(sens: ReadonlyMap<TunableKey, number>): Set<TunableKey> {
+  const primary = new Set<TunableKey>()
+  let max = 0
+  for (const v of sens.values()) if (v > max) max = v
+  if (max <= 0) {
+    for (const k of sens.keys()) primary.add(k)
+    return primary
+  }
+  let argmax: TunableKey | null = null
+  let argmaxV = -1
+  for (const [k, v] of sens) {
+    if (v >= PRIMARY_FRAC * max) primary.add(k)
+    if (v > argmaxV) {
+      argmaxV = v
+      argmax = k
+    }
+  }
+  if (argmax !== null) primary.add(argmax)
+  return primary
+}
+
+/**
+ * Fraction of a series' variance explained by a grouping (one-way ANOVA:
+ * between-group sum of squares over total). 0 when the series does not vary.
+ */
+function varianceExplained(
+  values: readonly number[],
+  groups: readonly (readonly number[])[],
+): number {
+  const n = values.length
+  if (n === 0) return 0
+  let sum = 0
+  for (const v of values) sum += v
+  const grand = sum / n
+  let ssTotal = 0
+  for (const v of values) ssTotal += (v - grand) * (v - grand)
+  if (ssTotal <= 0) return 0
+  let ssBetween = 0
+  for (const g of groups) {
+    if (g.length === 0) continue
+    let gs = 0
+    for (const v of g) gs += v
+    const gm = gs / g.length
+    ssBetween += g.length * (gm - grand) * (gm - grand)
+  }
+  return ssBetween / ssTotal
 }
 
 /** Pearson correlation of two equal-length series; 0 when either is constant. */
