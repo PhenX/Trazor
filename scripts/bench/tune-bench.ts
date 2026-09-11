@@ -15,7 +15,7 @@
  *
  * Usage:
  *   npm run bench:tune                                  # corpus-vtracer, 512 px, current search
- *   npm run bench:tune -- --variant pin-inert           # a space-narrowing variant
+ *   npm run bench:tune -- --variant pin-inert           # the space-narrowing variant
  *   npm run bench:tune -- --repeats 3                    # repeated seeds → the noise band
  *   npm run bench:tune -- --sensitivity                  # objective main-effect table instead
  *   npm run bench:tune -- --data <dir> --limit 2 --workers 3 --json out.json
@@ -28,7 +28,7 @@
  *     --seed N           base PRNG seed (default 1)
  *     --repeats N        run each image at seeds seed..seed+N-1 for a noise band (default 1)
  *     --workers N        helper threads per trace (default 0 = sequential); pins concurrency to 1
- *     --variant V        current | pin-inert | staged (default current)
+ *     --variant V        current | pin-inert (default current)
  *     --sensitivity      run the objective main-effect study instead of the search bench
  *     --sens-samples N   Latin-hypercube points per image/mode for --sensitivity (default 48)
  *     --json <path>      also write the machine-readable report
@@ -80,7 +80,7 @@ const BALANCED_WEIGHTS: TuneWeights = {
   cleanliness: 1,
 }
 
-type Variant = 'current' | 'pin-inert' | 'staged'
+type Variant = 'current' | 'pin-inert'
 
 /**
  * Fidelity-inert knobs and the value each is pinned to under the `pin-inert`
@@ -233,9 +233,8 @@ async function traceCandidate(
 
 /**
  * The search options for a variant. `pin-inert` narrows the free set and pins the
- * fidelity-inert knobs to their dominant value on the base; `staged` flips the
- * `TuneOptions.staged` flag (added to `@trazor/tune` behind that flag while the
- * experiments are measured). `current` is the shipped search.
+ * fidelity-inert knobs to their dominant value on the base — a space-narrowing
+ * experiment that needs no engine change. `current` is the shipped search.
  */
 function variantSetup(
   variant: Variant,
@@ -254,7 +253,6 @@ function variantSetup(
       opts: { ...opts, free: DEFAULT_FREE.filter((k) => !drop.has(k)) },
     }
   }
-  if (variant === 'staged') return { base, opts: { ...opts, staged: true } }
   return { base, opts }
 }
 
