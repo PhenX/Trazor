@@ -41,7 +41,7 @@ import type {
   VectorizeSettings,
 } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
-import { meanDeltaE, rasterizeSvg, readRgba, score } from './lib'
+import { boundaryError, meanDeltaE, rasterizeSvg, readRgba, score } from './lib'
 
 type Task = 'edge' | 'cleanup' | 'field'
 
@@ -110,8 +110,16 @@ function readHint(path: string): GrayImage {
 interface Trace {
   dE: number
   nodes: number
+  bErr: number
 }
 
+/**
+ * Trace and score against the clean render `clean`. For the field task run in bw
+ * mode, `clean` is the clean **silhouette** render (the manifest's `clean/`, which
+ * for a silhouette dataset is a bw ink-on-paper image) — so both ΔE and the
+ * boundary displacement are measured against a bw-appropriate reference, not a
+ * color truth (docs/SIGNED_FIELD_PREPASS.md).
+ */
 async function trace(
   image: RasterImage,
   clean: RasterImage,
@@ -120,7 +128,11 @@ async function trace(
 ): Promise<Trace> {
   const result = await vectorize(image, settings, ctx)
   const raster = rasterizeSvg(result.svg, clean.width)
-  return { dE: meanDeltaE(raster, clean), nodes: result.stats.nodeCount }
+  return {
+    dE: meanDeltaE(raster, clean),
+    nodes: result.stats.nodeCount,
+    bErr: boundaryError(raster, clean),
+  }
 }
 
 /**
@@ -144,15 +156,27 @@ interface Acc {
   n: number
   dEoff: number
   dEon: number
+  bErrOff: number
+  bErrOn: number
   nodesOff: number
   nodesOn: number
 }
-const emptyAcc = (): Acc => ({ n: 0, dEoff: 0, dEon: 0, nodesOff: 0, nodesOn: 0 })
+const emptyAcc = (): Acc => ({
+  n: 0,
+  dEoff: 0,
+  dEon: 0,
+  bErrOff: 0,
+  bErrOn: 0,
+  nodesOff: 0,
+  nodesOn: 0,
+})
 
 function add(acc: Acc, off: Trace, on: Trace): void {
   acc.n++
   acc.dEoff += off.dE
   acc.dEon += on.dE
+  acc.bErrOff += off.bErr
+  acc.bErrOn += on.bErr
   acc.nodesOff += off.nodes
   acc.nodesOn += on.nodes
 }
@@ -163,6 +187,9 @@ interface BucketReport {
   deltaEOff: number
   deltaEOn: number
   improvement: number
+  bErrOff: number
+  bErrOn: number
+  bErrImprovement: number
   scoreOff: number
   scoreOn: number
   nodesOff: number
@@ -173,12 +200,17 @@ function summarize(bucket: string, acc: Acc): BucketReport | null {
   if (acc.n === 0) return null
   const deltaEOff = acc.dEoff / acc.n
   const deltaEOn = acc.dEon / acc.n
+  const bErrOff = acc.bErrOff / acc.n
+  const bErrOn = acc.bErrOn / acc.n
   return {
     bucket,
     samples: acc.n,
     deltaEOff,
     deltaEOn,
     improvement: deltaEOff - deltaEOn, // >0 = pre-pass helps
+    bErrOff,
+    bErrOn,
+    bErrImprovement: bErrOff - bErrOn, // >0 = boundaries land closer to the clean edge
     scoreOff: score(deltaEOff),
     scoreOn: score(deltaEOn),
     nodesOff: Math.round(acc.nodesOff / acc.n),
@@ -193,6 +225,9 @@ function fmtRow(r: BucketReport): string[] {
     r.deltaEOff.toFixed(4),
     r.deltaEOn.toFixed(4),
     (r.improvement >= 0 ? '+' : '') + r.improvement.toFixed(4),
+    r.bErrOff.toFixed(3),
+    r.bErrOn.toFixed(3),
+    (r.bErrImprovement >= 0 ? '+' : '') + r.bErrImprovement.toFixed(3),
     r.scoreOff.toFixed(3),
     r.scoreOn.toFixed(3),
     String(r.nodesOff),
@@ -208,6 +243,9 @@ function printReport(rows: BucketReport[], task: string, mode: string): void {
     'ΔE off',
     'ΔE on',
     'ΔΔE',
+    'bErr off',
+    'bErr on',
+    'ΔbErr',
     'score off',
     'score on',
     'nodes off',
@@ -222,14 +260,16 @@ function printReport(rows: BucketReport[], task: string, mode: string): void {
   const clean = rows.find((r) => r.bucket === 'clean')
   console.log('')
   if (degraded) {
-    const verdict = degraded.improvement > 0 ? 'helps' : 'no gain'
+    const verdict = degraded.improvement > 0 && degraded.bErrImprovement > 0 ? 'helps' : 'no gain'
     console.log(
-      `  degraded: pre-pass ${verdict} (ΔΔE ${degraded.improvement >= 0 ? '+' : ''}${degraded.improvement.toFixed(4)})`,
+      `  degraded: pre-pass ${verdict} (ΔΔE ${degraded.improvement >= 0 ? '+' : ''}${degraded.improvement.toFixed(4)}, ` +
+        `ΔbErr ${degraded.bErrImprovement >= 0 ? '+' : ''}${degraded.bErrImprovement.toFixed(3)} px)`,
     )
   }
-  if (clean && clean.improvement < -0.001) {
+  if (clean && (clean.improvement < -0.001 || clean.bErrImprovement < -0.02)) {
     console.log(
-      `  ⚠ clean-input regression: ΔE rose by ${(-clean.improvement).toFixed(4)} — a pre-pass that hurts clean inputs is a net loss`,
+      `  ⚠ clean-input regression: ΔE ${clean.improvement <= 0 ? '+' : '−'}${Math.abs(clean.improvement).toFixed(4)}, ` +
+        `boundary ${clean.bErrImprovement <= 0 ? '+' : '−'}${Math.abs(clean.bErrImprovement).toFixed(3)} px — a pre-pass that hurts clean inputs is a net loss`,
     )
   }
 }

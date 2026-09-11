@@ -235,6 +235,94 @@ export function qualityStats(render: RasterImage, ref: RasterImage): QualityStat
   }
 }
 
+/** Edge mask: pixels where the reference's local L1 RGB gradient exceeds `thresh`. */
+function edgeMask(img: RasterImage, w: number, h: number, thresh = 48): Uint8Array {
+  const d = img.data
+  const out = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = (y * img.width + x) * 4
+      let g = 0
+      if (x + 1 < w) {
+        const q = p + 4
+        g = Math.abs(d[p] - d[q]) + Math.abs(d[p + 1] - d[q + 1]) + Math.abs(d[p + 2] - d[q + 2])
+      }
+      if (y + 1 < h) {
+        const q = p + img.width * 4
+        const gy =
+          Math.abs(d[p] - d[q]) + Math.abs(d[p + 1] - d[q + 1]) + Math.abs(d[p + 2] - d[q + 2])
+        if (gy > g) g = gy
+      }
+      if (g > thresh) out[y * w + x] = 1
+    }
+  }
+  return out
+}
+
+/** Chamfer 3-4 distance transform (Borgefors 1986) of an edge set, in pixel units. */
+function chamferDistance(mask: Uint8Array, w: number, h: number): Float32Array {
+  const INF = 1e9
+  const d = new Float32Array(w * h)
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? 0 : INF
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      let v = d[i]
+      if (x > 0) v = Math.min(v, d[i - 1] + 3)
+      if (y > 0) v = Math.min(v, d[i - w] + 3)
+      if (x > 0 && y > 0) v = Math.min(v, d[i - w - 1] + 4)
+      if (x + 1 < w && y > 0) v = Math.min(v, d[i - w + 1] + 4)
+      d[i] = v
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x
+      let v = d[i]
+      if (x + 1 < w) v = Math.min(v, d[i + 1] + 3)
+      if (y + 1 < h) v = Math.min(v, d[i + w] + 3)
+      if (x + 1 < w && y + 1 < h) v = Math.min(v, d[i + w + 1] + 4)
+      if (x > 0 && y + 1 < h) v = Math.min(v, d[i + w - 1] + 4)
+      d[i] = v
+    }
+  }
+  for (let i = 0; i < d.length; i++) d[i] /= 3 // 3-4 weights → pixel units
+  return d
+}
+
+/**
+ * Symmetric mean boundary displacement in pixels between two same-sized rasters:
+ * the average, over each image's edge pixels, of the distance to the nearest edge
+ * in the other. It measures where boundaries land — the seam/corner error whole-image
+ * mean ΔE dilutes — so a bw silhouette traced from a clean vs. a corrupted field is
+ * separated even when their mean ΔE is close. 0 = boundaries coincide.
+ */
+export function boundaryError(a: RasterImage, b: RasterImage): number {
+  const w = Math.min(a.width, b.width)
+  const h = Math.min(a.height, b.height)
+  const ea = edgeMask(a, w, h)
+  const eb = edgeMask(b, w, h)
+  const dToB = chamferDistance(eb, w, h)
+  const dToA = chamferDistance(ea, w, h)
+  let sa = 0
+  let na = 0
+  let sb = 0
+  let nb = 0
+  for (let i = 0; i < w * h; i++) {
+    if (ea[i]) {
+      sa += dToB[i]
+      na++
+    }
+    if (eb[i]) {
+      sb += dToA[i]
+      nb++
+    }
+  }
+  const ma = na > 0 ? sa / na : 0
+  const mb = nb > 0 ? sb / nb : 0
+  return (ma + mb) / 2
+}
+
 /** app score: 1 − 4·ΔE, clamped to [0,1] (the studio's fidelity metric). */
 export function score(dE: number): number {
   const s = 1 - dE * 4
