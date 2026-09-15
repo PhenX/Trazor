@@ -25,7 +25,8 @@
  *      rim the flood attached never tints it toward a neighbor.
  *   4. A region-adjacency-graph merge folds near-duplicate neighbors and small
  *      regions together (agglomerative, closest pair first) down to the real
- *      colors, optionally capped at `maxRegions`.
+ *      colors; `maxRegions` then caps the count, folding the pairs whose union
+ *      costs the least total squared color error (Ward 1963) until it is met.
  *
  * Deterministic: fixed scan and neighbor order throughout, priority-queue ties
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
@@ -56,7 +57,10 @@ export interface SegmentOptions {
   mergeSizeBias?: number
   /** Regions smaller than this many pixels are merged into their most similar neighbor. */
   minRegionArea?: number
-  /** Hard cap on the final region count: keep merging the closest adjacent pair until at most this many remain. 0 = no cap. */
+  /**
+   * Hard cap on the final region count: pairs keep merging, cheapest total
+   * squared color error first (Ward), until at most this many remain. 0 = no cap.
+   */
   maxRegions?: number
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
   mask?: BinaryMask | null
@@ -831,7 +835,9 @@ function rescueMarkerlessFeatures(
  * white counter split into specks by compression still reads white), else the
  * mean over every pixel; consolidation and the `maxRegions` cap compare those
  * rendered colors, so two regions that would paint the same become one palette
- * entry. Returns the parent array (each region's representative root).
+ * entry. The cap is hard: it folds pairs by least added squared color error
+ * (Ward) until the count is met, however different the remaining hues are.
+ * Returns the parent array (each region's representative root).
  */
 function mergeRegions(
   region: Int32Array,
@@ -1007,24 +1013,64 @@ function mergeRegions(
     }
   }
 
-  // Soft cap: if still above `maxRegions`, fold the closest remaining pair of
-  // representatives, but only while they stay within a perceptual ceiling — a
-  // budget lowers the color count without flattening distinct hues together.
+  // Hard cap: while more than `maxRegions` colors remain, fold the pair of
+  // representatives whose union adds the least total squared color error
+  // (Ward 1963): cost = |A|·|B| / (|A| + |B|) · ΔE², on the rendered colors.
+  // A tiny odd-colored speck folds before two large fields of one hue, and two
+  // large distinct hues fold last, so a budget spends its damage where it shows
+  // least. Each root tracks its cheapest partner; a merge refreshes the merged
+  // root and every root whose partner it consumed. Ties break on the lower id.
   if (maxRegions > 0 && activeRegions > maxRegions) {
-    const CAP_CEILING = mergeThreshold * 2
-    for (let guard = 0; guard < regionCount && activeRegions > maxRegions; guard++) {
-      const cur: number[] = []
-      for (let i = 0; i < regionCount; i++) if (find(i) === i) cur.push(i)
-      let best: [number, number, number] | null = null
-      for (let a = 0; a < cur.length; a++) {
-        for (let b = a + 1; b < cur.length; b++) {
-          const d = meanDelta(cur[a], cur[b])
-          if (best === null || d < best[2]) best = [cur[a], cur[b], d]
+    const capRoots: number[] = []
+    for (let i = 0; i < regionCount; i++) if (find(i) === i) capRoots.push(i)
+    const active = new Uint8Array(regionCount)
+    for (const r of capRoots) active[r] = 1
+    const partner = new Int32Array(regionCount).fill(-1)
+    const partnerCost = new Float64Array(regionCount).fill(Infinity)
+    const wardCost = (a: number, b: number): number => {
+      const d = meanDelta(a, b)
+      return ((size[a] * size[b]) / (size[a] + size[b])) * d * d
+    }
+    const refresh = (a: number): void => {
+      let best = -1
+      let bestCost = Infinity
+      for (const b of capRoots) {
+        if (b === a || active[b] === 0) continue
+        const c = wardCost(a, b)
+        if (c < bestCost || (c === bestCost && b < best)) {
+          bestCost = c
+          best = b
         }
       }
-      if (best === null || best[2] > CAP_CEILING) break
-      union(best[0], best[1])
+      partner[a] = best
+      partnerCost[a] = bestCost
+    }
+    for (const r of capRoots) refresh(r)
+    while (activeRegions > maxRegions) {
+      let a = -1
+      for (const r of capRoots) {
+        if (active[r] === 0 || partner[r] < 0) continue
+        if (a === -1 || partnerCost[r] < partnerCost[a]) a = r
+      }
+      if (a === -1) break
+      const b = partner[a]
+      union(a, b)
       activeRegions--
+      const keep = find(a)
+      const drop = keep === a ? b : a
+      active[drop] = 0
+      refresh(keep)
+      for (const c of capRoots) {
+        if (active[c] === 0 || c === keep) continue
+        if (partner[c] === keep || partner[c] === drop) refresh(c)
+        else {
+          const cost = wardCost(c, keep)
+          if (cost < partnerCost[c] || (cost === partnerCost[c] && keep < partner[c])) {
+            partner[c] = keep
+            partnerCost[c] = cost
+          }
+        }
+      }
     }
   }
 

@@ -45,9 +45,6 @@ const FLAT_ART_MIN_DENSITY = 0.15
 /** With at least this fraction of genuinely colored pixels, an image is not grayscale. */
 const COLORED_FRACTION_MIN = 0.05
 
-/** Sub-this-size rim specks are merged away when cleaning anti-aliased flat art. */
-const FLAT_ART_MIN_REGION = 16
-
 /**
  * Gray levels for a tonal ink scan traced as grayscale. Few enough that the
  * paper's JPEG texture posterizes into one background level instead of thousands
@@ -60,36 +57,46 @@ const INK_TONE_LEVELS = 4
 const INK_TONE_MIN_REGION = 16
 
 /**
- * Region growing earns its place only for anti-aliased flat art with many
- * colors; outside that window global k-means is the faithful choice, so
- * {@link wantsRegionGrowing} adds two gates on top of {@link isCleanFlatArt}.
- */
-const REGIONS_MIN_DISTINCT_COLORS = 1000
-const REGIONS_MAX_MICRO_GRADIENT = 0.25
-
-/**
- * Whether flat art should be traced by region growing rather than global
- * quantization. Region growing exists to stop a k-means palette painting a soft
- * edge a nearest *third* color; it grows each region from a flat interior so the
- * ramp is split between its two real neighbors. That only helps within a narrow
- * band, so two conditions gate it beyond `isCleanFlatArt`:
+ * Cartoon-style art — flat fills meeting at crisp, anti-aliased edges — is
+ * traced by region growing: each fill grows from its flat interior, so a soft
+ * edge is split between its two real neighbors and no rim color is invented,
+ * and the trace stays a few clean shapes per fill. Five measured conditions,
+ * each shutting out one input the flood wrecks:
  *
- * - **Enough distinct colors.** The rim third-color it prevents appears only
- *   where anti-aliasing (or JPEG) invents a halo of intermediate colors — which
- *   surfaces as thousands of distinct colors. Few-color art (a clean logo, a
- *   flat game sprite) has no such halo: per-pixel quantization traces it exactly,
- *   while giving each connected region one mean color would only lose fidelity.
- * - **Little micro-gradient texture.** A region marker seeds from a flat
- *   interior. A smooth gradient (a sunset sky, a shaded background) has none, so
- *   it is flooded by a neighbouring region and painted a single mean color — the
- *   whole gradient collapses. Above this density, quantization — which posterizes
- *   the ramp into distinct bands — keeps the color.
+ * - **Exactly-flat interiors** (`flatDensity`): a fill keeps pixels identical
+ *   to their neighbors even after JPEG (a DC-only block is exact); sensor noise
+ *   never does, so a photograph with a large smooth sky is not a cartoon.
+ * - **Flat fills dominate** (`flatArea`): most of the opaque image is smooth,
+ *   flat-colored area — JPEG-tolerant, unlike `flatDensity`, so a compressed
+ *   cartoon still qualifies.
+ * - **Ramps are a minority** (`rampArea` against `flatArea`): a smooth area
+ *   that ramps — a sky gradient, a shaded backdrop, even a faint one — has no
+ *   flat interior to seed and is flooded into one mean color; quantization keeps
+ *   it as bands. Once ramps reach half the flat area the gradient is the picture.
+ * - **Coarse detail** (`fineArea`): fills too small to hold a flat core — a
+ *   sprite's, pixel art's — are folded into their neighbors by region growing;
+ *   per-pixel quantization keeps them. A few percent of such fills is fine
+ *   detail on a cartoon; more is a sprite.
+ * - **Anti-aliased rims exist** (`distinctColors` and micro-gradient against
+ *   edge density): a hard-edged pixel palette has no rim to protect — every
+ *   pixel already is a palette color — so quantization traces it exactly.
  */
-function wantsRegionGrowing(a: ImageAnalysis): boolean {
+const CARTOON_MIN_FLAT_AREA = 0.4
+const CARTOON_MAX_RAMP_SHARE = 0.5
+const CARTOON_MAX_FINE_AREA = 0.04
+const CARTOON_MIN_RIM_RATIO = 0.1
+/** Distinct colors below which an image is a hard-edged pixel palette (the pixel-art profile's own bound). */
+const CARTOON_MIN_DISTINCT_COLORS = 64
+
+/** Whether the image reads as cartoon-style flat art region growing serves best. */
+function isCartoon(a: ImageAnalysis): boolean {
   return (
-    isCleanFlatArt(a) &&
-    a.distinctColors > REGIONS_MIN_DISTINCT_COLORS &&
-    a.microGradientDensity < REGIONS_MAX_MICRO_GRADIENT
+    a.flatDensity >= FLAT_ART_MIN_DENSITY &&
+    a.flatArea >= CARTOON_MIN_FLAT_AREA &&
+    a.rampArea <= CARTOON_MAX_RAMP_SHARE * a.flatArea &&
+    a.fineArea <= CARTOON_MAX_FINE_AREA &&
+    a.distinctColors >= CARTOON_MIN_DISTINCT_COLORS &&
+    a.microGradientDensity >= CARTOON_MIN_RIM_RATIO * a.edgeDensity
   )
 }
 
@@ -160,14 +167,16 @@ function isTonalLineArt(a: ImageAnalysis): boolean {
  * few dominant flat colors — a compressed or rescaled flat graphic (a JPEG
  * logo, a screenshot) rather than a true photograph, whose colors spread out
  * so no two dominate. These want strong cleanup, not photo posterization. Clean
- * flat art is excluded: its crisp anti-aliased edges are not compression damage.
+ * flat art and cartoons are excluded: their crisp anti-aliased edges are not
+ * compression damage, and a blur would only soften the linework.
  */
 function isCompressedFlat(a: ImageAnalysis): boolean {
   return (
     a.photoScore > 0.6 &&
     a.twoToneCoverage > 0.55 &&
     a.colorfulness >= ACHROMATIC_CHROMA &&
-    !isCleanFlatArt(a)
+    !isCleanFlatArt(a) &&
+    !isCartoon(a)
   )
 }
 
@@ -229,6 +238,7 @@ export function recommendSettings(
   }
 
   const flatArt = isCleanFlatArt(a)
+  const cartoon = isCartoon(a)
   // Respect an explicit photo goal; otherwise treat compressed-flat art specially.
   const compressedFlat = profileId !== 'photo' && isCompressedFlat(a)
 
@@ -256,27 +266,34 @@ export function recommendSettings(
         { count: a.distinctColors, size: chosen },
       )
     }
-    // Clean flat art is exempt from photo denoise (its edges are crisp, not
-    // noisy) — bilateral blur would only soften the linework.
-    if (a.photoScore > 0.55 && patch.denoise === undefined && !compressedFlat && !flatArt) {
+    // Clean flat art and cartoons are exempt from photo denoise (their edges
+    // are crisp, not noisy) — bilateral blur would only soften the linework.
+    if (
+      a.photoScore > 0.55 &&
+      patch.denoise === undefined &&
+      !compressedFlat &&
+      !flatArt &&
+      !cartoon
+    ) {
       patch.denoise = 'bilateral'
       r.add('photoTexture', 'Photographic texture detected — bilateral denoise keeps edges clean.')
     }
-    // Anti-aliased flat art with many colors: global k-means maps the soft rim
-    // between two flat colors to a nearest *third* palette color, drawing
-    // hairline slivers along every edge. Region growing instead grows each
-    // region from its flat interior, so a soft edge is split between its two real
-    // neighbors and no third rim color can form — the faithful, seam-free choice.
-    // Small regions below `FLAT_ART_MIN_REGION` still fold into their
-    // surroundings. Gradient-bearing or few-color flat art is excluded
-    // (`wantsRegionGrowing`) and stays on quantization, which keeps a gradient's
-    // bands and traces few-color art exactly.
-    if (wantsRegionGrowing(a)) {
+    // Cartoon-style flat art: global k-means maps the soft rim between two
+    // flat colors to a nearest *third* palette color, drawing hairline slivers
+    // along every edge. Region growing instead grows each fill from its flat
+    // interior, so a soft edge is split between its two real neighbors and no
+    // rim color can form — the clean, few-shapes choice for a cartoon. The
+    // size-aware region merge folds rim slivers on its own, so the profile's
+    // speck floor stands (a flag's stars and a scene's small marks survive),
+    // and the palette budget is a hard cap on the fills that remain.
+    // Gradient-heavy, sprite-fine or hard-edged art is excluded (`isCartoon`)
+    // and stays on quantization, which keeps a gradient's bands and traces a
+    // pixel palette exactly.
+    if (cartoon) {
       patch.segmentation = 'regions'
-      patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, FLAT_ART_MIN_REGION)
       r.add(
-        'flatArtRegions',
-        'Crisp flat art — growing regions from the flat interiors (no global palette) so anti-aliased edges stay clean.',
+        'cartoonRegions',
+        'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean, within the color budget.',
       )
     }
   }
@@ -336,10 +353,11 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
     )
     return 'illustration'
   }
-  // Photographic routing is vetoed for clean flat art: anti-aliasing makes crisp
-  // vector art score as photographic, but its flat interiors give it away, so it
-  // stays a faithful color trace instead of being posterized or over-cleaned.
-  if (!isCleanFlatArt(a) && a.photoScore > 0.6) {
+  // Photographic routing is vetoed for clean flat art and cartoons: anti-aliasing
+  // (or JPEG) makes crisp vector art score as photographic, but its flat
+  // interiors give it away, so it stays a faithful color trace instead of being
+  // posterized or over-cleaned.
+  if (!isCleanFlatArt(a) && !isCartoon(a) && a.photoScore > 0.6) {
     if (isCompressedFlat(a)) {
       r.add(
         'pickCompressedFlat',
@@ -354,7 +372,7 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
     r.add('pickLogo', 'Flat shapes with few colors — logo profile with seam-free cutout layers.')
     return 'logo'
   }
-  if (isCleanFlatArt(a)) {
+  if (isCleanFlatArt(a) || isCartoon(a)) {
     r.add('pickFlatArt', 'Clean flat art with anti-aliased edges — faithful color illustration.')
     return 'illustration'
   }

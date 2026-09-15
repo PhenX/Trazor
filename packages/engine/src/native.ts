@@ -916,13 +916,14 @@ async function colorPipeline(
     if (canCachePal) cacheStats(cache!).palMisses++
     // Region growing (marker-controlled watershed): no global palette, so an
     // anti-aliased edge is split between its two neighbors instead of inventing
-    // a third rim color. `paletteSize` is a budget (soft cap), not an exact
-    // count; autoPaletteSize lets the merge thresholds decide the count.
+    // a third rim color. The merge thresholds decide the color count, and
+    // `paletteSize` is its hard upper bound — never an exact count, so
+    // `autoPaletteSize` changes nothing here.
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
-      maxRegions: settings.autoPaletteSize ? 0 : settings.paletteSize,
+      maxRegions: settings.paletteSize,
       mask: opaque,
     })
     await run.tick()
