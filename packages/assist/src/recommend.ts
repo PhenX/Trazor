@@ -49,6 +49,17 @@ const COLORED_FRACTION_MIN = 0.05
 const FLAT_ART_MIN_REGION = 16
 
 /**
+ * Gray levels for a tonal ink scan traced as grayscale. Few enough that the
+ * paper's JPEG texture posterizes into one background level instead of thousands
+ * of speck regions, enough to separate paper, faint construction lines, mid-tone
+ * hatching and solid ink.
+ */
+const INK_TONE_LEVELS = 4
+
+/** Speck floor for a tonal ink scan — drops the paper's residual JPEG specks. */
+const INK_TONE_MIN_REGION = 16
+
+/**
  * Region growing earns its place only for anti-aliased flat art with many
  * colors; outside that window global k-means is the faithful choice, so
  * {@link wantsRegionGrowing} adds two gates on top of {@link isCleanFlatArt}.
@@ -115,6 +126,36 @@ function isAchromatic(a: ImageAnalysis): boolean {
 }
 
 /**
+ * Genuinely bilevel ink: an achromatic mark that is essentially two tones (dark
+ * ink on bright paper) with high contrast and almost no mid-gray. A hard
+ * threshold reproduces it exactly, so it is traced as black & white.
+ */
+function isBilevelInk(a: ImageAnalysis): boolean {
+  return a.twoToneCoverage > 0.92 && a.contrast > 0.25 && isAchromatic(a)
+}
+
+/**
+ * Achromatic line-art scan carrying real gray tone: an ink drawing, engraving or
+ * technical/patent scan on bright paper — busy edges, a limited tone count, no
+ * color — that is not cleanly bilevel ({@link isBilevelInk}). What separates it
+ * from a mid-toned grayscale photo is the bright paper ground and the sparse
+ * tone count; what separates it from clean two-tone ink is the mid-gray it
+ * carries (faint pencil, engraved hatching, a JPEG'd rule). A bw threshold
+ * collapses that mid-gray into solid ink — thickening every stroke and flooding
+ * hatched areas black — so this is traced as grayscale tonal layers, which keep
+ * each stroke at its true darkness.
+ */
+function isTonalLineArt(a: ImageAnalysis): boolean {
+  return (
+    isAchromatic(a) &&
+    !isBilevelInk(a) &&
+    a.meanLightness > 0.7 &&
+    a.edgeDensity > 0.1 &&
+    a.distinctColors <= 4096
+  )
+}
+
+/**
  * Photographic-looking texture (noise, blocking, ringing) sitting on top of a
  * few dominant flat colors — a compressed or rescaled flat graphic (a JPEG
  * logo, a screenshot) rather than a true photograph, whose colors spread out
@@ -154,6 +195,28 @@ export function recommendSettings(
     r.add('pixelExact', `Kept the ${a.distinctColors} original colors exactly.`, {
       count: a.distinctColors,
     })
+    return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+  }
+
+  // An achromatic line-art scan with real gray tone traces as grayscale tonal
+  // layers, not black & white: a bw threshold would over-ink it, thickening
+  // faint strokes and flooding hatched areas solid black. A small tone count
+  // posterizes the paper's JPEG texture into one background level instead of
+  // thousands of speck regions.
+  if (goal === 'auto' && isTonalLineArt(a)) {
+    patch.mode = 'grayscale'
+    patch.paletteSize = INK_TONE_LEVELS
+    patch.autoPaletteSize = false
+    patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, INK_TONE_MIN_REGION)
+    r.add(
+      'inkGrayscale',
+      `${INK_TONE_LEVELS} gray tones — enough to separate paper, faint lines and ink, few enough to posterize the scan's texture instead of tracing it.`,
+      { levels: INK_TONE_LEVELS },
+    )
+    if (a.pixels > 4_000_000) {
+      patch.maxDimension = 1600
+      r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
+    }
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -253,23 +316,25 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   }
   // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
   // two-color mark (navy on white, say) keeps its color through a flat profile.
-  if (a.twoToneCoverage > 0.92 && a.contrast > 0.25 && isAchromatic(a)) {
+  if (isBilevelInk(a)) {
     r.add(
       'pickBwSketch',
       'Essentially two-tone with high contrast — black & white tracing fits best.',
     )
     return 'bw-sketch'
   }
-  // Achromatic line art / ink drawing: no real color, a bright paper background,
-  // crisp strokes and few distinct tones — unlike a mid-toned grayscale photo,
-  // which fills the tonal range with smooth micro-gradients. Threshold B&W keeps
-  // the lines crisp and compact instead of stacking tonal gray layers.
-  if (isAchromatic(a) && a.meanLightness > 0.7 && a.edgeDensity > 0.1 && a.distinctColors <= 4096) {
+  // Achromatic line art carrying real gray tone (a faint pencil scan, an
+  // engraving's hatching, a JPEG'd technical drawing): no color, a bright paper
+  // ground, busy edges and few tones — but not cleanly bilevel. A bw threshold
+  // over-inks it; a faithful color/grayscale trace keeps each stroke's true
+  // darkness (the recommender applies grayscale mode). The illustration base
+  // gives the smooth stacked layering that suits it.
+  if (isTonalLineArt(a)) {
     r.add(
-      'pickInkLineart',
-      'Achromatic line art with crisp edges and few tones — black & white tracing.',
+      'pickInkGrayscale',
+      'Achromatic line art with gray tone — faithful grayscale tracing, not over-inked black & white.',
     )
-    return 'bw-sketch'
+    return 'illustration'
   }
   // Photographic routing is vetoed for clean flat art: anti-aliasing makes crisp
   // vector art score as photographic, but its flat interiors give it away, so it

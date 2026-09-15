@@ -156,6 +156,7 @@ e2e-artifacts/
 /eval-artifacts/
 scripts/eval/corpus/
 scripts/eval/corpus-vtracer/
+scripts/eval/corpus-lineart/
 
 # Generated ML training datasets (scripts/dataset) and the fetched real corpus
 # (scripts/corpus). Both are reproducible from scripts — never committed. Anchored
