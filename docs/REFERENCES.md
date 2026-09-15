@@ -82,6 +82,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   while large regions merge only when near-identical. The `mergeSizeBias` option
   of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
   close-but-distinct dominant colors apart instead of averaging them into one.
+- **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
+  _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
+  variance agglomeration: the pair whose union adds the least total squared
+  error merges first. The hard `maxRegions` cap of the region-growing merge
+  (`packages/raster/src/segment.ts`) folds regions by |A|·|B|/(|A|+|B|)·ΔE²
+  until the color budget is met, so the budget's damage lands on the smallest,
+  closest regions.
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).

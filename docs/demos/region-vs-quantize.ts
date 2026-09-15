@@ -3,10 +3,10 @@
  * quantized. Region growing seeds each region from a flat interior, so it keeps
  * anti-aliased edges from inventing a third rim color — but a smooth gradient
  * has no flat interior to seed from, so it gets flooded into one mean color, and
- * a palette of close hues over-merges. The recommender (`@trazor/assist`) now
- * routes gradient-bearing or few-color flat art to quantization instead, and
- * keeps region growing for the many-color, gradient-free clip-art it is meant
- * for. Each scene is traced both ways; the recommender's auto pick is marked.
+ * a palette of close hues over-merges. The recommender (`@trazor/assist`)
+ * routes gradient-heavy scenes to quantization and keeps region growing for
+ * the cartoon-style flat art it is meant for, whatever its color count. Each
+ * scene is traced both ways; the recommender's auto pick is marked.
  *
  * Run:  npx tsx docs/demos/region-vs-quantize.ts
  * Output: docs/demos/region-vs-quantize.html
@@ -150,7 +150,7 @@ const BASE = {
   layering: 'stacked' as const,
   smoothing: 0.8,
   colorCoherence: 0.5,
-  minRegionArea: 16,
+  minRegionArea: 4,
 }
 
 const kb = (n: number): string => `${(n / 1024).toFixed(1)} kB`
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
 </style>
 <div class="wrap">
   <h1>Region growing vs. quantization</h1>
-  <p class="sub">Region growing keeps anti-aliased edges from inventing a third rim color, but a smooth gradient has no flat interior to seed a region from — so it floods into one mean color, and a palette of close hues over-merges. The recommender routes gradient-bearing or few-color flat art to quantization (which posterizes a ramp into faithful bands) and keeps region growing for the many-color, gradient-free clip-art it is meant for. The <b>auto pick</b> is outlined.</p>
+  <p class="sub">Region growing keeps anti-aliased edges from inventing a third rim color, but a smooth gradient has no flat interior to seed a region from — so it floods into one mean color, and a palette of close hues over-merges. The recommender routes gradient-heavy scenes to quantization (which posterizes a ramp into faithful bands) and keeps region growing for cartoon-style flat art, whatever its color count. The <b>auto pick</b> is outlined.</p>
   ${rows.join('\n')}
 </div>`
 

@@ -181,7 +181,7 @@ export interface SegmentOptions {
   mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
-  maxRegions?: number // soft cap: fold the closest pair (within 2·mergeThreshold) until met; 0 = none
+  maxRegions?: number // hard cap: fold pairs by least added squared color error (Ward) until met; 0 = none
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
 }
 export interface SegmentResult {
@@ -238,8 +238,9 @@ export function fitRegionGradients(
   no third color is ever created on a boundary.
 - A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
   regions under `minRegionArea` (closest first), then consolidates non-adjacent
-  near-duplicates globally; `maxRegions` folds the closest pair only within a
-  perceptual ceiling, so a budget never collapses genuinely different hues. With
+  near-duplicates globally; `maxRegions` is a hard cap — pairs fold by least
+  added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
+  so a budget spends its damage on the smallest, closest regions first. With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
   close-but-distinct colors stay apart while small regions still fold.
 - Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
