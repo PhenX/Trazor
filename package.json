@@ -21,9 +21,11 @@
     "eval:prepass": "tsx scripts/eval/trace-eval.ts",
     "eval:corpus": "node scripts/eval/make-corpus.mjs",
     "eval:samples": "node scripts/eval/fetch-vtracer-samples.mjs",
+    "eval:lineart": "node scripts/eval/fetch-lineart-samples.mjs",
     "eval:tracers": "tsx scripts/eval/tracer-compare.ts",
     "eval:ab": "node scripts/eval/ab.mjs",
     "bench": "tsx scripts/bench/trace-bench.ts",
+    "bench:tune": "tsx scripts/bench/tune-bench.ts",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

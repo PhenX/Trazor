@@ -15,8 +15,12 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
   contract](ML_STRATEGY.md#determinism-and-webgpu-a-two-tier-contract).
 - **Optional, fail-soft.** The app must stay fully functional, and the classical path byte-identical, with no model
   loaded. Every geometry-touching change ships with a byte-identical-classical-path test and a WASM-parity test.
-- **Measure what ships.** The proxy losses (edge BCE/Dice, cleanup PSNR) are not the target — the target is the app's
-  Oklab ΔE through the tracer, held out by source family (item 1).
+- **Measure what ships.** The proxy losses (edge BCE/Dice, cleanup PSNR) are not the target — the target is the traced
+  output's fidelity, held out by source family (item 1). The `eval:ab` verdict reads **GMSD through the tracer** as its
+  primary — the human-validated perceptual metric (two blind judged batches: `docs/studies/ab-gmsd.md` and
+  `perceptual-metrics.md` in the studio, 30/33 decisive pairs pooled) — with **mean Oklab ΔE and spurious hue as
+  regression guards**. A change is "better" only when GMSD improves past its tie band with no guard regression, per
+  family; a lower whole-image mean ΔE is not enough.
 
 ## Shipped baseline
 
@@ -29,14 +33,14 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 
 ## Priority overview
 
-| #     | Item                                   | Fixes                              | Impact                     | Effort | Risk                          |
-| ----- | -------------------------------------- | ---------------------------------- | -------------------------- | ------ | ----------------------------- |
-| **1** | ΔE-through-tracer eval harness ✅      | selection optimizes a proxy        | unlocks measuring 2–6      | M      | Low                           |
-| **2** | Degradation & data realism ◐           | robustness on degraded/real inputs | High (edge + cleanup both) | M–L    | Low                           |
-| **3** | Learned signed-field head ◐            | shape fitting _on degraded input_  | High (point-position win)  | L      | Med (geometry / determinism)  |
-| **4** | Primitive / arc fitting (classical) ✅ | biggest _visible_ quality gap      | High                       | L      | Med (geometry / cutout seams) |
-| **5** | Cleanup model capacity ✅              | under-capacity vs its own spec     | Med                        | S      | Low                           |
-| **6** | Bounded differentiable refinement      | fidelity ceiling                   | Very high, long-term       | XL     | High                          |
+| #     | Item                                                | Fixes                              | Impact                                            | Effort | Risk                          |
+| ----- | --------------------------------------------------- | ---------------------------------- | ------------------------------------------------- | ------ | ----------------------------- |
+| **1** | ΔE-through-tracer eval harness ✅                   | selection optimizes a proxy        | unlocks measuring 2–6                             | M      | Low                           |
+| **2** | Degradation & data realism ◐                        | robustness on degraded/real inputs | High (edge + cleanup both)                        | M–L    | Low                           |
+| **3** | Learned signed-field head ◐ — measured: no headroom | shape fitting _on degraded input_  | Low (a perfect field moves the boundary ~0.04 px) | L      | Med (geometry / determinism)  |
+| **4** | Primitive / arc fitting (classical) ✅              | biggest _visible_ quality gap      | High                                              | L      | Med (geometry / cutout seams) |
+| **5** | Cleanup model capacity ✅                           | under-capacity vs its own spec     | Med                                               | S      | Low                           |
+| **6** | Bounded differentiable refinement                   | fidelity ceiling                   | Very high, long-term                              | XL     | High                          |
 
 **Sequencing:** Sprint 1 = **1 → 2** (then retrain edge + cleanup, record the new baseline). Sprint 2 = **5** (quick) +
 **3**. Sprint 3 = **4**. Later = **6** (offline oracle first). Item 1 comes first because nothing else is trustworthy
@@ -111,18 +115,26 @@ regression**. Then retrain edge + cleanup and record the item-1 numbers as the n
 **Docs.** `config.mjs` USAGE, `scripts/dataset/README.md`; mark shipped corruptions in the `ML_STRATEGY.md` degradation
 list.
 
-## 3. Learned signed-field head — geometry, not just gating
-
-## 3. Learned signed-field head — geometry, not just gating — **mechanism implemented**
+## 3. Learned signed-field head — geometry, not just gating — **mechanism implemented, measured: no headroom**
 
 **Shipped & tested.** The bw `coverageHint` path (`EngineContext.coverageHint` → quantized signed field → `traceMask`
 `coverage`), worker/client wiring, `FieldEnhancer` (`@trazor/ml`), the `field/` dataset target
 (`coverage = 1 − Oklab L` of the clean scene), and the `field` train/predict/eval tasks. Covered by
 `packages/engine/test/coverage-hint.test.ts`: no hint is byte-identical; a clean field snaps the traced edge toward the
 true position on a hard/degraded input; `pixel` mode ignores it. Spec: [`SIGNED_FIELD_PREPASS.md`](SIGNED_FIELD_PREPASS.md).
-**Pending:** silhouette training data (the procedural source is multi-color, not a silhouette — so the ΔE eval isn't
-meaningful for it yet), a bw-appropriate eval reference, trained weights, the color `pairwiseField` extension, and the
-studio UI toggle.
+The **silhouette training data** now exists (`scripts/dataset --source silhouette`: one ink on a paper ground —
+glyph counters, strokes, holes, thin features at several scales — with unit tests) and the **bw-appropriate eval
+reference** too (`eval:prepass --task field` reports a boundary-displacement error against the clean silhouette
+alongside ΔE).
+
+**Measured (studio session-8 study): very little headroom.** With that data and reference in place, the studio's
+(private) study trained a first field model and measured it on the metrics its human-judged batches track — GMSD
+(primary), boundary F and chamfer — not on whole-image ΔE. Even a **perfect** clean field re-seats the traced boundary
+by only ~0.04 px on degraded silhouettes and moves GMSD/ΔE within their tie bands; the trained model does no visible
+harm and at best a marginal boundary-F gain on real degraded line art, bought with ~10 % more nodes. The boundary error
+lives in the threshold/despeckle stage, not in the sub-pixel refinement this field feeds. Consequences: the mechanism
+stays (byte-identical when off, reproducible on a pinned backend), **no `signed-field.onnx` is published**, and the
+color `pairwiseField` extension and the studio UI toggle are **on hold** until the mechanism is reconsidered.
 
 **Why.** Point-position fidelity comes from the classical sub-pixel refinement (`packages/trace/src/refine.ts`), which
 snaps ring vertices onto the zero-contour of a signed field. That field is built from the **degraded** working image

@@ -27,6 +27,19 @@ No corpus is needed to start: the default `procedural` source synthesizes random
 doc's procedural data source), which also gives exact ground truth. Point `--source dir --corpus <dir>` at real SVGs
 (fonts exported per-glyph, icon sets, clip art) to scale up.
 
+**`--source silhouette`** synthesizes bw silhouette scenes for the signed-field pre-pass
+([`../../docs/SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md), the `field/` target): one dark ink on a
+light paper ground — glyph-like marks with counters (`O`, frame, `H`, `E`), strokes of varying width, holes, and thin
+features (hairline bars, thin rings, dots) at several scales, across five archetype families (`glyph`, `stroke`,
+`blob`, `thin`, `mixed`). Unlike the multi-color `procedural` source, the clean composite _is_ a silhouette, so the
+coverage field is ~1 on ink and ~0 on paper and the `eval:prepass --task field` ΔE (against the clean composite) is a
+bw-appropriate reference. Pair it with `--no-background` so a geometric-warp corner reads as paper, not procedural
+color, and `--targets clean,field` (the field task needs no edge map):
+
+```sh
+npm run dataset -- --source silhouette --count 11000 --targets clean,field --no-background --seed 1
+```
+
 ## Output
 
 ```
@@ -40,9 +53,10 @@ dataset-out/
 ```
 
 For a real `--source dir` corpus, splits are assigned **per source family** (top-level subdirectory) so no source SVG
-leaks across train/val/test — otherwise metrics inflate. Procedural samples are mutually independent, so they split per
-sample and hit the ratios directly. Each sample also records its `family` label in the manifest. Pick the target heads
-with `--targets edge,clean,field` (all three by default).
+leaks across train/val/test — otherwise metrics inflate. Procedural and silhouette samples are mutually independent, so
+they split per sample and hit the ratios directly. Each sample records its `family` label in the manifest for
+per-family reporting (it does not drive the split for these sources). Pick the target heads with
+`--targets edge,clean,field` (all three by default).
 
 ## Pipeline (one sample)
 
@@ -69,19 +83,19 @@ need byte-identical regeneration across machines.
 
 ## Files
 
-| File                | Role                                                               |
-| ------------------- | ------------------------------------------------------------------ |
-| `generate.mjs`      | CLI, worker-pool orchestration, split assignment, manifest         |
-| `sample.mjs`        | one sample end to end (render → degrade → targets → write)         |
-| `sample-worker.mjs` | worker-thread entry: runs `sample.mjs` off the main thread         |
-| `config.mjs`        | defaults + argument parsing + usage                                |
-| `sources.mjs`       | procedural SVG synthesis and real-corpus directory walk            |
-| `render.mjs`        | resvg rasterization, letterbox, geometric augmentation, downsample |
-| `degrade.mjs`       | background, composite, and the photometric degradation ops         |
-| `targets.mjs`       | edge-map ground truth (Sobel)                                      |
-| `imageops.mjs`      | RGBA resize / area-downsample / affine / letterbox primitives      |
-| `random.mjs`        | seeded PRNG and distribution helpers                               |
-| `io.mjs`            | PNG writing and manifest                                           |
+| File                | Role                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| `generate.mjs`      | CLI, worker-pool orchestration, split assignment, manifest           |
+| `sample.mjs`        | one sample end to end (render → degrade → targets → write)           |
+| `sample-worker.mjs` | worker-thread entry: runs `sample.mjs` off the main thread           |
+| `config.mjs`        | defaults + argument parsing + usage                                  |
+| `sources.mjs`       | procedural + silhouette SVG synthesis and real-corpus directory walk |
+| `render.mjs`        | resvg rasterization, letterbox, geometric augmentation, downsample   |
+| `degrade.mjs`       | background, composite, and the photometric degradation ops           |
+| `targets.mjs`       | edge-map ground truth (Sobel)                                        |
+| `imageops.mjs`      | RGBA resize / area-downsample / affine / letterbox primitives        |
+| `random.mjs`        | seeded PRNG and distribution helpers                                 |
+| `io.mjs`            | PNG writing and manifest                                             |
 
 ## Extending
 

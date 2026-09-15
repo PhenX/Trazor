@@ -2,7 +2,7 @@
 // randomness is seeded from `seed`, so a config fully determines the dataset.
 
 export const DEFAULTS = {
-  source: 'procedural', // 'procedural' | 'dir'
+  source: 'procedural', // 'procedural' | 'silhouette' | 'dir'
   corpus: '', // directory of .svg files when source === 'dir'
   out: 'dataset-out', // output root
   count: 64, // samples to generate (procedural) or cap for 'dir' (0 = all)
@@ -132,8 +132,8 @@ export function parseArgs(argv) {
         throw new Error(`unknown flag --${key}`)
     }
   }
-  if (cfg.source !== 'procedural' && cfg.source !== 'dir') {
-    throw new Error(`--source must be 'procedural' or 'dir', got '${cfg.source}'`)
+  if (cfg.source !== 'procedural' && cfg.source !== 'silhouette' && cfg.source !== 'dir') {
+    throw new Error(`--source must be 'procedural', 'silhouette', or 'dir', got '${cfg.source}'`)
   }
   return cfg
 }
@@ -142,7 +142,8 @@ export const USAGE = `dataset generator — SVG corpus → rasterize → degrade
 
 Usage: npm run dataset -- [options]
 
-  --source <procedural|dir>  sample source (default procedural)
+  --source <procedural|silhouette|dir>  sample source (default procedural)
+                             (silhouette: one ink on a paper ground, for the signed-field pre-pass)
   --corpus <dir>             directory of .svg files (required for source=dir)
   --out <dir>                output root (default dataset-out)
   --count <n>                samples to generate, or cap for dir (default 64)

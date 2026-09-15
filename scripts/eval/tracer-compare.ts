@@ -45,6 +45,7 @@ import type { ProfileId, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 import { resizeToFit } from '@trazor/raster'
 import { analyzeSvg } from '@trazor/svg'
+import { gmsd } from './gmsd'
 import {
   flattenOverWhite,
   pngDataUri,
@@ -169,6 +170,7 @@ interface TraceResult {
   edgeDE: number
   p95: number
   spurious: number
+  gmsd: number
   nodes: number
   bytes: number
   ms: number
@@ -179,7 +181,15 @@ interface TraceResult {
 function fidelity(
   svg: string,
   srcWhite: RasterImage,
-): { dE: number; edgeDE: number; p95: number; spurious: number; nodes: number; bytes: number } {
+): {
+  dE: number
+  edgeDE: number
+  p95: number
+  spurious: number
+  gmsd: number
+  nodes: number
+  bytes: number
+} {
   const render = rasterizeSvg(svg, srcWhite.width)
   const ref = resampleNearest(srcWhite, render.width, render.height)
   const q = qualityStats(render, ref)
@@ -188,6 +198,9 @@ function fidelity(
     edgeDE: q.edge,
     p95: q.p95,
     spurious: q.spurious,
+    // GMSD from the same render/reference the ΔE uses — the human-validated
+    // primary the verdict reads (docs/studies/ab-gmsd.md in the studio).
+    gmsd: gmsd(render, ref),
     nodes: analyzeSvg(svg).nodeCount,
     bytes: Buffer.byteLength(svg, 'utf8'),
   }
@@ -271,6 +284,7 @@ function agg(rows: Row[], pick: (r: Row) => TraceResult | null) {
     edgeDE: mean((t) => t.edgeDE),
     p95: mean((t) => t.p95),
     spurious: mean((t) => t.spurious),
+    gmsd: mean((t) => t.gmsd),
     nodes: mean((t) => t.nodes),
     bytes: mean((t) => t.bytes),
     ms: mean((t) => t.ms),
@@ -345,16 +359,16 @@ function printFamilySummary(rows: Row[], hasV: boolean): void {
       const nodeRatio = v.nodes > 0 ? (t.nodes / v.nodes).toFixed(2) : '—'
       const byteRatio = v.bytes > 0 ? (t.bytes / v.bytes).toFixed(2) : '—'
       console.log(
-        `  ${fam.padEnd(12)} ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}` +
+        `  ${fam.padEnd(12)} GMSD T ${fmt(t.gmsd)} V ${fmt(v.gmsd)}   ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}` +
           `   spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   nodes T/V ${nodeRatio}× KB T/V ${byteRatio}×`,
       )
     } else {
-      // Show band + spurious + p95 alongside the mean: a change can lower the
-      // whole-image ΔE while inventing a hue at a seam (spurious up) — the mean
-      // alone would hide that, so never print it alone.
+      // GMSD is the human-validated primary; band + spurious + p95 alongside the
+      // mean because a change can lower the whole-image ΔE while inventing a hue
+      // at a seam (spurious up) — the mean alone would hide that.
       console.log(
-        `  ${fam.padEnd(12)} ΔE ${fmt(t.dE)}   band ${fmt(t.edgeDE)}   spurious ${fmt(t.spurious)}` +
-          `   p95 ${fmt(t.p95)}   nodes ${Math.round(t.nodes)}`,
+        `  ${fam.padEnd(12)} GMSD ${fmt(t.gmsd)}   ΔE ${fmt(t.dE)}   band ${fmt(t.edgeDE)}` +
+          `   spurious ${fmt(t.spurious)}   p95 ${fmt(t.p95)}   nodes ${Math.round(t.nodes)}`,
       )
     }
   }
@@ -497,7 +511,7 @@ async function main(): Promise<void> {
     const v = agg(rows, (r) => r.vtracer)
     if (t && v) {
       console.log(
-        `\n  overall  ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
+        `\n  overall  GMSD T ${fmt(t.gmsd)} V ${fmt(v.gmsd)}   ΔE T ${fmt(t.dE)} V ${fmt(v.dE)}   band T ${fmt(t.edgeDE)} V ${fmt(v.edgeDE)}   ` +
           `spurious T ${fmt(t.spurious)} V ${fmt(v.spurious)}   p95 T ${fmt(t.p95)} V ${fmt(v.p95)}   ` +
           `score T ${score(t.dE).toFixed(3)} V ${score(v.dE).toFixed(3)}   nodes T/V ${(t.nodes / v.nodes).toFixed(2)}×   bytes T/V ${(t.bytes / v.bytes).toFixed(2)}×`,
       )
@@ -523,6 +537,7 @@ async function main(): Promise<void> {
         edgeDE: r.trazor.edgeDE,
         p95: r.trazor.p95,
         spurious: r.trazor.spurious,
+        gmsd: r.trazor.gmsd,
         nodes: r.trazor.nodes,
         bytes: r.trazor.bytes,
         ms: r.trazor.ms,
@@ -533,6 +548,7 @@ async function main(): Promise<void> {
             edgeDE: r.vtracer.edgeDE,
             p95: r.vtracer.p95,
             spurious: r.vtracer.spurious,
+            gmsd: r.vtracer.gmsd,
             nodes: r.vtracer.nodes,
             bytes: r.vtracer.bytes,
             ms: r.vtracer.ms,

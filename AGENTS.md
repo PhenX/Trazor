@@ -171,9 +171,17 @@ A change to color, palette, segmentation or the tracer is only "better" if it is
 - **Use `npm run eval:ab` for the verdict.** It traces the corpus through the engine on your working tree and on HEAD
   and prints **PASS / MIXED / FAIL** (`scripts/eval/README.md`). A change ships only on **PASS**; a **MIXED** is a real
   trade-off to weigh out loud with the user, and a **FAIL** does not ship. Don't hand-compare two runs by eye.
+- **The verdict reads GMSD; ΔE and spurious hue guard.** The default `eval:ab` verdict decides on **GMSD**, the
+  human-validated primary metric — two blind judged batches (`docs/studies/ab-gmsd.md` and `perceptual-metrics.md` in
+  the studio) show it tracks the eye on 30/33 decisive pairs pooled, where mean ΔE and spurious hue track it at 82 % /
+  79 %. GMSD is judged against a content-dependent **tie band** (≈ 0.0008 on flat vector art, ≈ 0.014 on diverse or
+  degraded content): a move inside the band is no change. **Mean ΔE and spurious hue stay on as regression guards** — a
+  GMSD win bought with an invented seam color (spurious hue up) still FAILs — but they no longer rank candidates. Pass
+  `--primary de` to reproduce the legacy ΔE + spurious verdict, or `--tie-band <n>` to force one band.
 - **Read the whole metric panel, not the mean.** Whole-image mean ΔE dilutes local damage; a change can lower the mean
-  while raising **spurious hue** (a saturated color invented at a seam). `eval:ab` judges on ΔE _and_ spurious hue for
-  exactly this reason — a better mean bought with worse spurious hue is not an improvement.
+  while raising **spurious hue** (a saturated color invented at a seam), and GMSD is the metric that best catches the
+  local structural damage the eye sees. `eval:ab` reports GMSD, ΔE, band, p95 and spurious hue per family so a win on
+  one axis can't hide a loss on another.
 - **Gate at the routing you actually changed.** A palette (quantize) change shows nothing on images the recommender
   routes to region growing, and vice-versa; force the path (`--set segmentation=quantize`) or sweep a setting
   (`--sweep segmentation=quantize,regions`, or `--sweep 6,8,12` for `paletteSize`) so the change is exercised where it

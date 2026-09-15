@@ -22,7 +22,7 @@ import { parseArgs, USAGE } from './config.mjs'
 import { ensureDir, sanitize, writeManifest } from './io.mjs'
 import { hashString, mulberry32, seedFor } from './random.mjs'
 import { processItem } from './sample.mjs'
-import { dirSource, proceduralItem } from './sources.mjs'
+import { dirSource, proceduralItem, silhouetteItem } from './sources.mjs'
 
 const cfg = parseArgs(process.argv.slice(2))
 if (cfg.help) {
@@ -68,8 +68,11 @@ function* buildItems() {
       index++
     }
   } else {
+    // procedural and silhouette are both index-driven synthesizers; each sample is
+    // mutually independent, so it splits on its own id (no family straddles splits).
+    const itemFor = cfg.source === 'silhouette' ? silhouetteItem : proceduralItem
     for (let index = 0; index < cfg.count; index++) {
-      const { id, family, svg } = proceduralItem(index, cfg.seed)
+      const { id, family, svg } = itemFor(index, cfg.seed)
       yield {
         index,
         id,

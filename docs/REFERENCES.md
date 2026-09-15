@@ -111,6 +111,23 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   base→pixel lines in sRGB, and the per-pixel opacity as the projection onto it
   (`packages/raster/src/gradient.ts`).
 
+## Evaluation metrics (scripts/eval)
+
+- **W. Xue, L. Zhang, X. Mou & A. C. Bovik, “Gradient Magnitude Similarity
+  Deviation: A Highly Efficient Perceptual Image Quality Index”, _IEEE Trans.
+  Image Processing_ 23(2), 2014.** <https://doi.org/10.1109/TIP.2013.2293423>
+  The standard deviation of the pixel-wise gradient-magnitude similarity map
+  between a render and its reference — cheap and well correlated with human
+  opinion. Computed in `scripts/eval/gmsd.ts` (Prewitt gradients over a 2×
+  box-downsampled luma plane, stabilizer T = 170) and read as the **default A/B
+  verdict primary** by `scripts/eval/ab-report.ts`. Human-validated as the
+  primary metric across two blind judged batches in the studio
+  (`docs/studies/ab-gmsd.md`, `perceptual-metrics.md`): it tracks the eye on
+  30 of 33 decisive pairs pooled, where mean Oklab ΔE and spurious hue track it
+  at 82 % / 79 %. The implementation is a byte-for-byte port of the studio's
+  `scripts/eval/metrics/gmsd.ts`, so the engine and the studio panel report one
+  GMSD, not two.
+
 ## Settings search (packages/tune)
 
 - **Robert Hooke & T. A. Jeeves, “‘Direct Search’ Solution of Numerical and
