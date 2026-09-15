@@ -58,9 +58,14 @@ function parseSweep(spec) {
   }
 }
 
-/** Split argv into sweep control vs pass-through flags for tracer-compare. */
+/**
+ * Split argv into sweep control, verdict flags (for ab-report), and pass-through
+ * flags (for tracer-compare). `--primary` / `--tie-band` decide the verdict, not
+ * the trace, so they are held back from tracer-compare (which would reject them).
+ */
 function parseArgs(argv) {
   const passthrough = []
+  const verdict = []
   let sweep = { key: null, values: [null] }
   let data = DEFAULT_DATA
   for (let i = 0; i < argv.length; i++) {
@@ -69,6 +74,8 @@ function parseArgs(argv) {
       sweep = parseSweep(argv[++i])
     } else if (a === '--data') {
       data = argv[++i]
+    } else if (a === '--primary' || a === '--tie-band') {
+      verdict.push(a, argv[++i])
     } else {
       passthrough.push(a)
       // flags that take a value: keep the value with them
@@ -77,7 +84,7 @@ function parseArgs(argv) {
       }
     }
   }
-  return { passthrough, sweep, data }
+  return { passthrough, verdict, sweep, data }
 }
 
 /** A filesystem-safe tag for one sweep value. */
@@ -98,7 +105,7 @@ function runCompare(data, passthrough, key, value, outPath) {
 }
 
 function main() {
-  const { passthrough, sweep, data } = parseArgs(process.argv.slice(2))
+  const { passthrough, verdict, sweep, data } = parseArgs(process.argv.slice(2))
 
   if (!existsSync(data)) {
     console.error(`\n  corpus not found: ${data}`)
@@ -147,6 +154,7 @@ function main() {
           'scripts/eval/ab-report.ts',
           join(OUT, `base-${tag}.json`),
           join(OUT, `cand-${tag}.json`),
+          ...verdict,
         ],
         { stdio: 'inherit' },
       )

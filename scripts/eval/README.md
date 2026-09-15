@@ -93,10 +93,11 @@ useful sanity check, not a target — a trained model predicts a sparser, denois
 `tracer-compare.ts` measures Trazor against [VTracer](https://github.com/visioncortex/vtracer) — the fast O(n) color
 tracer — so "is VTracer actually better, and where?" becomes a number per image **family** instead of a vibe. It traces
 each corpus image through `@trazor/engine` **and** the `vtracer` CLI, rasterizes both SVGs with resvg over white, and
-reports, per family, mean **Oklab ΔE**, a **banding-aware** edge-zone ΔE, a p95 worst-tail, and a **spurious-hue**
-score — each traced pixel's ΔE to the nearest source color in a local window, so a hue the trace invented at a seam
-(a wrong-colored band) scores high even though it sits near a real rim mixture and plain ΔE forgives it — plus node
-count, byte size, and wall-clock time. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
+reports, per family, **GMSD** (the human-validated perceptual primary), mean **Oklab ΔE**, a **banding-aware** edge-zone
+ΔE, a p95 worst-tail, and a **spurious-hue** score — each traced pixel's ΔE to the nearest source color in a local
+window, so a hue the trace invented at a seam (a wrong-colored band) scores high even though it sits near a real rim
+mixture and plain ΔE forgives it — plus node count, byte size, and wall-clock time. GMSD rides in the JSON report so
+`ab-report` can read it as the verdict primary. It's the one axis where VTracer's spatially-coherent clustering beats Trazor's
 global k-means on color content.
 
 It's also the regression harness for the two follow-on ideas: a fast greedy curve back-end and gradient-aware
@@ -163,12 +164,37 @@ setting, either thread it through `VectorizeSettings` while prototyping (then `-
 edit the constant and re-run `eval:ab` once per value.
 
 It requires uncommitted changes (the candidate) to compare against HEAD (the baseline); because the packages export TS
-source with no build step, stashing the source and re-running is a true baseline. The verdict rests on the two metrics
-that matter most — **mean ΔE and spurious-hue** — judged per family and overall:
+source with no build step, stashing the source and re-running is a true baseline.
 
-- **PASS** — a primary metric improved and **no** family regressed. Ships.
-- **FAIL** — a primary metric (ΔE or spurious hue) regressed overall, or on two-plus families. Does **not** ship.
-- **MIXED** — a genuine trade-off (some families win, some lose). A human weighs it.
+### What decides the verdict — GMSD, with ΔE and spurious hue as guards
+
+The default verdict reads **GMSD** (`scripts/eval/gmsd.ts`), the human-validated primary metric. Two blind
+human-judged batches in the studio ([`docs/studies/ab-gmsd.md`](../../../docs/studies/ab-gmsd.md) and
+`perceptual-metrics.md`) fixed GMSD as primary: it tracks the eye on **30 of 33 decisive pairs pooled**, where the old
+verdict metrics — mean Oklab ΔE and spurious hue — track it at **82 % / 79 %** (and only 60 % on diverse content). So
+GMSD decides, and mean ΔE and spurious hue stay on as **regression guards** that can only turn a verdict into FAIL on a
+clear regression (an invented seam color a GMSD move would otherwise wave through), never rank a candidate.
+
+GMSD is judged against a **content-dependent tie band** — a move smaller than the band is "held", not a change:
+
+- **≈ 0.0008** on flat vector art (families `flat`, `logo`, `icon`, `brand`, `flag`, `emoji`),
+- **≈ 0.014** on diverse, photographic or degraded content (every other family, and the overall aggregate).
+
+Per family and overall:
+
+- **PASS** — GMSD improved (overall or on a family) with **no** GMSD regression anywhere and no guard regression. Ships.
+- **FAIL** — GMSD regressed overall or on two-plus families, or a guard (ΔE / spurious hue) regressed overall or on
+  two-plus families. Does **not** ship.
+- **MIXED** — GMSD held or the families disagree: a genuine trade-off a human weighs.
+
+Flags:
+
+- `--primary de` — restore the **legacy** verdict (mean ΔE + spurious hue as the primaries, no GMSD). Use it to
+  reproduce an old verdict, or on a **pre-GMSD report** (old JSON without a `gmsd` field): the default GMSD verdict
+  rejects such a report with a message pointing here.
+- `--tie-band <n>` — force one GMSD tie band for every group instead of the content-dependent one.
+
+Both flags pass straight through `npm run eval:ab`.
 
 `ab-report.ts` is the pure verdict engine (unit-tested in `ab-report.test.ts`) and also runs standalone on any two
 `--json` reports, however they were produced — the way to A/B two commits rather than working-tree-vs-HEAD:
@@ -176,7 +202,8 @@ that matter most — **mean ΔE and spurious-hue** — judged per family and ove
 ```sh
 git checkout main    && npm run eval:tracers -- --data scripts/eval/corpus-vtracer --json base.json
 git checkout mybranch && npm run eval:tracers -- --data scripts/eval/corpus-vtracer --json cand.json
-tsx scripts/eval/ab-report.ts base.json cand.json
+tsx scripts/eval/ab-report.ts base.json cand.json                 # GMSD-primary verdict
+tsx scripts/eval/ab-report.ts base.json cand.json --primary de    # legacy ΔE + spurious verdict
 ```
 
 ## The corpus

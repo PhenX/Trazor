@@ -15,8 +15,12 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
   contract](ML_STRATEGY.md#determinism-and-webgpu-a-two-tier-contract).
 - **Optional, fail-soft.** The app must stay fully functional, and the classical path byte-identical, with no model
   loaded. Every geometry-touching change ships with a byte-identical-classical-path test and a WASM-parity test.
-- **Measure what ships.** The proxy losses (edge BCE/Dice, cleanup PSNR) are not the target — the target is the app's
-  Oklab ΔE through the tracer, held out by source family (item 1).
+- **Measure what ships.** The proxy losses (edge BCE/Dice, cleanup PSNR) are not the target — the target is the traced
+  output's fidelity, held out by source family (item 1). The `eval:ab` verdict reads **GMSD through the tracer** as its
+  primary — the human-validated perceptual metric (two blind judged batches: `docs/studies/ab-gmsd.md` and
+  `perceptual-metrics.md` in the studio, 30/33 decisive pairs pooled) — with **mean Oklab ΔE and spurious hue as
+  regression guards**. A change is "better" only when GMSD improves past its tie band with no guard regression, per
+  family; a lower whole-image mean ΔE is not enough.
 
 ## Shipped baseline
 
