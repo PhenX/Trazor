@@ -42,11 +42,21 @@ Produced by the dataset generator (the `field/` target, [`../scripts/dataset`](.
 `coverage = 1 − Oklab L` of the **clean composite** (matching `@trazor/raster` `toGrayscale`) at a mid (0.5) threshold —
 its anti-aliased edge values carry the sub-pixel boundary. Pixel-aligned by construction (derived before degradation).
 
-> **Data caveat.** The coverage field is a **bw-silhouette** target, but the built-in procedural source renders _opaque,
-> multi-color_ scenes — not ideal training data for a silhouette model, and the ΔE eval (which compares against the color
-> ground truth) is not meaningful for it. The effective data story is **single-subject / matte-style samples** (roadmap
-> item 2's matting work + a silhouette procedural mode) and a bw reference for the eval. Until then the model trains, but
-> measure it on silhouette inputs.
+**Silhouette source (`--source silhouette`).** The coverage field is a **bw-silhouette** target, so the training data
+is the dataset generator's `silhouette` source: one dark ink on a light paper ground — glyph-like marks with counters,
+strokes of varying width, holes, and thin features at several scales — run through the full degradation pipeline
+(blur, noise, JPEG, tone, dither, geometric warp). On these scenes the clean composite _is_ a bw silhouette, so the
+`field/` coverage target is ~1 on ink and ~0 on paper, and the `eval:prepass --task field` ΔE (against the clean
+composite) becomes a **bw-appropriate reference** rather than the meaningless color-truth comparison the multi-color
+`procedural` source produced. Generate with a light ground so a geometric-warp corner reads as paper:
+
+```sh
+npm run dataset -- --source silhouette --count 11000 --targets clean,field --no-background --seed 1
+```
+
+Fonts are the strongest silhouette source ([`ML_STRATEGY.md`](ML_STRATEGY.md)); the `silhouette` synthesizer covers the
+same structure (counters, thin strokes, corners, several scales) procedurally, and a font-derived SVG corpus can be
+mixed in through `--source dir` when one is available.
 
 ## Model, training, export
 
@@ -82,11 +92,15 @@ export class FieldEnhancer {
 ## Status
 
 - **Implemented & tested:** the engine/trace mechanism (bw `coverageHint`), worker/client wiring, `FieldEnhancer`, the
-  `field/` dataset target, and the `field` training/predict/eval tasks. The mechanism is covered by
-  `packages/engine/test/coverage-hint.test.ts` — no hint is byte-identical; a clean field snaps the traced edge toward the
-  true position on a hard/degraded input; `pixel` mode ignores it.
-- **Pending:** silhouette training data (see the caveat), trained weights, a bw-appropriate eval reference, and the studio
-  UI toggle.
+  `field/` dataset target, the `field` training/predict/eval tasks, the **`silhouette` dataset source** (with unit
+  tests, `scripts/dataset/silhouette.test.ts`), and a **bw-appropriate eval reference** — `eval:prepass --task field`
+  now also reports a symmetric boundary-displacement error against the clean silhouette (`lib.ts` `boundaryError`), so
+  the gate reads boundary error and ΔE. The trace mechanism is covered by `packages/engine/test/coverage-hint.test.ts` —
+  no hint is byte-identical; a clean field snaps the traced edge toward the true position on a hard/degraded input;
+  `pixel` mode ignores it.
+- **Pending:** the color `pairwiseField` extension and the studio UI toggle. (Trained weights and the panel proof are
+  produced by the private Session-8 study, `docs/studies/ml-signed-field.md` in the studio repo — no `.onnx` is
+  committed to the engine.)
 
 ## Success criteria
 

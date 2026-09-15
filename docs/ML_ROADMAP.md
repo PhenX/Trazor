@@ -120,9 +120,11 @@ list.
 (`coverage = 1 − Oklab L` of the clean scene), and the `field` train/predict/eval tasks. Covered by
 `packages/engine/test/coverage-hint.test.ts`: no hint is byte-identical; a clean field snaps the traced edge toward the
 true position on a hard/degraded input; `pixel` mode ignores it. Spec: [`SIGNED_FIELD_PREPASS.md`](SIGNED_FIELD_PREPASS.md).
-**Pending:** silhouette training data (the procedural source is multi-color, not a silhouette — so the ΔE eval isn't
-meaningful for it yet), a bw-appropriate eval reference, trained weights, the color `pairwiseField` extension, and the
-studio UI toggle.
+The **silhouette training data** now exists (`scripts/dataset --source silhouette`: one ink on a paper ground —
+glyph counters, strokes, holes, thin features at several scales — with unit tests) and the **bw-appropriate eval
+reference** too (`eval:prepass --task field` reports a boundary-displacement error against the clean silhouette
+alongside ΔE). **Pending:** the color `pairwiseField` extension and the studio UI toggle. (Trained weights and the
+metrics-that-track-the-eye proof are produced by the private Session-8 study, not committed to the engine.)
 
 **Why.** Point-position fidelity comes from the classical sub-pixel refinement (`packages/trace/src/refine.ts`), which
 snaps ring vertices onto the zero-contour of a signed field. That field is built from the **degraded** working image
