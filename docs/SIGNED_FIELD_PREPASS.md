@@ -98,9 +98,11 @@ export class FieldEnhancer {
   the gate reads boundary error and ΔE. The trace mechanism is covered by `packages/engine/test/coverage-hint.test.ts` —
   no hint is byte-identical; a clean field snaps the traced edge toward the true position on a hard/degraded input;
   `pixel` mode ignores it.
-- **Pending:** the color `pairwiseField` extension and the studio UI toggle. (Trained weights and the panel proof are
-  produced by the private Session-8 study, `docs/studies/ml-signed-field.md` in the studio repo — no `.onnx` is
-  committed to the engine.)
+- **Measured, not shipped:** the studio's (private) session-8 study trained a first field model on the silhouette data
+  and measured it on GMSD, boundary F and chamfer. Even a **perfect** clean field re-seats the traced boundary by only
+  ~0.04 px and stays within the metrics' tie bands; the trained model is harmless and at best marginally better on real
+  degraded line art, for ~10 % more nodes. No `.onnx` is published; the color `pairwiseField` extension and the studio
+  UI toggle are on hold until the mechanism is reconsidered.
 
 ## Success criteria
 
