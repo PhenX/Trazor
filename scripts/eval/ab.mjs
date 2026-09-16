@@ -60,8 +60,9 @@ function parseSweep(spec) {
 
 /**
  * Split argv into sweep control, verdict flags (for ab-report), and pass-through
- * flags (for tracer-compare). `--primary` / `--tie-band` decide the verdict, not
- * the trace, so they are held back from tracer-compare (which would reject them).
+ * flags (for tracer-compare). `--primary` / `--tie-band` / `--simplify-band`
+ * decide the verdict, not the trace, so they are held back from tracer-compare
+ * (which would reject them).
  */
 function parseArgs(argv) {
   const passthrough = []
@@ -74,7 +75,7 @@ function parseArgs(argv) {
       sweep = parseSweep(argv[++i])
     } else if (a === '--data') {
       data = argv[++i]
-    } else if (a === '--primary' || a === '--tie-band') {
+    } else if (a === '--primary' || a === '--tie-band' || a === '--simplify-band') {
       verdict.push(a, argv[++i])
     } else {
       passthrough.push(a)

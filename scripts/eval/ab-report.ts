@@ -18,8 +18,16 @@
  * degraded content. **Mean ΔE and spurious hue stay on as regression guards**
  * — they can only turn a verdict into FAIL on a clear regression (an invented
  * seam color the GMSD move would otherwise wave through), never rank a
- * candidate. `--tie-band <n>` forces one band; `--primary de` restores the
- * legacy ΔE + spurious verdict for comparison.
+ * candidate.
+ *
+ * **A simplicity term weighs editability**, which GMSD and ΔE can't see: a
+ * candidate whose overall node count drops substantially (with the guards clean)
+ * earns one step of credit — softening a *small* GMSD trade from FAIL to MIXED,
+ * or a structural tie from MIXED to PASS — because a far simpler, more editable
+ * SVG is a real product win (region growing over global quantize on flat art).
+ * It never rescues a large GMSD regression or a guard regression.
+ * `--tie-band <n>` forces one band; `--simplify-band <frac>` tunes the term
+ * (`≥ 1` disables it); `--primary de` restores the legacy ΔE + spurious verdict.
  *
  * Deterministic and pure: it only reads the two JSON blobs. Used both as the
  * verdict step of `npm run eval:ab` and directly (`tsx ab-report.ts a.json
@@ -83,6 +91,22 @@ export const TIE_BAND_DIVERSE = 0.014
  *  The engine corpus's `flat`/`logo` tags plus the studio's icon/brand/flag/emoji. */
 export const FLAT_FAMILIES = new Set(['flat', 'logo', 'icon', 'brand', 'flag', 'emoji'])
 
+/**
+ * Simplicity (editability) term. GMSD and ΔE score color fidelity, but a
+ * cleaner, more editable SVG — far fewer nodes — is a real product win they
+ * miss (region growing over global quantize on flat art is the case in point:
+ * it trades a little mean fidelity for a much simpler cut/edit path). A
+ * candidate whose overall node count drops by at least this fraction, with the
+ * fidelity guards (ΔE, spurious hue) clean, is "substantially simpler". That
+ * softens a *small* GMSD regression (under {@link SMALL_REGRESSION_FACTOR} × the
+ * tie band) from FAIL to MIXED, and a structural tie from MIXED to PASS. It
+ * never rescues a large GMSD regression or a guard regression, so it cannot wave
+ * a real defect — a collapsed near-blank output has few nodes but fails the
+ * guards and the GMSD move. `--simplify-band <frac>` tunes it; `≥ 1` disables it.
+ */
+export const SIMPLIFY_BAND = 0.25
+const SMALL_REGRESSION_FACTOR = 2
+
 export type Primary = 'gmsd' | 'de'
 
 export interface CompareOptions {
@@ -90,6 +114,9 @@ export interface CompareOptions {
   primary?: Primary
   /** Force one GMSD tie band for every group instead of the content-dependent one. */
   tieBand?: number | null
+  /** Overall node-count drop that counts as "substantially simpler" (default
+   *  {@link SIMPLIFY_BAND}); `≥ 1` disables the simplicity term. */
+  simplifyBand?: number
 }
 
 /** The GMSD tie band for a family: flat vector art vs diverse content, or an override. */
@@ -201,6 +228,18 @@ export function overallVerdict(overall: GroupVerdict, families: GroupVerdict[]):
 }
 
 /**
+ * True when the candidate is *substantially simpler* overall: its node count
+ * drops by at least `simplifyBand` and the fidelity guards (mean ΔE, spurious
+ * hue) are clean. A collapsed near-blank output also has few nodes, but it trips
+ * a guard, so this stays false for it.
+ */
+export function overallSimpler(overall: GroupVerdict, simplifyBand: number): boolean {
+  if (simplifyBand >= 1 || overall.guardRegressed) return false
+  const n = overall.metrics.nodes
+  return n.dir === 'better' && n.base > 0 && (n.base - n.cand) / n.base >= simplifyBand
+}
+
+/**
  * The default GMSD-primary verdict. GMSD decides, judged against each group's
  * tie band; mean ΔE and spurious hue are guards that only block the ship.
  *
@@ -209,20 +248,41 @@ export function overallVerdict(overall: GroupVerdict, families: GroupVerdict[]):
  * to catch). **PASS** when GMSD improves overall (or on a family) with no GMSD
  * regression anywhere and no ship-blocking guard regression. Otherwise
  * **MIXED** — a real trade a human weighs.
+ *
+ * A candidate that is {@link overallSimpler} earns one step of credit for the
+ * editability win that GMSD can't see: it softens a *small* overall GMSD
+ * regression (under {@link SMALL_REGRESSION_FACTOR} × the tie band, with fewer
+ * than two families regressing) from FAIL to MIXED, and a structural tie
+ * (overall GMSD held, nothing regressing) from MIXED to PASS. It never rescues a
+ * large GMSD regression, a two-family regression, or a guard regression.
  */
-export function gmsdVerdict(overall: GroupVerdict, families: GroupVerdict[]): Verdict {
+export function gmsdVerdict(
+  overall: GroupVerdict,
+  families: GroupVerdict[],
+  simplifyBand: number = SIMPLIFY_BAND,
+): Verdict {
   if (!overall.gmsd) {
     throw new Error('gmsdVerdict called on reports without a GMSD field')
   }
   const familiesGmsdWorse = families.filter((f) => f.gmsd?.dir === 'worse').length
   const familyGmsdBetter = families.some((f) => f.gmsd?.dir === 'better')
   const guardBlocks = overall.guardRegressed || families.filter((f) => f.guardRegressed).length >= 2
+  const simpler = !guardBlocks && overallSimpler(overall, simplifyBand)
 
-  if (overall.gmsd.dir === 'worse' || familiesGmsdWorse >= 2 || guardBlocks) return 'FAIL'
+  // A small overall GMSD regression, with the guards clean and no family pile-up,
+  // is a trade the editability win can carry down to MIXED.
+  const smallGmsdRegression =
+    overall.gmsd.dir === 'worse' &&
+    overall.gmsd.cand - overall.gmsd.base < SMALL_REGRESSION_FACTOR * overall.tieBand
+  if (overall.gmsd.dir === 'worse' || familiesGmsdWorse >= 2 || guardBlocks) {
+    return simpler && smallGmsdRegression && familiesGmsdWorse < 2 ? 'MIXED' : 'FAIL'
+  }
   // Past the FAIL guard, overall GMSD is 'better' or 'held' — a family win with
   // nothing regressing PASSes even when the overall aggregate holds.
   if (overall.gmsd.dir === 'better' && familiesGmsdWorse === 0) return 'PASS'
   if (familyGmsdBetter && familiesGmsdWorse === 0) return 'PASS'
+  // A structural tie that also trims a lot of nodes is a clean editability win.
+  if (simpler && overall.gmsd.dir === 'held' && familiesGmsdWorse === 0) return 'PASS'
   return 'MIXED'
 }
 
@@ -232,6 +292,9 @@ export interface AbResult {
   families: GroupVerdict[]
   perImage: Array<{ image: string; family: string; base: TrazorMetrics; cand: TrazorMetrics }>
   verdict: Verdict
+  /** True when the simplicity term moved the verdict up a step (a fidelity trade
+   *  the node-count drop earned) — surfaced in the banner so it's never silent. */
+  simplicityTipped: boolean
 }
 
 /** Compare two parsed reports. Rows are matched by image name. */
@@ -274,15 +337,23 @@ export function compareReports(
     base: (baseBy.get(r.image) as Row).trazor,
     cand: r.trazor,
   }))
+  const simplifyBand = opts.simplifyBand ?? SIMPLIFY_BAND
+  let verdict: Verdict
+  let simplicityTipped = false
+  if (primary === 'gmsd') {
+    verdict = gmsdVerdict(overall, familyVerdicts, simplifyBand)
+    // It tipped when disabling the term (band ≥ 1) would give a stricter verdict.
+    simplicityTipped = verdict !== gmsdVerdict(overall, familyVerdicts, Infinity)
+  } else {
+    verdict = overallVerdict(overall, familyVerdicts)
+  }
   return {
     primary,
     overall,
     families: familyVerdicts,
     perImage,
-    verdict:
-      primary === 'gmsd'
-        ? gmsdVerdict(overall, familyVerdicts)
-        : overallVerdict(overall, familyVerdicts),
+    verdict,
+    simplicityTipped,
   }
 }
 
@@ -363,11 +434,18 @@ export function renderReport(res: AbResult): string {
           : '✗ FAIL — do not ship: a primary metric (ΔE / spurious hue) regressed'
         : '~ MIXED — a real trade-off; needs a human call'
   lines.push(`  VERDICT: ${res.verdict}   ${banner}`)
+  if (res.simplicityTipped) {
+    const drop = pct(res.overall.metrics.nodes.base, res.overall.metrics.nodes.cand)
+    lines.push(
+      `           (simplicity: ${drop} nodes — a small fidelity trade carried up a step for editability)`,
+    )
+  }
   lines.push('')
   if (res.primary === 'gmsd') {
     lines.push(
       `  primary: GMSD (human-validated), tie band ${res.overall.tieBand} diverse / ${TIE_BAND_FLAT} flat. ` +
-        'guards: ΔE (mean fidelity) · spurious (invented hue at seams). lower is better.',
+        'guards: ΔE (mean fidelity) · spurious (invented hue at seams). ' +
+        'simplicity: node-count drop softens a small GMSD trade. lower is better.',
     )
   } else {
     lines.push(
@@ -382,6 +460,7 @@ interface CliArgs {
   candP?: string
   primary: Primary
   tieBand: number | null
+  simplifyBand?: number
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -395,6 +474,8 @@ function parseArgs(argv: string[]): CliArgs {
       a.primary = v
     } else if (key === '--tie-band') {
       a.tieBand = Number(argv[++i])
+    } else if (key === '--simplify-band') {
+      a.simplifyBand = Number(argv[++i])
     } else if (key.startsWith('--')) {
       throw new Error(`unknown flag ${key}`)
     } else {
@@ -410,13 +491,18 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2))
   if (!args.baseP || !args.candP) {
     console.error(
-      'usage: tsx ab-report.ts <baseline.json> <candidate.json> [--primary gmsd|de] [--tie-band <n>]',
+      'usage: tsx ab-report.ts <baseline.json> <candidate.json> ' +
+        '[--primary gmsd|de] [--tie-band <n>] [--simplify-band <frac>]',
     )
     process.exit(2)
   }
   const base = JSON.parse(readFileSync(args.baseP, 'utf8'))
   const cand = JSON.parse(readFileSync(args.candP, 'utf8'))
-  const res = compareReports(base, cand, { primary: args.primary, tieBand: args.tieBand })
+  const res = compareReports(base, cand, {
+    primary: args.primary,
+    tieBand: args.tieBand,
+    simplifyBand: args.simplifyBand,
+  })
   console.log(renderReport(res))
   // Non-zero exit on FAIL so it can gate a script / CI step.
   if (res.verdict === 'FAIL') process.exit(1)

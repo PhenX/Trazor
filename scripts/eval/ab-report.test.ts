@@ -110,6 +110,80 @@ describe('A/B verdict — GMSD primary (default)', () => {
   })
 })
 
+describe('A/B verdict — simplicity (editability) term', () => {
+  it('softens a small GMSD regression to MIXED when nodes drop substantially', () => {
+    // GMSD 0.1→0.12: worse (>0.014 diverse band) but small (<2×band=0.028).
+    // Nodes 1000→700: a 30% drop (≥ 25% band). Guards held → editability trade.
+    const base = report([{ family: 'photo', image: 'a.png', gmsd: 0.1, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', gmsd: 0.12, nodes: 700 }])
+    const res = compareReports(base, cand)
+    expect(res.overall.gmsd?.dir).toBe('worse')
+    expect(res.verdict).toBe('MIXED')
+    expect(res.simplicityTipped).toBe(true)
+    // Disabling the term (band ≥ 1) restores the strict FAIL.
+    expect(compareReports(base, cand, { simplifyBand: 1 }).verdict).toBe('FAIL')
+  })
+
+  it('lifts a structural tie to PASS when nodes drop substantially', () => {
+    // GMSD held (0.005 < 0.014), a big node drop, guards clean → a clean win.
+    const base = report([{ family: 'photo', image: 'a.png', gmsd: 0.1, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', gmsd: 0.105, nodes: 600 }])
+    const res = compareReports(base, cand)
+    expect(res.overall.gmsd?.dir).toBe('held')
+    expect(res.verdict).toBe('PASS')
+    expect(res.simplicityTipped).toBe(true)
+    expect(compareReports(base, cand, { simplifyBand: 1 }).verdict).toBe('MIXED')
+  })
+
+  it('never rescues a large GMSD regression, however many nodes drop', () => {
+    // GMSD 0.1→0.14: worse and large (≥ 0.028). Nodes cut in half — still FAIL.
+    const base = report([{ family: 'photo', image: 'a.png', gmsd: 0.1, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', gmsd: 0.14, nodes: 500 }])
+    const res = compareReports(base, cand)
+    expect(res.verdict).toBe('FAIL')
+    expect(res.simplicityTipped).toBe(false)
+  })
+
+  it('never rescues a guard regression (invented hue), however many nodes drop', () => {
+    // Small GMSD move + huge node drop, but the change invents a seam hue.
+    const base = report([
+      { family: 'photo', image: 'a.png', gmsd: 0.1, spurious: 0.012, nodes: 1000 },
+    ])
+    const cand = report([
+      { family: 'photo', image: 'a.png', gmsd: 0.12, spurious: 0.02, nodes: 500 },
+    ])
+    const res = compareReports(base, cand)
+    expect(res.verdict).toBe('FAIL')
+    expect(res.simplicityTipped).toBe(false)
+  })
+
+  it('a modest node drop below the band does not tip the verdict', () => {
+    // Nodes 1000→900 is only 10% (< 25%): not "substantially simpler".
+    const base = report([{ family: 'photo', image: 'a.png', gmsd: 0.1, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', gmsd: 0.12, nodes: 900 }])
+    const res = compareReports(base, cand)
+    expect(res.verdict).toBe('FAIL')
+    expect(res.simplicityTipped).toBe(false)
+  })
+
+  it('does not apply to the legacy --primary de verdict', () => {
+    const base = report([{ family: 'photo', image: 'a.png', dE: 0.02, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', dE: 0.026, nodes: 500 }])
+    const res = compareReports(base, cand, { primary: 'de' })
+    // A real ΔE regression still FAILs; nodes never enter the legacy verdict.
+    expect(res.verdict).toBe('FAIL')
+    expect(res.simplicityTipped).toBe(false)
+  })
+
+  it('notes the simplicity trade in the rendered banner when it tips', () => {
+    const base = report([{ family: 'photo', image: 'a.png', gmsd: 0.1, nodes: 1000 }])
+    const cand = report([{ family: 'photo', image: 'a.png', gmsd: 0.12, nodes: 700 }])
+    const out = renderReport(compareReports(base, cand))
+    expect(out).toContain('simplicity:')
+    expect(out).toMatch(/carried up a step/)
+  })
+})
+
 describe('A/B verdict — legacy ΔE + spurious (--primary de), unchanged', () => {
   const de = { primary: 'de' as const }
 
