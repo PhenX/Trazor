@@ -8,6 +8,19 @@ import type { Rgba } from './helpers'
 const BLACK: Rgba = [0, 0, 0, 255]
 const SKIN: Rgba = [230, 180, 140, 255]
 
+/** An Oklab color as an 8-bit clamped RGBA pixel. */
+function okPixel(L: number, a: number, b: number): Rgba {
+  const [r, g, bl] = oklabToRgb(L, a, b)
+  const c = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)))
+  return [c(r), c(g), c(bl), 255]
+}
+
+// A close-but-distinct Oklab pair (ΔE ≈ 0.07): merged by the flat `mergeThreshold`
+// (0.1) yet above the near-duplicate floor (`SRM_FLOOR` ≈ 0.03) — a coral sun
+// against a pink sky, the colors size-aware merging must keep apart at scale.
+const CORAL = okPixel(0.6, 0.05, 0.02)
+const PINK = okPixel(0.6, 0.12, 0.02)
+
 /** Two flat colors joined by a 4px anti-aliased ramp (a black outline meeting skin). */
 function rampImage(w = 40, h = 20): ReturnType<typeof rasterOf> {
   const edge = w / 2
@@ -53,16 +66,59 @@ describe('segmentRegions — region growing', () => {
     expect(seg.labels.count).toBe(1)
   })
 
-  it('respects a hard region cap without collapsing distinct hues', () => {
-    // Four vivid quadrants capped at 3: the two closest merge; no blue-into-black.
+  it('never exceeds the region cap, however distinct the remaining hues', () => {
+    // Six vivid fields: every cap below six is met exactly, down to one color.
+    const cols: Rgba[] = [
+      [220, 30, 30, 255],
+      [30, 180, 60, 255],
+      [40, 60, 220, 255],
+      [235, 220, 60, 255],
+      [200, 60, 200, 255],
+      [40, 200, 210, 255],
+    ]
+    const img = rasterOf(90, 60, (x, y) => cols[((x / 30) | 0) + 3 * ((y / 30) | 0)])
+    expect(segmentRegions(img).labels.count).toBe(6)
+    for (const cap of [5, 3, 2, 1]) {
+      const seg = segmentRegions(img, { maxRegions: cap })
+      expect(seg.labels.count).toBe(cap)
+      expect(seg.paletteHex).toHaveLength(cap)
+    }
+  })
+
+  it('leaves the result untouched when the cap is not reached', () => {
     const img = rasterOf(40, 40, (x, y) => {
       if (y < 20 && x < 20) return [220, 30, 30, 255]
-      if (y < 20) return [235, 60, 40, 255] // near the red
+      if (y < 20) return [30, 180, 60, 255]
       if (x < 20) return [40, 60, 220, 255]
       return [235, 220, 60, 255]
     })
-    const seg = segmentRegions(img, { maxRegions: 3 })
-    expect(seg.labels.count).toBeLessThanOrEqual(4)
+    const free = segmentRegions(img)
+    const capped = segmentRegions(img, { maxRegions: 4 })
+    expect(capped.labels.count).toBe(4)
+    expect(Array.from(capped.labels.data)).toEqual(Array.from(free.labels.data))
+    expect(capped.paletteHex).toEqual(free.paletteHex)
+  })
+
+  it('spends the cap on the merge that adds the least squared color error', () => {
+    // Two large fields of close colors (kept apart by size-aware merging) and
+    // one small far-off blue mark. Recoloring the mark costs 144 px × a large ΔE²;
+    // folding the fields costs 3200 px × a tiny ΔE², so the fields fold and the
+    // blue survives — a closest-pair merge would do the opposite.
+    const w = 160
+    const h = 40
+    const BLUE: Rgba = [30, 60, 220, 255]
+    const img = rasterOf(w, h, (x, y) => {
+      if (x >= 20 && x < 32 && y >= 14 && y < 26) return BLUE
+      return x < w / 2 ? CORAL : PINK
+    })
+    const free = segmentRegions(img, { mergeSizeBias: 0.8, minRegionArea: 1 })
+    expect(free.labels.count).toBe(3)
+    const seg = segmentRegions(img, { mergeSizeBias: 0.8, minRegionArea: 1, maxRegions: 2 })
+    expect(seg.labels.count).toBe(2)
+    const mark = seg.labels.data[20 * w + 24]
+    const field = seg.labels.data[20 * w + 100]
+    expect(mark).not.toBe(field)
+    expect(seg.paletteRgb[mark * 3 + 2]).toBeGreaterThan(seg.paletteRgb[mark * 3]) // still blue
   })
 
   it('marks masked-out pixels as -1 and segments only the rest', () => {
@@ -217,19 +273,6 @@ describe('segmentRegions — palette colors come from flat interiors', () => {
     expect(paletteL(seg, seg.labels.data[0])).toBeLessThan(0.02)
   })
 })
-
-/** An Oklab color as an 8-bit clamped RGBA pixel. */
-function okPixel(L: number, a: number, b: number): Rgba {
-  const [r, g, bl] = oklabToRgb(L, a, b)
-  const c = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)))
-  return [c(r), c(g), c(bl), 255]
-}
-
-// A close-but-distinct Oklab pair (ΔE ≈ 0.07): merged by the flat `mergeThreshold`
-// (0.1) yet above the near-duplicate floor (`SRM_FLOOR` ≈ 0.03) — a coral sun
-// against a pink sky, the colors size-aware merging must keep apart at scale.
-const CORAL = okPixel(0.6, 0.05, 0.02)
-const PINK = okPixel(0.6, 0.12, 0.02)
 
 /** Two flat blocks of the close pair, left | right. */
 function twoBlocks(w: number, h: number): ReturnType<typeof rasterOf> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createRaster, fillRaster, setPixel } from '@trazor/core'
+import { createRaster, fillRaster, getProfile, setPixel } from '@trazor/core'
 import { analyzeImage, recommendSettings, suggestPalettes } from '@trazor/assist'
 import type { ImageAnalysis } from '@trazor/assist'
 import { mulberry32 } from '@trazor/core'
@@ -235,6 +235,53 @@ function gradientOnFlat() {
   return img
 }
 
+/**
+ * A cartoon panel: outlined flat fills (a black contour around colored blobs on
+ * a pale ground) with anti-aliased edges, then buried under JPEG-like block
+ * noise (±2 levels per channel, constant inside 8×8 blocks). The fills are no
+ * longer exactly flat everywhere, yet they read as flat fills to the eye — and
+ * to the smooth-area statistics.
+ */
+function noisyCartoon() {
+  const w = 320
+  const h = 240
+  const img = createRaster(w, h)
+  const rnd = mulberry32(99)
+  const blobs: [number, number, number, number[]][] = [
+    [80, 90, 52, [240, 120, 60]],
+    [220, 100, 60, [60, 140, 230]],
+    [150, 180, 40, [90, 200, 90]],
+  ]
+  const noise: number[] = []
+  for (let i = 0; i < ((w / 8) | 0) * ((h / 8) | 0) * 3; i++)
+    noise.push(Math.round((rnd() - 0.5) * 4))
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let r = 250
+      let g = 244
+      let b = 232
+      for (const [cx, cy, rad, col] of blobs) {
+        const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+        const fill = Math.max(0, Math.min(1, rad - 3 - d))
+        const ink = Math.max(0, Math.min(1, rad + 1 - d)) - fill
+        r = mixByte(mixByte(r, 20, ink), col[0], fill)
+        g = mixByte(mixByte(g, 20, ink), col[1], fill)
+        b = mixByte(mixByte(b, 20, ink), col[2], fill)
+      }
+      const n = (((y / 8) | 0) * ((w / 8) | 0) + ((x / 8) | 0)) * 3
+      setPixel(
+        img,
+        x,
+        y,
+        Math.max(0, Math.min(255, r + noise[n])),
+        Math.max(0, Math.min(255, g + noise[n + 1])),
+        Math.max(0, Math.min(255, b + noise[n + 2])),
+      )
+    }
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
@@ -258,6 +305,22 @@ describe('analyzeImage', () => {
     const a = analyzeImage(coloredOnBlack())
     expect(a.colorfulness).toBeLessThan(0.03) // mean chroma dragged down by the black field
     expect(a.coloredFraction).toBeGreaterThan(0.05) // yet a clear fraction is genuinely colored
+  })
+
+  it('measures flat fills and ramps as smooth areas, tolerating JPEG-like noise', () => {
+    // Dense anti-aliased clip-art: mostly flat area (the rest is rim), no ramp.
+    const flat = analyzeImage(antialiasedField())
+    expect(flat.flatArea).toBeGreaterThan(0.5)
+    expect(flat.rampArea).toBeLessThan(0.05)
+    // A gradient swatch on a flat ground: the swatch is ramp area.
+    const ramp = analyzeImage(gradientOnFlat())
+    expect(ramp.rampArea).toBeGreaterThan(0.3)
+    // Block noise leaves a cartoon's fills smooth and flat, not ramps.
+    const noisy = analyzeImage(noisyCartoon())
+    expect(noisy.flatArea).toBeGreaterThan(0.7)
+    expect(noisy.rampArea).toBeLessThan(0.05)
+    // Sensor noise breaks smoothness everywhere: almost no flat area.
+    expect(analyzeImage(noisyPhoto()).flatArea).toBeLessThan(0.2)
   })
 
   it('measures noise/gradients as photographic', () => {
@@ -360,9 +423,18 @@ describe('recommendSettings', () => {
     expect(rec.patch.mode).toBe('color')
     expect(rec.patch.denoise).not.toBe('bilateral') // crisp edges, not photo blur
     // Region growing (not global quantization) so the anti-aliased edges never
-    // invent a third rim color, with small rim regions folded away.
+    // invent a third rim color; the profile's speck floor stands.
     expect(rec.patch.segmentation).toBe('regions')
-    expect(rec.patch.minRegionArea ?? 0).toBeGreaterThanOrEqual(16)
+    expect(rec.patch.minRegionArea).toBe(getProfile('illustration').patch.minRegionArea)
+  })
+
+  it('routes a block-noisy cartoon to region growing as an illustration, not a photo', () => {
+    const a = analyzeImage(noisyCartoon())
+    const rec = recommendSettings(a)
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.patch.segmentation).toBe('regions')
+    expect(rec.patch.denoise).not.toBe('bilateral')
+    expect(rec.patch.blurRadius ?? 0).toBe(0)
   })
 
   it('does not route a gradient-on-flat-background to region growing (single-color collapse)', () => {
@@ -407,6 +479,9 @@ describe('recommendSettings — region-growing gates', () => {
     edgeDensity: 0.08,
     microGradientDensity: 0.18,
     flatDensity: 0.6,
+    flatArea: 0.8,
+    rampArea: 0.02,
+    fineArea: 0.005,
     twoToneCoverage: 0.3,
     photoScore: 0.7,
     pixelArtScore: 0,
@@ -422,20 +497,53 @@ describe('recommendSettings — region-growing gates', () => {
     expect(recommendSettings(flatArt()).patch.segmentation).toBe('regions')
   })
 
-  it('keeps few-color flat art on quantization (no anti-aliased rims to protect)', () => {
-    // A clean logo/sprite has no rim halo, so per-pixel quantization is exact;
-    // region-mean coloring would only lose fidelity.
+  it('keeps a hard-edged pixel palette on quantization (no anti-aliased rims to protect)', () => {
+    // Every pixel of a pixel-art palette already is a palette color, so
+    // per-pixel quantization traces it exactly; region growing would only lose
+    // its smallest features. Two tells: few distinct colors, and edges with no
+    // soft rim beside them.
     expect(recommendSettings(flatArt({ distinctColors: 40 })).patch.segmentation).not.toBe(
       'regions',
     )
+    expect(
+      recommendSettings(flatArt({ microGradientDensity: 0.004, edgeDensity: 0.3 })).patch
+        .segmentation,
+    ).not.toBe('regions')
   })
 
-  it('keeps gradient-bearing flat art on quantization (region growing floods ramps)', () => {
-    // Still clean flat art (micro-gradient below flat density), but the gradient
-    // has no flat interior to seed a marker, so region growing would flood it
-    // into one mean color. Quantization posterizes the ramp into distinct bands.
-    const a = flatArt({ microGradientDensity: 0.3 })
-    expect(a.microGradientDensity).toBeLessThan(a.flatDensity) // still "flat art"
+  it('keeps gradient-heavy flat art on quantization (region growing floods ramps)', () => {
+    // A smooth ramp has no flat interior to seed a marker, so region growing
+    // floods it into one mean color. Once ramps reach half the flat area the
+    // gradient is the picture, and quantization keeps it as bands.
+    const a = flatArt({ flatArea: 0.45, rampArea: 0.35 })
+    expect(recommendSettings(a).patch.segmentation).not.toBe('regions')
+    // A minor ramp — a shaded cheek on a flat cartoon — does not change the route.
+    expect(recommendSettings(flatArt({ rampArea: 0.2 })).patch.segmentation).toBe('regions')
+  })
+
+  it('keeps sprite-fine detail on quantization (fills too small for a flat core)', () => {
+    // Several percent of the pixels in fills region growing would fold away.
+    expect(recommendSettings(flatArt({ fineArea: 0.06 })).patch.segmentation).not.toBe('regions')
+  })
+
+  it('grows regions for a compressed cartoon and keeps it off the photo route', () => {
+    // JPEG noise makes a cartoon score photographic and roughens its
+    // micro-gradients past any fixed density, but its fills stay flat area.
+    const a = flatArt({
+      photoScore: 0.9,
+      microGradientDensity: 0.3,
+      flatDensity: 0.5,
+      distinctColors: 30000,
+    })
+    const rec = recommendSettings(a)
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.patch.segmentation).toBe('regions')
+    expect(rec.patch.denoise).toBeUndefined()
+  })
+
+  it('keeps a photograph with a large smooth sky off region growing', () => {
+    // Smooth, but never exactly flat: sensor noise leaves no identical neighbors.
+    const a = flatArt({ flatDensity: 0.05, flatArea: 0.6, rampArea: 0.1, photoScore: 1 })
     expect(recommendSettings(a).patch.segmentation).not.toBe('regions')
   })
 })

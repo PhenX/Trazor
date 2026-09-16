@@ -91,7 +91,11 @@ export interface VectorizeSettings {
    * anti-aliased edges never invent a rim color (best for flat art / line art).
    */
   segmentation: SegmentationMode
-  /** Number of output colors (2-64). With `regions`, an upper budget rather than an exact count. */
+  /**
+   * Upper bound on output colors (2-64). `quantize` clusters to exactly this
+   * many unless `autoPaletteSize` merges near-duplicates; `regions` lets the
+   * region merge decide the count and caps it here.
+   */
   paletteSize: number
   /** Let the engine lower `paletteSize` when the image needs fewer colors. */
   autoPaletteSize: boolean

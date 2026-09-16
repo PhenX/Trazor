@@ -874,3 +874,44 @@ describe('stage cache (E3)', () => {
     expect(revisit3.svg).toBe((await run(img, { ...base, paletteSize: 3 })).svg)
   })
 })
+
+/** Six vivid flat fields — more colors than a small palette budget allows. */
+function sixFields(): RasterImage {
+  const img = createRaster(90, 60)
+  const colors: [number, number, number][] = [
+    [220, 30, 30],
+    [30, 180, 60],
+    [40, 60, 220],
+    [235, 220, 60],
+    [200, 60, 200],
+    [40, 200, 210],
+  ]
+  for (let y = 0; y < 60; y++) {
+    for (let x = 0; x < 90; x++) {
+      const c = colors[((x / 30) | 0) + 3 * ((y / 30) | 0)]
+      setPixel(img, x, y, c[0], c[1], c[2])
+    }
+  }
+  return img
+}
+
+describe('region growing honors the palette budget', () => {
+  it('never paints more colors than paletteSize, with or without autoPaletteSize', async () => {
+    for (const autoPaletteSize of [true, false]) {
+      const result = await vectorize(
+        sixFields(),
+        settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize }),
+      )
+      expect(result.palette.length).toBeLessThanOrEqual(3)
+      expect(result.stats.colorCount).toBeLessThanOrEqual(3)
+    }
+  })
+
+  it('keeps every distinct color when the budget allows it', async () => {
+    const result = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 8, autoPaletteSize: true }),
+    )
+    expect(result.palette.length).toBe(6)
+  })
+})
