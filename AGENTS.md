@@ -178,6 +178,10 @@ A change to color, palette, segmentation or the tracer is only "better" if it is
   degraded content): a move inside the band is no change. **Mean ΔE and spurious hue stay on as regression guards** — a
   GMSD win bought with an invented seam color (spurious hue up) still FAILs — but they no longer rank candidates. Pass
   `--primary de` to reproduce the legacy ΔE + spurious verdict, or `--tie-band <n>` to force one band.
+- **Simplicity (editability) earns credit GMSD can't see.** A far simpler, more editable SVG — overall node count down
+  ≥ 25 % with the guards clean — softens a *small* GMSD trade (FAIL → MIXED) or a structural tie (MIXED → PASS); it
+  never rescues a large or two-family GMSD regression or a guard trip. This is the region-growing-over-quantize win on
+  flat art: a little mean fidelity for a much cleaner cut path. `--simplify-band <frac>` tunes it (`≥ 1` disables it).
 - **Read the whole metric panel, not the mean.** Whole-image mean ΔE dilutes local damage; a change can lower the mean
   while raising **spurious hue** (a saturated color invented at a seam), and GMSD is the metric that best catches the
   local structural damage the eye sees. `eval:ab` reports GMSD, ΔE, band, p95 and spurious hue per family so a win on

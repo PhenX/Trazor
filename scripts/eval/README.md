@@ -187,14 +187,25 @@ Per family and overall:
   two-plus families. Does **not** ship.
 - **MIXED** — GMSD held or the families disagree: a genuine trade-off a human weighs.
 
+**A simplicity term weighs editability**, which GMSD and ΔE can't see. A cleaner, far more editable SVG — a big drop in
+node count with the guards clean — is a real product win (region growing over global quantize on flat art is the case in
+point: it trades a little mean fidelity for a much simpler cut/edit path). So when the candidate's **overall node count
+drops by ≥ 25 %** with the ΔE / spurious guards clean, the verdict earns one step of credit: a *small* overall GMSD
+regression (under 2× the tie band, fewer than two families regressing) softens **FAIL → MIXED**, and a structural tie
+softens **MIXED → PASS**. It never rescues a large GMSD regression, a two-family regression, or a guard regression — a
+collapsed near-blank output has few nodes but trips the guards — so it can't wave through a real defect. When it moves a
+verdict, the banner says so.
+
 Flags:
 
 - `--primary de` — restore the **legacy** verdict (mean ΔE + spurious hue as the primaries, no GMSD). Use it to
   reproduce an old verdict, or on a **pre-GMSD report** (old JSON without a `gmsd` field): the default GMSD verdict
   rejects such a report with a message pointing here.
 - `--tie-band <n>` — force one GMSD tie band for every group instead of the content-dependent one.
+- `--simplify-band <frac>` — the overall node-count drop that counts as "substantially simpler" (default `0.25`);
+  `≥ 1` disables the simplicity term.
 
-Both flags pass straight through `npm run eval:ab`.
+All three flags pass straight through `npm run eval:ab`.
 
 `ab-report.ts` is the pure verdict engine (unit-tested in `ab-report.test.ts`) and also runs standalone on any two
 `--json` reports, however they were produced — the way to A/B two commits rather than working-tree-vs-HEAD:
