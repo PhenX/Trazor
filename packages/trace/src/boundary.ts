@@ -3,7 +3,15 @@ import type { TraceCurveOptions } from './closed'
 import { closedPathToCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'
 import { optimalPolyline } from './potrace/polyfit'
-import { fitOpenRuns, mergeReach, runTolerance } from './potrace/runfit'
+import {
+  candidateStride,
+  descriptionLambda,
+  fitOpenRuns,
+  mergeReach,
+  ringSigmas,
+  runBand,
+  runTau,
+} from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { reverseCommands } from './paths'
@@ -880,13 +888,18 @@ function fitOpenChain(
   }
 
   // Each smooth run between two corners is fitted directly to the refined chain
-  // samples (line / arc / G1 cubic), the pinned junction endpoints keeping the
-  // partition seam-free.
-  return fitOpenRuns(geom, vertexIdx, {
+  // samples by the bounded DP (line / arc / G1 cubic), the pinned junction
+  // endpoints keeping the partition seam-free.
+  const sigma = ringSigmas(points, geom, field !== undefined)
+  const extent = field ? Math.max(field.width, field.height) : 0
+  return fitOpenRuns(geom, sigma, vertexIdx, {
     alphamax: (opts.smoothing * 4) / 3,
     cornerThreshold: opts.cornerThreshold,
-    tol: runTolerance(opts.optTolerance, field !== undefined),
+    lambda: descriptionLambda(extent),
+    tau: runTau(),
+    band: runBand(opts.optTolerance),
     reach: mergeReach(opts.curveOptimize),
+    stride: candidateStride(opts.curveOptimize),
   })
 }
 

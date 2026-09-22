@@ -486,12 +486,16 @@ export function closedPathToCommands(
 // DP. `polygon` is the adjusted optimal polygon (Selinger §2.2, §2.3.1, first vertex repeated as
 // last) that `polygon` curveMode emits and that decides the corners; `geom` is the refined ring
 // geometry the multi-model run fitter samples; `vertices` are the optimal polygon's ascending sample
-// indices into `geom`. `refined` is whether `geom` was snapped to a sub-pixel field.
+// indices into `geom`; `sigma` is the per-point positional uncertainty (px, parallel to `geom`) the
+// fitter weights χ² by; `refined` is whether `geom` was snapped to a sub-pixel field; `extent` is the
+// field's longer side (px, 0 when unknown) for the fitter's description-length weight λ.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
   vertices: number[]
+  sigma: number[]
   refined: boolean
+  extent: number
 }
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
 // §2.3.1); null when the ring is too short to carry a polygon. Depends on the ring and the field

@@ -122,7 +122,7 @@ function evalCubic(c: Cubic, t: number): [number, number] {
 }
 
 /** One Newton-Raphson step of the parameter for point (px, py). */
-function refineParam(c: Cubic, px: number, py: number, t: number): number {
+export function refineParam(c: Cubic, px: number, py: number, t: number): number {
   const [qx, qy] = evalCubic(c, t)
   const [d1x, d1y] = cubicDeriv1(c, t)
   const [d2x, d2y] = cubicDeriv2(c, t)

@@ -3,7 +3,15 @@ import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
 import { optimalPolyline } from './potrace/polyfit'
-import { fitClosedRuns, mergeReach, runTolerance } from './potrace/runfit'
+import {
+  candidateStride,
+  descriptionLambda,
+  fitClosedRuns,
+  mergeReach,
+  ringSigmas,
+  runBand,
+  runTau,
+} from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { refineRingToField } from './refine'
@@ -57,8 +65,12 @@ export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
   vertices: number[]
+  /** Per-point positional uncertainty σ (px), parallel to `geom` (run-fit weight). */
+  sigma: number[]
   /** Whether `geom` was snapped to a sub-pixel field (else the lattice ring). */
   refined: boolean
+  /** Image extent (longer side, px) for the run fitter's λ; 0 when unknown. */
+  extent: number
 }
 
 /**
@@ -161,7 +173,9 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   const geom = field ? refineRingToField(ext, field) : ext
   const sums = computeSums(geom)
   const polygon = adjustVertices(geom, sums, vertexIdx, true)
-  return { polygon, geom, vertices: vertexIdx, refined: field !== undefined }
+  const sigma = ringSigmas(ext, geom, field !== undefined)
+  const extent = field ? Math.max(field.width, field.height) : 0
+  return { polygon, geom, vertices: vertexIdx, sigma, refined: field !== undefined, extent }
 }
 
 /**
@@ -192,11 +206,14 @@ export function polygonToCommands(
     return out
   }
 
-  const commands = fitClosedRuns(fit.geom, fit.vertices, polygon, {
+  const commands = fitClosedRuns(fit.geom, fit.sigma, fit.vertices, polygon, {
     alphamax: (opts.smoothing * 4) / 3,
     cornerThreshold: opts.cornerThreshold,
-    tol: runTolerance(opts.optTolerance, fit.refined),
+    lambda: descriptionLambda(fit.extent),
+    tau: runTau(),
+    band: runBand(opts.optTolerance),
     reach: mergeReach(opts.curveOptimize),
+    stride: candidateStride(opts.curveOptimize),
   })
   // A ring too short for a meaningful run fit falls back to the exact lattice.
   return commands ?? pixelCommands(ring)
