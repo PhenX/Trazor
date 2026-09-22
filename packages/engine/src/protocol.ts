@@ -110,6 +110,14 @@ export type HelperShapeMeta = Omit<SvgShape, 'commands'>
 export interface HelperUnitPaint {
   own: HelperShapeMeta
   under?: HelperShapeMeta
+  /**
+   * The layer is a translucent face, so its exterior takes no alpha coverage
+   * field — its interior sits below the cut level and refining onto that contour
+   * would fold the face away. The paint itself stays opaque (a stacked face keeps
+   * its flat composited fill); this only steers the boundary field, so the
+   * helper's refined polygons match the coordinator's.
+   */
+  translucent?: boolean
 }
 
 /**

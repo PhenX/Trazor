@@ -212,8 +212,18 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (`scripts/eval/inkvec-compare.ts`; the comparison in
   [`INKVEC_COMPARISON.md`](INKVEC_COMPARISON.md)). Its coverage model informed
   the transparency coverage field (`alphaCoverageField`), the stacked-layer
-  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion) and the
-  interior palette read (`interiorPaletteColors`); no code was taken.
+  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion), the
+  interior palette read (`interiorPaletteColors`), and the treatment of an ink as
+  color plus opacity: a flat translucent region (a shadow, glass, steam) is
+  emitted as a face with a `fill-opacity`, its ink recovered by inverting the
+  over-white composite the working image carries — `ink = (over − 255·(1 − a)) /
+a` — at the label's median alpha (`translucentFaces`, `packages/engine`); no
+  code was taken.
+- **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
+  (SIGGRAPH)_ 18(3), 1984.** The `over` operator `out = src·a + dst·(1 − a)` that
+  `flattenImage` applies to composite a transparent source onto white, and whose
+  straight-alpha inverse recovers a translucent face's ink from that white
+  composite (`translucentFaces`).
 - **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
   Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
   <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,
