@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Trazor — a client-side raster → SVG vectorization engine (the @trazor/* algorithm packages)",
-  "license": "MIT",
+  "license": "FSL-1.1-ALv2",
   "workspaces": [
     "packages/*"
   ],

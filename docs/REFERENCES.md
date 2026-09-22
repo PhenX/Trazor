@@ -191,7 +191,7 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 
 - **Peter Selinger, Potrace (software), GPL-2.0.** Reference implementation of
   the paper above; not used as code because its license is incompatible with
-  this repository’s MIT license.
+  this repository’s license.
 - **Vision Cortex, “VTracer”, MIT © 2024 TSANG, Hao Fung.**
   <https://github.com/visioncortex/vtracer> — the O(n) color-tracing framework
   (connected-cluster segmentation → hierarchical layering → spline fit). Used as

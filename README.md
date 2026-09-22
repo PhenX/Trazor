@@ -102,8 +102,12 @@ The `scripts/` tooling (dataset generation, corpus fetch, tracer evaluation) sup
 
 ## Notes on licensing
 
-- This repository is **MIT**. The tracing algorithms are implemented from their published papers; no GPL code (e.g.
-  the Potrace reference implementation) was used or linked.
+- This repository is licensed under the **Functional Source License, Version 1.1, ALv2 Future License**
+  (FSL-1.1-ALv2, see [`LICENSE`](LICENSE)): you may use, copy, modify and redistribute it for any purpose except a
+  Competing Use, and each version becomes available under the Apache License 2.0 two years after it is made
+  available. Versions up to and including commit `d5dd561` were published under the MIT license and remain
+  available under it. The tracing algorithms are implemented from their published papers; no GPL code (e.g. the
+  Potrace reference implementation) was used or linked.
 - `@trazor/ml` ships **no model weights**. They keep their own licenses (u2netp and SlimSAM, both Apache-2.0) and are
   downloaded at runtime, not distributed with this repository. Weights the project trains itself are served
   same-origin under `models/` by the app that deploys them.
