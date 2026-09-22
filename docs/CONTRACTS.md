@@ -538,6 +538,19 @@ export function pairwiseField(
 ): SignedField
 export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
 export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
+// Boundary solve (inkvec stage 08): move a chain's free points at once so the geometry's exact
+// rendered coverage matches the field, by clipped-pixel-area least squares with kink + anchor priors
+// and a self-crossing guard (Fletcher–Reeves conjugate gradient). `pts` is the chain in travel order
+// (a closed ring without its duplicated close point, `cyclic` true); `free[i]` marks an unknown
+// (pinned endpoints keep a cutout partition seam-free). Deterministic (fixed `maxIters`, no clock).
+// Verified correct on the coverage-exact disk; NOT on the default trace path — see ARCHITECTURE.md.
+export function solveBoundary(
+  pts: FlatPoints,
+  field: SignedField,
+  free: readonly boolean[],
+  cyclic: boolean,
+  opts: SolveOptions, // { maxIters }
+): FlatPoints
 // The curve half of the chain from a RingFit. In `spline` mode each smooth run (the refined ring
 // points between two corners) is fitted directly to those points — line / circular arc / G1 cubic,
 // merged by description length (Selinger 2003 §2.2 for the segmentation, inkvec's multi-model fit for

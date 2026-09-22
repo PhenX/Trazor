@@ -41,5 +41,7 @@ export {
   negatedField,
 } from './refine'
 export type { SignedField, LayerFieldSource } from './refine'
+export { solveBoundary } from './solve'
+export type { SolveOptions } from './solve'
 export { reverseCommands } from './paths'
 export type { FlatPoints } from './paths'
