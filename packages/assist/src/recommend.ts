@@ -42,6 +42,16 @@ const ACHROMATIC_CHROMA = 0.03
  */
 const FLAT_ART_MIN_DENSITY = 0.15
 
+/**
+ * Smoothing for clean two-tone art (icons, glyphs). Their corners are real and
+ * their edges are straight, so the bw-sketch profile's scan-oriented 0.75 (which
+ * rounds a noisy staircase off) only rounds corners and bows straight runs here.
+ * Measured on the icon corpus: 0.75 → 0.25 moved 512 px GMSD 0.0375 → 0.0317,
+ * material-icons 0.036 → 0.021, lucide 0.057 → 0.043, with the emoji families
+ * (which keep the profile value) unaffected.
+ */
+const FLAT_INK_SMOOTHING = 0.25
+
 /** With at least this fraction of genuinely colored pixels, an image is not grayscale. */
 const COLORED_FRACTION_MIN = 0.05
 
@@ -254,6 +264,12 @@ export function recommendSettings(
       'flatInk',
       'Clean two-tone art — threshold set midway between its two tones, ink painted in its measured color.',
     )
+    // Clean two-tone art is icons and glyphs, which have sharp corners; the
+    // bw-sketch profile's high smoothing is for scans, where it rounds the
+    // staircase off a noisy edge. Here it rounds real corners and bows straight
+    // edges, so drop it — the corners the shape actually has are preserved.
+    patch.smoothing = FLAT_INK_SMOOTHING
+    r.add('flatInkCorners', 'Sharp-cornered art — low smoothing so corners stay sharp.')
   }
 
   if (profileId === 'pixel-art') {
