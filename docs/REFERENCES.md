@@ -35,6 +35,18 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   browser-fast form of this: the optimal polygon (Selinger §2.2) supplies the
   segmentation and corners, and each smooth run is fitted and its polygon edges
   merged linearly — not inkvec’s O(n²) per-vertex dynamic program (`fit_dp`).
+- **logolabs, “inkvec” — sub-pixel boundary refinement (stage 07, Apache-2.0).**
+  <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/planar.rs`
+  `refine_subpixel`/`edge_offset`, `docs/algorithm/07-subpixel.md`). Each boundary
+  point is moved onto the coverage = ½ level set by searching along the local
+  boundary normal for the crossing: coverage is probed at the pixel centres along
+  the normal, the two probes bracketing ½ locate the edge, and a clean step
+  inverts through the _exact_ half-plane coverage of a unit square — which, unlike
+  a bilinear root-find between pixel centres, carries no bias towards the ½ grid
+  (a slanted edge is otherwise read ~0.15 px fat). `refineRingToField` in
+  `packages/trace/src/refine.ts` implements this over the engine's signed coverage
+  fields (`alphaCoverageField`, `pairwiseField`, `layerField`), feeding the
+  polygon, vertex-adjustment and run-fitting stages the de-staircased points.
 - **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
   Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
   for emitting a fitted circular arc as ≤90° circle-exact cubics

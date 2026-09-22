@@ -52,83 +52,231 @@ export function pairwiseField(
   }
 }
 
-/** Clamp for a single vertex's sub-pixel displacement (px). */
-const MAX_SHIFT = 0.75
 /**
- * A field sample this close to ±0.5 is a fully inside/outside pixel. A hard edge
- * shows only these, and its 2×2 around a real corner is indistinguishable from a
- * staircase step — so with no intermediate (anti-aliased) sample there is no
- * sub-pixel information and the lattice vertex is left exactly where it is.
+ * A field sample this close to ±0.5 is a fully inside/outside pixel: `layerField`
+ * treats the exterior rim as covered only where the alpha coverage is not yet
+ * saturated.
  */
 const SATURATED = 0.4999
+/** Clamp for a single point's sub-pixel displacement along the normal (px). */
+const MAX_SHIFT = 1.0
+/**
+ * A coverage this close to 0 or 1 is a fully outside/inside pixel that carries no
+ * sub-pixel information: a hard edge shows only these, and moving a point off the
+ * lattice with no anti-aliased evidence would only bend the straight runs that
+ * meet it. A point moves only when it has at least one partial (anti-aliased)
+ * pixel to read the crossing from.
+ */
+const PARTIAL_LO = 0.03
+const PARTIAL_HI = 0.97
 
 /**
- * Move each lattice ring vertex onto the zero iso-contour of a signed coverage
- * field: centered coverage in [-0.5, 0.5], positive inside a region, negative
- * outside, zero at the true boundary (magnitude 0.5 = a fully inside/outside
- * pixel, intermediate = anti-aliased). At a pixel corner the field is bilinear
- * in the four surrounding pixels; one Newton step along its gradient lands the
- * corner on the zero level.
+ * Move each lattice boundary point onto the coverage = ½ level set of a signed
+ * field, by searching along the local boundary normal for the position where the
+ * coverage the image reads crosses one half — the true anti-aliased edge (inkvec
+ * stage 07 `refine_subpixel`, `crates/inkvec-trace/src/planar.rs`; see
+ * docs/REFERENCES.md). The field is centered coverage in [-0.5, 0.5]: positive
+ * inside a region, negative outside, ±0.5 a fully saturated pixel, intermediate
+ * an anti-aliased one; `a = value + ½` is the observed coverage.
  *
- * This de-staircases an anti-aliased edge before the polygon and vertex-
- * adjustment stages read it: on a straight run every vertex shifts by the same
- * sub-pixel offset (the edge slides to its true position). A vertex is left in
- * place when it is on the image border, when the field does not cross zero
- * around it, or when the edge is hard (no anti-aliased sample nearby) — a hard
- * edge carries no sub-pixel truth, and moving its corners would only bend the
- * straight runs that meet there.
+ * For each point the tangent is estimated from its two neighbours (cyclic on a
+ * closed ring, clamped on an open chain) and the normal is perpendicular to it.
+ * Coverage is probed at the pixel centres nearest ±1, ±½, 0 pixels along the
+ * normal; the two probes that bracket the ½ crossing locate the edge. Where the
+ * profile is a clean step (saturates on both sides, monotone) a single partial
+ * pixel inverts through the exact half-plane coverage of a unit square
+ * ({@link edgeOffset}), which — unlike a bilinear root-find between pixel centres
+ * — carries no bias towards the ½ grid; otherwise the crossing is found by a
+ * root-find along the normal. A point is left in place on the image border, where
+ * no probe is partial (a hard edge), or where the profile never crosses ½.
+ *
+ * This de-staircases an anti-aliased edge before the polygon, vertex-adjustment
+ * and run-fitting stages read it: on a straight run every point shifts by the
+ * same sub-pixel offset (the edge slides to its true position). Omitting the
+ * field leaves the exact lattice geometry (the caller passes none).
  */
 export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedField): FlatPoints {
   const w = field.width
   const h = field.height
   const data = 'data' in field ? field.data : null
-  const sample = (x: number, y: number): number => {
+  /** Centered field value at integer pixel (x, y), coordinates clamped to grid. */
+  const at = (x: number, y: number): number => {
     const cx = x < 0 ? 0 : x >= w ? w - 1 : x
     const cy = y < 0 ? 0 : y >= h ? h - 1 : y
     return data !== null ? data[cy * w + cx] : (field as SignedField).at(cx, cy)
   }
+  /** Observed coverage in [0, 1] bilinearly sampled at corner-space position (X, Y). */
+  const coverageAt = (px: number, py: number): number => {
+    // Field samples sit at pixel centres, one corner-space unit apart, offset ½.
+    const fx = px - 0.5
+    const fy = py - 0.5
+    const x0 = Math.floor(fx)
+    const y0 = Math.floor(fy)
+    const tx = fx - x0
+    const ty = fy - y0
+    const v =
+      at(x0, y0) * (1 - tx) * (1 - ty) +
+      at(x0 + 1, y0) * tx * (1 - ty) +
+      at(x0, y0 + 1) * (1 - tx) * ty +
+      at(x0 + 1, y0 + 1) * tx * ty
+    const a = v + 0.5
+    return a < 0 ? 0 : a > 1 ? 1 : a
+  }
 
   const n = ring.length >> 1
+  // A closed ring repeats its first point as its last; its neighbours wrap.
+  const closed = n > 2 && ring[0] === ring[(n - 1) * 2] && ring[1] === ring[(n - 1) * 2 + 1]
+  const period = closed ? n - 1 : n
+  const neighbor = (i: number): number =>
+    closed ? ((i % period) + period) % period : i < 0 ? 0 : i >= n ? n - 1 : i
+
   const out: FlatPoints = new Array(ring.length)
   for (let i = 0; i < n; i++) {
-    const x = ring[i * 2]
-    const y = ring[i * 2 + 1]
-    out[i * 2] = x
-    out[i * 2 + 1] = y
+    const px = ring[i * 2]
+    const py = ring[i * 2 + 1]
+    out[i * 2] = px
+    out[i * 2 + 1] = py
     // Pin the image border so a clipped straight edge is not pulled inward.
-    if (x <= 0 || y <= 0 || x >= w || y >= h) continue
+    if (px <= 0 || py <= 0 || px >= w || py >= h) continue
 
-    const tl = sample(x - 1, y - 1)
-    const tr = sample(x, y - 1)
-    const bl = sample(x - 1, y)
-    const br = sample(x, y)
-    // Only refine where the field genuinely crosses zero around this corner.
-    if ((tl > 0 && tr > 0 && bl > 0 && br > 0) || (tl < 0 && tr < 0 && bl < 0 && br < 0)) continue
-    // A hard edge (all four samples saturated) has no sub-pixel truth — leave it.
-    if (
-      Math.abs(tl) >= SATURATED &&
-      Math.abs(tr) >= SATURATED &&
-      Math.abs(bl) >= SATURATED &&
-      Math.abs(br) >= SATURATED
-    ) {
-      continue
-    }
-
-    const f = (tl + tr + bl + br) / 4
-    const gx = (tr + br - tl - bl) / 2
-    const gy = (bl + br - tl - tr) / 2
-    const g2 = gx * gx + gy * gy
-    if (g2 < 1e-12) continue
-
-    const t = -f / g2
-    let dx = t * gx
-    let dy = t * gy
-    dx = dx > MAX_SHIFT ? MAX_SHIFT : dx < -MAX_SHIFT ? -MAX_SHIFT : dx
-    dy = dy > MAX_SHIFT ? MAX_SHIFT : dy < -MAX_SHIFT ? -MAX_SHIFT : dy
-    out[i * 2] = x + dx
-    out[i * 2 + 1] = y + dy
+    const ia = neighbor(i - 1)
+    const ib = neighbor(i + 1)
+    const tanx = ring[ib * 2] - ring[ia * 2]
+    const tany = ring[ib * 2 + 1] - ring[ia * 2 + 1]
+    const tl = Math.hypot(tanx, tany)
+    if (tl < 1e-9) continue
+    const nx = -tany / tl
+    const ny = tanx / tl
+    const shift = solveNormal(coverageAt, px, py, nx, ny, w, h)
+    if (shift === null) continue
+    out[i * 2] = px + nx * shift
+    out[i * 2 + 1] = py + ny * shift
   }
   return out
+}
+
+/**
+ * Distance from the centre of a pixel with coverage `a` to a straight edge cut
+ * through it, signed towards the side where coverage falls — the exact inverse of
+ * a unit square's half-plane coverage, with `(na, nb)` the sorted magnitudes of
+ * the (unit) edge normal (inkvec `edge_offset`, `planar.rs`). Exact for an
+ * axis-aligned edge and, through the quadratic branch, for a slanted one, where a
+ * linear chord rule reads a 90%-covered pixel's edge ~0.18 px too far out.
+ */
+function edgeOffset(a: number, na: number, nb: number): number {
+  const hi = a >= 0.5 ? a : 1 - a
+  const s = a >= 0.5 ? 1 : -1
+  const d1 = 0.5 * (na - nb)
+  const d2 = 0.5 * (na + nb)
+  const d =
+    hi - 0.5 <= d1 / na ? (hi - 0.5) * na : d2 - Math.sqrt(Math.max(0, 2 * na * nb * (1 - hi)))
+  return s * d
+}
+
+/**
+ * Search along the normal (nx, ny) from point (px, py) for the coverage = ½
+ * crossing, returning the signed offset along the normal in [-1, 1] px, or `null`
+ * to leave the point where it is. inkvec `refine_subpixel`'s per-point search
+ * (`planar.rs`): probe coverage at the pixel centres nearest ±1, ±½, 0 px along
+ * the normal, bracket the ½ crossing, and invert a clean step exactly.
+ */
+function solveNormal(
+  coverageAt: (px: number, py: number) => number,
+  px: number,
+  py: number,
+  nx: number,
+  ny: number,
+  w: number,
+  h: number,
+): number | null {
+  const ax = Math.abs(nx)
+  const ay = Math.abs(ny)
+  const na = ax >= ay ? ax : ay
+  const nb = ax >= ay ? ay : ax
+  // Probe coverage at the pixel centre containing each offset along the normal.
+  const us: number[] = []
+  const as: number[] = []
+  for (const u of [-1, -0.5, 0, 0.5, 1]) {
+    const ix = Math.round(px + nx * u - 0.5)
+    const iy = Math.round(py + ny * u - 0.5)
+    if (ix < 0 || iy < 0 || ix >= w || iy >= h) continue
+    const cx = ix + 0.5
+    const cy = iy + 0.5
+    const uc = (cx - px) * nx + (cy - py) * ny
+    let dup = false
+    for (let k = 0; k < us.length; k++) if (Math.abs(us[k] - uc) < 1e-9) dup = true
+    if (dup) continue
+    us.push(uc)
+    as.push(coverageAt(cx, cy))
+  }
+  // Sort by signed offset along the normal.
+  const order = us.map((_, k) => k).toSorted((p, q) => us[p] - us[q])
+  const u = order.map((k) => us[k])
+  const a = order.map((k) => as[k])
+  const m = u.length
+  if (m < 2) return null
+  // A point moves only with anti-aliased evidence: at least one partial pixel.
+  let anyPartial = false
+  for (const av of a) if (av > PARTIAL_LO && av < PARTIAL_HI) anyPartial = true
+  if (!anyPartial) return null
+
+  // Direction coverage grows along the normal.
+  let dir = 0
+  if (u[m - 1] > u[0] && Math.abs(a[m - 1] - a[0]) > 0.05) dir = Math.sign(a[m - 1] - a[0])
+
+  const partial = (v: number): boolean => v > PARTIAL_LO && v < PARTIAL_HI
+  let hit: number | null = null
+  if (dir !== 0) {
+    for (let k = 0; k < m - 1; k++) {
+      const a0 = a[k]
+      const a1 = a[k + 1]
+      if ((a0 - 0.5) * (a1 - 0.5) <= 0 && Math.abs(a1 - a0) > 1e-9) {
+        if (partial(a0) && partial(a1)) hit = u[k] + ((u[k + 1] - u[k]) * (0.5 - a0)) / (a1 - a0)
+        else if (partial(a0)) hit = u[k] - dir * edgeOffset(a0, na, nb)
+        else if (partial(a1)) hit = u[k + 1] - dir * edgeOffset(a1, na, nb)
+        else hit = 0.5 * (u[k] + u[k + 1])
+        break
+      }
+    }
+  }
+
+  // The exact step inversion is trusted only for a clean step: saturating on both
+  // sides within the probe span and monotone (a thin ridge saturates at both ends
+  // like a step but reading it as one throws the point out). Otherwise root-find
+  // the ½ crossing along the normal.
+  let inc = true
+  let dec = true
+  for (let k = 1; k < m; k++) {
+    if (a[k] < a[k - 1] - 0.05) inc = false
+    if (a[k] > a[k - 1] + 0.05) dec = false
+  }
+  let min = 1
+  let max = 0
+  for (const av of a) {
+    if (av < min) min = av
+    if (av > max) max = av
+  }
+  const stepLike = m >= 3 && (inc || dec) && min < 0.12 && max > 0.88
+  if (!stepLike) {
+    hit = null
+    const STEPS = 9
+    let prevU = 0
+    let prevA = 0
+    let havePrev = false
+    for (let s = 0; s <= STEPS; s++) {
+      const uu = -1 + (2 * s) / STEPS
+      const cov = coverageAt(px + nx * uu, py + ny * uu)
+      if (havePrev && (prevA - 0.5) * (cov - 0.5) <= 0 && Math.abs(cov - prevA) > 1e-9) {
+        hit = prevU + ((uu - prevU) * (0.5 - prevA)) / (cov - prevA)
+        break
+      }
+      prevU = uu
+      prevA = cov
+      havePrev = true
+    }
+  }
+  if (hit === null) return null
+  return hit > MAX_SHIFT ? MAX_SHIFT : hit < -MAX_SHIFT ? -MAX_SHIFT : hit
 }
 
 /** What a stacked layer's boundary field is read from (`layerField`). */
