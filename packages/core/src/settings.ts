@@ -10,8 +10,15 @@ export type VectorizeMode = 'color' | 'grayscale' | 'bw' | 'centerline'
  *   shared boundary graph so adjacent shapes reuse mathematically identical
  *   edges — no hairline gaps, no overlaps. Best for cutting machines and
  *   editing in vector tools.
+ * - `nested`: the same shared boundary graph as `cutout`, but each planar face
+ *   is painted once as its outer ring only, in containment order (parents
+ *   first, children over them), and same-color sibling faces merge into one
+ *   even-odd path. A boundary between nested faces is drawn once — the child's
+ *   outline supplies the parent's hole — so the file carries far fewer
+ *   coordinates than `cutout` while rendering identically (the shared curve is
+ *   bit-identical, so no seam appears). Best for compact multi-color art.
  */
-export type LayeringMode = 'stacked' | 'cutout'
+export type LayeringMode = 'stacked' | 'cutout' | 'nested'
 
 /**
  * - `spline`: full curve chain (optimal polygon → corner analysis → cubic

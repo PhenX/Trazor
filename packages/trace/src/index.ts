@@ -7,12 +7,20 @@ export {
   pixelCommands,
 } from './closed'
 export type { RingFit, TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
-export { assembleRegions, extractChains, fitChain, fitChains, traceLabelMap } from './boundary'
+export {
+  assembleFaces,
+  assembleRegions,
+  extractChains,
+  fitChain,
+  fitChains,
+  traceLabelMap,
+} from './boundary'
 export type {
   BoundaryChain,
   ChainFit,
   ChainNetwork,
   ColorField,
+  FaceShape,
   RegionShape,
   TraceCutoutOptions,
 } from './boundary'

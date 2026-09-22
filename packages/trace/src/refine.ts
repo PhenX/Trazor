@@ -17,49 +17,37 @@ export interface SignedField {
 
 /**
  * Signed color-boundary field between two region colors, in [-0.5, 0.5]:
- * negative deep in `left`, positive deep in `right`, zero where the pixel color
- * is the perceptual 50% mix — the true anti-aliased edge between two flat
- * regions. Built from a per-pixel Oklab buffer (interleaved [L, a, b]): an
- * anti-aliased rim pixel reads an intermediate value, a fully saturated
- * interior pixel reads ±0.5, so a hard color edge (no intermediate sample) is
- * left on the lattice exactly like a hard threshold edge is.
+ * negative deep in `left`, positive deep in `right`, zero where the pixel is the
+ * 50% mix of the two — the true anti-aliased edge between two flat regions. The
+ * mix is inverted in encoded sRGB with {@link coverageOf}, the space a
+ * rasterizer blends an anti-aliased edge in (SVG's `color-interpolation: sRGB`,
+ * canvas, Skia, Cairo), so the recovered edge is exact; a perceptual space would
+ * bend the mixing line and shift it. An anti-aliased rim pixel reads an
+ * intermediate value, a fully saturated interior pixel reads ±0.5, so a hard
+ * color edge (no intermediate sample) is left on the lattice exactly like a hard
+ * threshold edge is; two coincident colors carry no edge and read as all-zero
+ * (no refinement). `pixels` is the working image's RGBA bytes; `palette` is the
+ * per-label RGB (interleaved), indexed by the `left`/`right` labels.
  */
 export function pairwiseField(
-  oklab: Float32Array,
+  pixels: Uint8ClampedArray,
+  palette: Uint8Array,
   width: number,
   height: number,
-  left: readonly [number, number, number],
-  right: readonly [number, number, number],
+  left: number,
+  right: number,
 ): SignedField {
-  const lL = left[0]
-  const la = left[1]
-  const lb = left[2]
-  const rL = right[0]
-  const ra = right[1]
-  const rb = right[2]
-  const dx = lL - rL
-  const dy = la - ra
-  const dz = lb - rb
-  const dLR = Math.sqrt(dx * dx + dy * dy + dz * dz)
-  const inv = dLR > 1e-6 ? 0.5 / dLR : 0
+  const li = left * 3
+  const ri = right * 3
   return {
     width,
     height,
     at(x: number, y: number): number {
-      const o = (y * width + x) * 3
-      const L = oklab[o]
-      const a = oklab[o + 1]
-      const b = oklab[o + 2]
-      const dll = L - lL
-      const dla = a - la
-      const dlb = b - lb
-      const drl = L - rL
-      const dra = a - ra
-      const drb = b - rb
-      const dl = Math.sqrt(dll * dll + dla * dla + dlb * dlb)
-      const dr = Math.sqrt(drl * drl + dra * dra + drb * drb)
-      const v = (dl - dr) * inv
-      return v < -0.5 ? -0.5 : v > 0.5 ? 0.5 : v
+      // Coverage of the right side against the left, centered: −0.5 deep in
+      // `left`, +0.5 deep in `right`, 0 at the 50% mix. −1 (coincident colors)
+      // reads 0, so the field is flat and refineRingToField leaves the edge.
+      const c = coverageOf(pixels, (y * width + x) * 4, palette, ri, li)
+      return c < 0 ? 0 : c - 0.5
     },
   }
 }

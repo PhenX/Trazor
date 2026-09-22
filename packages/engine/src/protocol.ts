@@ -254,16 +254,10 @@ export interface HelperJobMessage {
   /** Serialization settings; only `trace-layers` serializes. */
   serialize?: HelperSerializeOptions
   /**
-   * `fit-chains` and `trace-layers`: per-label palette Oklab (interleaved
-   * [L, a, b]), transferred. Present ⇒ refine each chain, or each layer's
-   * rings, onto the sub-pixel color edge between the two regions that meet
-   * there, using the Oklab buffer of the cached working image.
-   */
-  paletteOklab?: ArrayBuffer
-  /**
-   * `trace-layers`: per-label palette RGB (interleaved bytes), transferred.
-   * Present ⇒ refine each layer's rings onto the sub-pixel edge between the two
-   * region colors that meet there, read from the cached working image.
+   * `fit-chains` and `trace-layers`: per-label palette RGB (interleaved bytes),
+   * transferred. Present ⇒ refine each chain, or each layer's rings, onto the
+   * sub-pixel color edge between the two regions that meet there, read from the
+   * cached working image's RGBA bytes (the sRGB blend inverted by `coverageOf`).
    */
   paletteRgb?: ArrayBuffer
   /**
