@@ -41,6 +41,48 @@ function sprite() {
   return img
 }
 
+/**
+ * A black disk on a fully transparent canvas with an anti-aliased rim: the ink
+ * color under partial alpha, the empty pixels stored as (0, 0, 0, 0).
+ */
+function inkOnTransparent() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 160; x++) {
+      const d = Math.hypot(x + 0.5 - 80, y + 0.5 - 80)
+      const coverage = Math.max(0, Math.min(1, 40.5 - d))
+      if (coverage > 0) setPixel(img, x, y, 0, 0, 0, Math.round(coverage * 255))
+    }
+  }
+  return img
+}
+
+/** A dark-gray square with a black outline on a transparent canvas: three tones, not two. */
+function grayFillBlackOutline() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 30; y < 130; y++) {
+    for (let x = 30; x < 130; x++) {
+      const edge = x < 42 || x >= 118 || y < 42 || y >= 118
+      if (edge) setPixel(img, x, y, 0, 0, 0)
+      else setPixel(img, x, y, 63, 63, 63)
+    }
+  }
+  return img
+}
+
+/** A black glyph on a transparent canvas casting a wide half-transparent shadow. */
+function inkWithSoftShadow() {
+  const img = inkOnTransparent()
+  for (let y = 100; y < 150; y++) {
+    for (let x = 20; x < 140; x++) {
+      if (img.data[(y * 160 + x) * 4 + 3] === 0) setPixel(img, x, y, 0, 0, 0, 96)
+    }
+  }
+  return img
+}
+
 /** Grayscale gradient with luminance noise (R=G=B) — a photographic gray scene. */
 function grayPhoto() {
   const img = createRaster(200, 200)
@@ -332,7 +374,65 @@ describe('analyzeImage', () => {
   it('flags a tiny transparent sprite as pixel art with alpha', () => {
     const a = analyzeImage(sprite())
     expect(a.pixelArtScore).toBeGreaterThanOrEqual(0.7)
+    expect(a.rimColors).toBe(0)
     expect(a.hasAlpha).toBe(true)
+  })
+
+  it('does not take a small anti-aliased icon for pixel art', () => {
+    // A 96-px canvas, but hundreds of rim colors: an icon, not a sprite. (Off
+    // the lattice, so the rim takes many distinct coverage values.)
+    const img = createRaster(96, 96)
+    fillRaster(img, 0, 0, 0, 0)
+    for (let y = 0; y < 96; y++) {
+      for (let x = 0; x < 96; x++) {
+        const d = Math.hypot(x + 0.5 - 48.31, y + 0.5 - 47.77)
+        const coverage = Math.max(0, Math.min(1, 24.37 - d))
+        if (coverage > 0) setPixel(img, x, y, 0, 0, 0, Math.round(coverage * 255))
+      }
+    }
+    const a = analyzeImage(img)
+    expect(a.pixelArtScore).toBeLessThan(0.7)
+    expect(recommendSettings(a).profileId).not.toBe('pixel-art')
+    // The same icon rendered small enough to hold few colors: still not a hard
+    // palette, because nearly every color it has is a rim color.
+    const small = createRaster(64, 64)
+    fillRaster(small, 0, 0, 0, 0)
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const d = Math.hypot(x + 0.5 - 32, y + 0.5 - 32)
+        const coverage = Math.max(0, Math.min(1, 16.5 - d))
+        if (coverage > 0) setPixel(small, x, y, 0, 0, 0, Math.round(coverage * 255))
+      }
+    }
+    const b = analyzeImage(small)
+    expect(b.distinctColors).toBeLessThanOrEqual(32)
+    expect(b.rimColors * 2).toBeGreaterThan(b.distinctColors)
+    expect(b.pixelArtScore).toBeLessThan(0.7)
+  })
+
+  it('reads a transparent canvas as the white ground it is flattened onto', () => {
+    // Read raw, the empty (0, 0, 0, 0) pixels would make this a black field.
+    const a = analyzeImage(inkOnTransparent())
+    expect(a.hasAlpha).toBe(true)
+    expect(a.meanLightness).toBeGreaterThan(0.7)
+    expect(a.twoToneCoverage).toBeGreaterThan(0.9)
+    expect(a.colorfulness).toBeLessThan(0.03)
+    expect(a.distinctColors).toBeGreaterThan(2) // the rim's grays
+    expect(a.translucentArea).toBeLessThan(0.01)
+    expect(a.minorTonesArea).toBe(0)
+    expect(a.inkHex).toBe('#000000')
+    expect(a.paperHex).toBe('#ffffff')
+    expect(recommendSettings(a).profileId).toBe('bw-sketch')
+  })
+
+  it('tells a translucent interior from anti-aliased edge coverage', () => {
+    expect(analyzeImage(inkWithSoftShadow()).translucentArea).toBeGreaterThan(0.1)
+  })
+
+  it('counts a flat third tone, which anti-aliasing never produces', () => {
+    const a = analyzeImage(grayFillBlackOutline())
+    expect(a.minorTonesArea).toBeGreaterThan(0.02)
+    expect(a.inkHex).toBe('#3f3f3f')
   })
 })
 
@@ -372,6 +472,31 @@ describe('recommendSettings', () => {
     const rec = recommendSettings(analyzeImage(inkOnWhite()))
     expect(rec.profileId).toBe('bw-sketch')
     expect(rec.patch.mode).toBe('bw')
+  })
+
+  it('thresholds clean two-tone art midway between its tones and paints its measured ink', () => {
+    const rec = recommendSettings(analyzeImage(inkOnTransparent()))
+    expect(rec.profileId).toBe('bw-sketch')
+    expect(rec.patch.thresholdMode).toBe('fixed')
+    expect(rec.patch.threshold).toBeGreaterThan(120)
+    expect(rec.patch.threshold).toBeLessThan(136)
+    expect(rec.patch.fillColor).toBe('#000000')
+    // Anti-aliased transparency: the cut sits at half coverage.
+    expect(rec.patch.alphaThreshold).toBe(128)
+    // Ink that is not black is painted as measured.
+    expect(recommendSettings(analyzeImage(inkOnWhite())).patch.fillColor).toBe('#0c0c0c')
+  })
+
+  it('keeps art with a flat third tone out of B&W, which could keep only one ink', () => {
+    const rec = recommendSettings(analyzeImage(grayFillBlackOutline()))
+    expect(rec.profileId).not.toBe('bw-sketch')
+    expect(rec.patch.mode).not.toBe('bw')
+  })
+
+  it('keeps the faint-pixel cut for an image with translucent content', () => {
+    const rec = recommendSettings(analyzeImage(inkWithSoftShadow()))
+    expect(rec.patch.background).toBe('transparent')
+    expect(rec.patch.alphaThreshold).toBeUndefined()
   })
 
   it('traces a shaded achromatic line drawing (not two-tone) as grayscale, not over-inked B&W', () => {
@@ -475,6 +600,7 @@ describe('recommendSettings — region-growing gates', () => {
     pixels: 480_000,
     hasAlpha: false,
     distinctColors: 8000,
+    rimColors: 7900,
     entropyBits: 9,
     edgeDensity: 0.08,
     microGradientDensity: 0.18,
@@ -490,6 +616,12 @@ describe('recommendSettings — region-growing gates', () => {
     contrast: 0.2,
     colorfulness: 0.1,
     coloredFraction: 0.5,
+    translucentArea: 0,
+    minorTonesArea: 0,
+    inkHex: '#000000',
+    paperHex: '#ffffff',
+    inkLightness: 0,
+    paperLightness: 1,
     ...over,
   })
 
