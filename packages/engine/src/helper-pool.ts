@@ -55,9 +55,10 @@ export interface HelperDispatchSpec {
   meta?: (unit: number) => HelperUnitPaint
   /** Serialization settings; omit to fit without serializing. */
   serialize?: HelperSerializeOptions
-  /** `fit-chains`: per-label palette Oklab, enabling sub-pixel color refinement. */
-  paletteOklab?: Float32Array
-  /** `trace-layers`: per-label palette RGB, for the layers' boundary fields. */
+  /**
+   * Per-label palette RGB, enabling sub-pixel color refinement: `fit-chains`
+   * refines each shared chain, `trace-layers` each layer's boundary field.
+   */
   paletteRgb?: Uint8Array
   /** The transparency cut level whose coverage refines exterior edges. */
   alphaThreshold?: number
@@ -124,9 +125,9 @@ interface Job {
  * **Memory.** Each helper holds its own copy of what it is sent: the working
  * image (4·w·h bytes — 45 MB for 4096×2731) plus, for stacked, the label map
  * (4·w·h) and its pixel buckets, for bw its share of the rings and the coverage
- * field (4·w·h), and for cutout the Oklab buffer it derives (12·w·h). Ring and
- * polygon caches add to that. A consumer sizes the pool for the image it is
- * tracing rather than for the core count alone.
+ * field (4·w·h), and for cutout the chains it owns. Ring and polygon caches add
+ * to that. A consumer sizes the pool for the image it is tracing rather than for
+ * the core count alone.
  */
 export class HelperPool {
   private readonly slots: Slot[]
@@ -311,7 +312,6 @@ export class HelperPool {
         const units = buckets[h]
         if (units.length === 0) continue
         job.pending.add(h)
-        const paletteOklab = spec.paletteOklab ? spec.paletteOklab.slice().buffer : undefined
         const paletteRgb = spec.paletteRgb ? spec.paletteRgb.slice().buffer : undefined
         this.send(
           this.slots[h],
@@ -325,12 +325,11 @@ export class HelperPool {
             batch: Math.max(1, spec.batch ?? 1),
             meta: spec.meta ? units.map(spec.meta) : undefined,
             serialize: spec.serialize,
-            paletteOklab,
             paletteRgb,
             alphaThreshold: spec.alphaThreshold,
             arcPrecision: spec.arcPrecision,
           },
-          [paletteOklab, paletteRgb].filter((b): b is ArrayBuffer => b !== undefined),
+          paletteRgb ? [paletteRgb] : [],
         )
       }
       for (let unit = 0; unit < spec.total; unit++) {

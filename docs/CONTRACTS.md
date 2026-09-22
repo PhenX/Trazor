@@ -483,6 +483,18 @@ export function coverageOf(
   ai: number,
   bi: number,
 ): number
+// Signed color-boundary field between two region colors (cutout chain refinement), in [-0.5, 0.5]:
+// −0.5 deep in `left`, +0.5 deep in `right`, 0 at the 50% mix, inverted in encoded sRGB with
+// `coverageOf`. `pixels` is the working image RGBA; `palette` the per-label RGB; `left`/`right` are
+// label ids. A hard edge (no intermediate sample) reads ±0.5, so it stays on the lattice.
+export function pairwiseField(
+  pixels: Uint8ClampedArray,
+  palette: Uint8Array,
+  width: number,
+  height: number,
+  left: number,
+  right: number,
+): SignedField
 export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
 export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
 // The curve half of the chain from a RingFit. In `spline` mode each smooth run (the refined ring
@@ -539,6 +551,18 @@ export function fitChains(network: ChainNetwork, opts: TraceCutoutOptions): Chai
 // Regions from the fitted chains: each ring walks the chain instances around it, reusing the
 // identical fit (reversed for the left-hand instance). `fits` is parallel to `network.chains`.
 export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]): RegionShape[]
+// Planar faces from the same fitted chains, for `nested` layering. Each connected region contributes
+// one face per outer ring, carrying that ring plus only the holes that border transparency (a labeled
+// hole is dropped — the child face painted over it in containment order repaints its area); `parent`
+// indexes the containing face (−1 for a root). Painted parents-first with children on top, the faces
+// tile exactly, and a boundary between nested faces is drawn once (as the child's outline).
+export interface FaceShape {
+  label: number
+  commands: PathCommand[] // the face's outer ring (+ transparent holes), one or more M…Z subpaths
+  area: number // enclosed area of the outer ring, px²
+  parent: number // index of the containing face, or −1
+}
+export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]): FaceShape[]
 ```
 
 ## @trazor/svg

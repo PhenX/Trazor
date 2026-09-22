@@ -230,14 +230,18 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   by description length. Used as the measured icon benchmark oracle
   (`scripts/eval/inkvec-compare.ts`; the comparison in
   [`INKVEC_COMPARISON.md`](INKVEC_COMPARISON.md)). Its coverage model informed
-  the transparency coverage field (`alphaCoverageField`), the stacked-layer
-  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion), the
+  the transparency coverage field (`alphaCoverageField`), the cutout and
+  stacked-layer boundary fields (`pairwiseField`, `layerField`, `coverageOf` —
+  the sRGB blend inversion, from `crates/inkvec-trace/src/coverage.rs`), the
   interior palette read (`interiorPaletteColors`), and the treatment of an ink as
   color plus opacity: a flat translucent region (a shadow, glass, steam) is
   emitted as a face with a `fill-opacity`, its ink recovered by inverting the
   over-white composite the working image carries — `ink = (over − 255·(1 − a)) /
-a` — at the label's median alpha (`translucentFaces`, `packages/engine`); no
-  code was taken.
+  a` — at the label's median alpha (`translucentFaces`, `packages/engine`). Its
+  planar-face emission (`crates/inkvec-cli/src/emit.rs` `emit_color`, `rings.rs`)
+  — each face painted once as its outer ring in containment order, same-color
+  siblings merged into one even-odd path — informed the `nested` layering
+  (`assembleFaces`, `emitNestedFaces`). No code was taken.
 - **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
   (SIGGRAPH)_ 18(3), 1984.** The `over` operator `out = src·a + dst·(1 − a)` that
   `flattenImage` applies to composite a transparent source onto white, and whose

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import type { LabelMap, PathCommand } from '@trazor/core'
-import { rgbToOklab } from '@trazor/core'
 import { traceLabelMap } from '@trazor/trace'
 import type { ColorField } from '@trazor/trace'
 
@@ -17,14 +16,15 @@ function anchors(commands: PathCommand[]): [number, number][] {
   return out
 }
 
-const A = rgbToOklab(20 / 255, 20 / 255, 210 / 255)
-const B = rgbToOklab(210 / 255, 210 / 255, 20 / 255)
+const A = [20, 20, 210] as const
+const B = [210, 210, 20] as const
 
 /**
  * Region 1 is a rectangle whose true edges sit at sub-pixel positions, enclosed
  * by region 0. Pixels are colored by a coverage ramp across a 1px anti-aliased
- * band, so the perceptual 50% crossing (the pairwise field's zero) lands on the
- * true edge — the closed boundary loop should refine onto it.
+ * band — the sRGB blend a rasterizer would write — so `coverageOf` inverts it
+ * exactly and the pairwise field's 50% crossing lands on the true edge, which
+ * the closed boundary loop should refine onto.
  */
 function subPixelRegionRect(
   left: number,
@@ -35,7 +35,7 @@ function subPixelRegionRect(
   const w = 24
   const h = 20
   const data = new Int32Array(w * h)
-  const oklab = new Float32Array(w * h * 3)
+  const pixels = new Uint8ClampedArray(w * h * 4)
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const cx = x + 0.5
@@ -43,14 +43,15 @@ function subPixelRegionRect(
       const s = Math.min(cx - left, right - cx, cy - top, bottom - cy)
       data[y * w + x] = s > 0 ? 1 : 0
       const c = s + 0.5 < 0 ? 0 : s + 0.5 > 1 ? 1 : s + 0.5 // coverage of region 1
-      const o = (y * w + x) * 3
-      oklab[o] = A[0] + c * (B[0] - A[0])
-      oklab[o + 1] = A[1] + c * (B[1] - A[1])
-      oklab[o + 2] = A[2] + c * (B[2] - A[2])
+      const o = (y * w + x) * 4
+      pixels[o] = Math.round(A[0] + c * (B[0] - A[0]))
+      pixels[o + 1] = Math.round(A[1] + c * (B[1] - A[1]))
+      pixels[o + 2] = Math.round(A[2] + c * (B[2] - A[2]))
+      pixels[o + 3] = 255
     }
   }
-  const paletteOklab = new Float32Array([A[0], A[1], A[2], B[0], B[1], B[2]])
-  return { labels: { width: w, height: h, data, count: 2 }, field: { oklab, paletteOklab } }
+  const paletteRgb = new Uint8Array([A[0], A[1], A[2], B[0], B[1], B[2]])
+  return { labels: { width: w, height: h, data, count: 2 }, field: { pixels, paletteRgb } }
 }
 
 describe('cutout sub-pixel color-boundary refinement', () => {
