@@ -76,6 +76,24 @@ function alphaScene(): RasterImage {
   return img
 }
 
+/**
+ * An opaque disk under a translucent glass panel on a transparent canvas: the
+ * panel's interior is partial alpha with partial neighbors, so it is emitted as
+ * a face with a fill opacity (its exterior stays on the lattice, no alpha
+ * field), while the disk is an opaque face cut at half coverage.
+ */
+function translucentScene(): RasterImage {
+  const img = createRaster(72, 72)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 72; y++) {
+    for (let x = 0; x < 72; x++) {
+      if (Math.hypot(x + 0.5 - 24, y + 0.5 - 44) < 16) setPixel(img, x, y, 210, 60, 50, 255)
+      if (x >= 30 && x < 64 && y >= 12 && y < 58) setPixel(img, x, y, 40, 120, 200, 115)
+    }
+  }
+  return img
+}
+
 /** Ink art with a hole and a few specks — enough boundary work for bw mode. */
 function inkArt(): RasterImage {
   const img = createRaster(72, 72)
@@ -146,6 +164,22 @@ const MODES: Mode[] = [
     patch: {
       mode: 'color',
       paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'cutout',
+    },
+  },
+  {
+    name: 'color stacked, translucent face',
+    image: translucentScene,
+    patch: { mode: 'color', paletteSize: 4, background: 'transparent', alphaThreshold: 128 },
+  },
+  {
+    name: 'color cutout, translucent face',
+    image: translucentScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 4,
       background: 'transparent',
       alphaThreshold: 128,
       layering: 'cutout',

@@ -18,6 +18,13 @@ export interface SvgShape {
   /** `'#rrggbb'` or `'none'`. Undefined ⇒ `fill="none"` when stroked, else the shape is skipped. */
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
+  /**
+   * Fill opacity in [0, 1], emitted as `fill-opacity` when below 1 — a
+   * translucent face (a soft shadow, glass, steam) whose `fill` is its ink color
+   * and whose alpha is carried here, so it composites over what it covers. Absent
+   * (or 1) ⇒ a fully opaque fill.
+   */
+  fillOpacity?: number
   stroke?: string
   strokeWidth?: number
   strokeLinecap?: 'butt' | 'round' | 'square'
@@ -156,6 +163,9 @@ function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean
   let attrs = ''
   const fill = shape.fill === undefined ? 'none' : assertAttrSafe(shape.fill, 'fill')
   attrs += ` fill="${fill}"`
+  if (shape.fillOpacity !== undefined && shape.fillOpacity < 1) {
+    attrs += ` fill-opacity="${formatNumber(shape.fillOpacity, 3)}"`
+  }
   if (includeFillRule && shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
   if (shape.stroke !== undefined) attrs += ` stroke="${assertAttrSafe(shape.stroke, 'stroke')}"`
   if (shape.strokeWidth !== undefined) {
