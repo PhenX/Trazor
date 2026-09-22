@@ -47,6 +47,20 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   `packages/trace/src/refine.ts` implements this over the engine's signed coverage
   fields (`alphaCoverageField`, `pairwiseField`, `layerField`), feeding the
   polygon, vertex-adjustment and run-fitting stages the de-staircased points.
+- **logolabs, “inkvec” — boundary solve (stage 08, Apache-2.0).**
+  <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/boundary_opt.rs`
+  `optimise`, `docs/algorithm/08-boundary-solve.md`). Every boundary point is one
+  unknown of a single optimization whose data term is the exact rendered coverage
+  — each pixel clipped by the chain and closed along its border (a shoelace with
+  an analytic Jacobian through the gridline crossings), `a·c_left + (1−a)·c_right`
+  against the pixel — plus a kink term on second differences and an anchor to the
+  refined positions, solved by Fletcher–Reeves conjugate gradient with a leashed
+  line search and a self-crossing guard. `solveBoundary` in
+  `packages/trace/src/solve.ts` implements this per chain over the engine's signed
+  coverage fields (the two-face residual reduces to `(a − a_obs)²` on the field);
+  verified on the coverage-exact disk but kept off the default trace path (the
+  coverage-area null space wanders angular boundaries into a sawtooth) — see
+  `packages/trace/ARCHITECTURE.md`.
 - **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
   Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
   for emitting a fitted circular arc as ≤90° circle-exact cubics

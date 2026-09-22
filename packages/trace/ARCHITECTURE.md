@@ -10,6 +10,7 @@ read that before editing. This map describes structure and intent; `src/index.ts
 src/
   crack.ts        mask → signed closed lattice boundary paths (turn policies, hole hierarchy)
   refine.ts       optional sub-pixel snap of boundary points onto a signed coverage field's ½ level (normal search)
+  solve.ts        boundary solve: move a chain's points at once to match exact rendered coverage (off the default path)
   boundary.ts     label map → seam-free region shapes (the shared boundary graph)
   closed.ts       one closed ring → PathCommand[] via the Potrace chain; also traceMask
   centerline.ts   skeleton → smooth open strokes (graph walk, junction merge, fit)
@@ -76,6 +77,28 @@ depends on the ring and the optional field alone, while **`polygonToCommands(rin
 `smoothing`, `curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed;
 `shapesFromPaths` takes the `RingFit`s for a whole path array as an optional argument. Holding them is what lets the
 engine's `StageCache` replay a smoothing change without re-running the straightness DP.
+
+## The boundary solve (`solve.ts`) — implemented, off the default path
+
+`refineRingToField` decides each point on its own normal. A pixel's value is the coverage of _every_ boundary point
+that touches it, so a point's neighbours change what that pixel should read, and a pixel says nothing about motion
+_along_ the boundary — neither of which a per-point normal search can see. **`solveBoundary`** (inkvec stage 08
+`boundary_opt::optimise`, `docs/REFERENCES.md`) solves a whole chain at once: the data term is the exact rendered
+coverage the geometry would paint (each pixel clipped by the chain and closed along its border, a shoelace with an
+analytic Jacobian through the gridline crossings), plus a kink term on second differences and an anchor to the refined
+positions, minimized by Fletcher–Reeves conjugate gradient with a leashed line search and a self-crossing (fold) guard.
+It runs per chain — the free points its only unknowns, pinned endpoints (cutout junctions) keeping the partition
+seam-free by construction, a closed ring cyclic with the anchor holding it tangentially — so it is a pure, deterministic
+function (fixed iteration cap, no clock) and a helper-parallel run stays byte-identical.
+
+It is **verified correct** (a raw lattice disk ring solves onto the true circle to std 0.04 px, `solve.test.ts`) but is
+**not on the default trace path**: measured on the inkvec corpus behind `refineRingToField`, it is net-neutral on GMSD
+overall (0.0407 → ~0.041 at 512 px) while _regressing_ the angular mono families (Lucide, Material) and raising spurious
+hue — the coverage-area objective is many-to-one, so on a straight or thin-stroke boundary it wanders the null space
+into a sawtooth that renders almost identically and looks nothing like the shape (inkvec `boundary_opt.rs` documents the
+same, and that a single global regularizer cannot serve both the smooth and the angular case). Separating the cases needs
+either recommender routing or a thin-face centreline-plus-width model (inkvec LOG-44), both out of this change's scope.
+`solveBoundary` is exported so it can be wired where that routing exists.
 
 ## The seam-free boundary graph (`boundary.ts`)
 
