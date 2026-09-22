@@ -107,6 +107,25 @@ const CARTOON_MIN_RIM_RATIO = 0.1
 /** Distinct colors below which an image is a hard-edged pixel palette (the pixel-art profile's own bound). */
 const CARTOON_MIN_DISTINCT_COLORS = 64
 
+/**
+ * Ramp share (`rampArea`) above which an image carries real gradients worth
+ * fitting: a synthetic linear ramp reads ~0.65 and a gradient-shaded emoji
+ * ~0.5, while flat icons and cartoons read 0. Below it, gradient detection only
+ * spends time (the fitter is neutral on flat art) so it stays off — the ramp
+ * measure, not a profile flag, is what turns it on.
+ */
+const GRADIENT_MIN_RAMP_AREA = 0.45
+
+/**
+ * Long side (px) gradient detection runs at when the ramp gate turns it on. The
+ * pixel-level ramp verification dominates the fitter's cost, so detecting on a
+ * copy no larger than this keeps the time within budget on a large input (a
+ * source past `maxDimension` already traces at 1600 px, and detection is capped
+ * below even that); the traced geometry stays full resolution. Sized so a
+ * corpus-scale icon/emoji (≤512 px) still verifies at full resolution.
+ */
+const GRADIENT_DETECT_CAP = 512
+
 /** Whether the image reads as cartoon-style flat art region growing serves best. */
 function isCartoon(a: ImageAnalysis): boolean {
   return (
@@ -339,6 +358,23 @@ export function recommendSettings(
       r.add(
         'cartoonRegions',
         'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean, within the color budget.',
+      )
+    }
+    // Real gradients (a synthetic ramp, a gradient-shaded emoji) posterize into
+    // a stack of bands under a flat-fill palette — many coordinates for a smooth
+    // area. When the ramp measure shows a substantial share of the image ramps,
+    // fit those bands back into gradient paints; the pixel-level verification is
+    // capped to a downscaled copy so the cost stays in budget on large inputs.
+    // Flat art reads `rampArea` 0 and never pays for it.
+    if (a.rampArea >= GRADIENT_MIN_RAMP_AREA) {
+      patch.gradients = true
+      patch.gradientMaxDimension =
+        patch.gradientMaxDimension === undefined
+          ? GRADIENT_DETECT_CAP
+          : Math.min(patch.gradientMaxDimension, GRADIENT_DETECT_CAP)
+      r.add(
+        'gradients',
+        'Smooth color ramps detected — fitting them as gradient fills instead of posterized bands.',
       )
     }
   }
