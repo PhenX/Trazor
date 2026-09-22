@@ -116,3 +116,122 @@ export function oklabToHex(L: number, a: number, b: number): string {
 export function oklabLightness(r: number, g: number, b: number): number {
   return rgbToOklab(r / 255, g / 255, b / 255)[0]
 }
+
+// ---- CIELAB / CIEDE2000 ----
+// CIEDE2000 (Sharma, Wu & Dalal, "The CIEDE2000 color-difference formula",
+// Color Research & Application 30(1), 2005) is the industrial color-difference
+// standard, tuned so a unit is one just-noticeable difference across the whole
+// gamut. Oklab distance is close to uniform for clustering but is far stricter
+// than a JND near black and looser in saturated hues, so a near-duplicate
+// threshold expressed in Oklab merges too eagerly in the shadows and too timidly
+// in vivid color; CIEDE2000 is the floor that matches perception evenly.
+
+/** D65 reference white (2° observer), the standard illuminant for CIELAB. */
+const D65_X = 0.95047
+const D65_Z = 1.08883
+
+/** CIELAB nonlinearity: the CIE 1976 cube-root with the linear toe (216/24389, 24389/27). */
+function labF(t: number): number {
+  return t > 216 / 24389 ? Math.cbrt(t) : (841 / 108) * t + 4 / 29
+}
+
+/**
+ * sRGB (components in [0, 1]) → CIELAB (D65). Returns [L*, a*, b*], L* in
+ * [0, 100]. The linear-light XYZ uses the sRGB primaries; the L* transfer uses
+ * the CIE 1976 cube-root with the linear toe (216/24389, 24389/27).
+ */
+export function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const lr = srgbToLinear(r)
+  const lg = srgbToLinear(g)
+  const lb = srgbToLinear(b)
+  const x = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / D65_X
+  const y = 0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb
+  const z = (0.0193339 * lr + 0.119192 * lg + 0.9503041 * lb) / D65_Z
+  const fx = labF(x)
+  const fy = labF(y)
+  const fz = labF(z)
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+}
+
+const DEG = Math.PI / 180
+
+/**
+ * CIEDE2000 color difference ΔE₀₀ between two CIELAB colors (Sharma, Wu & Dalal
+ * 2005), with all weighting factors k_L = k_C = k_H = 1. Verified against the
+ * paper's published test pairs (`packages/core/test/color.test.ts`).
+ */
+export function ciede2000(
+  L1: number,
+  a1: number,
+  b1: number,
+  L2: number,
+  a2: number,
+  b2: number,
+): number {
+  const c1 = Math.hypot(a1, b1)
+  const c2 = Math.hypot(a2, b2)
+  const cm = (c1 + c2) / 2
+  const cm7 = cm ** 7
+  const G = 0.5 * (1 - Math.sqrt(cm7 / (cm7 + 25 ** 7)))
+  const ap1 = a1 * (1 + G)
+  const ap2 = a2 * (1 + G)
+  const cp1 = Math.hypot(ap1, b1)
+  const cp2 = Math.hypot(ap2, b2)
+  const hp = (a: number, b: number): number => {
+    if (a === 0 && b === 0) return 0
+    const h = Math.atan2(b, a) / DEG
+    return h < 0 ? h + 360 : h
+  }
+  const hp1 = hp(ap1, b1)
+  const hp2 = hp(ap2, b2)
+  const dL = L2 - L1
+  const dC = cp2 - cp1
+  let dh = 0
+  if (cp1 * cp2 !== 0) {
+    dh = hp2 - hp1
+    if (dh > 180) dh -= 360
+    else if (dh < -180) dh += 360
+  }
+  const dH = 2 * Math.sqrt(cp1 * cp2) * Math.sin((dh / 2) * DEG)
+  const Lm = (L1 + L2) / 2
+  const Cm = (cp1 + cp2) / 2
+  let Hm = hp1 + hp2
+  if (cp1 * cp2 !== 0) {
+    if (Math.abs(hp1 - hp2) > 180) Hm += hp1 + hp2 < 360 ? 360 : -360
+    Hm /= 2
+  }
+  const T =
+    1 -
+    0.17 * Math.cos((Hm - 30) * DEG) +
+    0.24 * Math.cos(2 * Hm * DEG) +
+    0.32 * Math.cos((3 * Hm + 6) * DEG) -
+    0.2 * Math.cos((4 * Hm - 63) * DEG)
+  const dTheta = 30 * Math.exp(-(((Hm - 275) / 25) ** 2))
+  const Cm7 = Cm ** 7
+  const Rc = 2 * Math.sqrt(Cm7 / (Cm7 + 25 ** 7))
+  const Sl = 1 + (0.015 * (Lm - 50) ** 2) / Math.sqrt(20 + (Lm - 50) ** 2)
+  const Sc = 1 + 0.045 * Cm
+  const Sh = 1 + 0.015 * Cm * T
+  const Rt = -Math.sin(2 * dTheta * DEG) * Rc
+  const l = dL / Sl
+  const c = dC / Sc
+  const h = dH / Sh
+  return Math.sqrt(l * l + c * c + h * h + Rt * c * h)
+}
+
+/**
+ * CIEDE2000 between two sRGB byte triples (0–255), through {@link rgbToLab}. The
+ * near-duplicate palette floor is stated in these perceptually even units.
+ */
+export function ciede2000Rgb(
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number,
+): number {
+  const [L1, a1, bb1] = rgbToLab(r1 / 255, g1 / 255, b1 / 255)
+  const [L2, a2, bb2] = rgbToLab(r2 / 255, g2 / 255, b2 / 255)
+  return ciede2000(L1, a1, bb1, L2, a2, bb2)
+}
