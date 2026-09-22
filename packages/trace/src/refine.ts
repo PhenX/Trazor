@@ -142,3 +142,128 @@ export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedFie
   }
   return out
 }
+
+/** What a stacked layer's boundary field is read from (`layerField`). */
+export interface LayerFieldSource {
+  width: number
+  height: number
+  /** 1 where the layer's mask covers the pixel. */
+  mask: Uint8Array
+  /** Label per pixel, −1 where the pixel is unlabeled (cut away as transparent). */
+  labels: Int32Array
+  /** The working image's RGBA bytes. */
+  pixels: Uint8ClampedArray
+  /** Per-label palette RGB (interleaved, indexed by label). */
+  paletteRgb: Uint8Array
+  /**
+   * The color painted inside the mask: a lifted island's own label, or −1 for
+   * a base layer, whose mask is a union under the sheets above it and whose
+   * edge therefore meets each inside pixel's own label color.
+   */
+  label: number
+  /**
+   * Signed transparency coverage (`alphaCoverageField`), positive on the
+   * labeled side: the exterior edge. Absent, the exterior is a hard edge.
+   */
+  alpha?: GrayImage
+}
+
+/**
+ * Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5]: positive
+ * inside the layer's mask, negative outside, zero at the true edge. An edge of
+ * the mask is a color edge with the label across it — the pixel's coverage
+ * recovered by projecting its color onto the segment between the two palette
+ * colors (`coverageOf`), the pair read per pixel from its first 4-neighbor on
+ * the other side of the mask (left, right, up, down: a fixed order, so the
+ * field is deterministic) — or, where the source is not solid, the exterior
+ * edge against transparency, whose position the alpha coverage carries. A pixel
+ * with no neighbor across the mask is deep inside or outside (±0.5); two
+ * identical palette colors carry no edge information and read as a hard edge.
+ */
+export function layerField(src: LayerFieldSource): SignedField {
+  const { width: w, height: h, mask, labels, pixels, paletteRgb, label, alpha } = src
+  const alphaData = alpha?.data
+  /** Pixel `p`'s coverage by `own` against `other`, centered: −0.5 at `other`, +0.5 at `own`. */
+  const project = (p: number, own: number, other: number, hard: number): number => {
+    const c = coverageOf(pixels, p * 4, paletteRgb, own * 3, other * 3)
+    return c < 0 ? hard : c - 0.5
+  }
+  /** First 4-neighbor of `p` whose mask bit is `side`, else −1. */
+  const across = (p: number, x: number, y: number, side: number): number => {
+    if (x > 0 && mask[p - 1] === side) return p - 1
+    if (x < w - 1 && mask[p + 1] === side) return p + 1
+    if (y > 0 && mask[p - w] === side) return p - w
+    if (y < h - 1 && mask[p + w] === side) return p + w
+    return -1
+  }
+  return {
+    width: w,
+    height: h,
+    at(x: number, y: number): number {
+      const p = y * w + x
+      if (alphaData !== undefined) {
+        // Not solid: on the exterior rim or beyond it, where coverage is the edge.
+        const a = alphaData[p]
+        if (a < SATURATED) return a
+      }
+      const l = labels[p]
+      if (mask[p] !== 0) {
+        const q = across(p, x, y, 0)
+        if (q < 0) return 0.5
+        const other = labels[q]
+        const own = label >= 0 ? label : l
+        if (other < 0 || own < 0) return 0.5
+        return project(p, own, other, 0.5)
+      }
+      if (l < 0) return -0.5
+      const q = across(p, x, y, 1)
+      if (q < 0) return -0.5
+      const own = label >= 0 ? label : labels[q]
+      if (own < 0) return -0.5
+      return project(p, own, l, -0.5)
+    },
+  }
+}
+
+/**
+ * Coverage of a pixel by color `a` against color `b`, in [0, 1]: the
+ * least-squares mixing weight of `a` in the pixel's RGB, `(P − b)·(a − b) /
+ * |a − b|²`, clamped. A rasterizer blends an anti-aliased edge in the encoded
+ * sRGB values it writes (SVG's `color-interpolation: sRGB`, canvas, Skia,
+ * Cairo), so the inversion is exact in those same values; a perceptual space
+ * would bend the mixing line and shift every recovered edge. −1 when the two
+ * colors coincide (no edge to read). `pi` and `ai`/`bi` are byte offsets into
+ * the RGBA pixels and the RGB palette.
+ */
+export function coverageOf(
+  pixels: Uint8ClampedArray,
+  pi: number,
+  palette: Uint8Array,
+  ai: number,
+  bi: number,
+): number {
+  const dr = palette[ai] - palette[bi]
+  const dg = palette[ai + 1] - palette[bi + 1]
+  const db = palette[ai + 2] - palette[bi + 2]
+  const d2 = dr * dr + dg * dg + db * db
+  if (d2 < 1) return -1
+  const c =
+    ((pixels[pi] - palette[bi]) * dr +
+      (pixels[pi + 1] - palette[bi + 1]) * dg +
+      (pixels[pi + 2] - palette[bi + 2]) * db) /
+    d2
+  return c < 0 ? 0 : c > 1 ? 1 : c
+}
+
+/** A gray field as a `SignedField`; a `SignedField` as itself. */
+export function signedFieldOf(field: GrayImage | SignedField): SignedField {
+  if (!('data' in field)) return field
+  const { width, height, data } = field
+  return { width, height, at: (x, y) => data[y * width + x] }
+}
+
+/** The field with its sign flipped: the same edge seen from the other side. */
+export function negatedField(field: GrayImage | SignedField): SignedField {
+  const inner = signedFieldOf(field)
+  return { width: inner.width, height: inner.height, at: (x, y) => -inner.at(x, y) }
+}

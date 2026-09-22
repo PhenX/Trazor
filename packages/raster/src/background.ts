@@ -2,7 +2,7 @@
  * Alpha flattening and background-color probing.
  */
 import { createMask, hexToRgb } from '@trazor/core'
-import type { BinaryMask, RasterImage, VectorizeSettings } from '@trazor/core'
+import type { BinaryMask, GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
 
 export interface FlattenResult {
   /** RGB composited over white (`transparent`) or `backgroundColor` (`custom`), alpha 255. */
@@ -83,6 +83,34 @@ export function flattenImage(
     opaque.data[i] = data[p] >= threshold ? 1 : 0
   }
   return { image: flat, opaque, alpha }
+}
+
+/**
+ * Signed coverage field of the transparency cut, in [-0.5, 0.5]: positive where
+ * the source alpha reaches `alphaThreshold` (the pixel produces a shape),
+ * negative below it, zero at the level. Each side is normalized by its own
+ * distance to the extreme — `signedThresholdField`'s construction — so a solid
+ * pixel reads +0.5, a clear one −0.5 and an anti-aliased rim pixel its partial
+ * coverage. The tracer refines a region's exterior boundary onto the zero
+ * contour: at half coverage (`alphaThreshold` 128) that is the true outline of
+ * an anti-aliased edge, since a rasterizer writes each rim pixel's coverage
+ * into alpha and keeps the ink color under it.
+ */
+export function alphaCoverageField(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  alphaThreshold: number,
+): GrayImage {
+  const t = Math.min(255, Math.max(0, alphaThreshold)) / 255
+  const inScale = 0.5 / Math.max(1 - t, 1e-6)
+  const outScale = 0.5 / Math.max(t, 1e-6)
+  const out = new Float32Array(alpha.length)
+  for (let i = 0; i < alpha.length; i++) {
+    const d = alpha[i] / 255 - t
+    out[i] = d * (d > 0 ? inScale : outScale)
+  }
+  return { width, height, data: out }
 }
 
 /**

@@ -126,6 +126,29 @@ export function flattenImage(
 ): FlattenResult
 // Most common color among the 1px border frame (for omitBackground detection).
 export function borderDominantColor(image: RasterImage): [number, number, number]
+// Signed transparency coverage at the cut level, in [-0.5, 0.5]: positive where alpha ≥ alphaThreshold,
+// each side normalized to ±0.5 like signedThresholdField. The exterior edge the tracer refines onto — at
+// half coverage (128) the true outline of an anti-aliased edge, whose coverage a rasterizer writes to alpha.
+export function alphaCoverageField(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  alphaThreshold: number,
+): GrayImage
+
+// palette.ts
+export interface InteriorPalette {
+  paletteRgb: Uint8Array
+  paletteHex: string[]
+}
+// Per-label color read from the region interiors: the per-channel median of the pixels whose four
+// neighbors share the label (the median of every pixel when fewer than 16 do; the given color for an
+// empty label), so an anti-aliased rim never tints a fill. Runs after the cleanup that settles the labels.
+export function interiorPaletteColors(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): InteriorPalette
 
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
@@ -416,6 +439,34 @@ export function closedPathToCommands(
 // the field only — never on smoothing, curve optimization or the corner threshold — so a caller may
 // compute it once and re-fit it many times.
 export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null
+// Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
+// reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
+// 4-neighbor on the other side: left, right, up, down), an exterior edge the transparency coverage
+// (`alpha`); ±0.5 deep inside/outside; identical palette colors read as a hard edge. `label` is the
+// color painted inside the mask (a lifted island's label; −1 for a base layer: each inside pixel's own).
+export interface LayerFieldSource {
+  width: number
+  height: number
+  mask: Uint8Array // 1 inside the layer
+  labels: Int32Array // −1 = unlabeled (transparent)
+  pixels: Uint8ClampedArray // working image RGBA
+  paletteRgb: Uint8Array // per-label RGB
+  label: number
+  alpha?: GrayImage // alphaCoverageField
+}
+export function layerField(src: LayerFieldSource): SignedField
+// Coverage of pixel `pi` (byte offset into RGBA) by palette color `ai` against `bi` (byte offsets):
+// the least-squares blend weight (P − b)·(a − b)/|a − b|² in the encoded sRGB values a rasterizer
+// blends in, clamped to [0, 1]; −1 when the two colors coincide.
+export function coverageOf(
+  pixels: Uint8ClampedArray,
+  pi: number,
+  palette: Uint8Array,
+  ai: number,
+  bi: number,
+): number
+export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
+export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
 // Corner analysis, smoothing and curve optimization over an adjusted polygon (Selinger §2.3.2, §2.4).
 // `pixel` curveMode and a null polygon emit the exact rectilinear ring instead.
 export function polygonToCommands(
@@ -460,6 +511,8 @@ export interface ChainFit {
 export function extractChains(labels: LabelMap): ChainNetwork
 // Fit chain `index`. Every chain is independent, so a caller may fit them in any order or in
 // parallel (the engine's helper pool does) and place the results by index.
+// `opts.colorField.alpha` (an alphaCoverageField) refines a chain with an unlabeled side onto the
+// transparency coverage's zero contour; without it such a chain stays on the lattice.
 export function fitChain(network: ChainNetwork, index: number, opts: TraceCutoutOptions): ChainFit
 export function fitChains(network: ChainNetwork, opts: TraceCutoutOptions): ChainFit[]
 // Regions from the fitted chains: each ring walks the chain instances around it, reusing the

@@ -57,6 +57,10 @@ export interface HelperDispatchSpec {
   serialize?: HelperSerializeOptions
   /** `fit-chains`: per-label palette Oklab, enabling sub-pixel color refinement. */
   paletteOklab?: Float32Array
+  /** `trace-layers`: per-label palette RGB, for the layers' boundary fields. */
+  paletteRgb?: Uint8Array
+  /** The transparency cut level whose coverage refines exterior edges. */
+  alphaThreshold?: number
   /** `fit-chains`: collapse circular Bézier runs to `A` arcs at this precision. */
   arcPrecision?: number
   /**
@@ -156,11 +160,15 @@ export class HelperPool {
     return unit % this.slots.length
   }
 
-  /** Cache the working image on every helper that does not already hold `key`. */
-  setImage(key: string, image: RasterImage): void {
+  /**
+   * Cache the working image — and, under transparent handling, the source alpha
+   * — on every helper that does not already hold `key`.
+   */
+  setImage(key: string, image: RasterImage, alpha?: Uint8Array | null): void {
     for (const slot of this.slots) {
       if (slot.imageKey === key) continue
       const buffer = image.data.slice().buffer
+      const alphaBuffer = alpha ? alpha.slice().buffer : undefined
       this.send(
         slot,
         {
@@ -169,8 +177,9 @@ export class HelperPool {
           width: image.width,
           height: image.height,
           buffer,
+          alpha: alphaBuffer,
         },
-        [buffer],
+        alphaBuffer ? [buffer, alphaBuffer] : [buffer],
       )
       slot.imageKey = key
     }
@@ -303,6 +312,7 @@ export class HelperPool {
         if (units.length === 0) continue
         job.pending.add(h)
         const paletteOklab = spec.paletteOklab ? spec.paletteOklab.slice().buffer : undefined
+        const paletteRgb = spec.paletteRgb ? spec.paletteRgb.slice().buffer : undefined
         this.send(
           this.slots[h],
           {
@@ -316,9 +326,11 @@ export class HelperPool {
             meta: spec.meta ? units.map(spec.meta) : undefined,
             serialize: spec.serialize,
             paletteOklab,
+            paletteRgb,
+            alphaThreshold: spec.alphaThreshold,
             arcPrecision: spec.arcPrecision,
           },
-          paletteOklab ? [paletteOklab] : undefined,
+          [paletteOklab, paletteRgb].filter((b): b is ArrayBuffer => b !== undefined),
         )
       }
       for (let unit = 0; unit < spec.total; unit++) {

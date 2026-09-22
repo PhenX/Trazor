@@ -1,8 +1,9 @@
 import type { BinaryMask, GrayImage, PathCommand, RasterImage } from '@trazor/core'
-import { toOklabBuffer } from '@trazor/raster'
+import { alphaCoverageField, toOklabBuffer } from '@trazor/raster'
 import {
   decomposeMask,
   fitChain,
+  layerField,
   polygonToCommands,
   ringPolygon,
   shapesFromPaths,
@@ -12,6 +13,7 @@ import type {
   ChainNetwork,
   CrackPath,
   FlatPoints,
+  SignedField,
   TraceCurveOptions,
   TraceCutoutOptions,
 } from '@trazor/trace'
@@ -30,10 +32,23 @@ import type {
   WorkerScope,
 } from './protocol'
 
-/** The working image plus the Oklab buffer cutout chain fitting reads from it. */
+/**
+ * The working image plus the Oklab buffer boundary refinement reads from it,
+ * and, under transparent handling, the source alpha with the coverage field
+ * built from it at the job's cut level.
+ */
 interface ImageState {
   image: RasterImage
   oklab?: Float32Array
+  alpha?: Uint8Array
+  alphaField?: GrayImage
+  alphaLevel?: number
+}
+
+/** What a stacked layer's rings are refined against: its color edges and, if any, the transparency coverage. */
+interface LayerRefine {
+  paletteRgb: Uint8Array
+  alpha?: GrayImage
 }
 
 /**
@@ -194,19 +209,28 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   /** The option objects every unit of one job shares. */
   function jobOptions(job: HelperJobMessage): JobOptions {
+    const paletteOklab = job.paletteOklab ? new Float32Array(job.paletteOklab) : undefined
     if (job.kind === 'fit-chains') {
-      const paletteOklab = job.paletteOklab ? new Float32Array(job.paletteOklab) : undefined
       const arcPrecision = job.arcPrecision
       return {
         cutout: {
           ...curveOptions(job.curve),
-          colorField: paletteOklab ? { oklab: oklabBuffer(), paletteOklab } : undefined,
+          colorField: paletteOklab
+            ? { oklab: oklabBuffer(), paletteOklab, alpha: alphaFieldAt(job.alphaThreshold) }
+            : undefined,
           refineChain:
             arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
         },
       }
     }
-    return { curve: curveOptions(job.curve, job.kind === 'trace-rings' ? coverage() : undefined) }
+    if (job.kind === 'trace-layers') {
+      const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
+      return {
+        curve: curveOptions(job.curve),
+        layer: paletteRgb ? { paletteRgb, alpha: alphaFieldAt(job.alphaThreshold) } : undefined,
+      }
+    }
+    return { curve: curveOptions(job.curve, coverage()) }
   }
 
   /** One unit's shapes: their commands and, unless fitting only, their SVG form. */
@@ -222,7 +246,7 @@ export function installHelperHandler(scope: WorkerScope): void {
     const curve = opts.curve
     if (!curve) throw new Error(`helper: no curve options for ${job.kind}`)
     const shapes =
-      job.kind === 'trace-layers' ? traceLayer(curve, unit) : traceRingUnit(curve, unit)
+      job.kind === 'trace-layers' ? traceLayer(curve, unit, opts.layer) : traceRingUnit(curve, unit)
     const out = job.serialize
     if (!out) return { shapes }
     const paint = job.meta?.[at]
@@ -238,21 +262,49 @@ export function installHelperHandler(scope: WorkerScope): void {
     return { shapes, svg }
   }
 
-  /** Stacked layer `unit`: union flood mask → rings → curve chain. */
-  function traceLayer(curve: TraceCurveOptions, unit: number): PathCommand[][] {
+  /**
+   * Stacked layer `unit`: union flood mask → rings → curve chain. The rings and,
+   * when the run wants them, their polygons are built together, while `st.mask`
+   * still holds the layer's mask the boundary field reads; a layer whose rings
+   * were kept by a `pixel` run is decomposed again for its polygons.
+   */
+  function traceLayer(
+    curve: TraceCurveOptions,
+    unit: number,
+    refine: LayerRefine | undefined,
+  ): PathCommand[][] {
     const st = stackState
     if (!st) throw new Error('helper: no stacked plan for trace-layers')
-    let entry = st.layers.get(unit)
-    if (!entry) {
-      entry = { paths: decomposeLayer(st, unit) }
-      st.layers.set(unit, entry)
-    }
     const wantPolygons = curve.curveMode !== 'pixel'
-    if (wantPolygons && !entry.polygons) {
-      entry.polygons = entry.paths.map((p) => ringPolygon(p.points))
+    let entry = st.layers.get(unit)
+    if (!entry || (wantPolygons && !entry.polygons)) {
+      const paths = decomposeLayer(st, unit)
+      entry = { paths }
+      if (wantPolygons) {
+        const field = refine ? layerFieldOf(st, unit, refine) : undefined
+        entry.polygons = paths.map((p) => ringPolygon(p.points, field))
+      }
+      st.layers.set(unit, entry)
     }
     const traced = shapesFromPaths(entry.paths, curve, wantPolygons ? entry.polygons : undefined)
     return traced.map((s) => s.commands)
+  }
+
+  /** The boundary field of layer `unit`, read from the mask `decomposeLayer` just left in `st.mask`. */
+  function layerFieldOf(st: StackState, unit: number, refine: LayerRefine): SignedField {
+    const island = unit - st.order.length
+    const st2 = imageState
+    if (!st2) throw new Error('helper: no working image')
+    return layerField({
+      width: st.msg.width,
+      height: st.msg.height,
+      mask: st.mask.data,
+      labels: st.labels,
+      pixels: st2.image.data,
+      paletteRgb: refine.paletteRgb,
+      label: island >= 0 ? st.islandLabels[island] : -1,
+      alpha: refine.alpha,
+    })
   }
 
   /** One bw ring: its polygon stages (cached) followed by its curve stages. */
@@ -297,6 +349,20 @@ export function installHelperHandler(scope: WorkerScope): void {
   /** The cached bw coverage field, if this helper was given one. */
   function coverage(): GrayImage | undefined {
     return ringState?.coverage
+  }
+
+  /**
+   * The transparency coverage field at `level`, built once per level from the
+   * cached source alpha; undefined without a level or under opaque handling.
+   */
+  function alphaFieldAt(level: number | undefined): GrayImage | undefined {
+    const st = imageState
+    if (level === undefined || !st?.alpha) return undefined
+    if (st.alphaField === undefined || st.alphaLevel !== level) {
+      st.alphaField = alphaCoverageField(st.alpha, st.image.width, st.image.height, level)
+      st.alphaLevel = level
+    }
+    return st.alphaField
   }
 
   /**
@@ -377,10 +443,11 @@ function advanceUnion(st: StackState, layer: number): void {
   st.unionLayer = layer
 }
 
-/** Options shared by every unit of one job: `cutout` for chain fitting, else `curve`. */
+/** Options shared by every unit of one job: `cutout` for chain fitting, else `curve` (plus `layer` for stacked layers). */
 interface JobOptions {
   curve?: TraceCurveOptions
   cutout?: TraceCutoutOptions
+  layer?: LayerRefine
 }
 
 /** Curve settings as the tracer's own option shape, with an optional sub-pixel field. */
@@ -391,6 +458,7 @@ function curveOptions(curve: HelperCurveOptions, coverage?: GrayImage): TraceCur
 function takeImage(msg: HelperImageMessage): ImageState {
   return {
     image: { width: msg.width, height: msg.height, data: new Uint8ClampedArray(msg.buffer) },
+    alpha: msg.alpha ? new Uint8Array(msg.alpha) : undefined,
   }
 }
 

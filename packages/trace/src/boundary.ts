@@ -1,4 +1,4 @@
-import type { LabelMap, PathCommand } from '@trazor/core'
+import type { GrayImage, LabelMap, PathCommand } from '@trazor/core'
 import type { TraceCurveOptions } from './closed'
 import { closedPathToCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'
@@ -8,7 +8,7 @@ import { smoothOpen } from './potrace/smooth'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { reverseCommands } from './paths'
-import { pairwiseField, refineRingToField } from './refine'
+import { negatedField, pairwiseField, refineRingToField, signedFieldOf } from './refine'
 import type { SignedField } from './refine'
 
 /**
@@ -22,6 +22,14 @@ import type { SignedField } from './refine'
 export interface ColorField {
   oklab: Float32Array
   paletteOklab: Float32Array
+  /**
+   * Signed transparency coverage (`alphaCoverageField`), positive on the
+   * labeled side. Present, a chain with an unlabeled (transparent) side is
+   * refined onto the coverage's zero contour — the true outline of an
+   * anti-aliased edge against transparency; absent, such a chain stays on the
+   * lattice.
+   */
+  alpha?: GrayImage
 }
 
 export interface TraceCutoutOptions extends TraceCurveOptions {
@@ -405,14 +413,23 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
   return shapes
 }
 
-/** Sub-pixel color-boundary field for a chain, from its two region colors. */
+/**
+ * Sub-pixel boundary field for a chain: the color field between its two region
+ * colors, or, on an exterior chain (one side unlabeled), the transparency
+ * coverage — which is positive on the labeled side, while a chain's field must
+ * be positive on its right.
+ */
 function chainField(
   network: ChainNetwork,
   chain: BoundaryChain,
   opts: TraceCutoutOptions,
 ): SignedField | undefined {
   const cf = opts.colorField
-  if (!cf || chain.left < 0 || chain.right < 0) return undefined
+  if (!cf) return undefined
+  if (chain.left < 0 || chain.right < 0) {
+    if (!cf.alpha || (chain.left < 0 && chain.right < 0)) return undefined
+    return chain.right >= 0 ? signedFieldOf(cf.alpha) : negatedField(cf.alpha)
+  }
   const li = chain.left * 3
   const ri = chain.right * 3
   return pairwiseField(
