@@ -14,7 +14,7 @@ exports[`gradient scenes > 'disc fading to transparent' 1`] = `
 {
   "colors": 1,
   "gradients": [
-    "g0 radial c(60,60) r46 0:#c81e1e 0.33:#c81e1e@1 0.42:#c81e1e@0.88 0.64:#c81e1e@0.59 1:#c81e1e@0.13",
+    "g0 radial c(60,60) r49 0:#c81e1e 0.3:#c81e1e@1 0.42:#c81e1e@0.84 0.64:#c81e1e@0.53 1:#c81e1e@0.03",
   ],
   "paths": 1,
 }
