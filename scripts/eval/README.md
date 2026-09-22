@@ -230,3 +230,21 @@ own and takes minutes on a 24 MP photo, so this keeps the comparison fair and co
 writes `index.html` next to the assets it references: `source/` (the resized input both tracers saw), `trazor/` and
 `vtracer/` (each tracer's SVG). The page itself shows fast, uncropped PNG thumbnails; open the on-disk SVGs to inspect
 the real vector output.
+
+## inkvec comparison — `eval:inkvec`
+
+`inkvec-compare.ts` measures Trazor against [inkvec](https://github.com/logolabs/inkvec), the Rust icon/logo
+vectorizer, on a folder of icon PNGs (alpha-edged icons and emoji are its home turf), with both tools' metrics: GMSD
+(Trazor's primary), mean ΔE (Oklab) and CIEDE2000 (inkvec's), spurious hue, the same at 2× against the truth SVG when
+`truth/<name>.svg` exists (scale fidelity), inkvec's coordinate count, nodes, gzip bytes and wall time. inkvec is run
+through its CLI (`cargo build --release` in a checkout; `--inkvec <bin>` or `INKVEC_BIN`), Trazor in-process on the
+assist's auto settings (or `--profile` / `--set k=v`). Findings and the resulting changes are in
+[`../../docs/INKVEC_COMPARISON.md`](../../docs/INKVEC_COMPARISON.md).
+
+```bash
+npm run eval:inkvec -- --data <icons-dir> --inkvec /path/to/inkvec --json report.json
+npm run eval:inkvec -- --data <icons-dir> --reuse --set alphaThreshold=128   # reuse cached inkvec SVGs, sweep a setting
+```
+
+The corpus is not committed: point `--data` at PNGs rendered from open icon sets (Lucide, Material, Simple Icons,
+Noto, Twemoji, OpenMoji, Fluent) with a `families.json` tag map and the source SVGs under `truth/`.
