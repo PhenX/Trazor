@@ -493,10 +493,13 @@ describe('recommendSettings', () => {
     expect(rec.patch.mode).not.toBe('bw')
   })
 
-  it('keeps the faint-pixel cut for an image with translucent content', () => {
+  it('cuts at half coverage even with translucent content (kept as faces with opacity)', () => {
+    // The engine emits translucent interiors as faces with opacity, so the
+    // half-coverage cut serves opaque and translucent alpha alike — no guard.
     const rec = recommendSettings(analyzeImage(inkWithSoftShadow()))
     expect(rec.patch.background).toBe('transparent')
-    expect(rec.patch.alphaThreshold).toBeUndefined()
+    expect(rec.patch.alphaThreshold).toBe(128)
+    expect(rec.rationaleKeys.some((k) => k.code === 'alphaEdge')).toBe(true)
   })
 
   it('traces a shaded achromatic line drawing (not two-tone) as grayscale, not over-inked B&W', () => {
