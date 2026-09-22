@@ -157,6 +157,27 @@ const MODES: Mode[] = [
     patch: { mode: 'color', paletteSize: 6, layering: 'cutout' },
   },
   {
+    name: 'color nested',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, layering: 'nested' },
+  },
+  {
+    name: 'color nested, unoptimized',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, layering: 'nested', optimizeSvg: false },
+  },
+  {
+    name: 'color nested, alpha edge',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'nested',
+    },
+  },
+  {
     name: 'color cutout, grouped',
     image: scene,
     patch: { mode: 'color', paletteSize: 6, layering: 'cutout', groupByColor: true },

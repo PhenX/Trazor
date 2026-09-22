@@ -75,8 +75,8 @@ describe('traceLabelMap split into extract / fit / assemble', () => {
       opts: {
         ...OPTS,
         colorField: {
-          oklab: new Float32Array(PARTITION.width * PARTITION.height * 3).fill(0.3),
-          paletteOklab: new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 0.1, 0.1]),
+          pixels: new Uint8ClampedArray(PARTITION.width * PARTITION.height * 4).fill(80),
+          paletteRgb: new Uint8Array([0, 0, 0, 255, 0, 0, 130, 30, 30]),
         },
       },
     },
