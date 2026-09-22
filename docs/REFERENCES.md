@@ -222,8 +222,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (`scripts/eval/inkvec-compare.ts`; the comparison in
   [`INKVEC_COMPARISON.md`](INKVEC_COMPARISON.md)). Its coverage model informed
   the transparency coverage field (`alphaCoverageField`), the stacked-layer
-  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion) and the
-  interior palette read (`interiorPaletteColors`); no code was taken.
+  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion), the
+  interior palette read (`interiorPaletteColors`), the CIEDE2000 “same ink”
+  merge floor (`quantize.ts`, its `SAME_INK_DE00`), and the mixture-label
+  absorption pass (`packages/raster/src/mixture.ts`) — its ink-idea test
+  (`crates/inkvec-trace/src/color.rs`): a label whose pixels are coverage
+  blends of its two neighbors, and which fills little interior, is not an ink;
+  no code was taken.
 - **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
   Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
   <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,

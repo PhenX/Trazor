@@ -294,6 +294,23 @@ describe('quantize — k-means path', () => {
     const plain = quantize(img, { ...baseOpts, k: 4, seed: 1 })
     expect(plain.labels.count).toBeGreaterThan(2)
   })
+
+  it('autoK folds near-black duplicates that Oklab holds apart, via the CIEDE2000 floor', () => {
+    // Two near-black clusters ~#010101 and ~#070707: ~0.10 apart in Oklab (well
+    // past the 0.03 Oklab floor, so the classic pass keeps them separate) but
+    // ~1.2 in CIEDE2000 (a fraction of a JND — the same ink). Six distinct
+    // shades (> k) force the k-means path.
+    const dark = [0, 1, 2]
+    const darker = [6, 7, 8]
+    const img = rasterOf(60, 20, (x) => {
+      const v = x < 30 ? dark[x % 3] : darker[x % 3]
+      return [v, v, v, 255]
+    })
+    const merged = quantize(img, { ...baseOpts, k: 2, seed: 1, autoK: true })
+    expect(merged.labels.count).toBe(1)
+    const plain = quantize(img, { ...baseOpts, k: 2, seed: 1 })
+    expect(plain.labels.count).toBe(2)
+  })
 })
 
 describe('quantize — fixed palette', () => {
