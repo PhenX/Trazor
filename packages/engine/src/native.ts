@@ -44,6 +44,7 @@ import {
   totalNodes,
 } from './trace'
 import {
+  absorbMixtureLabels,
   adaptiveBinarize,
   alphaCoverageField,
   bilateralFilter,
@@ -1018,6 +1019,25 @@ async function colorPipeline(
     // edge pixel is never moved; 0 rounds is byte-identical to the classic path.
     if (settings.dissolveBands > 0) {
       dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
+    }
+    // Dissolve labels that are anti-aliased blends of their two dominant
+    // neighbors — a rim color k-means handed its own centroid — splitting each
+    // back to the neighbor its coverage favors, before the size merge. A rim
+    // ink is a color phenomenon (an invented hue where two distinct fills meet);
+    // grayscale mode's neighboring tones are legitimate tonal steps, not
+    // mixtures, so the pass is color-only. Also skipped with a fixed palette
+    // (the user's exact colors), in pixel mode (exact lattice), under an edge
+    // hint (a predicted boundary is never moved), and when gradients are on (a
+    // smooth ramp's own bands read as blends, and the gradient fitter — not this
+    // pass — turns them into a gradient).
+    if (
+      settings.mode === 'color' &&
+      settings.palette === null &&
+      settings.curveMode !== 'pixel' &&
+      protect === null &&
+      !settings.gradients
+    ) {
+      absorbMixtureLabels(image, q.labels, q.paletteRgb)
     }
     // `protect` (hoisted above) lets an edge hint keep small regions on a
     // predicted boundary; with no hint this is byte-identical to the plain merge.
