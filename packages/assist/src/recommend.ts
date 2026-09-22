@@ -46,6 +46,25 @@ const FLAT_ART_MIN_DENSITY = 0.15
 const COLORED_FRACTION_MIN = 0.05
 
 /**
+ * Flat area in a third tone above which two-tone art is not bilevel: a gray
+ * fill inside a black outline is three inks, and a hard threshold would keep
+ * only one of them.
+ */
+const MINOR_TONES_MAX = 0.005
+
+/**
+ * Translucent interior (`translucentArea`) up to which an image's partial alpha
+ * is anti-aliased edge coverage, so the transparency cut sits at half coverage
+ * — the true outline of every anti-aliased edge. Past it the image carries
+ * soft, see-through content (shadows, glass, steam) that a half-coverage cut
+ * would drop outright, so the default faint-pixel cut stands.
+ */
+const TRANSLUCENT_MAX = 0.02
+
+/** Alpha of half coverage: the outline of an anti-aliased edge against transparency. */
+const EDGE_ALPHA_THRESHOLD = 128
+
+/**
  * Gray levels for a tonal ink scan traced as grayscale. Few enough that the
  * paper's JPEG texture posterizes into one background level instead of thousands
  * of speck regions, enough to separate paper, faint construction lines, mid-tone
@@ -138,7 +157,12 @@ function isAchromatic(a: ImageAnalysis): boolean {
  * threshold reproduces it exactly, so it is traced as black & white.
  */
 function isBilevelInk(a: ImageAnalysis): boolean {
-  return a.twoToneCoverage > 0.92 && a.contrast > 0.25 && isAchromatic(a)
+  return (
+    a.twoToneCoverage > 0.92 &&
+    a.contrast > 0.25 &&
+    a.minorTonesArea < MINOR_TONES_MAX &&
+    isAchromatic(a)
+  )
 }
 
 /**
@@ -197,6 +221,27 @@ export function recommendSettings(
   if (a.hasAlpha) {
     patch.background = 'transparent'
     r.add('alpha', 'Transparent pixels found — they will produce no shapes.')
+    if (a.translucentArea <= TRANSLUCENT_MAX) {
+      patch.alphaThreshold = EDGE_ALPHA_THRESHOLD
+      r.add(
+        'alphaEdge',
+        'Anti-aliased transparency — cutting at half coverage puts every edge on its true outline.',
+      )
+    }
+  }
+
+  // Clean two-tone flat art (an icon, a glyph, a stamp) has exact tones, so the
+  // threshold that splits them is their lightness midpoint — Otsu, made for a
+  // scan's histogram, has no reason to land there — and its ink is its own
+  // measured color, not black.
+  if (patch.mode === 'bw' && isCleanFlatArt(a) && isBilevelInk(a)) {
+    patch.thresholdMode = 'fixed'
+    patch.threshold = clampInt(Math.round((255 * (a.inkLightness + a.paperLightness)) / 2), 1, 254)
+    patch.fillColor = a.inkHex
+    r.add(
+      'flatInk',
+      'Clean two-tone art — threshold set midway between its two tones, ink painted in its measured color.',
+    )
   }
 
   if (profileId === 'pixel-art') {
