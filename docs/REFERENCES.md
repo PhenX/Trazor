@@ -58,6 +58,16 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Björn Ottosson, “A perceptual color space for image processing” (Oklab), 2020.** <https://bottosson.github.io/posts/oklab/>
   All perceptual color math: clustering distances, palette merging, ΔE
   fidelity scoring (`packages/core/src/color.ts`).
+- **Gaurav Sharma, Wencheng Wu & Edul N. Dalal, “The CIEDE2000 color-difference
+  formula: implementation notes, supplementary test data, and mathematical
+  observations”, _Color Research & Application_ 30(1), 2005.** The CIEDE2000
+  color difference and the sRGB→CIELAB (D65) conversion it runs on
+  (`ciede2000`, `rgbToLab` in `packages/core/src/color.ts`), verified against
+  the paper's published test pairs. Used as the perceptually even “same ink”
+  floor (ΔE₀₀ 1.5) in autoK's near-duplicate merge
+  (`packages/raster/src/quantize.ts`), where Oklab distance is too strict near
+  black and too loose in saturated hues, and as the eval harness's ΔE₀₀ metric
+  (`scripts/eval/inkvec-compare.ts`).
 - **Stuart P. Lloyd, “Least squares quantization in PCM”, _IEEE Trans.
   Information Theory_ 28(2), 1982.** The assign/update iterations the k-means
   refinement runs after seeding (`packages/raster/src/quantize.ts`).

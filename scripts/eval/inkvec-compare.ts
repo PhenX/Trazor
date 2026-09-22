@@ -39,7 +39,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, extname, join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { analyzeImage, recommendSettings } from '@trazor/assist'
-import { DEFAULT_SETTINGS, getProfile, normalizeSettings, srgbToLinear } from '@trazor/core'
+import { ciede2000, DEFAULT_SETTINGS, getProfile, normalizeSettings, rgbToLab } from '@trazor/core'
 import type { ProfileId, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 import { analyzeSvg } from '@trazor/svg'
@@ -128,74 +128,7 @@ function parseArgs(argv: string[]): Args {
   return a
 }
 
-// ---- CIEDE2000 (Sharma, Wu & Dalal 2005), sRGB → CIELAB D65 ----
-
-function rgbToLab(r: number, g: number, b: number): [number, number, number] {
-  const lr = srgbToLinear(r)
-  const lg = srgbToLinear(g)
-  const lb = srgbToLinear(b)
-  const x = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / 0.95047
-  const y = 0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb
-  const z = (0.0193339 * lr + 0.119192 * lg + 0.9503041 * lb) / 1.08883
-  const f = (t: number): number => (t > 216 / 24389 ? Math.cbrt(t) : (841 / 108) * t + 4 / 29)
-  const fx = f(x)
-  const fy = f(y)
-  const fz = f(z)
-  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
-}
-
-function de00(L1: number, a1: number, b1: number, L2: number, a2: number, b2: number): number {
-  const rad = Math.PI / 180
-  const c1 = Math.hypot(a1, b1)
-  const c2 = Math.hypot(a2, b2)
-  const cm = (c1 + c2) / 2
-  const cm7 = cm ** 7
-  const G = 0.5 * (1 - Math.sqrt(cm7 / (cm7 + 25 ** 7)))
-  const ap1 = a1 * (1 + G)
-  const ap2 = a2 * (1 + G)
-  const cp1 = Math.hypot(ap1, b1)
-  const cp2 = Math.hypot(ap2, b2)
-  const hp = (a: number, b: number): number => {
-    if (a === 0 && b === 0) return 0
-    const h = Math.atan2(b, a) / rad
-    return h < 0 ? h + 360 : h
-  }
-  const hp1 = hp(ap1, b1)
-  const hp2 = hp(ap2, b2)
-  const dL = L2 - L1
-  const dC = cp2 - cp1
-  let dh = 0
-  if (cp1 * cp2 !== 0) {
-    dh = hp2 - hp1
-    if (dh > 180) dh -= 360
-    else if (dh < -180) dh += 360
-  }
-  const dH = 2 * Math.sqrt(cp1 * cp2) * Math.sin((dh / 2) * rad)
-  const Lm = (L1 + L2) / 2
-  const Cm = (cp1 + cp2) / 2
-  let Hm = hp1 + hp2
-  if (cp1 * cp2 !== 0) {
-    if (Math.abs(hp1 - hp2) > 180) Hm += hp1 + hp2 < 360 ? 360 : -360
-    Hm /= 2
-  }
-  const T =
-    1 -
-    0.17 * Math.cos((Hm - 30) * rad) +
-    0.24 * Math.cos(2 * Hm * rad) +
-    0.32 * Math.cos((3 * Hm + 6) * rad) -
-    0.2 * Math.cos((4 * Hm - 63) * rad)
-  const dTheta = 30 * Math.exp(-(((Hm - 275) / 25) ** 2))
-  const Cm7 = Cm ** 7
-  const Rc = 2 * Math.sqrt(Cm7 / (Cm7 + 25 ** 7))
-  const Sl = 1 + (0.015 * (Lm - 50) ** 2) / Math.sqrt(20 + (Lm - 50) ** 2)
-  const Sc = 1 + 0.045 * Cm
-  const Sh = 1 + 0.015 * Cm * T
-  const Rt = -Math.sin(2 * dTheta * rad) * Rc
-  const l = dL / Sl
-  const c = dC / Sc
-  const h = dH / Sh
-  return Math.sqrt(l * l + c * c + h * h + Rt * c * h)
-}
+// ---- CIEDE2000 (Sharma, Wu & Dalal 2005): @trazor/core `ciede2000`/`rgbToLab` ----
 
 /** Mean CIEDE2000 between two same-sized rasters (both opaque over white). */
 function meanDe00(a: RasterImage, b: RasterImage): number {
@@ -205,7 +138,7 @@ function meanDe00(a: RasterImage, b: RasterImage): number {
     const i = p * 4
     const [l1, a1, b1] = rgbToLab(a.data[i] / 255, a.data[i + 1] / 255, a.data[i + 2] / 255)
     const [l2, a2, b2] = rgbToLab(b.data[i] / 255, b.data[i + 1] / 255, b.data[i + 2] / 255)
-    sum += de00(l1, a1, b1, l2, a2, b2)
+    sum += ciede2000(l1, a1, b1, l2, a2, b2)
   }
   return n > 0 ? sum / n : 0
 }

@@ -63,6 +63,32 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — color (CIEDE2000)
+
+```ts
+// color.ts — sRGB→CIELAB (D65) and the CIEDE2000 difference (Sharma, Wu & Dalal
+// 2005), alongside the existing Oklab helpers. Components r,g,b in [0,1]; Lab
+// L* in [0,100]. `ciede2000Rgb` is the byte-triple convenience used by the
+// palette "same ink" floor.
+export function rgbToLab(r: number, g: number, b: number): [number, number, number]
+export function ciede2000(
+  L1: number,
+  a1: number,
+  b1: number,
+  L2: number,
+  a2: number,
+  b2: number,
+): number
+export function ciede2000Rgb(
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number,
+): number
+```
+
 ## @trazor/core — gradient paint model
 
 ```ts
