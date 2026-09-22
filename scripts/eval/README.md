@@ -246,5 +246,16 @@ npm run eval:inkvec -- --data <icons-dir> --inkvec /path/to/inkvec --json report
 npm run eval:inkvec -- --data <icons-dir> --reuse --set alphaThreshold=128   # reuse cached inkvec SVGs, sweep a setting
 ```
 
-The corpus is not committed: point `--data` at PNGs rendered from open icon sets (Lucide, Material, Simple Icons,
-Noto, Twemoji, OpenMoji, Fluent) with a `families.json` tag map and the source SVGs under `truth/`.
+The corpus is not committed (the sets' licenses vary): `inkvec-corpus.mjs` builds it from a checkout of inkvec's own
+benchmark data — the same 38 icons at 512 px and 50 at 128 px every measurement runs on, each set's own 128 px
+render where inkvec ships it and the source SVG rendered with resvg otherwise, with the `families.json` tag map and the
+source SVGs under `truth/`:
+
+```bash
+git clone --depth 1 https://github.com/logolabs/inkvec /tmp/inkvec && (cd /tmp/inkvec && cargo build --release)
+node scripts/eval/inkvec-corpus.mjs --inkvec /tmp/inkvec        # → eval-artifacts/corpus-inkvec/{512,128}
+npm run eval:inkvec -- --data eval-artifacts/corpus-inkvec/512 --inkvec /tmp/inkvec/target/release/inkvec
+```
+
+The 128 px tier is byte-identical to the study's corpus; the 512 px renders can differ from it by encoder rounding, so
+compare against a baseline built the same way rather than against the numbers in `INKVEC_COMPARISON.md`.
