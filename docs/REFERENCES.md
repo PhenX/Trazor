@@ -203,6 +203,17 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   win came from palette budgeting instead (`packages/assist/src/recommend.ts`).
   Informed the stacked/cutout layering vocabulary; cutouts use the shared
   boundary-graph approach for seam-freedom.
+- **logolabs, “inkvec” (software), Apache-2.0.** <https://github.com/logolabs/inkvec>
+  — a Rust icon/logo vectorizer built around coverage rather than pixels: the
+  coverage of an anti-aliased pixel is inverted from its color, alpha is
+  coverage, edges are refined against exact half-plane coverage, and curves are
+  fitted by a multi-model (line / arc / cubic / ellipse) dynamic program priced
+  by description length. Used as the measured icon benchmark oracle
+  (`scripts/eval/inkvec-compare.ts`; the comparison in
+  [`INKVEC_COMPARISON.md`](INKVEC_COMPARISON.md)). Its coverage model informed
+  the transparency coverage field (`alphaCoverageField`), the stacked-layer
+  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion) and the
+  interior palette read (`interiorPaletteColors`); no code was taken.
 - **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
   Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
   <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,
