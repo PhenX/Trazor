@@ -12,7 +12,7 @@ import type {
   BoundaryChain,
   ChainNetwork,
   CrackPath,
-  FlatPoints,
+  RingFit,
   SignedField,
   TraceCurveOptions,
   TraceCutoutOptions,
@@ -73,7 +73,7 @@ interface StackState {
   mask: BinaryMask
   flood: Int32Array
   /** Per layer index: its decomposed rings and their adjusted polygons. */
-  layers: Map<number, { paths: CrackPath[]; polygons?: (FlatPoints | null)[] }>
+  layers: Map<number, { paths: CrackPath[]; polygons?: (RingFit | null)[] }>
 }
 
 /** The bw mask's rings, with each one's adjusted polygon once built. */
@@ -83,7 +83,7 @@ interface RingState {
   local: Map<number, number>
   coverage?: GrayImage
   /** Local ring index ⇒ its adjusted polygon (`null` for a ring too short). */
-  polygons: (FlatPoints | null | undefined)[]
+  polygons: (RingFit | null | undefined)[]
 }
 
 /** One helper's share of the boundary chain network (cutout). */
@@ -313,7 +313,7 @@ export function installHelperHandler(scope: WorkerScope): void {
     if (!st) throw new Error('helper: no rings for trace-rings')
     const local = st.local.get(unit)
     if (local === undefined) throw new Error(`helper: ring ${unit} not held`)
-    let polygon: FlatPoints | null = null
+    let polygon: RingFit | null = null
     if (curve.curveMode !== 'pixel') {
       const held = st.polygons[local]
       polygon = held === undefined ? ringPolygon(runAt(st.msg.rings, local), st.coverage) : held

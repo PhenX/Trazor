@@ -22,7 +22,24 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Curves”, in _Graphics Gems_, Academic Press, 1990.**
   Least-squares cubic Bézier fitting with iterative reparameterization
   (Newton-Raphson) and recursive splitting at max-error points. Used for open
-  polylines (centerline strokes) in `packages/trace/src/fit.ts`.
+  polylines (centerline strokes) in `packages/trace/src/fit.ts` and for the
+  per-run cubic of the multi-model fitter (`packages/trace/src/potrace/runfit.ts`).
+- **logolabs, “inkvec” — curve fitting (Apache-2.0), and Raph Levien’s `kurbo`
+  cubic fitter it builds on.** <https://github.com/logolabs/inkvec>
+  (`crates/inkvec-fit/multimodel.rs`, `curves.rs`, `docs/algorithm/11-fitting.md`).
+  The measured boundary is described by the fewest lines, circular arcs and
+  cubics under a minimum-description-length objective (`cost = 0.5·χ² +
+λ·params`, `λ = ln(extent/precision) ≈ 8.5`), fitting the curve to the points
+  rather than to the polygon’s chords so it carries none of the Selinger chain’s
+  circumscribe/inscribe bias. `packages/trace/src/potrace/runfit.ts` implements a
+  browser-fast form of this: the optimal polygon (Selinger §2.2) supplies the
+  segmentation and corners, and each smooth run is fitted and its polygon edges
+  merged linearly — not inkvec’s O(n²) per-vertex dynamic program (`fit_dp`).
+- **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
+  Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
+  for emitting a fitted circular arc as ≤90° circle-exact cubics
+  (`packages/trace/src/potrace/runfit.ts`), which `@trazor/svg`’s `fitArcs` can
+  later collapse to `A` commands.
 - **David Douglas & Thomas Peucker, “Algorithms for the reduction of the number
   of points required to represent a digitized line or its caricature”,
   _Cartographica_ 10(2), 1973.** Polyline simplification used for open paths
@@ -40,8 +57,10 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **I. Kåsa, “A circle fitting procedure and its error analysis”, _IEEE Trans.
   Instrumentation and Measurement_ 25(1), 1976.** Algebraic least-squares circle
   fit; recovers an unbiased center/radius from unevenly-spaced boundary samples
-  for `<circle>` primitive recognition (`packages/svg/src/fit.ts`) and for
-  collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`).
+  for `<circle>` primitive recognition (`packages/svg/src/fit.ts`), for
+  collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`),
+  and for the arc model of the multi-model run fitter
+  (`packages/trace/src/potrace/runfit.ts`).
 - **Andrew Fitzgibbon, Maurizio Pilu & Robert Fisher, “Direct least square
   fitting of ellipses”, _IEEE Trans. PAMI_ 21(5), 1999.** Direct conic ellipse
   fit (smallest-eigenvector of the design scatter). Used, with the points

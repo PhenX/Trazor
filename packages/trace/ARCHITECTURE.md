@@ -20,8 +20,8 @@ src/
     sums.ts       prefix moments; chord penalty; best-fit line; quadratic forms
     polyfit.ts    straightness analysis + optimal-polygon dynamic program
     adjust.ts     least-squares vertex adjustment (constrained to the unit square)
-    smooth.ts     corner analysis (alphamax) → corners vs smooth cubic pieces
-    opticurve.ts  curve-run optimization (merge adjacent cubics within tolerance)
+    smooth.ts     corner analysis (alphamax) → corners vs smooth vertices
+    runfit.ts     multi-model run fit: line / circular arc / G1 cubic per run, merged by MDL
 ```
 
 ## Three entry points
@@ -49,22 +49,29 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
      border are left on the lattice.
 3. **Vertex adjustment** (`adjust.ts`, §2.3.1) — move each polygon vertex to the least-squares intersection of its two
    incident edge lines, constrained to the unit square around the (possibly refined) vertex.
-4. **Corner analysis + smoothing** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides
-   corner vs smooth at each vertex; smooth vertices become cubic pieces through the edge midpoints. When a
-   `cornerThreshold` is supplied it refines that call to be angle- and scale-aware: a vertex whose shorter incident edge is
-   sub-pixel is never a corner (staircase/aliasing jags stay smooth), a genuinely sharp interior angle is always a corner,
-   and the α metric governs only the shallow middle. Omitting it is byte-identical to the pure α behavior.
-5. **Curve optimization** (`opticurve.ts`, §2.4) — merge runs of adjacent cubics into one while it stays within
-   `optTolerance`, keeping node counts low.
+4. **Corner analysis** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides corner vs
+   smooth at each vertex. When a `cornerThreshold` is supplied it refines that call to be angle- and scale-aware: a vertex
+   whose shorter incident edge is sub-pixel is never a corner (staircase/aliasing jags stay smooth), a genuinely sharp
+   interior angle is always a corner, and the α metric governs only the shallow middle. Omitting it is byte-identical to
+   the pure α behavior. (`cornerAt` exposes this decision to the run fitter.)
+5. **Multi-model run fitting** (`runfit.ts`) — each smooth run between two corners is fitted directly to the refined ring
+   points (not the polygon's chords, so none of Selinger's circumscribe-at-vertices / inscribe-at-curves bias), choosing
+   per run a line, a circular arc or a G1 cubic and merging adjacent polygon edges by description length
+   (`0.5·χ² + λ·params`, λ ≈ 8.5 — inkvec's objective). Merges never break below a polygon vertex, so a jittery straight
+   edge stays one line and segment counts stay bounded; a wholly-smooth ring collapses to one circle where it fits.
+   Straight runs come out as lines, circular runs as circle-exact cubics that `@trazor/svg`'s `fitArcs` recovers as `A`
+   arcs. `curveOptimize` sets the merge reach (off ⇒ more, shorter pieces).
 
-`curveMode` short-circuits this: `polygon` stops after step 3; `pixel` skips it entirely for exact rectilinear paths.
+`curveMode` short-circuits this: `polygon` stops after step 3 (emitting the adjusted polygon); `pixel` skips it entirely
+for exact rectilinear paths.
 
 The chain is exported in two halves, split where the curve settings first matter: **`ringPolygon(ring, field?)`** runs
-steps 2-3 (returning the adjusted polygon, or `null` for a ring too short to carry one) and depends on the ring and the
-optional field alone, while **`polygonToCommands(ring, polygon, opts)`** runs steps 4-5 under `smoothing`,
-`curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed; `shapesFromPaths`
-takes the polygons for a whole path array as an optional argument. Holding the polygons is what lets the engine's
-`StageCache` replay a smoothing change without re-running the straightness DP.
+steps 2-3 and returns a **`RingFit`** (the adjusted polygon for `polygon` mode and corner detection, the refined ring
+geometry the run fitter samples, and the segmentation vertex indices), or `null` for a ring too short to carry one; it
+depends on the ring and the optional field alone, while **`polygonToCommands(ring, fit, opts)`** runs steps 4-5 under
+`smoothing`, `curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed;
+`shapesFromPaths` takes the `RingFit`s for a whole path array as an optional argument. Holding them is what lets the
+engine's `StageCache` replay a smoothing change without re-running the straightness DP.
 
 ## The seam-free boundary graph (`boundary.ts`)
 

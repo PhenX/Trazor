@@ -117,9 +117,9 @@ describe('exterior edges against transparency', () => {
       mask.data[p] = alpha[p] >= 128 ? 1 : 0
     }
     const ring = decomposeMask(mask, 'minority', 1)[0].points
-    const lattice = polygonRadii(ringPolygon(ring) as number[])
+    const lattice = polygonRadii(ringPolygon(ring)?.polygon as number[])
     const refined = polygonRadii(
-      ringPolygon(ring, alphaCoverageField(alpha, 128, 128, 128)) as number[],
+      ringPolygon(ring, alphaCoverageField(alpha, 128, 128, 128))?.polygon as number[],
     )
     // The lattice polygon's vertices scatter around the circle by the staircase
     // (up to half a pixel); refined against the coverage they scatter less. Both
@@ -129,14 +129,14 @@ describe('exterior edges against transparency', () => {
   })
 
   for (const layering of ['stacked', 'cutout'] as const) {
-    it(`${layering}: traces a smooth outline at the half-coverage contour`, async () => {
+    it(`${layering}: traces the true circle with no chord bias`, async () => {
       const { mean, maxDev } = await radii(settings({ layering, alphaThreshold: 128 }))
-      // The curve stage passes inside the polygon's chords (Selinger's smoothing
-      // runs the curve through the edge midpoints), so a convex outline sits a
-      // fraction of a pixel inside the true circle; the refined outline is
-      // smooth about it.
-      expect(Math.abs(mean - R)).toBeLessThan(0.4)
-      expect(maxDev).toBeLessThan(0.7)
+      // The multi-model run fitter fits the refined ring points directly (not the
+      // polygon's chords), so the emitted curve carries none of the Selinger
+      // chain's circumscribe/inscribe bias: the outline sits on the true circle,
+      // not a fraction of a pixel inside it, and stays smooth about it.
+      expect(Math.abs(mean - R)).toBeLessThan(0.05)
+      expect(maxDev).toBeLessThan(0.2)
     })
 
     it(`${layering}: follows the cut level — a fainter cut traces a larger outline`, async () => {
@@ -145,4 +145,85 @@ describe('exterior edges against transparency', () => {
       expect(faint.mean).toBeGreaterThan(half.mean + 0.1)
     })
   }
+
+  it('lands an anti-aliased straight edge on its true sub-pixel line, as lines', async () => {
+    const result = await vectorize(
+      coverageRect(EDGE_X),
+      settings({ alphaThreshold: 128 }),
+      undefined,
+      {
+        withDocument: true,
+      },
+    )
+    const shape = (result.document?.shapes ?? [])[0]
+    expect(shape).toBeDefined()
+    const cmds = shape.commands
+    const xs = cmds
+      .filter((c): c is Extract<PathCommand, { x: number }> => 'x' in c)
+      .map((c) => c.x)
+    // The left face is the anti-aliased edge; its anchors track the true line.
+    const left = Math.min(...xs)
+    expect(Math.abs(left - EDGE_X)).toBeLessThan(0.1)
+    // A straight edge is emitted as straight lines, never cubics.
+    expect(cmds.some((c) => c.type === 'C')).toBe(false)
+  })
+
+  it('keeps a coverage-exact acute tip sharp, not rounded away', async () => {
+    const result = await vectorize(coverageWedge(), settings({ alphaThreshold: 128 }), undefined, {
+      withDocument: true,
+    })
+    const shape = (result.document?.shapes ?? [])[0]
+    expect(shape).toBeDefined()
+    const pts = outline(shape.commands)
+    // An anchor sits near the true apex — the sharp tip survives (an acute tip's
+    // exact position is inherently soft in the coverage, so the bound is loose).
+    const nearTip = pts.reduce(
+      (m, [x, y]) => Math.min(m, Math.hypot(x - TIP_X, y - TIP_Y)),
+      Infinity,
+    )
+    expect(nearTip).toBeLessThan(2)
+  })
 })
+
+const EDGE_X = 40.3
+
+/** A vertical anti-aliased edge at `edgeX`: opaque to the right, transparent left. */
+function coverageRect(edgeX: number): RasterImage {
+  const img = createRaster(96, 64)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 96; x++) {
+      // Fraction of the pixel column to the right of the edge (and left of x=80).
+      const cov = Math.max(0, Math.min(1, x + 1 - edgeX)) * (x < 80 ? 1 : Math.max(0, 80 - x))
+      if (cov > 0 && y > 8 && y < 56) setPixel(img, x, y, 200, 40, 50, Math.round(cov * 255))
+    }
+  }
+  return img
+}
+
+const TIP_X = 88
+const TIP_Y = 32
+
+/** A coverage-exact triangle with a sharp acute tip at (TIP_X, TIP_Y). */
+function coverageWedge(): RasterImage {
+  const img = createRaster(112, 64)
+  fillRaster(img, 0, 0, 0, 0)
+  const sub = 8
+  const ax = 16
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 112; x++) {
+      let covered = 0
+      for (let sy = 0; sy < sub; sy++) {
+        for (let sx = 0; sx < sub; sx++) {
+          const px = x + (sx + 0.5) / sub
+          const py = y + (sy + 0.5) / sub
+          // Triangle (ax, 12)–(ax, 52)–(TIP_X, TIP_Y): a slender wedge.
+          const t = (px - ax) / (TIP_X - ax)
+          if (px >= ax && px <= TIP_X && Math.abs(py - TIP_Y) <= (1 - t) * 20) covered++
+        }
+      }
+      if (covered > 0) setPixel(img, x, y, 200, 40, 50, Math.round((covered * 255) / (sub * sub)))
+    }
+  }
+  return img
+}

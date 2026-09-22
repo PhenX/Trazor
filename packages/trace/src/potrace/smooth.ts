@@ -1,5 +1,4 @@
 import { interiorAngleDeg } from '@trazor/core'
-import type { FlatPoints } from '../paths'
 
 /**
  * Below this incident-edge length (px) a vertex is pixel-scale noise — a
@@ -9,37 +8,14 @@ import type { FlatPoints } from '../paths'
 const MIN_CORNER_EDGE = 1.5
 
 /**
- * One piece of the smoothed outline, spanning from the previous segment's end
- * anchor to `ex,ey` (the midpoint of the edge after this vertex, or the exact
- * chain endpoint). Corners route through the vertex with two straight lines.
+ * Whether polygon vertex b (between neighbors a and c) is a corner, under the
+ * α / cornerThreshold rule (Selinger 2003 §2.3.2). The smoothness α is derived
+ * from how far b sticks out of the chord a–c; α ≥ alphamax keeps a corner.
+ * Exposed so the multi-model run fitter partitions a ring at exactly the corners
+ * Selinger's smoothing would keep, so `smoothing` (alphamax) and
+ * `cornerThreshold` retain their meaning.
  */
-export interface CurvePiece {
-  corner: boolean
-  /** Vertex position (corner routing point). */
-  vx: number
-  vy: number
-  /** Cubic controls (curve pieces only). */
-  c1x: number
-  c1y: number
-  c2x: number
-  c2y: number
-  /** End anchor of this piece. */
-  ex: number
-  ey: number
-}
-
-/**
- * Corner analysis and curve generation (Selinger 2003, §2.3.2). For each
- * vertex b between neighbors a and c the smoothness α is derived from how far
- * b sticks out of the chord a–c; α ≥ alphamax keeps a sharp corner, smaller α
- * produces a cubic through the two adjacent edge midpoints with controls
- * sliding from the midpoints toward b.
- *
- * When `cornerThreshold` (interior angle, degrees) is supplied the corner
- * decision is additionally angle- and scale-aware: pixel-scale jags are never
- * corners and a genuinely sharp turn always is (see `isCorner`).
- */
-export function smoothVertex(
+export function cornerAt(
   ax: number,
   ay: number,
   bx: number,
@@ -48,7 +24,7 @@ export function smoothVertex(
   cy: number,
   alphamax: number,
   cornerThreshold?: number,
-): CurvePiece {
+): boolean {
   const denom = Math.abs(cx - ax) + Math.abs(cy - ay)
   let alpha: number
   if (denom !== 0) {
@@ -59,28 +35,7 @@ export function smoothVertex(
   } else {
     alpha = 4 / 3
   }
-
-  const zax = (ax + bx) / 2
-  const zay = (ay + by) / 2
-  const zcx = (bx + cx) / 2
-  const zcy = (by + cy) / 2
-
-  if (isCorner(alpha, alphamax, ax, ay, bx, by, cx, cy, cornerThreshold)) {
-    return { corner: true, vx: bx, vy: by, c1x: 0, c1y: 0, c2x: 0, c2y: 0, ex: zcx, ey: zcy }
-  }
-
-  const a = alpha < 0.55 ? 0.55 : alpha > 1 ? 1 : alpha
-  return {
-    corner: false,
-    vx: bx,
-    vy: by,
-    c1x: zax + a * (bx - zax),
-    c1y: zay + a * (by - zay),
-    c2x: zcx + a * (bx - zcx),
-    c2y: zcy + a * (by - zcy),
-    ex: zcx,
-    ey: zcy,
-  }
+  return isCorner(alpha, alphamax, ax, ay, bx, by, cx, cy, cornerThreshold)
 }
 
 /**
@@ -109,62 +64,4 @@ function isCorner(
   if (shortEdge < MIN_CORNER_EDGE) return false
   if (interiorAngleDeg(ax, ay, bx, by, cx, cy) < cornerThreshold) return true
   return alpha >= alphamax
-}
-
-/**
- * Smooth a closed vertex ring. `vertices` is a flat ring WITHOUT the duplicate
- * end point. Returns the pieces in vertex order; piece i spans mid(v[i-1],v[i])
- * → mid(v[i],v[i+1]).
- */
-export function smoothClosed(
-  vertices: FlatPoints,
-  alphamax: number,
-  cornerThreshold?: number,
-): CurvePiece[] {
-  const m = vertices.length >> 1
-  const pieces: CurvePiece[] = new Array(m)
-  for (let i = 0; i < m; i++) {
-    const ip = (i + m - 1) % m
-    const inx = (i + 1) % m
-    pieces[i] = smoothVertex(
-      vertices[ip * 2],
-      vertices[ip * 2 + 1],
-      vertices[i * 2],
-      vertices[i * 2 + 1],
-      vertices[inx * 2],
-      vertices[inx * 2 + 1],
-      alphamax,
-      cornerThreshold,
-    )
-  }
-  return pieces
-}
-
-/**
- * Smooth an open chain with exact endpoints. Returns interior pieces only
- * (vertices 1..m-2); the caller connects v0 → mid(v0,v1) and
- * mid(v[m-2],v[m-1]) → v[m-1] with straight lines.
- */
-export function smoothOpen(
-  vertices: FlatPoints,
-  alphamax: number,
-  cornerThreshold?: number,
-): CurvePiece[] {
-  const m = vertices.length >> 1
-  const pieces: CurvePiece[] = []
-  for (let i = 1; i < m - 1; i++) {
-    pieces.push(
-      smoothVertex(
-        vertices[(i - 1) * 2],
-        vertices[(i - 1) * 2 + 1],
-        vertices[i * 2],
-        vertices[i * 2 + 1],
-        vertices[(i + 1) * 2],
-        vertices[(i + 1) * 2 + 1],
-        alphamax,
-        cornerThreshold,
-      ),
-    )
-  }
-  return pieces
 }

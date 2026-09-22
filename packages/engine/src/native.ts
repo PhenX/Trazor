@@ -87,7 +87,7 @@ import {
 import type {
   ChainFit,
   CrackPath,
-  FlatPoints,
+  RingFit,
   RegionShape,
   SignedField,
   TracedShape,
@@ -357,7 +357,7 @@ interface RingLayer {
 interface LayerRings {
   key: string
   layers: RingLayer[]
-  polygons?: (FlatPoints | null)[][]
+  polygons?: (RingFit | null)[][]
 }
 
 /**
@@ -373,7 +373,7 @@ interface InkEntry {
   coverage?: GrayImage
   ringKey?: string
   rings?: CrackPath[]
-  polygons?: (FlatPoints | null)[]
+  polygons?: (RingFit | null)[]
 }
 
 /**
@@ -1357,7 +1357,7 @@ async function colorPipeline(
     const paintLayer = (
       label: number,
       paths: CrackPath[],
-      polygons: (FlatPoints | null)[] | undefined,
+      polygons: (RingFit | null)[] | undefined,
     ): Promise<void> =>
       paintShapes(
         label,
@@ -1398,7 +1398,7 @@ async function colorPipeline(
         else cacheStats(cache!).polyMisses++
       }
       // Rings without polygons (a `pixel` run stored them): rebuild and keep them.
-      const rebuilt: (FlatPoints | null)[][] | undefined =
+      const rebuilt: (RingFit | null)[][] | undefined =
         wantPolygons && !cachedPolygons ? [] : undefined
       startLayers(cachedLayers.length)
       for (let i = 0; i < cachedLayers.length; i++) {
@@ -1419,8 +1419,7 @@ async function colorPipeline(
       }
       // Rings and polygons are retained only when there is a cache to hold them.
       const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
-      const polygonSets: (FlatPoints | null)[][] | undefined =
-        layers && wantPolygons ? [] : undefined
+      const polygonSets: (RingFit | null)[][] | undefined = layers && wantPolygons ? [] : undefined
       const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
       await decomposeStackedLayers(
         labels,
@@ -1457,7 +1456,7 @@ async function colorPipeline(
  * edges and the transparency coverage); without one they depend on the rings
  * alone.
  */
-function layerPolygons(paths: CrackPath[], field?: SignedField): (FlatPoints | null)[] {
+function layerPolygons(paths: CrackPath[], field?: SignedField): (RingFit | null)[] {
   return paths.map((p) => ringPolygon(p.points, field))
 }
 
@@ -1890,7 +1889,7 @@ async function inkPipeline(
     // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
     const wantPolygons = settings.curveMode !== 'pixel'
     let paths: CrackPath[]
-    let polygons: (FlatPoints | null)[] | undefined
+    let polygons: (RingFit | null)[] | undefined
     if (entry?.rings && entry.ringKey === ringKey) {
       paths = entry.rings
       polygons = wantPolygons ? entry.polygons : undefined

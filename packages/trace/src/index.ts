@@ -6,7 +6,7 @@ export {
   polygonToCommands,
   pixelCommands,
 } from './closed'
-export type { TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
+export type { RingFit, TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
 export { assembleRegions, extractChains, fitChain, fitChains, traceLabelMap } from './boundary'
 export type {
   BoundaryChain,
