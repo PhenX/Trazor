@@ -24,17 +24,23 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (Newton-Raphson) and recursive splitting at max-error points. Used for open
   polylines (centerline strokes) in `packages/trace/src/fit.ts` and for the
   per-run cubic of the multi-model fitter (`packages/trace/src/potrace/runfit.ts`).
-- **logolabs, “inkvec” — curve fitting (Apache-2.0), and Raph Levien’s `kurbo`
-  cubic fitter it builds on.** <https://github.com/logolabs/inkvec>
-  (`crates/inkvec-fit/multimodel.rs`, `curves.rs`, `docs/algorithm/11-fitting.md`).
-  The measured boundary is described by the fewest lines, circular arcs and
-  cubics under a minimum-description-length objective (`cost = 0.5·χ² +
-λ·params`, `λ = ln(extent/precision) ≈ 8.5`), fitting the curve to the points
-  rather than to the polygon’s chords so it carries none of the Selinger chain’s
-  circumscribe/inscribe bias. `packages/trace/src/potrace/runfit.ts` implements a
-  browser-fast form of this: the optimal polygon (Selinger §2.2) supplies the
-  segmentation and corners, and each smooth run is fitted and its polygon edges
-  merged linearly — not inkvec’s O(n²) per-vertex dynamic program (`fit_dp`).
+- **logolabs, “inkvec” — curve fitting (stage 11, Apache-2.0), and Raph Levien’s
+  `kurbo` cubic fitter it builds on.** <https://github.com/logolabs/inkvec>
+  (`crates/inkvec-fit/{lib,multimodel,curves,merge,primitives}.rs`,
+  `docs/algorithm/11-fitting.md`). The measured boundary is described by the
+  fewest lines, circular arcs and cubics under a minimum-description-length
+  objective (`cost = 0.5·χ² + λ·params`, χ² the squared point-to-curve residuals
+  weighted by per-point `1/σ²`, `λ = ln(extent/precision) ≈ 8.5` at 512 px, a
+  span admissible only within `τ·σ`, `τ = 2`), a dynamic program picking the
+  segmentation and the per-span model jointly, then a `merge_free_cubics` pass —
+  fitting the curve to the points rather than to the polygon’s chords so it
+  carries none of the Selinger chain’s circumscribe/inscribe bias.
+  `packages/trace/src/potrace/runfit.ts` implements a browser-fast form: a
+  bounded DP over a candidate set (the optimal-polygon vertices of Selinger §2.2
+  as breakpoints, the discrete-curvature sign changes and a coarse stride inside
+  a long edge) rather than inkvec’s DP over every point, with the corner prior
+  from `smoothing`/`cornerThreshold`, an endpoint-pinned circle fit (so the arc
+  scored is the arc drawn) and a monotone-sweep gate on the arc.
 - **logolabs, “inkvec” — sub-pixel boundary refinement (stage 07, Apache-2.0).**
   <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/planar.rs`
   `refine_subpixel`/`edge_offset`, `docs/algorithm/07-subpixel.md`). Each boundary

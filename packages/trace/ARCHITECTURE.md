@@ -22,7 +22,8 @@ src/
     polyfit.ts    straightness analysis + optimal-polygon dynamic program
     adjust.ts     least-squares vertex adjustment (constrained to the unit square)
     smooth.ts     corner analysis (alphamax) → corners vs smooth vertices
-    runfit.ts     multi-model run fit: line / circular arc / G1 cubic per run, merged by MDL
+    runfit.ts     multi-model run fit: a bounded dynamic program over candidate breakpoints picks
+                  the segmentation and the per-span model (line / circular arc / G1 cubic) by MDL
 ```
 
 ## Three entry points
@@ -59,20 +60,29 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    whose shorter incident edge is sub-pixel is never a corner (staircase/aliasing jags stay smooth), a genuinely sharp
    interior angle is always a corner, and the α metric governs only the shallow middle. Omitting it is byte-identical to
    the pure α behavior. (`cornerAt` exposes this decision to the run fitter.)
-5. **Multi-model run fitting** (`runfit.ts`) — each smooth run between two corners is fitted directly to the refined ring
-   points (not the polygon's chords, so none of Selinger's circumscribe-at-vertices / inscribe-at-curves bias), choosing
-   per run a line, a circular arc or a G1 cubic and merging adjacent polygon edges by description length
-   (`0.5·χ² + λ·params`, λ ≈ 8.5 — inkvec's objective). Merges never break below a polygon vertex, so a jittery straight
-   edge stays one line and segment counts stay bounded; a wholly-smooth ring collapses to one circle where it fits.
-   Straight runs come out as lines, circular runs as circle-exact cubics that `@trazor/svg`'s `fitArcs` recovers as `A`
-   arcs. `curveOptimize` sets the merge reach (off ⇒ more, shorter pieces).
+5. **Multi-model run fitting** (`runfit.ts`) — a bounded dynamic program fits each smooth run between two corners
+   directly to the refined ring points (not the polygon's chords, so none of Selinger's circumscribe-at-vertices /
+   inscribe-at-curves bias). This ports inkvec's stage 11 (`crates/inkvec-fit/{multimodel,curves,merge}.rs`) in a
+   browser-fast form: rather than inkvec's DP over every point, the DP runs over a bounded candidate set — the
+   optimal-polygon vertices (Selinger §2.2) as breakpoints, the discrete-curvature sign changes and a coarse stride inside
+   a long polygon edge — and over the O(k²) spans of that candidate graph picks the segmentation and the per-span model
+   (line / circular arc / G1 cubic) jointly under `0.5·χ² + λ·params` (χ² weighted by per-point `1/σ²`, `λ = ln(extent /
+precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective).
+   `σ` is small where a sample was snapped onto the sub-pixel edge, ½ px where it stayed on the lattice; a corner is a
+   forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A rounded corner the polygon split
+   into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
+   line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a
+   wholly-smooth ring collapses to one circle where it fits. Circular runs are emitted as circle-exact cubics that
+   `@trazor/svg`'s `fitArcs` recovers as `A` arcs. `curveOptimize` sets the DP reach and candidate stride (off ⇒ shorter,
+   greedier pieces).
 
 `curveMode` short-circuits this: `polygon` stops after step 3 (emitting the adjusted polygon); `pixel` skips it entirely
 for exact rectilinear paths.
 
 The chain is exported in two halves, split where the curve settings first matter: **`ringPolygon(ring, field?)`** runs
 steps 2-3 and returns a **`RingFit`** (the adjusted polygon for `polygon` mode and corner detection, the refined ring
-geometry the run fitter samples, and the segmentation vertex indices), or `null` for a ring too short to carry one; it
+geometry the run fitter samples with its per-point σ, and the segmentation vertex indices), or `null` for a ring too
+short to carry one; it
 depends on the ring and the optional field alone, while **`polygonToCommands(ring, fit, opts)`** runs steps 4-5 under
 `smoothing`, `curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed;
 `shapesFromPaths` takes the `RingFit`s for a whole path array as an optional argument. Holding them is what lets the
