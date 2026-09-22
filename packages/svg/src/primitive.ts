@@ -462,14 +462,27 @@ function detectRegularPolygon(
   const m = px.length
   if (m < 24) return null
 
+  // The polar anchor is the outline's area centroid (shoelace), which is the
+  // exact center of any regular figure. The mean of the samples is not: the
+  // outline is sampled per segment, so long edges and tight corners weight it
+  // unevenly, and a star's anchor drifts toward its denser side.
   let sumX = 0
   let sumY = 0
+  let cross = 0
+  let momentX = 0
+  let momentY = 0
   for (let i = 0; i < m; i++) {
+    const j = i + 1 < m ? i + 1 : 0
+    const c = px[i] * py[j] - px[j] * py[i]
+    cross += c
+    momentX += (px[i] + px[j]) * c
+    momentY += (py[i] + py[j]) * c
     sumX += px[i]
     sumY += py[i]
   }
-  const cx = sumX / m
-  const cy = sumY / m
+  const degenerate = Math.abs(cross) < 1e-6
+  const cx = degenerate ? sumX / m : momentX / (3 * cross)
+  const cy = degenerate ? sumY / m : momentY / (3 * cross)
 
   // Polar coordinates about the centroid, plus the outline's own bounding box.
   const rad = new Float64Array(m)

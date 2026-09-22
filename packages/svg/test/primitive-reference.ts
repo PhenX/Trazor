@@ -360,8 +360,21 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
   const pts = denseOutline(start, ops)
   if (pts.length < 24) return null
 
-  const cx = mean(pts.map((p) => p.x))
-  const cy = mean(pts.map((p) => p.y))
+  // Area centroid (shoelace): the exact center of a regular figure, unlike the
+  // sample mean, which the per-segment sampling weights unevenly.
+  let cross = 0
+  let momentX = 0
+  let momentY = 0
+  for (let i = 0; i < pts.length; i++) {
+    const q = pts[i + 1 < pts.length ? i + 1 : 0]
+    const c = pts[i].x * q.y - q.x * pts[i].y
+    cross += c
+    momentX += (pts[i].x + q.x) * c
+    momentY += (pts[i].y + q.y) * c
+  }
+  const degenerate = Math.abs(cross) < 1e-6
+  const cx = degenerate ? mean(pts.map((p) => p.x)) : momentX / (3 * cross)
+  const cy = degenerate ? mean(pts.map((p) => p.y)) : momentY / (3 * cross)
   const rad = pts.map((p) => Math.hypot(p.x - cx, p.y - cy))
   const ang = pts.map((p) => Math.atan2(p.y - cy, p.x - cx))
   const rMax = Math.max(...rad)
