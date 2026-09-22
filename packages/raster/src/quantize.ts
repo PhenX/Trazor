@@ -10,7 +10,15 @@
  *
  * Everything is deterministic for a given input and seed.
  */
-import { clampInt, hexToRgb, mulberry32, rgbToHex, rgbToOklab } from '@trazor/core'
+import {
+  ciede2000,
+  clampInt,
+  hexToRgb,
+  mulberry32,
+  rgbToHex,
+  rgbToLab,
+  rgbToOklab,
+} from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 
@@ -33,7 +41,10 @@ export interface QuantizeOptions {
    * (byte-identical to sampling all in-mask pixels).
    */
   sampleMask?: BinaryMask | null
-  /** Merge near-duplicate centroids (Oklab distance < 0.03) after k-means. */
+  /**
+   * Merge near-duplicate centroids after k-means: pairs within 0.03 Oklab or
+   * within CIEDE2000 1.5 (the perceptually even "same ink" floor) fold together.
+   */
   autoK?: boolean
   /**
    * Non-empty ⇒ skip clustering: the palette is exactly these '#rrggbb'
@@ -55,6 +66,19 @@ export interface QuantizeResult {
 
 /** Oklab distance below which `autoK` merges two centroids. */
 const MERGE_DIST = 0.03
+
+/**
+ * CIEDE2000 ΔE₀₀ below which `autoK` treats two centroids as the same ink
+ * (inkvec's `SAME_INK_DE00`). Oklab distance is far stricter than a
+ * just-noticeable difference near black — where a #000 outline and a #0a0a0a
+ * fill sit ~0.15 apart in Oklab yet a fraction of a JND apart perceptually — and
+ * looser in saturated hues, so the pure-Oklab floor leaves near-neutral
+ * duplicates and dark rim rings as their own inks (invented seam hues). The
+ * perceptually even ΔE₀₀ floor folds those together. A pair merges when it is
+ * within this floor OR within {@link MERGE_DIST} in Oklab, so the classic
+ * Oklab merge is never undone — only extended where Oklab is too strict.
+ */
+const MERGE_DE00 = 1.5
 
 // ---- hue-flip guard (Oklab k-means labeling) ----
 // A diverging ramp (red→white→blue) crosses through neutral, where k-means
@@ -554,10 +578,20 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
     fullCounts = fullCounts.slice(0, m)
   }
 
-  // autoK: greedily merge centroid pairs closer than MERGE_DIST in Oklab.
+  // autoK: greedily fold near-duplicate centroids together in two phases. The
+  // first merges the closest pair within MERGE_DIST in Oklab (the classic pass,
+  // unchanged). The second then folds any remaining pair within MERGE_DE00 in
+  // CIEDE2000 — the perceptually even "same ink" floor that catches the
+  // near-black and near-neutral duplicates Oklab holds apart (a #0a0a0a fill by
+  // a #000 outline, a dark rim ring). The Oklab pass runs to completion first,
+  // so an image the ΔE₀₀ floor finds nothing new in is byte-identical to the
+  // pure-Oklab merge; the floor only ever adds merges, never reorders them.
   if (opts.autoK === true && m > 1) {
     const lab = new Float64Array(m * 3)
-    for (let c = 0; c < m; c++) {
+    // CIELAB of each centroid's exact mean RGB (its output color), for the ΔE₀₀
+    // "same ink" test; kept in sync with rgbSums as centroids merge.
+    const labD = new Float64Array(m * 3)
+    const setOklab = (c: number): void => {
       if (useOklab) {
         lab[c * 3] = cent[c * 3]
         lab[c * 3 + 1] = cent[c * 3 + 1]
@@ -569,10 +603,43 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
         lab[c * 3 + 2] = B
       }
     }
+    const setCielab = (c: number): void => {
+      const inv = 1 / fullCounts[c]
+      const [L, A, B] = rgbToLab(
+        (rgbSums[c * 3] * inv) / 255,
+        (rgbSums[c * 3 + 1] * inv) / 255,
+        (rgbSums[c * 3 + 2] * inv) / 255,
+      )
+      labD[c * 3] = L
+      labD[c * 3 + 1] = A
+      labD[c * 3 + 2] = B
+    }
+    for (let c = 0; c < m; c++) {
+      setOklab(c)
+      setCielab(c)
+    }
     const alive = new Uint8Array(m).fill(1)
     const parent = new Int32Array(m)
     for (let c = 0; c < m; c++) parent[c] = c
     const limit = MERGE_DIST * MERGE_DIST
+    const mergeInto = (bi: number, bj: number): void => {
+      // Count-weighted average in the working color space.
+      const wi = fullCounts[bi]
+      const wj = fullCounts[bj]
+      const wt = wi + wj
+      cent[bi * 3] = (cent[bi * 3] * wi + cent[bj * 3] * wj) / wt
+      cent[bi * 3 + 1] = (cent[bi * 3 + 1] * wi + cent[bj * 3 + 1] * wj) / wt
+      cent[bi * 3 + 2] = (cent[bi * 3 + 2] * wi + cent[bj * 3 + 2] * wj) / wt
+      rgbSums[bi * 3] += rgbSums[bj * 3]
+      rgbSums[bi * 3 + 1] += rgbSums[bj * 3 + 1]
+      rgbSums[bi * 3 + 2] += rgbSums[bj * 3 + 2]
+      fullCounts[bi] = wt
+      alive[bj] = 0
+      parent[bj] = bi
+      setOklab(bi)
+      setCielab(bi)
+    }
+    // Phase 1: closest Oklab pair below the Oklab floor.
     for (;;) {
       let bi = -1
       let bj = -1
@@ -593,29 +660,34 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
         }
       }
       if (bi < 0 || bestD >= limit) break
-      // Merge bj into bi: count-weighted average in the working color space.
-      const wi = fullCounts[bi]
-      const wj = fullCounts[bj]
-      const wt = wi + wj
-      cent[bi * 3] = (cent[bi * 3] * wi + cent[bj * 3] * wj) / wt
-      cent[bi * 3 + 1] = (cent[bi * 3 + 1] * wi + cent[bj * 3 + 1] * wj) / wt
-      cent[bi * 3 + 2] = (cent[bi * 3 + 2] * wi + cent[bj * 3 + 2] * wj) / wt
-      rgbSums[bi * 3] += rgbSums[bj * 3]
-      rgbSums[bi * 3 + 1] += rgbSums[bj * 3 + 1]
-      rgbSums[bi * 3 + 2] += rgbSums[bj * 3 + 2]
-      fullCounts[bi] = wt
-      alive[bj] = 0
-      parent[bj] = bi
-      if (useOklab) {
-        lab[bi * 3] = cent[bi * 3]
-        lab[bi * 3 + 1] = cent[bi * 3 + 1]
-        lab[bi * 3 + 2] = cent[bi * 3 + 2]
-      } else {
-        const [L, A, B] = rgbToOklab(cent[bi * 3], cent[bi * 3 + 1], cent[bi * 3 + 2])
-        lab[bi * 3] = L
-        lab[bi * 3 + 1] = A
-        lab[bi * 3 + 2] = B
+      mergeInto(bi, bj)
+    }
+    // Phase 2: closest ΔE₀₀ pair below the CIEDE2000 floor.
+    for (;;) {
+      let bi = -1
+      let bj = -1
+      let bestD = Infinity
+      for (let i = 0; i < m; i++) {
+        if (alive[i] === 0) continue
+        for (let j = i + 1; j < m; j++) {
+          if (alive[j] === 0) continue
+          const de00 = ciede2000(
+            labD[i * 3],
+            labD[i * 3 + 1],
+            labD[i * 3 + 2],
+            labD[j * 3],
+            labD[j * 3 + 1],
+            labD[j * 3 + 2],
+          )
+          if (de00 < bestD) {
+            bestD = de00
+            bi = i
+            bj = j
+          }
+        }
       }
+      if (bi < 0 || bestD >= MERGE_DE00) break
+      mergeInto(bi, bj)
     }
     // Compact survivors and remap labels (chasing merge chains to their root).
     const toCompact = new Int32Array(m)

@@ -77,6 +77,16 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Björn Ottosson, “A perceptual color space for image processing” (Oklab), 2020.** <https://bottosson.github.io/posts/oklab/>
   All perceptual color math: clustering distances, palette merging, ΔE
   fidelity scoring (`packages/core/src/color.ts`).
+- **Gaurav Sharma, Wencheng Wu & Edul N. Dalal, “The CIEDE2000 color-difference
+  formula: implementation notes, supplementary test data, and mathematical
+  observations”, _Color Research & Application_ 30(1), 2005.** The CIEDE2000
+  color difference and the sRGB→CIELAB (D65) conversion it runs on
+  (`ciede2000`, `rgbToLab` in `packages/core/src/color.ts`), verified against
+  the paper's published test pairs. Used as the perceptually even “same ink”
+  floor (ΔE₀₀ 1.5) in autoK's near-duplicate merge
+  (`packages/raster/src/quantize.ts`), where Oklab distance is too strict near
+  black and too loose in saturated hues, and as the eval harness's ΔE₀₀ metric
+  (`scripts/eval/inkvec-compare.ts`).
 - **Stuart P. Lloyd, “Least squares quantization in PCM”, _IEEE Trans.
   Information Theory_ 28(2), 1982.** The assign/update iterations the k-means
   refinement runs after seeding (`packages/raster/src/quantize.ts`).
@@ -233,15 +243,20 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   the transparency coverage field (`alphaCoverageField`), the cutout and
   stacked-layer boundary fields (`pairwiseField`, `layerField`, `coverageOf` —
   the sRGB blend inversion, from `crates/inkvec-trace/src/coverage.rs`), the
-  interior palette read (`interiorPaletteColors`), and the treatment of an ink as
-  color plus opacity: a flat translucent region (a shadow, glass, steam) is
-  emitted as a face with a `fill-opacity`, its ink recovered by inverting the
-  over-white composite the working image carries — `ink = (over − 255·(1 − a)) /
-  a` — at the label's median alpha (`translucentFaces`, `packages/engine`). Its
-  planar-face emission (`crates/inkvec-cli/src/emit.rs` `emit_color`, `rings.rs`)
-  — each face painted once as its outer ring in containment order, same-color
-  siblings merged into one even-odd path — informed the `nested` layering
-  (`assembleFaces`, `emitNestedFaces`). No code was taken.
+  interior palette read (`interiorPaletteColors`), the CIEDE2000 “same ink”
+  merge floor (`quantize.ts`, its `SAME_INK_DE00`), the mixture-label
+  absorption pass (`packages/raster/src/mixture.ts`) — its ink-idea test
+  (`crates/inkvec-trace/src/color.rs`): a label whose pixels are coverage
+  blends of its two neighbors, and which fills little interior, is not an ink —
+  and the treatment of an ink as color plus opacity: a flat translucent region
+  (a shadow, glass, steam) is emitted as a face with a `fill-opacity`, its ink
+  recovered by inverting the over-white composite the working image carries —
+  `ink = (over − 255·(1 − a)) / a` — at the label's median alpha
+  (`translucentFaces`, `packages/engine`). Its planar-face emission
+  (`crates/inkvec-cli/src/emit.rs` `emit_color`, `rings.rs`) — each face painted
+  once as its outer ring in containment order, same-color siblings merged into
+  one even-odd path — informed the `nested` layering (`assembleFaces`,
+  `emitNestedFaces`). No code was taken.
 - **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
   (SIGGRAPH)_ 18(3), 1984.** The `over` operator `out = src·a + dst·(1 − a)` that
   `flattenImage` applies to composite a transparent source onto white, and whose

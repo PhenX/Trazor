@@ -63,6 +63,32 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — color (CIEDE2000)
+
+```ts
+// color.ts — sRGB→CIELAB (D65) and the CIEDE2000 difference (Sharma, Wu & Dalal
+// 2005), alongside the existing Oklab helpers. Components r,g,b in [0,1]; Lab
+// L* in [0,100]. `ciede2000Rgb` is the byte-triple convenience used by the
+// palette "same ink" floor.
+export function rgbToLab(r: number, g: number, b: number): [number, number, number]
+export function ciede2000(
+  L1: number,
+  a1: number,
+  b1: number,
+  L2: number,
+  a2: number,
+  b2: number,
+): number
+export function ciede2000Rgb(
+  r1: number,
+  g1: number,
+  b1: number,
+  r2: number,
+  g2: number,
+  b2: number,
+): number
+```
+
 ## @trazor/core — gradient paint model
 
 ```ts
@@ -157,6 +183,18 @@ export function interiorPaletteColors(
   paletteRgb: Uint8Array,
 ): InteriorPalette
 
+// mixture.ts — dissolve labels that are anti-aliased blends of their two dominant
+// neighbors (a rim color k-means gave its own centroid), splitting each pixel to
+// the neighbor its sRGB coverage favors. Only a low-interior band that genuinely
+// straddles both neighbors is dissolved (a chosen tint that fills area is kept).
+// Mutates and returns `labels`; the palette keeps its length. `paletteRgb` is the
+// RGB bytes per label (labels.count*3). No-op below three labels.
+export function absorbMixtureLabels(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): LabelMap
+
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
 export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
@@ -200,8 +238,11 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   early exit when max centroid movement < 1e-4. Distances in `colorSpace`
   (oklab: convert via core; rgb: normalized [0,1] channels).
 - Final pass labels every in-mask pixel by nearest centroid.
-- `autoK`: after convergence, greedily merge centroid pairs with Oklab distance
-  < 0.03 (weighted average), relabel.
+- `autoK`: after convergence, greedily merge near-duplicate centroids (weighted
+  average), relabel — in two phases: first the closest pair within 0.03 in Oklab
+  (unchanged), then any remaining pair within CIEDE2000 1.5 (the perceptually
+  even "same ink" floor that catches near-black/near-neutral duplicates Oklab
+  holds apart). The ΔE₀₀ phase only ever adds merges.
 - Palette ordered by pixel count descending. Hex via core `rgbToHex`.
 
 ```ts
