@@ -9,7 +9,7 @@ read that before editing. This map describes structure and intent; `src/index.ts
 ```
 src/
   crack.ts        mask → signed closed lattice boundary paths (turn policies, hole hierarchy)
-  refine.ts       optional sub-pixel snap of ring vertices onto a signed coverage field (anti-aliased edges)
+  refine.ts       optional sub-pixel snap of boundary points onto a signed coverage field's ½ level (normal search)
   boundary.ts     label map → seam-free region shapes (the shared boundary graph)
   closed.ts       one closed ring → PathCommand[] via the Potrace chain; also traceMask
   centerline.ts   skeleton → smooth open strokes (graph walk, junction merge, fit)
@@ -43,10 +43,14 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
 2. **Straightness + optimal polygon** (`polyfit.ts`, §2.2) — the constraint-vector walk finds each vertex's furthest
    straight reach; a two-phase DP then minimizes segment count, then chord penalty (from the O(1) prefix moments in
    `sums.ts`). This always runs on the **integer** lattice ring (unit steps are load-bearing for the straightness analysis).
-   - _optional sub-pixel_ (`refine.ts`): with a `coverage` field, the ring's vertices are snapped onto its zero contour
-     **after** the polygon indices are chosen; the refined positions feed only the moment sums and vertex adjustment, so
-     each segment's best-fit line tracks the true anti-aliased edge instead of the staircase. Hard edges and the image
-     border are left on the lattice.
+   - _optional sub-pixel_ (`refine.ts`): with a `coverage` field, each ring point is moved onto the field's coverage = ½
+     level set **after** the polygon indices are chosen — inkvec stage 07 (`refine_subpixel`, `docs/REFERENCES.md`): the
+     local tangent comes from the point's neighbours, the normal is perpendicular, and coverage is probed at the pixel
+     centres along the normal; the two probes bracketing ½ locate the edge, a clean step inverting through the exact
+     half-plane coverage of a unit square (no bias towards the ½ grid, where a bilinear root-find leaves a slanted edge
+     ~0.15 px fat) and a ridge or soft profile falling back to a root-find. The refined positions feed the moment sums,
+     the vertex adjustment and the run fitter's samples, so each segment tracks the true anti-aliased edge instead of the
+     staircase. Hard edges (no partial pixel) and the image border are left on the lattice.
 3. **Vertex adjustment** (`adjust.ts`, §2.3.1) — move each polygon vertex to the least-squares intersection of its two
    incident edge lines, constrained to the unit square around the (possibly refined) vertex.
 4. **Corner analysis** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides corner vs

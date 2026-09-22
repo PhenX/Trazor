@@ -3,7 +3,7 @@ import { createMask, createRaster, fillRaster, normalizeSettings, setPixel } fro
 import type { PathCommand, RasterImage, VectorizeSettings } from '@trazor/core'
 import { vectorize } from '@trazor/engine'
 import { alphaCoverageField } from '@trazor/raster'
-import { decomposeMask, ringPolygon } from '@trazor/trace'
+import { decomposeMask, refineRingToField, ringPolygon } from '@trazor/trace'
 
 const CX = 64
 const CY = 64
@@ -131,12 +131,13 @@ describe('exterior edges against transparency', () => {
   for (const layering of ['stacked', 'cutout'] as const) {
     it(`${layering}: traces the true circle with no chord bias`, async () => {
       const { mean, maxDev } = await radii(settings({ layering, alphaThreshold: 128 }))
-      // The multi-model run fitter fits the refined ring points directly (not the
-      // polygon's chords), so the emitted curve carries none of the Selinger
-      // chain's circumscribe/inscribe bias: the outline sits on the true circle,
-      // not a fraction of a pixel inside it, and stays smooth about it.
-      expect(Math.abs(mean - R)).toBeLessThan(0.05)
-      expect(maxDev).toBeLessThan(0.2)
+      // The normal-search refinement lands every ring point on the coverage = ½
+      // level set, and the multi-model run fitter fits those points directly (not
+      // the polygon's chords), so the emitted curve carries none of the Selinger
+      // chain's circumscribe/inscribe bias: the outline sits on the true circle to
+      // a few hundredths of a pixel, not a fraction of a pixel inside it.
+      expect(Math.abs(mean - R)).toBeLessThan(0.02)
+      expect(maxDev).toBeLessThan(0.1)
     })
 
     it(`${layering}: follows the cut level — a fainter cut traces a larger outline`, async () => {
@@ -183,6 +184,42 @@ describe('exterior edges against transparency', () => {
     )
     expect(nearTip).toBeLessThan(2)
   })
+
+  it('lands a rotated square on its true slanted edges, off the lattice', () => {
+    const { alpha, mask } = coverageSquare()
+    const ring = decomposeMask(mask, 'minority', 1)[0].points
+    const refined = ringPolygon(ring, alphaCoverageField(alpha, W_SQ, W_SQ, 128))
+      ?.polygon as number[]
+    // Every refined vertex sits within a tenth of a pixel of the true square
+    // boundary: the exact half-plane inversion places a slanted edge on its own
+    // sub-pixel line, where a bilinear root-find leaves it biased fat by ~0.15 px.
+    let maxDev = 0
+    for (let i = 0; i < refined.length - 2; i += 2) {
+      maxDev = Math.max(maxDev, distToSquare(refined[i], refined[i + 1]))
+    }
+    expect(maxDev).toBeLessThan(0.1)
+  })
+
+  it('places a thin sub-pixel stroke on both of its edges, without collapsing it', () => {
+    const { alpha, mask } = coverageStroke()
+    const ring = decomposeMask(mask, 'minority', 1)[0].points
+    const refined = refineRingToField(ring, alphaCoverageField(alpha, W_ST, H_ST, 128))
+    let left = Infinity
+    let right = -Infinity
+    for (let i = 0; i < refined.length - 2; i += 2) {
+      const x = refined[i]
+      const y = refined[i + 1]
+      if (y > 8 && y < H_ST - 8) {
+        left = Math.min(left, x)
+        right = Math.max(right, x)
+      }
+    }
+    // The ridge is read as a ridge (root-find, not the step inversion), so both
+    // edges land near their true sub-pixel lines and the stroke keeps its width
+    // instead of collapsing to a line or blowing out.
+    expect(Math.abs(left - STROKE_L)).toBeLessThan(0.2)
+    expect(Math.abs(right - STROKE_R)).toBeLessThan(0.2)
+  })
 })
 
 const EDGE_X = 40.3
@@ -226,4 +263,92 @@ function coverageWedge(): RasterImage {
     }
   }
   return img
+}
+
+const W_SQ = 64
+const SQ_CX = 32
+const SQ_CY = 32
+const SQ_HALF = 18
+const SQ_ANGLE = (25 * Math.PI) / 180
+const SQ_COS = Math.cos(SQ_ANGLE)
+const SQ_SIN = Math.sin(SQ_ANGLE)
+
+/** A coverage-exact square of side 2·SQ_HALF rotated SQ_ANGLE about its center. */
+function coverageSquare(): { alpha: Uint8Array; mask: ReturnType<typeof createMask> } {
+  const alpha = new Uint8Array(W_SQ * W_SQ)
+  const mask = createMask(W_SQ, W_SQ)
+  const sub = 8
+  for (let y = 0; y < W_SQ; y++) {
+    for (let x = 0; x < W_SQ; x++) {
+      let covered = 0
+      for (let sy = 0; sy < sub; sy++) {
+        for (let sx = 0; sx < sub; sx++) {
+          const dx = x + (sx + 0.5) / sub - SQ_CX
+          const dy = y + (sy + 0.5) / sub - SQ_CY
+          const u = dx * SQ_COS + dy * SQ_SIN
+          const v = -dx * SQ_SIN + dy * SQ_COS
+          if (Math.abs(u) <= SQ_HALF && Math.abs(v) <= SQ_HALF) covered++
+        }
+      }
+      const a = Math.round((covered * 255) / (sub * sub))
+      alpha[y * W_SQ + x] = a
+      mask.data[y * W_SQ + x] = a >= 128 ? 1 : 0
+    }
+  }
+  return { alpha, mask }
+}
+
+/** Distance from (px, py) to the rotated square's boundary (min over its 4 edges). */
+function distToSquare(px: number, py: number): number {
+  // Corners in image space, in order around the square.
+  const local: [number, number][] = [
+    [-SQ_HALF, -SQ_HALF],
+    [SQ_HALF, -SQ_HALF],
+    [SQ_HALF, SQ_HALF],
+    [-SQ_HALF, SQ_HALF],
+  ]
+  const corners = local.map(([u, v]): [number, number] => [
+    SQ_CX + u * SQ_COS - v * SQ_SIN,
+    SQ_CY + u * SQ_SIN + v * SQ_COS,
+  ])
+  let best = Infinity
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = corners[i]
+    const [bx, by] = corners[(i + 1) % 4]
+    const ex = bx - ax
+    const ey = by - ay
+    const t = Math.max(0, Math.min(1, ((px - ax) * ex + (py - ay) * ey) / (ex * ex + ey * ey)))
+    best = Math.min(best, Math.hypot(px - (ax + t * ex), py - (ay + t * ey)))
+  }
+  return best
+}
+
+const W_ST = 32
+const H_ST = 48
+const STROKE_C = 16
+const STROKE_HALF = 0.75
+const STROKE_L = STROKE_C - STROKE_HALF
+const STROKE_R = STROKE_C + STROKE_HALF
+
+/** A coverage-exact vertical stroke of sub-pixel width 2·STROKE_HALF. */
+function coverageStroke(): { alpha: Uint8Array; mask: ReturnType<typeof createMask> } {
+  const alpha = new Uint8Array(W_ST * H_ST)
+  const mask = createMask(W_ST, H_ST)
+  const sub = 8
+  for (let y = 0; y < H_ST; y++) {
+    for (let x = 0; x < W_ST; x++) {
+      let covered = 0
+      for (let sy = 0; sy < sub; sy++) {
+        for (let sx = 0; sx < sub; sx++) {
+          const px = x + (sx + 0.5) / sub
+          const py = y + (sy + 0.5) / sub
+          if (Math.abs(px - STROKE_C) <= STROKE_HALF && py >= 4 && py <= H_ST - 4) covered++
+        }
+      }
+      const a = Math.round((covered * 255) / (sub * sub))
+      alpha[y * W_ST + x] = a
+      mask.data[y * W_ST + x] = a >= 128 ? 1 : 0
+    }
+  }
+  return { alpha, mask }
 }
