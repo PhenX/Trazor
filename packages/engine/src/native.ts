@@ -6,6 +6,7 @@ import {
   mmPerPx,
   normalizeSettings,
   nowMs,
+  rgbToHex,
   rgbToOklab,
 } from '@trazor/core'
 import type {
@@ -72,6 +73,8 @@ import {
   smoothLabelsSpatial,
   toGrayscale,
   toOklabBuffer,
+  TRANSLUCENT_MAX_ALPHA,
+  TRANSLUCENT_MIN_ALPHA,
   zhangSuenThin,
 } from '@trazor/raster'
 import {
@@ -103,6 +106,23 @@ import type {
 } from './protocol'
 
 const QUANTIZE_SEED = 0x02f6e2b1
+
+/** One paint run of a face: a fill, whether it must stay its own path, and its palette colors. */
+interface FacePaint {
+  fill: string
+  unfoldable?: boolean
+  colors: readonly string[]
+}
+
+/** A face paint as the per-shape metadata a helper serializes with. */
+function toMeta(p: FacePaint, layerId: number): HelperShapeMeta {
+  return {
+    fill: p.fill,
+    fillRule: 'evenodd',
+    layerId,
+    ...(p.unfoldable ? { unfoldable: true } : {}),
+  }
+}
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
@@ -308,6 +328,15 @@ interface PaletteEntry {
   paletteClampedTo?: number
   /** Per-label gradient paint (label ⇒ ramp fill, or null for a flat fill); absent when gradients are off. */
   gradients?: (GradientPaint | null)[]
+  /**
+   * Per-label fill opacity (label ⇒ opacity in (0,1), or undefined for an opaque
+   * label) and the ink each translucent label paints in; both absent when no
+   * label is a translucent face. Kept beside `paletteHex` (which keeps the
+   * composited color) so a cutout run paints the ink at its opacity while a
+   * stacked run keeps the flat composited fill.
+   */
+  fillOpacity?: (number | undefined)[]
+  inkHex?: (string | undefined)[]
   /** Per label, the label painted beneath it with the same geometry (an overlay's base), or -1; absent with `gradients`. */
   underlays?: Int32Array
   /** Stacked layer rings for one ring key; a key change replaces the whole set. */
@@ -519,6 +548,7 @@ function buildDocument(
     commands: s.commands,
     fill: s.fill,
     fillRule: s.fillRule,
+    fillOpacity: s.fillOpacity,
     stroke: s.stroke,
     strokeWidth: s.strokeWidth,
     layerId: s.layerId,
@@ -902,6 +932,8 @@ async function colorPipeline(
   let paletteClampedTo: number | undefined
   let gradients: (GradientPaint | null)[] | undefined
   let underlays: Int32Array | undefined
+  let fillOpacity: (number | undefined)[] | undefined
+  let inkHex: (string | undefined)[] | undefined
 
   const cached =
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
@@ -918,6 +950,8 @@ async function colorPipeline(
     paletteClampedTo = cached.paletteClampedTo
     gradients = cached.gradients
     underlays = cached.underlays
+    fillOpacity = cached.fillOpacity
+    inkHex = cached.inkHex
     cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
@@ -955,6 +989,11 @@ async function colorPipeline(
       underlays = fitted.underlays
       counts = countLabels(labels)
     }
+    {
+      const tl = translucentFaces(image, labels, alpha, paletteHex.length, gradients)
+      fillOpacity = tl?.opacity
+      inkHex = tl?.inkHex
+    }
     if (canCachePal && palKey !== undefined) {
       paletteEntry = {
         labels,
@@ -964,6 +1003,8 @@ async function colorPipeline(
         paletteClampedTo,
         gradients,
         underlays,
+        fillOpacity,
+        inkHex,
       }
       palettePut(cache!, palKey, paletteEntry)
     }
@@ -1078,6 +1119,11 @@ async function colorPipeline(
       underlays = fitted.underlays
       counts = countLabels(labels)
     }
+    if (settings.palette === null) {
+      const tl = translucentFaces(image, labels, alpha, paletteHex.length, gradients)
+      fillOpacity = tl?.opacity
+      inkHex = tl?.inkHex
+    }
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
@@ -1089,6 +1135,8 @@ async function colorPipeline(
         paletteClampedTo,
         gradients,
         underlays,
+        fillOpacity,
+        inkHex,
       }
       palettePut(cache!, palKey, paletteEntry)
     }
@@ -1127,6 +1175,25 @@ async function colorPipeline(
   // underlay may overlap a same-paint sheet beneath it, so it is never folded
   // into one even-odd path with it.
   const underOf = (l: number): number => underlays?.[l] ?? -1
+  // A translucent label's fill opacity (undefined ⇒ opaque), and the ink it
+  // paints in — which composites over the white canvas to the source-over-white
+  // color. Used by the cutout partition, whose faces are disjoint and so sit over
+  // that white ground directly; stacked layers keep the flat composited fill,
+  // since a translucent face there would composite over the sheets below it (a
+  // later session emits those sheets and turns the fill translucent).
+  const opacityOf = (l: number): number | undefined => fillOpacity?.[l]
+  const inkOf = (l: number): string | undefined => inkHex?.[l]
+  // One label's stacked paint runs, in emission order (base first, own on top): a
+  // gradient overlay keeps its base underlay; every other label is a single
+  // opaque or gradient fill.
+  const stackedFacePaints = (label: number): FacePaint[] => {
+    const own: FacePaint = { fill: fillFor[label], colors: paletteColorsFor[label] }
+    const under = underOf(label)
+    if (under >= 0) {
+      return [{ fill: fillFor[under], unfoldable: true, colors: paletteColorsFor[under] }, own]
+    }
+    return [own]
+  }
 
   if (run.tracing) {
     run.emitStep(() => {
@@ -1231,12 +1298,21 @@ async function colorPipeline(
     for (const region of regions) {
       const under = underOf(region.label)
       for (const label of under >= 0 ? [under, region.label] : [region.label]) {
-        const fill = fillFor[label]
-        addColors(usedPalette, paletteColorsFor[label])
+        // A cutout face is disjoint, so it sits over the white canvas: a
+        // translucent label paints its ink at its opacity and reproduces the
+        // source-over-white color, while an opaque label paints its flat fill.
+        const opacity = label === under ? undefined : opacityOf(label)
+        const ink = opacity !== undefined ? inkOf(label) : undefined
+        const fill = ink ?? fillFor[label]
+        addColors(
+          usedPalette,
+          opacity !== undefined && ink !== undefined ? [ink] : paletteColorsFor[label],
+        )
         shapes.push({
           commands: region.commands,
           fill,
           fillRule: 'evenodd',
+          ...(opacity !== undefined ? { fillOpacity: opacity } : {}),
           ...(label === under ? { unfoldable: true } : {}),
           ...(trapPx > 0
             ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
@@ -1265,11 +1341,17 @@ async function colorPipeline(
         ? reusable.layers
         : undefined
     const cachedPolygons = cachedLayers && wantPolygons ? reusable?.polygons : undefined
-    /** The boundary field of one layer, from the mask its rings were cut from. */
+    /**
+     * The boundary field of one layer, from the mask its rings were cut from. A
+     * translucent layer takes no alpha field: its interior sits below the cut
+     * level, so refining its exterior onto that level's contour would fold the
+     * face away — its edges stay on the lattice while its color edges still snap.
+     */
     const fieldFor = (
       mask: Uint8Array,
       stackLabels: Int32Array,
       label: number,
+      translucent: boolean,
     ): SignedField | undefined =>
       refinesEdges
         ? layerField({
@@ -1280,7 +1362,7 @@ async function colorPipeline(
             pixels: image.data,
             paletteRgb,
             label,
-            alpha: alphaField,
+            alpha: translucent ? undefined : alphaField,
           })
         : undefined
 
@@ -1307,15 +1389,12 @@ async function colorPipeline(
       totalLayers = total
       traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
     }
-    /** The paints a layer's shapes carry, for a helper to serialize them with. */
     const layerPaint = (label: number, layerId: number): HelperUnitPaint => {
-      const under = underOf(label)
-      const own: HelperShapeMeta = { fill: fillFor[label], fillRule: 'evenodd', layerId }
-      if (under < 0) return { own }
-      return {
-        own,
-        under: { fill: fillFor[under], fillRule: 'evenodd', layerId, unfoldable: true },
-      }
+      const paints = stackedFacePaints(label)
+      const translucent = opacityOf(label) !== undefined
+      return paints.length === 2
+        ? { under: toMeta(paints[0], layerId), own: toMeta(paints[1], layerId), translucent }
+        : { own: toMeta(paints[0], layerId), translucent }
     }
     /**
      * Place one layer's traced shapes, then report progress and yield. A layer
@@ -1329,18 +1408,17 @@ async function colorPipeline(
       layerShapes: readonly PathCommand[][],
       parts: readonly (ShapeOut | null)[] | undefined,
     ): Promise<void> => {
-      const under = underOf(label)
       const layerId = done
       let at = 0
-      for (const l of under >= 0 ? [under, label] : [label]) {
-        if (layerShapes.length > 0) addColors(usedPalette, paletteColorsFor[l])
+      for (const p of stackedFacePaints(label)) {
+        if (layerShapes.length > 0) addColors(usedPalette, p.colors)
         for (const commands of layerShapes) {
           shapes.push({
             commands,
-            fill: fillFor[l],
+            fill: p.fill,
             fillRule: 'evenodd',
             layerId,
-            ...(l === under ? { unfoldable: true } : {}),
+            ...(p.unfoldable ? { unfoldable: true } : {}),
           })
           if (parts) shapeParts.push(parts[at] ?? null)
           at++
@@ -1429,7 +1507,15 @@ async function colorPipeline(
         startLayers,
         async (label, paths, mask, island) => {
           const polygons = wantPolygons
-            ? layerPolygons(paths, fieldFor(mask, plan.stackLabels, island ? label : -1))
+            ? layerPolygons(
+                paths,
+                fieldFor(
+                  mask,
+                  plan.stackLabels,
+                  island ? label : -1,
+                  opacityOf(label) !== undefined,
+                ),
+              )
             : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
@@ -2192,6 +2278,96 @@ function countLabels(labels: LabelMap): Uint32Array {
     if (l >= 0) counts[l]++
   }
   return counts
+}
+
+/** Fewest translucent pixels before a label is emitted as a translucent face. */
+const MIN_TRANSLUCENT_PIXELS = 16
+
+/** Lower median value of a 256-bin channel histogram at `base`, over `total` samples. */
+function medianBin(hist: Uint32Array, base: number, total: number): number {
+  const half = (total + 1) >> 1
+  let acc = 0
+  let v = 0
+  for (; v < 255; v++) {
+    acc += hist[base + v]
+    if (acc >= half) break
+  }
+  return v
+}
+
+/**
+ * Classify each label as a translucent face and, for those that are, recolor it
+ * to its ink and return its fill opacity (label ⇒ opacity, else undefined; the
+ * whole result undefined when no label is translucent).
+ *
+ * inkvec treats an ink as color plus opacity: a soft shadow, glass or steam is a
+ * translucent face painted its ink color at `alpha/255` opacity, so over a white
+ * ground it reproduces the source-over-white color and over other content it
+ * shows through. A label qualifies when most of its pixels are partly transparent
+ * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`). Its opacity is the
+ * median source alpha over those pixels. Its ink is the straight-alpha color the
+ * source stored under partial coverage, recovered by inverting the over-white
+ * composite the working image carries — `ink = (over − 255·(1 − a)) / a`, i.e.
+ * `(over − 255)·255/α + 255` — read as the per-channel median over the label's
+ * translucent pixels, so the composited rim the labeling handed it does not move
+ * the color. Returns the per-label opacity and ink (both indexed by label,
+ * undefined for an opaque label), or undefined when no label is translucent;
+ * `paletteHex` is left untouched. Gradient labels are skipped. Deterministic:
+ * histograms only.
+ */
+interface Translucency {
+  opacity: (number | undefined)[]
+  inkHex: (string | undefined)[]
+}
+function translucentFaces(
+  image: RasterImage,
+  labels: LabelMap,
+  alpha: Uint8Array | null,
+  count: number,
+  gradients: (GradientPaint | null)[] | undefined,
+): Translucency | undefined {
+  if (alpha === null) return undefined
+  const lab = labels.data
+  const px = image.data
+  const transN = new Uint32Array(count)
+  const totalN = new Uint32Array(count)
+  const aHist = new Uint32Array(count * 256)
+  const inkHist = new Uint32Array(count * 768)
+  for (let i = 0; i < lab.length; i++) {
+    const l = lab[i]
+    if (l < 0 || l >= count) continue
+    totalN[l]++
+    const a = alpha[i]
+    if (a < TRANSLUCENT_MIN_ALPHA || a >= TRANSLUCENT_MAX_ALPHA) continue
+    transN[l]++
+    aHist[l * 256 + a]++
+    const p = i * 4
+    const inv = 255 / a
+    let r = Math.round((px[p] - 255) * inv + 255)
+    let g = Math.round((px[p + 1] - 255) * inv + 255)
+    let b = Math.round((px[p + 2] - 255) * inv + 255)
+    r = r < 0 ? 0 : r > 255 ? 255 : r
+    g = g < 0 ? 0 : g > 255 ? 255 : g
+    b = b < 0 ? 0 : b > 255 ? 255 : b
+    const base = l * 768
+    inkHist[base + r]++
+    inkHist[base + 256 + g]++
+    inkHist[base + 512 + b]++
+  }
+  let opacity: (number | undefined)[] | undefined
+  let inkHex: (string | undefined)[] | undefined
+  for (let l = 0; l < count; l++) {
+    if (gradients?.[l]) continue
+    if (transN[l] < MIN_TRANSLUCENT_PIXELS || transN[l] * 2 < totalN[l]) continue
+    const medA = medianBin(aHist, l * 256, transN[l])
+    if (medA < TRANSLUCENT_MIN_ALPHA || medA >= TRANSLUCENT_MAX_ALPHA) continue
+    const r = medianBin(inkHist, l * 768, transN[l])
+    const g = medianBin(inkHist, l * 768 + 256, transN[l])
+    const b = medianBin(inkHist, l * 768 + 512, transN[l])
+    ;(opacity ??= new Array<number | undefined>(count))[l] = Math.round((medA / 255) * 1000) / 1000
+    ;(inkHex ??= new Array<string | undefined>(count))[l] = rgbToHex(r, g, b)
+  }
+  return opacity && inkHex ? { opacity, inkHex } : undefined
 }
 
 /** Append each color not already present (preserves first-appearance order). */

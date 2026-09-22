@@ -52,15 +52,6 @@ const COLORED_FRACTION_MIN = 0.05
  */
 const MINOR_TONES_MAX = 0.005
 
-/**
- * Translucent interior (`translucentArea`) up to which an image's partial alpha
- * is anti-aliased edge coverage, so the transparency cut sits at half coverage
- * — the true outline of every anti-aliased edge. Past it the image carries
- * soft, see-through content (shadows, glass, steam) that a half-coverage cut
- * would drop outright, so the default faint-pixel cut stands.
- */
-const TRANSLUCENT_MAX = 0.02
-
 /** Alpha of half coverage: the outline of an anti-aliased edge against transparency. */
 const EDGE_ALPHA_THRESHOLD = 128
 
@@ -220,14 +211,16 @@ export function recommendSettings(
 
   if (a.hasAlpha) {
     patch.background = 'transparent'
-    r.add('alpha', 'Transparent pixels found — they will produce no shapes.')
-    if (a.translucentArea <= TRANSLUCENT_MAX) {
-      patch.alphaThreshold = EDGE_ALPHA_THRESHOLD
-      r.add(
-        'alphaEdge',
-        'Anti-aliased transparency — cutting at half coverage puts every edge on its true outline.',
-      )
-    }
+    patch.alphaThreshold = EDGE_ALPHA_THRESHOLD
+    r.add('alpha', 'Transparent pixels found — clear areas will produce no shapes.')
+    // Half coverage is the true outline of an anti-aliased opaque edge; soft
+    // see-through content (a shadow, glass, steam) survives the cut as a
+    // translucent interior and is emitted as a face with opacity, so the same
+    // cut serves opaque and translucent alpha alike.
+    r.add(
+      'alphaEdge',
+      'Cutting at half coverage puts every anti-aliased edge on its true outline; translucent regions become faces with opacity.',
+    )
   }
 
   // Clean two-tone flat art (an icon, a glyph, a stamp) has exact tones, so the

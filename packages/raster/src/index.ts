@@ -6,7 +6,13 @@
  */
 export { resizeGray, resizeToFit } from './resize'
 export { bilateralFilter, gaussianBlur, medianFilter } from './filters'
-export { alphaCoverageField, borderDominantColor, flattenImage } from './background'
+export {
+  alphaCoverageField,
+  borderDominantColor,
+  flattenImage,
+  TRANSLUCENT_MAX_ALPHA,
+  TRANSLUCENT_MIN_ALPHA,
+} from './background'
 export type { FlattenResult } from './background'
 export { toGrayscale, toOklabBuffer } from './convert'
 export { detectEdges } from './edges'

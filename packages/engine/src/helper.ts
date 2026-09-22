@@ -245,8 +245,13 @@ export function installHelperHandler(scope: WorkerScope): void {
     }
     const curve = opts.curve
     if (!curve) throw new Error(`helper: no curve options for ${job.kind}`)
+    // A translucent layer takes no alpha exterior field — the same rule the
+    // coordinator applies — so its refined polygons match the sequential run.
+    const translucent = job.meta?.[at]?.translucent === true
     const shapes =
-      job.kind === 'trace-layers' ? traceLayer(curve, unit, opts.layer) : traceRingUnit(curve, unit)
+      job.kind === 'trace-layers'
+        ? traceLayer(curve, unit, opts.layer, translucent)
+        : traceRingUnit(curve, unit)
     const out = job.serialize
     if (!out) return { shapes }
     const paint = job.meta?.[at]
@@ -272,6 +277,7 @@ export function installHelperHandler(scope: WorkerScope): void {
     curve: TraceCurveOptions,
     unit: number,
     refine: LayerRefine | undefined,
+    translucent: boolean,
   ): PathCommand[][] {
     const st = stackState
     if (!st) throw new Error('helper: no stacked plan for trace-layers')
@@ -281,7 +287,7 @@ export function installHelperHandler(scope: WorkerScope): void {
       const paths = decomposeLayer(st, unit)
       entry = { paths }
       if (wantPolygons) {
-        const field = refine ? layerFieldOf(st, unit, refine) : undefined
+        const field = refine ? layerFieldOf(st, unit, refine, translucent) : undefined
         entry.polygons = paths.map((p) => ringPolygon(p.points, field))
       }
       st.layers.set(unit, entry)
@@ -291,7 +297,12 @@ export function installHelperHandler(scope: WorkerScope): void {
   }
 
   /** The boundary field of layer `unit`, read from the mask `decomposeLayer` just left in `st.mask`. */
-  function layerFieldOf(st: StackState, unit: number, refine: LayerRefine): SignedField {
+  function layerFieldOf(
+    st: StackState,
+    unit: number,
+    refine: LayerRefine,
+    translucent: boolean,
+  ): SignedField {
     const island = unit - st.order.length
     const st2 = imageState
     if (!st2) throw new Error('helper: no working image')
@@ -303,7 +314,7 @@ export function installHelperHandler(scope: WorkerScope): void {
       pixels: st2.image.data,
       paletteRgb: refine.paletteRgb,
       label: island >= 0 ? st.islandLabels[island] : -1,
-      alpha: refine.alpha,
+      alpha: translucent ? undefined : refine.alpha,
     })
   }
 
