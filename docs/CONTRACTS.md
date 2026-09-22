@@ -115,15 +115,22 @@ export function bilateralFilter(
 // background.ts
 export interface FlattenResult {
   image: RasterImage // RGB composited over white (transparent) or backgroundColor (custom)
-  opaque: BinaryMask | null // null when fully opaque handling; else 1 = alpha >= alphaThreshold
+  opaque: BinaryMask | null // null when fully opaque handling; else the pixels that produce a shape
   alpha: Uint8Array | null // source alpha per pixel (0-255) whenever `opaque` is set; else null
 }
 // background 'auto': behaves as 'transparent' if any pixel alpha < 250, else fully opaque.
 // 'custom': composite over settings.backgroundColor, opaque = null.
+// transparent/auto `opaque`: 1 where alpha >= alphaThreshold OR the pixel is flat-translucent — partly
+// transparent (TRANSLUCENT_MIN_ALPHA..TRANSLUCENT_MAX_ALPHA) with a 4-neighbor within TRANSLUCENT_FLAT_DELTA
+// of its alpha. A see-through region (shadow, glass, steam) is a partial-alpha plateau, so it survives a
+// half-coverage cut at any thickness; an anti-aliased opaque rim climbs too steeply to match and stays cut.
 export function flattenImage(
   image: RasterImage,
   settings: Pick<VectorizeSettings, 'background' | 'backgroundColor' | 'alphaThreshold'>,
 ): FlattenResult
+// Alpha bounds for a translucent-face pixel: clear below MIN (no shape), solid at/above MAX (opaque content).
+export const TRANSLUCENT_MIN_ALPHA: number // 8
+export const TRANSLUCENT_MAX_ALPHA: number // 250
 // Most common color among the 1px border frame (for omitBackground detection).
 export function borderDominantColor(image: RasterImage): [number, number, number]
 // Signed transparency coverage at the cut level, in [-0.5, 0.5]: positive where alpha ≥ alphaThreshold,
@@ -527,6 +534,7 @@ export interface SvgShape {
   commands: PathCommand[] // may contain several M…Z subpaths
   fill?: string // '#rrggbb' | 'none' | 'url(#id)' (a doc.defs gradient)
   fillRule?: 'nonzero' | 'evenodd'
+  fillOpacity?: number // [0,1]; emitted as fill-opacity when < 1 (a translucent face's ink at its alpha)
   stroke?: string
   strokeWidth?: number
   strokeLinecap?: 'butt' | 'round' | 'square'
@@ -943,6 +951,7 @@ export interface VectorShape {
   commands: PathCommand[]
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
+  fillOpacity?: number // [0,1], present only on a translucent face (absent ⇒ 1)
   stroke?: string
   strokeWidth?: number
   layerId?: number

@@ -14,6 +14,8 @@ export interface VectorShape {
   /** `#rrggbb`, `'none'`, or `'url(#id)'` (a gradient in {@link VectorDocument.gradients}); absent ⇒ no fill. */
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
+  /** Fill opacity in [0, 1], present only on a translucent face (absent ⇒ 1). */
+  fillOpacity?: number
   stroke?: string
   strokeWidth?: number
   /** Stacking layer (paint order) a shape belongs to, when grouped. */
