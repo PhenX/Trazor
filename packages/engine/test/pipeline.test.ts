@@ -97,8 +97,10 @@ describe('native engine pipeline', () => {
     expect(result.width).toBe(60)
     expect(result.height).toBe(60)
     expect(result.palette.length).toBe(2)
-    expect(result.stats.pathCount).toBeGreaterThanOrEqual(2)
-    expect(result.stats.nodeCount).toBeGreaterThan(0)
+    // The two flat, axis-aligned fills serialize as <rect> primitives (fewer
+    // coordinates than an equivalent path); either way, two drawn shapes.
+    const shapeEls = result.svg.match(/<(path|rect|circle|ellipse)\b/g) ?? []
+    expect(shapeEls.length).toBeGreaterThanOrEqual(2)
     expect(result.warnings.filter((w) => w.code === 'empty-result')).toHaveLength(0)
     // The red square must be present as a red-ish fill.
     expect(result.svg).toMatch(/fill="#[a-f0-9]{6}"/)
@@ -221,10 +223,11 @@ describe('native engine pipeline', () => {
     const layers = result.svg.match(/<g id="layer-\d+">/g) ?? []
     expect(layers.length).toBe(2)
     expect((result.svg.match(/<\/g>/g) ?? []).length).toBe(2)
-    // Each used color is named by a layer <title>, and each layer is one path
-    // (stacked paints a color as one contiguous run, folded by the optimizer).
+    // Each used color is named by a layer <title>, and each layer is one shape
+    // (stacked paints a color as one contiguous run; a flat axis-aligned fill
+    // serializes as a <rect> primitive).
     for (const hex of result.palette) expect(result.svg).toContain(`<title>${hex}</title>`)
-    expect((result.svg.match(/<path /g) ?? []).length).toBe(2)
+    expect((result.svg.match(/<(path|rect|circle|ellipse)\b/g) ?? []).length).toBe(2)
   })
 
   it('does not group output by default', async () => {

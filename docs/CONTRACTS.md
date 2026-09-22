@@ -423,7 +423,7 @@ export function decomposeMask(
 export function shapesFromPaths(
   paths: CrackPath[],
   opts: TraceCurveOptions,
-  polygons?: readonly (FlatPoints | null)[],
+  polygons?: readonly (RingFit | null)[],
 ): TracedShape[]
 
 // The curve chain for one ring, split at the point where the curve settings first matter.
@@ -434,11 +434,22 @@ export function closedPathToCommands(
   opts: TraceCurveOptions,
   field?: SignedField, // per-chain color field (cutout); takes precedence over opts.coverage
 ): PathCommand[]
-// Optimal polygon + least-squares vertex adjustment (Selinger §2.2, §2.3.1), the first vertex
-// repeated as the last; null when the ring is too short to carry a polygon. Depends on the ring and
-// the field only — never on smoothing, curve optimization or the corner threshold — so a caller may
-// compute it once and re-fit it many times.
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null
+// The polygon half of the chain, held so the curve half re-fits without re-running the straightness
+// DP. `polygon` is the adjusted optimal polygon (Selinger §2.2, §2.3.1, first vertex repeated as
+// last) that `polygon` curveMode emits and that decides the corners; `geom` is the refined ring
+// geometry the multi-model run fitter samples; `vertices` are the optimal polygon's ascending sample
+// indices into `geom`. `refined` is whether `geom` was snapped to a sub-pixel field.
+export interface RingFit {
+  polygon: FlatPoints
+  geom: FlatPoints
+  vertices: number[]
+  refined: boolean
+}
+// Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
+// §2.3.1); null when the ring is too short to carry a polygon. Depends on the ring and the field
+// only — never on smoothing, curve optimization or the corner threshold — so a caller may compute it
+// once and re-fit it many times.
+export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
 // 4-neighbor on the other side: left, right, up, down), an exterior edge the transparency coverage
@@ -467,11 +478,14 @@ export function coverageOf(
 ): number
 export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
 export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
-// Corner analysis, smoothing and curve optimization over an adjusted polygon (Selinger §2.3.2, §2.4).
-// `pixel` curveMode and a null polygon emit the exact rectilinear ring instead.
+// The curve half of the chain from a RingFit. In `spline` mode each smooth run (the refined ring
+// points between two corners) is fitted directly to those points — line / circular arc / G1 cubic,
+// merged by description length (Selinger 2003 §2.2 for the segmentation, inkvec's multi-model fit for
+// the per-run curve) — carrying none of Selinger's chord-adjustment bias. `polygon` curveMode emits
+// the adjusted polygon; `pixel` curveMode and a null fit emit the exact rectilinear ring.
 export function polygonToCommands(
   ring: FlatPoints,
-  polygon: FlatPoints | null,
+  fit: RingFit | null,
   opts: TraceCurveOptions,
 ): PathCommand[]
 ```

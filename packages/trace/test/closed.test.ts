@@ -55,6 +55,41 @@ function anchors(commands: PathCommand[]): [number, number][] {
   return out
 }
 
+/** Each anchor of a closed ring with the turn angle (deg) between its pieces. */
+function tangentJoins(commands: PathCommand[]): { x: number; y: number; turn: number }[] {
+  const start = commands[0]
+  if (start.type !== 'M') return []
+  let cx = start.x
+  let cy = start.y
+  const dir = (ax: number, ay: number, bx: number, by: number): [number, number] => {
+    const l = Math.hypot(bx - ax, by - ay) || 1
+    return [(bx - ax) / l, (by - ay) / l]
+  }
+  // Per drawing command: the tangent leaving its start and arriving at its end.
+  const segs: { ex: number; ey: number; tOut: [number, number]; tIn: [number, number] }[] = []
+  for (const c of commands) {
+    if (c.type === 'L') {
+      segs.push({ ex: c.x, ey: c.y, tOut: dir(cx, cy, c.x, c.y), tIn: dir(cx, cy, c.x, c.y) })
+      cx = c.x
+      cy = c.y
+    } else if (c.type === 'C') {
+      segs.push({ ex: c.x, ey: c.y, tOut: dir(cx, cy, c.x1, c.y1), tIn: dir(c.x2, c.y2, c.x, c.y) })
+      cx = c.x
+      cy = c.y
+    }
+  }
+  const out: { x: number; y: number; turn: number }[] = []
+  for (let i = 0; i < segs.length; i++) {
+    const next = segs[(i + 1) % segs.length]
+    const dot = Math.max(
+      -1,
+      Math.min(1, segs[i].tIn[0] * next.tOut[0] + segs[i].tIn[1] * next.tOut[1]),
+    )
+    out.push({ x: segs[i].ex, y: segs[i].ey, turn: (Math.acos(dot) * 180) / Math.PI })
+  }
+  return out
+}
+
 describe('optimalPolyline', () => {
   it('reduces a perfect staircase diagonal to a single segment', () => {
     const pts: number[] = []
@@ -229,8 +264,8 @@ describe('curve chain split', () => {
   it('refines the polygon onto the field, so the field is not ignored', () => {
     const mask = circleMask(60, 22)
     const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
-    const lattice = ringPolygon(ring) as number[]
-    const refined = ringPolygon(ring, diskField(60, 22)) as number[]
+    const lattice = ringPolygon(ring)?.polygon as number[]
+    const refined = ringPolygon(ring, diskField(60, 22))?.polygon as number[]
     expect(refined).not.toEqual(lattice)
     // Same polygon, moved off the lattice: vertex count is unchanged.
     expect(refined.length).toBe(lattice.length)
@@ -258,11 +293,13 @@ describe('adaptive corners', () => {
   // A 6 px square: at default smoothing the α metric rounds corners this small.
   const smallSquare = (): BinaryMask => rectMask(16, 16, 4, 4, 10, 10)
 
+  // A corner is "sharp" when the path turns discontinuously (a tangent jump)
+  // at an anchor near it; a rounded corner joins its two pieces G1-continuously.
   function sharpCornerCount(commands: PathCommand[], corners: [number, number][]): number {
-    const pts = anchors(commands)
+    const joins = tangentJoins(commands)
     let hit = 0
     for (const [cx, cy] of corners) {
-      if (pts.some(([x, y]) => Math.abs(x - cx) < 0.6 && Math.abs(y - cy) < 0.6)) hit++
+      if (joins.some((j) => Math.abs(j.x - cx) < 1 && Math.abs(j.y - cy) < 1 && j.turn > 45)) hit++
     }
     return hit
   }

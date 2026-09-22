@@ -71,13 +71,6 @@ function fadeImage(w = 120, h = 120): RasterImage {
 }
 
 /** Every `<path>`'s `d` and `fill`, in document order. */
-function pathsOf(svg: string): { d: string; fill: string }[] {
-  return [...svg.matchAll(/<path\b[^>]*>/g)].map((m) => ({
-    d: /\bd="([^"]*)"/.exec(m[0])?.[1] ?? '',
-    fill: /\bfill="([^"]*)"/.exec(m[0])?.[1] ?? '',
-  }))
-}
-
 /** A hard-edged red square on white — two flat colors, no ramp. */
 function flatImage(w = 60, h = 60): RasterImage {
   const img = createRaster(w, h)
@@ -171,17 +164,20 @@ describe('gradient detection — engine', () => {
       const res = await vectorize(
         glowImage(),
         normalizeSettings({ paletteSize: 24, gradients: true, layering }),
+        undefined,
+        { withDocument: true },
       )
       expect(res.svg).toContain('stop-opacity=')
-      // The overlay shape is painted right after a shape of identical geometry
-      // carrying its base's paint, so the two paint servers composite.
-      const paths = pathsOf(res.svg)
-      const overlaid = paths.some(
+      // Each gradient-filled overlay shape has a twin of identical geometry
+      // carrying its base's paint emitted earlier in its layer, so the two paint
+      // servers composite (checked on the geometry itself, independent of whether
+      // a shape serializes as a <path> or a primitive element).
+      const shapes = res.document!.shapes
+      const geom = (s: (typeof shapes)[number]): string => JSON.stringify(s.commands)
+      const overlaid = shapes.some(
         (p, i) =>
-          i > 0 &&
-          paths[i - 1].d === p.d &&
-          paths[i - 1].fill !== p.fill &&
-          p.fill.startsWith('url(#'),
+          (p.fill ?? '').startsWith('url(#') &&
+          shapes.slice(0, i).some((q) => q.fill !== p.fill && geom(q) === geom(p)),
       )
       expect(overlaid).toBe(true)
       // The sky behind the glow is one gradient, not pieces around it.

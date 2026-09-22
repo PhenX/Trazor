@@ -2,9 +2,8 @@ import type { GrayImage, LabelMap, PathCommand } from '@trazor/core'
 import type { TraceCurveOptions } from './closed'
 import { closedPathToCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'
-import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
-import { smoothOpen } from './potrace/smooth'
+import { fitOpenRuns, mergeReach, runTolerance } from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { reverseCommands } from './paths'
@@ -530,8 +529,8 @@ function fitOpenChain(
   }
 
   // The optimal polygon needs the integer lattice (unit-step straightness);
-  // sub-pixel refinement then feeds only the sums + vertex adjustment. Junction
-  // endpoints stay exactly on the lattice so adjacent chains still connect.
+  // sub-pixel refinement then feeds the run fitter's samples. Junction endpoints
+  // stay exactly on the lattice so adjacent chains still connect.
   const vertexIdx = optimalPolyline(points)
   let geom = points
   if (field) {
@@ -542,11 +541,11 @@ function fitOpenChain(
     geom[last - 2] = points[last - 2]
     geom[last - 1] = points[last - 1]
   }
-  const sums = computeSums(geom)
-  const adjusted = adjustVertices(geom, sums, vertexIdx, false)
-  const m = adjusted.length >> 1
 
-  if (opts.curveMode === 'polygon' || m <= 2) {
+  if (opts.curveMode === 'polygon' || vertexIdx.length <= 2) {
+    // Polygon mode emits the least-squares adjusted vertices (Selinger §2.3.1).
+    const adjusted = adjustVertices(geom, computeSums(geom), vertexIdx, false)
+    const m = adjusted.length >> 1
     const out: PathCommand[] = []
     for (let i = 1; i < m; i++) {
       out.push({ type: 'L', x: adjusted[i * 2], y: adjusted[i * 2 + 1] })
@@ -554,15 +553,15 @@ function fitOpenChain(
     return out
   }
 
-  const alphamax = (opts.smoothing * 4) / 3
-  const pieces = smoothOpen(adjusted, alphamax, opts.cornerThreshold)
-  const out: PathCommand[] = []
-  const mid0x = (adjusted[0] + adjusted[2]) / 2
-  const mid0y = (adjusted[1] + adjusted[3]) / 2
-  out.push({ type: 'L', x: mid0x, y: mid0y })
-  out.push(...assemblePieces(mid0x, mid0y, pieces, opts.curveOptimize, opts.optTolerance))
-  out.push({ type: 'L', x: adjusted[(m - 1) * 2], y: adjusted[(m - 1) * 2 + 1] })
-  return out
+  // Each smooth run between two corners is fitted directly to the refined chain
+  // samples (line / arc / G1 cubic), the pinned junction endpoints keeping the
+  // partition seam-free.
+  return fitOpenRuns(geom, vertexIdx, {
+    alphamax: (opts.smoothing * 4) / 3,
+    cornerThreshold: opts.cornerThreshold,
+    tol: runTolerance(opts.optTolerance, field !== undefined),
+    reach: mergeReach(opts.curveOptimize),
+  })
 }
 
 /** Rectilinear open chain: direction-change lattice points only. */

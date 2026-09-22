@@ -2,9 +2,8 @@ import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '
 import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
-import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
-import { smoothClosed } from './potrace/smooth'
+import { fitClosedRuns, mergeReach, runTolerance } from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
 import { refineRingToField } from './refine'
@@ -46,6 +45,23 @@ export interface TracedShape {
 }
 
 /**
+ * The polygon half of the chain for one ring, held so the curve half can be
+ * re-fit without re-running the straightness DP. `polygon` is the adjusted
+ * optimal polygon (Selinger §2.3.1, first vertex repeated as last) that the
+ * `polygon` curveMode emits and that decides the corners; `geom` is the refined
+ * ring geometry (sub-pixel, or the lattice ring) the multi-model run fitter
+ * samples for `spline` mode; `vertices` are the optimal polygon's ascending
+ * sample indices into `geom` (first repeated as last).
+ */
+export interface RingFit {
+  polygon: FlatPoints
+  geom: FlatPoints
+  vertices: number[]
+  /** Whether `geom` was snapped to a sub-pixel field (else the lattice ring). */
+  refined: boolean
+}
+
+/**
  * Trace a binary mask into filled shapes: Potrace-chain quality curves per
  * boundary, holes grouped under their smallest enclosing shape.
  */
@@ -68,7 +84,7 @@ export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape
 export function shapesFromPaths(
   paths: CrackPath[],
   opts: TraceCurveOptions,
-  polygons?: readonly (FlatPoints | null)[],
+  polygons?: readonly (RingFit | null)[],
 ): TracedShape[] {
   const commandsOf = (path: CrackPath, i: number): PathCommand[] =>
     polygons
@@ -119,17 +135,18 @@ export function closedPathToCommands(
 
 /**
  * The polygon half of the chain for one closed ring (Selinger 2003, §2.2 +
- * §2.3.1): optimal polygon, then least-squares vertex adjustment. The ring
- * starts at a guaranteed convex corner (decomposition invariant), so the cycle
- * is linearized there for the straightness/DP stages. Returns the adjusted
- * vertices with the first repeated as the last, or `null` for a ring too short
- * to carry a polygon (the caller falls back to the exact lattice path).
+ * §2.3.1): optimal polygon, then least-squares vertex adjustment, plus the
+ * refined ring geometry the multi-model run fitter samples. The ring starts at a
+ * guaranteed convex corner (decomposition invariant), so the cycle is linearized
+ * there for the straightness/DP stages. Returns a {@link RingFit}, or `null` for
+ * a ring too short to carry a polygon (the caller falls back to the exact
+ * lattice path).
  *
  * It depends on the ring and the optional sub-pixel `field` only — never on
  * smoothing, curve optimization or the corner threshold — so a caller may
  * compute it once and re-fit it many times through {@link polygonToCommands}.
  */
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null {
+export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null {
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
   ext.push(ring[0], ring[1])
@@ -138,27 +155,33 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   if (vertexIdx.length < 4) return null
 
   // The optimal polygon picks vertices on the integer lattice (its straightness
-  // analysis needs unit steps); sub-pixel refinement then feeds only the moment
-  // sums and vertex adjustment, so each segment's best-fit line tracks the true
-  // edge rather than the staircase.
+  // analysis needs unit steps); sub-pixel refinement then feeds the moment sums,
+  // the vertex adjustment and the run fitter's samples, so each fit tracks the
+  // true edge rather than the staircase.
   const geom = field ? refineRingToField(ext, field) : ext
   const sums = computeSums(geom)
-  return adjustVertices(geom, sums, vertexIdx, true)
+  const polygon = adjustVertices(geom, sums, vertexIdx, true)
+  return { polygon, geom, vertices: vertexIdx, refined: field !== undefined }
 }
 
 /**
- * The curve half of the chain (Selinger 2003, §2.3.2 + §2.4): an adjusted
- * polygon from {@link ringPolygon} → commands under the curve settings, with
- * adjustment and smoothing cyclic. `pixel` curveMode and a null polygon emit the
- * exact rectilinear ring instead.
+ * The curve half of the chain: a {@link RingFit} from {@link ringPolygon} →
+ * commands under the curve settings. In `spline` mode each smooth run (the
+ * refined ring points between two corners) is fitted directly to those points
+ * by the multi-model run fitter (line / circular arc / G1 cubic, priced by
+ * description length — Selinger 2003 §2.2 for the segmentation, inkvec for the
+ * per-run fit), which carries none of Selinger's chord-adjustment bias. `polygon`
+ * curveMode emits the adjusted polygon; `pixel` curveMode and a null fit emit the
+ * exact rectilinear ring.
  */
 export function polygonToCommands(
   ring: FlatPoints,
-  polygon: FlatPoints | null,
+  fit: RingFit | null,
   opts: TraceCurveOptions,
 ): PathCommand[] {
-  if (opts.curveMode === 'pixel' || polygon === null) return pixelCommands(ring)
+  if (opts.curveMode === 'pixel' || fit === null) return pixelCommands(ring)
 
+  const polygon = fit.polygon
   if (opts.curveMode === 'polygon') {
     const out: PathCommand[] = [{ type: 'M', x: polygon[0], y: polygon[1] }]
     // Last adjusted vertex duplicates the first — skip it.
@@ -169,19 +192,14 @@ export function polygonToCommands(
     return out
   }
 
-  // Drop the duplicated last vertex for the cyclic stages.
-  const ringVerts = polygon.slice(0, polygon.length - 2)
-  const alphamax = (opts.smoothing * 4) / 3
-  const pieces = smoothClosed(ringVerts, alphamax, opts.cornerThreshold)
-
-  // The path starts at the end anchor of the last piece.
-  const lastPiece = pieces[pieces.length - 1]
-  const commands: PathCommand[] = [{ type: 'M', x: lastPiece.ex, y: lastPiece.ey }]
-  commands.push(
-    ...assemblePieces(lastPiece.ex, lastPiece.ey, pieces, opts.curveOptimize, opts.optTolerance),
-  )
-  commands.push({ type: 'Z' })
-  return commands
+  const commands = fitClosedRuns(fit.geom, fit.vertices, polygon, {
+    alphamax: (opts.smoothing * 4) / 3,
+    cornerThreshold: opts.cornerThreshold,
+    tol: runTolerance(opts.optTolerance, fit.refined),
+    reach: mergeReach(opts.curveOptimize),
+  })
+  // A ring too short for a meaningful run fit falls back to the exact lattice.
+  return commands ?? pixelCommands(ring)
 }
 
 /** Exact rectilinear ring (pixel mode): collinear lattice points collapsed. */
