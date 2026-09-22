@@ -24,7 +24,14 @@ export { simplifyOpen } from './simplify'
 export { fitOpenPolyline, fitCubicSegment, distanceToCubic } from './fit'
 export type { Cubic } from './fit'
 export { optimalPolyline, straightReach } from './potrace/polyfit'
-export { refineRingToField, pairwiseField } from './refine'
-export type { SignedField } from './refine'
+export {
+  refineRingToField,
+  pairwiseField,
+  layerField,
+  coverageOf,
+  signedFieldOf,
+  negatedField,
+} from './refine'
+export type { SignedField, LayerFieldSource } from './refine'
 export { reverseCommands } from './paths'
 export type { FlatPoints } from './paths'

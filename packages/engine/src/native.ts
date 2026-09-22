@@ -45,6 +45,7 @@ import {
 } from './trace'
 import {
   adaptiveBinarize,
+  alphaCoverageField,
   bilateralFilter,
   binarize,
   borderDominantColor,
@@ -58,6 +59,7 @@ import {
   fitRegionGradients,
   flattenImage,
   gaussianBlur,
+  interiorPaletteColors,
   medianFilter,
   mergeSmallRegions,
   otsuThreshold,
@@ -76,12 +78,20 @@ import {
   assembleRegions,
   decomposeMask,
   extractChains,
+  layerField,
   ringPolygon,
   shapesFromPaths,
   traceCenterline,
   traceLabelMap,
 } from '@trazor/trace'
-import type { ChainFit, CrackPath, FlatPoints, RegionShape, TracedShape } from '@trazor/trace'
+import type {
+  ChainFit,
+  CrackPath,
+  FlatPoints,
+  RegionShape,
+  SignedField,
+  TracedShape,
+} from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import type { HelperPool, StackPlanPayload } from './helper-pool'
@@ -1034,8 +1044,18 @@ async function colorPipeline(
       mergeSmallRegions(q.labels, settings.minRegionArea)
     }
     labels = q.labels
-    paletteHex = q.paletteHex
-    paletteRgb = q.paletteRgb
+    if (settings.palette === null) {
+      // A cluster's mean over every pixel it owns carries its anti-aliased rim
+      // into its color; the color is read from the region interiors instead,
+      // once the cleanup has settled which pixels each label owns. A fixed
+      // palette is the user's exact colors and stays as given.
+      const measured = interiorPaletteColors(image, labels, q.paletteRgb)
+      paletteHex = measured.paletteHex
+      paletteRgb = measured.paletteRgb
+    } else {
+      paletteHex = q.paletteHex
+      paletteRgb = q.paletteRgb
+    }
     counts = new Uint32Array(labels.count)
     for (let i = 0; i < labels.data.length; i++) {
       const l = labels.data[i]
@@ -1148,11 +1168,19 @@ async function colorPipeline(
   // every helper key a miss.
   const labelScope = palKey !== undefined ? `${helperCtx.scope}|${palKey}` : `#${helperCtx.serial}`
 
+  // Sub-pixel boundary refinement: a color edge is snapped onto the true
+  // anti-aliased edge between its two region colors, an exterior edge onto the
+  // transparency coverage at the cut level. Skipped in pixel mode (exact
+  // lattice); a single color with no transparency has no edge to refine.
+  const refines = settings.curveMode !== 'pixel'
+  const alphaField =
+    refines && alpha !== null && settings.alphaThreshold > 0
+      ? alphaCoverageField(alpha, image.width, image.height, settings.alphaThreshold)
+      : undefined
+  const refinesEdges = refines && (paletteHex.length > 1 || alphaField !== undefined)
+  const alphaLevel = alphaField !== undefined ? settings.alphaThreshold : undefined
+
   if (settings.layering === 'cutout') {
-    // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
-    // true anti-aliased edge between its two region colors. Skipped in pixel
-    // mode (exact lattice) and when the palette is degenerate.
-    const refinesColor = settings.curveMode !== 'pixel' && paletteHex.length > 1
     // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
     // (fitted once, reused reversed) so cutout gets the node reduction without
     // seam divergence. Full-shape primitives stay off for cutout (an element
@@ -1166,7 +1194,9 @@ async function colorPipeline(
         helpers,
         labels,
         image,
-        refinesColor ? paletteToOklab(paletteRgb) : undefined,
+        alpha,
+        refinesEdges ? paletteToOklab(paletteRgb) : undefined,
+        alphaLevel,
         curveOpts,
         arcPrecision,
         helperCtx,
@@ -1175,8 +1205,12 @@ async function colorPipeline(
     } else {
       regions = traceLabelMap(labels, {
         ...curveOpts,
-        colorField: refinesColor
-          ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(paletteRgb) }
+        colorField: refinesEdges
+          ? {
+              oklab: toOklabBuffer(image),
+              paletteOklab: paletteToOklab(paletteRgb),
+              alpha: alphaField,
+            }
           : undefined,
         refineChain: arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
       })
@@ -1218,11 +1252,37 @@ async function colorPipeline(
     // optimization over the cached rings and polygons.
     const ringKey = ringKeyOf(settings, traceMinArea)
     const reusable = paletteEntry?.rings
-    const cachedLayers =
-      reusable !== undefined && reusable.key === ringKey ? reusable.layers : undefined
     // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
     const wantPolygons = settings.curveMode !== 'pixel'
+    // Each layer's polygons are refined against its own boundary field, which
+    // reads the mask the rings were cut from — so they cannot be rebuilt from
+    // cached rings alone, and a ring set cached without them (by a `pixel`
+    // run) is decomposed again.
+    const cachedLayers =
+      reusable !== undefined &&
+      reusable.key === ringKey &&
+      !(wantPolygons && refinesEdges && reusable.polygons === undefined)
+        ? reusable.layers
+        : undefined
     const cachedPolygons = cachedLayers && wantPolygons ? reusable?.polygons : undefined
+    /** The boundary field of one layer, from the mask its rings were cut from. */
+    const fieldFor = (
+      mask: Uint8Array,
+      stackLabels: Int32Array,
+      label: number,
+    ): SignedField | undefined =>
+      refinesEdges
+        ? layerField({
+            width: image.width,
+            height: image.height,
+            mask,
+            labels: stackLabels,
+            pixels: image.data,
+            paletteRgb,
+            label,
+            alpha: alphaField,
+          })
+        : undefined
 
     // Layer bookkeeping shared by the cached and the computed path: layers are
     // painted in order and the running count is each layer's own id.
@@ -1315,6 +1375,7 @@ async function colorPipeline(
         unit < plan.order.length ? plan.order[unit] : plan.islands[unit - plan.order.length].label
       const total = plan.order.length + plan.islands.length
       const stackKey = `${labelScope}|${ringKey}`
+      if (refinesEdges) helpers.setImage(helperCtx.scope, image, alpha)
       helpers.setStackPlan(stackKey, stackPayload(labels, plan, settings.turnPolicy, traceMinArea))
       startLayers(total)
       for await (const out of helpers.dispatch({
@@ -1324,6 +1385,8 @@ async function colorPipeline(
         curve: curveOpts,
         meta: (unit) => layerPaint(labelOf(unit), unit),
         serialize: helperCtx.serialize,
+        paletteRgb: refinesEdges ? paletteRgb : undefined,
+        alphaThreshold: alphaLevel,
       })) {
         // oxlint-disable-next-line no-await-in-loop
         await paintShapes(labelOf(out.unit), out.shapes, out.svg)
@@ -1358,14 +1421,17 @@ async function colorPipeline(
       const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
       const polygonSets: (FlatPoints | null)[][] | undefined =
         layers && wantPolygons ? [] : undefined
+      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
       await decomposeStackedLayers(
         labels,
-        stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined),
+        plan,
         settings.turnPolicy,
         traceMinArea,
         startLayers,
-        async (label, paths) => {
-          const polygons = wantPolygons ? layerPolygons(paths) : undefined
+        async (label, paths, mask, island) => {
+          const polygons = wantPolygons
+            ? layerPolygons(paths, fieldFor(mask, plan.stackLabels, island ? label : -1))
+            : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
           await paintLayer(label, paths, polygons)
@@ -1386,12 +1452,13 @@ async function colorPipeline(
 }
 
 /**
- * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`.
- * Stacked layering traces flat label masks with no sub-pixel field, so the
- * polygons depend on the rings alone.
+ * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`,
+ * refined against the layer's boundary `field` when one applies (its color
+ * edges and the transparency coverage); without one they depend on the rings
+ * alone.
  */
-function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
-  return paths.map((p) => ringPolygon(p.points))
+function layerPolygons(paths: CrackPath[], field?: SignedField): (FlatPoints | null)[] {
+  return paths.map((p) => ringPolygon(p.points, field))
 }
 
 /**
@@ -1531,9 +1598,11 @@ function stackPayload(
 /**
  * Stacked layering: build each cut layer's mask from `plan` and decompose it
  * into boundary rings, handing them to `onLayer` in paint order (base layers
- * bottom-up, then the lifted island layers). `startLayers` reports the layer
- * total first, so a caller can drive progress; `onLayer` is awaited, so the
- * caller controls where the loop yields.
+ * bottom-up, then the lifted island layers) along with the mask they were cut
+ * from — valid until the next layer is built — and whether the layer is a
+ * lifted island. `startLayers` reports the layer total first, so a caller can
+ * drive progress; `onLayer` is awaited, so the caller controls where the loop
+ * yields.
  */
 async function decomposeStackedLayers(
   labels: LabelMap,
@@ -1541,7 +1610,7 @@ async function decomposeStackedLayers(
   turnPolicy: TurnPolicy,
   minArea: number,
   startLayers: (total: number) => void,
-  onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
+  onLayer: (label: number, paths: CrackPath[], mask: Uint8Array, island: boolean) => Promise<void>,
 ): Promise<void> {
   const floor = Math.max(1, minArea)
   const stackData = plan.stackLabels
@@ -1636,7 +1705,7 @@ async function decomposeStackedLayers(
     // Remove this layer's own pixels so the next union is the layers below it.
     for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
     // oxlint-disable-next-line no-await-in-loop
-    await onLayer(label, paths)
+    await onLayer(label, paths, cut, false)
   }
 
   // Island layers: each lifted color repainted on top of every base layer.
@@ -1645,7 +1714,7 @@ async function decomposeStackedLayers(
     for (const p of island.pixels) cut[p] = 1
     const paths = decomposeMask(cutMask, turnPolicy, floor)
     // oxlint-disable-next-line no-await-in-loop
-    await onLayer(island.label, paths)
+    await onLayer(island.label, paths, cut, true)
   }
 }
 
@@ -1660,14 +1729,16 @@ async function fitCutoutInHelpers(
   helpers: HelperPool,
   labels: LabelMap,
   image: RasterImage,
+  alpha: Uint8Array | null,
   paletteOklab: Float32Array | undefined,
+  alphaThreshold: number | undefined,
   curve: HelperCurveOptions,
   arcPrecision: number | undefined,
   helperCtx: HelperContext,
   labelScope: string,
 ): Promise<RegionShape[]> {
   const network = extractChains(labels)
-  if (paletteOklab) helpers.setImage(helperCtx.scope, image)
+  if (paletteOklab) helpers.setImage(helperCtx.scope, image, alpha)
   helpers.setChains(labelScope, network)
   const fits: ChainFit[] = new Array(network.chains.length)
   let done = 0
@@ -1678,6 +1749,7 @@ async function fitCutoutInHelpers(
     curve,
     batch: CHAIN_BATCH,
     paletteOklab,
+    alphaThreshold,
     arcPrecision,
   })) {
     fits[out.unit] = { open: out.shapes[0], closed: out.shapes[1] }

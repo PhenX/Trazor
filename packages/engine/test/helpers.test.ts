@@ -51,6 +51,31 @@ const overlayScene = scenes.find((s) => s.name === 'glow over a sky ramp (stacke
   | (typeof scenes)[number]
   | undefined
 
+/**
+ * A disk with an exact-coverage anti-aliased rim on a transparent canvas, a
+ * square of a second color inside it: exterior edges refined against the alpha
+ * coverage and color edges against the palette, in both layerings.
+ */
+function alphaScene(): RasterImage {
+  const img = createRaster(72, 72)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 72; y++) {
+    for (let x = 0; x < 72; x++) {
+      let covered = 0
+      for (let sy = 0; sy < 4; sy++) {
+        for (let sx = 0; sx < 4; sx++) {
+          if (Math.hypot(x + (sx + 0.5) / 4 - 36, y + (sy + 0.5) / 4 - 36) < 26.3) covered++
+        }
+      }
+      if (covered === 0) continue
+      const inner = x >= 28 && x < 44 && y >= 30 && y < 42
+      if (inner) setPixel(img, x, y, 40, 110, 190)
+      else setPixel(img, x, y, 210, 60, 50, Math.round((covered * 255) / 16))
+    }
+  }
+  return img
+}
+
 /** Ink art with a hole and a few specks — enough boundary work for bw mode. */
 function inkArt(): RasterImage {
   const img = createRaster(72, 72)
@@ -109,6 +134,22 @@ const MODES: Mode[] = [
     name: 'color stacked, gradient overlay (underlays)',
     image: () => (overlayScene as (typeof scenes)[number]).image(),
     patch: { ...overlayScene?.settings, mode: 'color', gradients: true },
+  },
+  {
+    name: 'color stacked, alpha edge',
+    image: alphaScene,
+    patch: { mode: 'color', paletteSize: 3, background: 'transparent', alphaThreshold: 128 },
+  },
+  {
+    name: 'color cutout, alpha edge',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'cutout',
+    },
   },
   {
     name: 'color cutout',

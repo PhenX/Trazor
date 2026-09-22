@@ -124,6 +124,11 @@ export interface HelperImageMessage {
   height: number
   /** RGBA bytes, transferred. */
   buffer: ArrayBuffer
+  /**
+   * Source alpha per pixel (Uint8, `width`×`height`), transferred; present under
+   * transparent handling. Exterior edges are refined onto its coverage.
+   */
+  alpha?: ArrayBuffer
 }
 
 /**
@@ -241,11 +246,24 @@ export interface HelperJobMessage {
   /** Serialization settings; only `trace-layers` serializes. */
   serialize?: HelperSerializeOptions
   /**
-   * `fit-chains`: per-label palette Oklab (interleaved [L, a, b]), transferred.
-   * Present ⇒ refine each chain onto the sub-pixel color edge between its two
-   * regions, using the Oklab buffer of the cached working image.
+   * `fit-chains` and `trace-layers`: per-label palette Oklab (interleaved
+   * [L, a, b]), transferred. Present ⇒ refine each chain, or each layer's
+   * rings, onto the sub-pixel color edge between the two regions that meet
+   * there, using the Oklab buffer of the cached working image.
    */
   paletteOklab?: ArrayBuffer
+  /**
+   * `trace-layers`: per-label palette RGB (interleaved bytes), transferred.
+   * Present ⇒ refine each layer's rings onto the sub-pixel edge between the two
+   * region colors that meet there, read from the cached working image.
+   */
+  paletteRgb?: ArrayBuffer
+  /**
+   * The transparency cut level whose coverage field (`alphaCoverageField` of the
+   * cached source alpha) refines exterior edges; absent ⇒ exterior edges stay on
+   * the lattice.
+   */
+  alphaThreshold?: number
   /** `fit-chains`: collapse circular Bézier runs to `A` arcs at this precision. */
   arcPrecision?: number
 }
