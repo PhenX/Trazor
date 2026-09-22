@@ -211,9 +211,14 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   by description length. Used as the measured icon benchmark oracle
   (`scripts/eval/inkvec-compare.ts`; the comparison in
   [`INKVEC_COMPARISON.md`](INKVEC_COMPARISON.md)). Its coverage model informed
-  the transparency coverage field (`alphaCoverageField`), the stacked-layer
-  boundary field (`layerField`, `coverageOf` — the sRGB blend inversion) and the
-  interior palette read (`interiorPaletteColors`); no code was taken.
+  the transparency coverage field (`alphaCoverageField`), the cutout and
+  stacked-layer boundary fields (`pairwiseField`, `layerField`, `coverageOf` —
+  the sRGB blend inversion, from `crates/inkvec-trace/src/coverage.rs`) and the
+  interior palette read (`interiorPaletteColors`). Its planar-face emission
+  (`crates/inkvec-cli/src/emit.rs` `emit_color`, `rings.rs`) — each face painted
+  once as its outer ring in containment order, same-color siblings merged into
+  one even-odd path — informed the `nested` layering (`assembleFaces`,
+  `emitNestedFaces`). No code was taken.
 - **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
   Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
   <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,

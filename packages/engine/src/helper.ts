@@ -1,5 +1,5 @@
 import type { BinaryMask, GrayImage, PathCommand, RasterImage } from '@trazor/core'
-import { alphaCoverageField, toOklabBuffer } from '@trazor/raster'
+import { alphaCoverageField } from '@trazor/raster'
 import {
   decomposeMask,
   fitChain,
@@ -33,13 +33,12 @@ import type {
 } from './protocol'
 
 /**
- * The working image plus the Oklab buffer boundary refinement reads from it,
- * and, under transparent handling, the source alpha with the coverage field
- * built from it at the job's cut level.
+ * The working image whose RGBA bytes boundary refinement reads directly, and,
+ * under transparent handling, the source alpha with the coverage field built
+ * from it at the job's cut level.
  */
 interface ImageState {
   image: RasterImage
-  oklab?: Float32Array
   alpha?: Uint8Array
   alphaField?: GrayImage
   alphaLevel?: number
@@ -209,14 +208,14 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   /** The option objects every unit of one job shares. */
   function jobOptions(job: HelperJobMessage): JobOptions {
-    const paletteOklab = job.paletteOklab ? new Float32Array(job.paletteOklab) : undefined
+    const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
     if (job.kind === 'fit-chains') {
       const arcPrecision = job.arcPrecision
       return {
         cutout: {
           ...curveOptions(job.curve),
-          colorField: paletteOklab
-            ? { oklab: oklabBuffer(), paletteOklab, alpha: alphaFieldAt(job.alphaThreshold) }
+          colorField: paletteRgb
+            ? { pixels: workingPixels(), paletteRgb, alpha: alphaFieldAt(job.alphaThreshold) }
             : undefined,
           refineChain:
             arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
@@ -224,7 +223,6 @@ export function installHelperHandler(scope: WorkerScope): void {
       }
     }
     if (job.kind === 'trace-layers') {
-      const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
       return {
         curve: curveOptions(job.curve),
         layer: paletteRgb ? { paletteRgb, alpha: alphaFieldAt(job.alphaThreshold) } : undefined,
@@ -339,11 +337,11 @@ export function installHelperHandler(scope: WorkerScope): void {
     return fit.closed ? [fit.open, fit.closed] : [fit.open]
   }
 
-  /** The cached working image's Oklab buffer, built once. */
-  function oklabBuffer(): Float32Array {
+  /** The cached working image's RGBA bytes (the color field reads them directly). */
+  function workingPixels(): Uint8ClampedArray {
     const st = imageState
     if (!st) throw new Error('helper: no working image')
-    return (st.oklab ??= toOklabBuffer(st.image))
+    return st.image.data
   }
 
   /** The cached bw coverage field, if this helper was given one. */

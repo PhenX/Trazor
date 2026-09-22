@@ -75,20 +75,22 @@ import {
   zhangSuenThin,
 } from '@trazor/raster'
 import {
+  assembleFaces,
   assembleRegions,
   decomposeMask,
   extractChains,
+  fitChains,
   layerField,
   ringPolygon,
   shapesFromPaths,
   traceCenterline,
-  traceLabelMap,
 } from '@trazor/trace'
 import type {
   ChainFit,
+  ChainNetwork,
   CrackPath,
+  FaceShape,
   FlatPoints,
-  RegionShape,
   SignedField,
   TracedShape,
 } from '@trazor/trace'
@@ -701,10 +703,12 @@ export async function vectorize(
   // half itself.
   const shapeParts: (ShapeOut | null)[] = []
   // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays off
-  // for cutout — an element can't be shared with a neighbor's path edge. Arc
-  // fitting for cutout happens seam-safely per shared chain instead (the
-  // `refineChain` passed to the tracer).
-  const roundPrimitives = settings.optimizeSvg && settings.layering !== 'cutout'
+  // for the shared partitions (cutout, nested) — an element can't be shared with
+  // a neighbor's path edge, and two sibling faces both draw the boundary between
+  // them, so approximating one as a primitive would open a seam. Arc fitting
+  // happens seam-safely per shared chain instead (the `refineChain` passed to
+  // the tracer). Only stacked, which overdraws with independent layers, uses them.
+  const roundPrimitives = settings.optimizeSvg && settings.layering === 'stacked'
   // Exactly the per-shape settings the serializer would apply, so a helper's
   // output drops into the document unchanged.
   const shapeSerialize: HelperSerializeOptions = {
@@ -1180,68 +1184,86 @@ async function colorPipeline(
   const refinesEdges = refines && (paletteHex.length > 1 || alphaField !== undefined)
   const alphaLevel = alphaField !== undefined ? settings.alphaThreshold : undefined
 
-  if (settings.layering === 'cutout') {
-    // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
-    // (fitted once, reused reversed) so cutout gets the node reduction without
-    // seam divergence. Full-shape primitives stay off for cutout (an element
-    // can't be shared with a neighbour's path), which is why `roundPrimitives`
-    // is disabled at serialization.
+  if (settings.layering === 'cutout' || settings.layering === 'nested') {
+    // Both partition layerings walk the same shared chain graph and fit each
+    // chain once; only the assembly differs (regions vs. nested faces). Collapse
+    // circular/elliptical Bézier runs to `A` arcs per shared chain (fitted once,
+    // reused reversed) so the node reduction stays seam-safe; full-shape
+    // primitives stay off for a shared partition (an element can't be shared with
+    // a neighbour's path), which is why `roundPrimitives` is disabled at
+    // serialization.
     const arcPrecision = settings.optimizeSvg ? settings.precision : undefined
-    let regions: RegionShape[]
+    const colorField = refinesEdges
+      ? { pixels: image.data, paletteRgb, alpha: alphaField }
+      : undefined
+    const cutoutOpts = {
+      ...curveOpts,
+      colorField,
+      refineChain:
+        arcPrecision === undefined
+          ? undefined
+          : (cmds: PathCommand[]) => fitArcs(cmds, arcPrecision),
+    }
+    let network: ChainNetwork
+    let fits: ChainFit[]
     if (helpers) {
-      regions = await fitCutoutInHelpers(
+      ;({ network, fits } = await fitChainsInHelpers(
         run,
         helpers,
         labels,
         image,
         alpha,
-        refinesEdges ? paletteToOklab(paletteRgb) : undefined,
+        refinesEdges ? paletteRgb : undefined,
         alphaLevel,
         curveOpts,
         arcPrecision,
         helperCtx,
         labelScope,
+      ))
+    } else {
+      network = extractChains(labels)
+      fits = fitChains(network, cutoutOpts)
+    }
+
+    if (settings.layering === 'nested') {
+      emitNestedFaces(
+        assembleFaces(network, fits),
+        fillFor,
+        paletteColorsFor,
+        underOf,
+        usedPalette,
+        shapes,
       )
     } else {
-      regions = traceLabelMap(labels, {
-        ...curveOpts,
-        colorField: refinesEdges
-          ? {
-              oklab: toOklabBuffer(image),
-              paletteOklab: paletteToOklab(paletteRgb),
-              alpha: alphaField,
-            }
-          : undefined,
-        refineChain: arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
-      })
-    }
-    regions.sort((a, b) => b.area - a.area)
-    // Trap width in viewBox px. An mm-unit output carries a physical millimetre
-    // trap: convert it through the document's mm-per-px so the overlap means the
-    // same on press at any trace resolution; a px-unit trap is already viewBox px.
-    const trapScale = mmPerPx(image.width, settings.widthMm)
-    const trapPx =
-      settings.gapFill <= 0
-        ? 0
-        : settings.unit === 'mm'
-          ? trapScale > 0
-            ? settings.gapFill / trapScale
-            : 0
-          : settings.gapFill
-    for (const region of regions) {
-      const under = underOf(region.label)
-      for (const label of under >= 0 ? [under, region.label] : [region.label]) {
-        const fill = fillFor[label]
-        addColors(usedPalette, paletteColorsFor[label])
-        shapes.push({
-          commands: region.commands,
-          fill,
-          fillRule: 'evenodd',
-          ...(label === under ? { unfoldable: true } : {}),
-          ...(trapPx > 0
-            ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
-            : {}),
-        })
+      const regions = assembleRegions(network, fits)
+      regions.sort((a, b) => b.area - a.area)
+      // Trap width in viewBox px. An mm-unit output carries a physical millimetre
+      // trap: convert it through the document's mm-per-px so the overlap means the
+      // same on press at any trace resolution; a px-unit trap is already viewBox px.
+      const trapScale = mmPerPx(image.width, settings.widthMm)
+      const trapPx =
+        settings.gapFill <= 0
+          ? 0
+          : settings.unit === 'mm'
+            ? trapScale > 0
+              ? settings.gapFill / trapScale
+              : 0
+            : settings.gapFill
+      for (const region of regions) {
+        const under = underOf(region.label)
+        for (const label of under >= 0 ? [under, region.label] : [region.label]) {
+          const fill = fillFor[label]
+          addColors(usedPalette, paletteColorsFor[label])
+          shapes.push({
+            commands: region.commands,
+            fill,
+            fillRule: 'evenodd',
+            ...(label === under ? { unfoldable: true } : {}),
+            ...(trapPx > 0
+              ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
+              : {}),
+          })
+        }
       }
     }
     run.progress(1)
@@ -1719,26 +1741,27 @@ async function decomposeStackedLayers(
 }
 
 /**
- * Cutout tracing across helpers: the coordinator walks the crack network into
- * chains, each chain is fitted ONCE in the helper that owns it, and the regions
- * are assembled here from the shared fits — so both neighbours of a chain still
- * inherit mathematically identical geometry and the partition stays seam-free.
+ * Partition chain fitting across helpers: the coordinator walks the crack
+ * network into chains, each chain is fitted ONCE in the helper that owns it, and
+ * the fits are collected here — so an assembler (regions for cutout, faces for
+ * nested) inherits mathematically identical geometry on both sides of a chain
+ * and the partition stays seam-free.
  */
-async function fitCutoutInHelpers(
+async function fitChainsInHelpers(
   run: Run,
   helpers: HelperPool,
   labels: LabelMap,
   image: RasterImage,
   alpha: Uint8Array | null,
-  paletteOklab: Float32Array | undefined,
+  paletteRgb: Uint8Array | undefined,
   alphaThreshold: number | undefined,
   curve: HelperCurveOptions,
   arcPrecision: number | undefined,
   helperCtx: HelperContext,
   labelScope: string,
-): Promise<RegionShape[]> {
+): Promise<{ network: ChainNetwork; fits: ChainFit[] }> {
   const network = extractChains(labels)
-  if (paletteOklab) helpers.setImage(helperCtx.scope, image, alpha)
+  if (paletteRgb) helpers.setImage(helperCtx.scope, image, alpha)
   helpers.setChains(labelScope, network)
   const fits: ChainFit[] = new Array(network.chains.length)
   let done = 0
@@ -1748,7 +1771,7 @@ async function fitCutoutInHelpers(
     stateKey: labelScope,
     curve,
     batch: CHAIN_BATCH,
-    paletteOklab,
+    paletteRgb,
     alphaThreshold,
     arcPrecision,
   })) {
@@ -1762,7 +1785,86 @@ async function fitCutoutInHelpers(
       await run.tick()
     }
   }
-  return assembleRegions(network, fits)
+  return { network, fits }
+}
+
+/**
+ * Nested layering emission (inkvec `emit_color`, `crates/inkvec-cli/src/emit.rs`):
+ * paint each planar face once as its outer ring, in containment order (a parent
+ * before the faces nested inside it), and merge same-color sibling faces into
+ * one even-odd path. A child's outline is painted over its parent, so a boundary
+ * between nested faces is written once and the shared curve — the identical fit —
+ * leaves no seam. Faces are pushed in a pre-order walk of the containment forest,
+ * larger area first at each level; a face carrying an underlay emits its base
+ * paint first (its own geometry) and is never merged, mirroring cutout.
+ */
+function emitNestedFaces(
+  faces: readonly FaceShape[],
+  fillFor: readonly string[],
+  paletteColorsFor: readonly string[][],
+  underOf: (label: number) => number,
+  usedPalette: string[],
+  shapes: SvgShape[],
+): void {
+  const children: number[][] = faces.map(() => [])
+  const roots: number[] = []
+  for (let i = 0; i < faces.length; i++) {
+    if (faces[i].parent >= 0) children[faces[i].parent].push(i)
+    else roots.push(i)
+  }
+  // Largest area first within a level, index as a deterministic tiebreak, so a
+  // face never sits above one it contains and the output is stable.
+  const byArea = (a: number, b: number): number => faces[b].area - faces[a].area || a - b
+  roots.sort(byArea)
+  for (const list of children) list.sort(byArea)
+
+  // A face merges with its same-color siblings only when its paint is a flat hex
+  // and it carries no underlay (a gradient's `url(#…)` fill and an underlay each
+  // stay their own element, exactly as inkvec keeps them out of the merge).
+  const mergeable = (i: number): boolean =>
+    underOf(faces[i].label) < 0 && fillFor[faces[i].label].startsWith('#')
+
+  const emitLevel = (members: readonly number[]): void => {
+    const done = new Uint8Array(members.length)
+    for (let a = 0; a < members.length; a++) {
+      if (done[a]) continue
+      done[a] = 1
+      const i = members[a]
+      const label = faces[i].label
+      const under = underOf(label)
+      if (!mergeable(i)) {
+        // Non-merged: an underlay's base paint first (same geometry), then the
+        // face's own paint, each its own element.
+        for (const paintLabel of under >= 0 ? [under, label] : [label]) {
+          addColors(usedPalette, paletteColorsFor[paintLabel])
+          shapes.push({
+            commands: faces[i].commands,
+            fill: fillFor[paintLabel],
+            fillRule: 'evenodd',
+            ...(paintLabel === under ? { unfoldable: true } : {}),
+          })
+        }
+        emitLevel(children[i])
+        continue
+      }
+      // Merge every later same-fill sibling into one even-odd path (disjoint
+      // siblings, so even-odd paints their union). Their children still follow.
+      const group = [i]
+      for (let b = a + 1; b < members.length; b++) {
+        if (done[b]) continue
+        const j = members[b]
+        if (!mergeable(j) || fillFor[faces[j].label] !== fillFor[label]) continue
+        done[b] = 1
+        group.push(j)
+      }
+      const commands: PathCommand[] = []
+      for (const j of group) commands.push(...faces[j].commands)
+      addColors(usedPalette, paletteColorsFor[label])
+      shapes.push({ commands, fill: fillFor[label], fillRule: 'evenodd' })
+      for (const j of group) emitLevel(children[j])
+    }
+  }
+  emitLevel(roots)
 }
 
 /** Chains between a progress report and a cancel check (a power of two, minus one). */

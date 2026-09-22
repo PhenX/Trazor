@@ -94,8 +94,14 @@ OpenMoji 0.035 / 0.012, Simple Icons 0.050 / 0.020, Twemoji 0.033 / 0.016. Per-i
   optimal polygon as the segmentation and refits each run — line, arc or G1 cubic, priced by description length — to
   the refined points by least squares, without inkvec's per-vertex dynamic program (0.5–1 s per ring).
 - **Coordinates (2.5× inkvec).** Stacked layering carries the union's outline in every base layer; cutout writes
-  every shared chain twice; straight runs are cubics. inkvec paints each planar face once and merges same-color
-  siblings into one evenodd path — an assembly over the cutout chain graph, not a new data structure.
+  every shared chain twice; straight runs are cubics. The **`nested`** layering paints each planar face once (its
+  outer ring, in containment order) and merges same-color siblings into one evenodd path — an assembly
+  (`assembleFaces`) over the cutout chain graph, not a new data structure. A boundary between nested faces is then
+  written once instead of twice, so `nested` carries fewer coordinates than `cutout` at equal GMSD (the overpaint of
+  the identical shared curve leaves no seam); it is the default for the logo profile, where it beats cutout. It stays
+  off illustration, whose opaque shaded art is smoother under `stacked` (which extends lower layers under upper ones)
+  than under any exact partition. The remaining gap on the emoji families is the cubic count of the Potrace chain,
+  which the curve refit addresses.
 - **Native alpha.** Translucent faces (steam at alpha 115/164 in a Noto emoji) are dropped by the half-coverage cut and
   were painted as light opaque colors by the old one; inkvec emits them with `opacity`. The analyzer already tells the
   cases apart (`translucentArea`).

@@ -92,12 +92,21 @@ A chain that closes on a junction can be both — its own ring for one region, o
 both fits exist and the assembler picks by how it arrived. The reversed form of whichever it used is derived once and
 shared, which is what makes the two neighbors' geometry identical rather than merely equal.
 
-_Optional sub-pixel color refinement_ (`ColorField`): given the working image's per-pixel Oklab buffer and the per-label
-palette Oklab, each shared chain is snapped onto the true anti-aliased edge between its two region colors before fitting —
-the pairwise signed field (`refine.ts` `pairwiseField`) is zero where a pixel is the perceptual 50% mix of the two sides.
-The chain is refined **once** and reused by both neighbors, and junction endpoints stay pinned to the lattice, so the
-seam-free guarantee holds. Straight junction-to-junction edges (no interior polygon vertex) are unaffected; loops and
+_Optional sub-pixel color refinement_ (`ColorField`): given the working image's RGBA bytes and the per-label palette RGB,
+each shared chain is snapped onto the true anti-aliased edge between its two region colors before fitting — the pairwise
+signed field (`refine.ts` `pairwiseField`) is zero where a pixel is the 50% mix of the two sides, the mix inverted in
+encoded sRGB (`coverageOf`, the space a rasterizer blends in) rather than a perceptual space that would bend the mixing
+line. The chain is refined **once** and reused by both neighbors, and junction endpoints stay pinned to the lattice, so
+the seam-free guarantee holds. Straight junction-to-junction edges (no interior polygon vertex) are unaffected; loops and
 curved chains carry the refinement. Omitting the field is byte-identical to the classical lattice trace.
+
+_Nested faces_ (`assembleFaces`, for `nested` layering): the same network and chain fits, assembled into planar faces
+instead of per-label regions. Each connected region contributes one face per **outer** ring; a labeled hole is dropped
+(the child face painted over it in containment order repaints its area), while a hole bordering transparency is kept as
+an even-odd cut. Faces record the face that contains them (geometric point-in-lattice-polygon), so the engine paints them
+parents-first with children on top. A boundary between nested faces is therefore drawn **once** — as the child's outline
+— and because that curve is the identical fit the parent would have drawn, the overpaint leaves no seam; same-color
+sibling faces then merge into one even-odd path at emission (inkvec `emit_color`).
 
 _Optional per-chain post-fit_ (`refineChain`): a transform applied to each shared chain's fitted commands **once** (the
 engine wires `@trazor/svg`'s `fitArcs` here for cutout when path optimization is on, collapsing circular/elliptical Bézier

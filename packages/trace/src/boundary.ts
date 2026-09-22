@@ -12,16 +12,17 @@ import { negatedField, pairwiseField, refineRingToField, signedFieldOf } from '.
 import type { SignedField } from './refine'
 
 /**
- * Per-pixel Oklab buffer (interleaved [L, a, b], matching the label map's
- * dimensions) plus per-label palette Oklab (interleaved, indexed by label). When
- * present, each shared boundary chain is refined onto the sub-pixel color edge
- * between its two regions — the anti-aliased boundary position, not the pixel
+ * The working image's RGBA bytes (matching the label map's dimensions) plus
+ * per-label palette RGB (interleaved, indexed by label). When present, each
+ * shared boundary chain is refined onto the sub-pixel color edge between its two
+ * regions — the anti-aliased boundary position recovered by inverting the sRGB
+ * blend the rasterizer produced (`pairwiseField` → `coverageOf`), not the pixel
  * staircase. The chain is fitted once and reused by both neighbors, so the
  * seam-free guarantee is preserved; junction endpoints stay pinned.
  */
 export interface ColorField {
-  oklab: Float32Array
-  paletteOklab: Float32Array
+  pixels: Uint8ClampedArray
+  paletteRgb: Uint8Array
   /**
    * Signed transparency coverage (`alphaCoverageField`), positive on the
    * labeled side. Present, a chain with an unlabeled (transparent) side is
@@ -414,6 +415,332 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
 }
 
 /**
+ * One planar face of a partition: a single connected region of one label,
+ * written as its outer ring alone. Its holes are dropped — in a partition every
+ * hole is another face's outer boundary, which is painted later and on top of
+ * this one, so the shared curve is drawn once (as the child's outline) instead
+ * of twice. `parent` indexes the face that geometrically contains this one (the
+ * next-larger face whose outline encloses it), or −1 for a root.
+ */
+export interface FaceShape {
+  label: number
+  /** The face's outer ring (a single `M…Z` subpath). */
+  commands: PathCommand[]
+  /** Enclosed area of the outer ring, in px². */
+  area: number
+  /** Index into the returned array of the containing face, or −1 for a root. */
+  parent: number
+}
+
+/**
+ * Assemble the planar faces of a partition from the fitted chains, for `nested`
+ * layering. Each connected region contributes one {@link FaceShape} per outer
+ * ring, carrying only that ring (holes are dropped — see {@link FaceShape}), and
+ * every face records the face that contains it. Painted in containment order
+ * (parents first) with each child drawn over its parent, the faces tile exactly:
+ * a boundary between a face and the face nested inside it is drawn once, as the
+ * child's outline, and because that curve is the identical fit the parent would
+ * have drawn, no seam appears.
+ *
+ * `fits` must be parallel to `network.chains` — the output of {@link fitChain}
+ * per index, exactly as {@link assembleRegions} consumes. Containment is decided
+ * geometrically: each face carries a probe point that is a genuine interior
+ * pixel of its own region, and a face is inside another when that other face's
+ * lattice outline encloses the probe; the smallest such enclosing face is the
+ * parent. The probe is an actual region pixel, so it never lands in a hole, and
+ * the test is exact on the integer lattice.
+ */
+export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]): FaceShape[] {
+  const { chains } = network
+  const cw = network.width + 1
+  const reversed: (PathCommand[] | null)[] = new Array(chains.length).fill(null)
+
+  const ringCommandsOf = (inst: Instance): PathCommand[] => {
+    const i = inst.chain
+    const closed = fits[i].closed as PathCommand[]
+    if (inst.forward) return closed
+    return (reversed[i] ??= reverseCommands(closed))
+  }
+  const runCommandsOf = (inst: Instance): PathCommand[] => {
+    const i = inst.chain
+    if (inst.forward) return fits[i].open
+    return (reversed[i] ??= stripM(
+      reverseCommands([
+        { type: 'M', x: chains[i].points[0], y: chains[i].points[1] },
+        ...fits[i].open,
+      ]),
+    ))
+  }
+  /** The chain's lattice points in travel order, appended to `into` (the first pair skipped after the ring's opening move). */
+  const appendLattice = (inst: Instance, into: number[], skipFirst: boolean): void => {
+    const p = chains[inst.chain].points
+    const n = p.length >> 1
+    if (inst.forward) {
+      for (let k = skipFirst ? 1 : 0; k < n; k++) into.push(p[k * 2], p[k * 2 + 1])
+    } else {
+      for (let k = n - 1 - (skipFirst ? 1 : 0); k >= 0; k--) into.push(p[k * 2], p[k * 2 + 1])
+    }
+  }
+
+  // Per-region instance index, identical to assembleRegions: a chain is walked
+  // forward by the region on its right, reversed by the region on its left.
+  const regionInstances = new Map<number, Map<number, Instance[]>>()
+  const cornerKey = (x: number, y: number): number => y * cw + x
+  const addInstance = (label: number, inst: Instance): void => {
+    if (label < 0) return
+    const p = chains[inst.chain].points
+    const sx = inst.forward ? p[0] : p[p.length - 2]
+    const sy = inst.forward ? p[1] : p[p.length - 1]
+    let byCorner = regionInstances.get(label)
+    if (!byCorner) {
+      byCorner = new Map()
+      regionInstances.set(label, byCorner)
+    }
+    const key = cornerKey(sx, sy)
+    let list = byCorner.get(key)
+    if (!list) {
+      list = []
+      byCorner.set(key, list)
+    }
+    list.push(inst)
+  }
+  for (let i = 0; i < chains.length; i++) {
+    addInstance(chains[i].right, { chain: i, forward: true, used: false })
+    addInstance(chains[i].left, { chain: i, forward: false, used: false })
+  }
+
+  /**
+   * One walked boundary ring: an outer ring (positive area) is a face, a hole
+   * (negative area) is dropped when a labeled child paints over it but KEPT (as
+   * an even-odd hole in its own face) when it borders transparency, which no face
+   * covers. `probeX/Y` is a genuine interior pixel of the face on the ring's own
+   * side; `holeX/Y` is a pixel across the ring, used to reattach a kept hole to
+   * the face that surrounds it.
+   */
+  interface RawRing {
+    label: number
+    commands: PathCommand[]
+    area: number
+    poly: number[]
+    probeX: number
+    probeY: number
+    holeX: number
+    holeY: number
+    touchesTransparent: boolean
+  }
+  const raw: RawRing[] = []
+
+  for (const [label, byCorner] of regionInstances) {
+    for (const list of byCorner.values()) {
+      for (const start of list) {
+        if (start.used) continue
+        const startChain = chains[start.chain]
+        const p = startChain.points
+        const sx = start.forward ? p[0] : p[p.length - 2]
+        const sy = start.forward ? p[1] : p[p.length - 1]
+        const startDir = instFirstDir(chains, start)
+        const [probeX, probeY] = rightProbe(sx, sy, startDir)
+        const [holeX, holeY] = leftProbe(sx, sy, startDir)
+
+        if (startChain.loop) {
+          start.used = true
+          const area = (start.forward ? startChain.shoelace : -startChain.shoelace) / 2
+          const poly: number[] = []
+          appendLattice(start, poly, false)
+          if (poly.length >= 2) poly.length -= 2 // drop the duplicated closing point
+          const outside = start.forward ? startChain.left : startChain.right
+          raw.push({
+            label,
+            commands: ringCommandsOf(start),
+            area,
+            poly,
+            probeX,
+            probeY,
+            holeX,
+            holeY,
+            touchesTransparent: outside < 0,
+          })
+          continue
+        }
+
+        let ringArea = 0
+        const ringCmds: PathCommand[] = []
+        const poly: number[] = []
+        ringCmds.push({ type: 'M', x: sx, y: sy })
+        let touchesTransparent = false
+        let inst = start
+        let firstInst = true
+        for (;;) {
+          inst.used = true
+          const c = chains[inst.chain]
+          ringArea += inst.forward ? c.shoelace : -c.shoelace
+          if ((inst.forward ? c.left : c.right) < 0) touchesTransparent = true
+          ringCmds.push(...runCommandsOf(inst))
+          appendLattice(inst, poly, !firstInst)
+          firstInst = false
+          const [ex, ey] = instEnd(chains, inst)
+          const nextList = byCorner.get(cornerKey(ex, ey))
+          const next = pickContinuation(chains, nextList, instLastDir(chains, inst), start)
+          if (!next || next === start) break
+          inst = next
+        }
+        ringCmds.push({ type: 'Z' })
+        if (poly.length >= 2) poly.length -= 2 // drop the closing point (equals the start)
+        raw.push({
+          label,
+          commands: ringCmds,
+          area: ringArea / 2,
+          poly,
+          probeX,
+          probeY,
+          holeX,
+          holeY,
+          touchesTransparent,
+        })
+      }
+    }
+  }
+
+  const n = raw.length
+  const bbox = new Float64Array(n * 4)
+  for (let i = 0; i < n; i++) {
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    const poly = raw[i].poly
+    for (let k = 0; k < poly.length; k += 2) {
+      if (poly[k] < minX) minX = poly[k]
+      if (poly[k] > maxX) maxX = poly[k]
+      if (poly[k + 1] < minY) minY = poly[k + 1]
+      if (poly[k + 1] > maxY) maxY = poly[k + 1]
+    }
+    bbox[i * 4] = minX
+    bbox[i * 4 + 1] = minY
+    bbox[i * 4 + 2] = maxX
+    bbox[i * 4 + 3] = maxY
+  }
+  const encloses = (j: number, px: number, py: number): boolean =>
+    px >= bbox[j * 4] &&
+    px <= bbox[j * 4 + 2] &&
+    py >= bbox[j * 4 + 1] &&
+    py <= bbox[j * 4 + 3] &&
+    pointInPolygon(px, py, raw[j].poly)
+
+  // Outer rings (positive area) are the faces; index them so a kept hole can be
+  // reattached to the faces it lies in.
+  const faceOfRaw = new Int32Array(n).fill(-1)
+  const faces: FaceShape[] = []
+  for (let i = 0; i < n; i++) {
+    if (raw[i].area > 0) {
+      faceOfRaw[i] = faces.length
+      faces.push({ label: raw[i].label, commands: raw[i].commands, area: raw[i].area, parent: -1 })
+    }
+  }
+
+  // A hole that borders transparency bounds a transparent region no face paints:
+  // it must be punched, under even-odd, out of every face drawn solid over it —
+  // the whole containment chain up to the first enclosing transparent region,
+  // which already cut this area (inkvec `emit_color`: punch a clear face out of
+  // its painted ancestors up to the first transparent ancestor; going further
+  // re-fills it, since a ring inside an even-odd hole flips parity back). A hole
+  // enclosed only by labeled regions is dropped — those child faces, drawn on
+  // top in containment order, repaint exactly its area.
+  const transparent: number[] = []
+  for (let i = 0; i < n; i++) if (raw[i].area < 0 && raw[i].touchesTransparent) transparent.push(i)
+  for (const i of transparent) {
+    const hx = raw[i].holeX
+    const hy = raw[i].holeY
+    const size = -raw[i].area
+    // The smallest transparent region strictly enclosing this one bounds how far
+    // up the chain to punch; faces at least that large are cut by it instead.
+    let enclosing = Infinity
+    for (const k of transparent) {
+      if (k === i) continue
+      const kSize = -raw[k].area
+      if (kSize > size && kSize < enclosing && encloses(k, hx, hy)) enclosing = kSize
+    }
+    for (let j = 0; j < n; j++) {
+      // Only a face that would paint over the whole region cuts it: it must
+      // enclose the region, so its outline is larger than the region and holds a
+      // pixel inside it. A rim sliver beside the region is smaller and is skipped
+      // — punching the region's ring into it would flood the sliver's color.
+      if (faceOfRaw[j] < 0 || raw[j].area < size || raw[j].area >= enclosing) continue
+      if (!encloses(j, hx, hy)) continue
+      // The hole ring carries its own M…Z, so it splices in as another even-odd
+      // subpath of each face it cuts.
+      faces[faceOfRaw[j]].commands.push(...raw[i].commands)
+    }
+  }
+
+  // Containment across faces (any label): a face sits inside another when that
+  // face's outline encloses its interior probe. The probe is a real pixel of the
+  // face, so only the face and its ancestors enclose it; the smallest such
+  // ancestor is the parent, which sets the paint order (parents first).
+  for (let i = 0; i < n; i++) {
+    const fi = faceOfRaw[i]
+    if (fi < 0) continue
+    let parent = -1
+    let parentArea = Infinity
+    for (let j = 0; j < n; j++) {
+      if (j === i || faceOfRaw[j] < 0 || raw[j].area < raw[i].area || raw[j].area >= parentArea) {
+        continue
+      }
+      if (!encloses(j, raw[i].probeX, raw[i].probeY)) continue
+      parent = faceOfRaw[j]
+      parentArea = raw[j].area
+    }
+    faces[fi].parent = parent
+  }
+  return faces
+}
+
+/** The pixel center on the right of travel (the face's own side) leaving corner (sx, sy) toward `dir`. */
+function rightProbe(sx: number, sy: number, dir: number): [number, number] {
+  switch (dir) {
+    case 0:
+      return [sx + 0.5, sy + 0.5]
+    case 1:
+      return [sx - 0.5, sy + 0.5]
+    case 2:
+      return [sx - 0.5, sy - 0.5]
+    default:
+      return [sx + 0.5, sy - 0.5]
+  }
+}
+
+/** The pixel center on the left of travel (across the ring) leaving corner (sx, sy) toward `dir`. */
+function leftProbe(sx: number, sy: number, dir: number): [number, number] {
+  switch (dir) {
+    case 0:
+      return [sx + 0.5, sy - 0.5]
+    case 1:
+      return [sx + 0.5, sy + 0.5]
+    case 2:
+      return [sx - 0.5, sy + 0.5]
+    default:
+      return [sx - 0.5, sy - 0.5]
+  }
+}
+
+/** Crossing-number test: is (px, py) inside the closed lattice polygon `poly` (interleaved x, y)? */
+function pointInPolygon(px: number, py: number, poly: number[]): boolean {
+  let inside = false
+  const m = poly.length >> 1
+  for (let i = 0, j = m - 1; i < m; j = i++) {
+    const yi = poly[i * 2 + 1]
+    const yj = poly[j * 2 + 1]
+    if (yi > py !== yj > py) {
+      const xi = poly[i * 2]
+      const xj = poly[j * 2]
+      const xCross = xi + ((py - yi) / (yj - yi)) * (xj - xi)
+      if (px < xCross) inside = !inside
+    }
+  }
+  return inside
+}
+
+/**
  * Sub-pixel boundary field for a chain: the color field between its two region
  * colors, or, on an exterior chain (one side unlabeled), the transparency
  * coverage — which is positive on the labeled side, while a chain's field must
@@ -430,14 +757,13 @@ function chainField(
     if (!cf.alpha || (chain.left < 0 && chain.right < 0)) return undefined
     return chain.right >= 0 ? signedFieldOf(cf.alpha) : negatedField(cf.alpha)
   }
-  const li = chain.left * 3
-  const ri = chain.right * 3
   return pairwiseField(
-    cf.oklab,
+    cf.pixels,
+    cf.paletteRgb,
     network.width,
     network.height,
-    [cf.paletteOklab[li], cf.paletteOklab[li + 1], cf.paletteOklab[li + 2]],
-    [cf.paletteOklab[ri], cf.paletteOklab[ri + 1], cf.paletteOklab[ri + 2]],
+    chain.left,
+    chain.right,
   )
 }
 
