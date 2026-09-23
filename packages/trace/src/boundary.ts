@@ -900,6 +900,7 @@ function fitOpenChain(
     band: runBand(opts.optTolerance),
     reach: mergeReach(opts.curveOptimize),
     stride: candidateStride(opts.curveOptimize),
+    extent,
   })
 }
 
