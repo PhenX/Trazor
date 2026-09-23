@@ -171,10 +171,11 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   if (vertexIdx.length < 4) return null
 
   // The optimal polygon picks vertices on the integer lattice (its straightness
-  // analysis needs unit steps); sub-pixel refinement then feeds the moment sums,
-  // the vertex adjustment and the run fitter's samples, so each fit tracks the
-  // true edge rather than the staircase.
-  const geom = field ? refineRingToField(ext, field) : ext
+  // analysis needs unit steps); sub-pixel refinement, searching along normals to
+  // the polygon's edges, then feeds the moment sums, the vertex adjustment and
+  // the run fitter's samples, so each fit tracks the true edge rather than the
+  // staircase.
+  const geom = field ? refineRingToField(ext, field, vertexIdx) : ext
   const sums = computeSums(geom)
   const polygon = adjustVertices(geom, sums, vertexIdx, true)
   // A ring a pixel wide — a hairline, a stroke's counter — has its two sides
@@ -185,7 +186,7 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * Math.abs(signedAreaFlat(ring))) {
     return null
   }
-  const sigma = ringSigmas(ext, geom, field !== undefined)
+  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx)
   const extent = field ? Math.max(field.width, field.height) : 0
   return { polygon, geom, vertices: vertexIdx, sigma, refined: field !== undefined, extent }
 }

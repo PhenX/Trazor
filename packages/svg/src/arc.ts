@@ -69,14 +69,17 @@ function arcFitsSamples(
   const sinP = Math.sin(phi)
   const minR = Math.min(rx, ry)
   const TWO_PI = 2 * Math.PI
+  // The endpoint is snapped to the output grid, so the run's last sample may sit
+  // just past the arc's end: allow the positional tolerance, as an angle.
+  const slack = tol / minR
   const inSweep = (t: number): boolean => {
     let d = t - theta1
     if (dTheta >= 0) {
       d = ((d % TWO_PI) + TWO_PI) % TWO_PI
-      return d <= dTheta + 1e-6
+      return d <= dTheta + slack || d >= TWO_PI - slack
     }
     d = -(((-d % TWO_PI) + TWO_PI) % TWO_PI)
-    return d >= dTheta - 1e-6
+    return d >= dTheta - slack || d <= -TWO_PI + slack
   }
   for (const s of samples) {
     const dx = s.x - cx
@@ -106,9 +109,10 @@ interface Conic {
  * from the original curve — the same at every radius. (A radius-scaled tolerance
  * let a large, only-roughly-circular run collapse to an arc that rendered
  * visibly off, and which runs crossed that threshold depended on platform
- * floating-point, so the output diverged between machines.)
+ * floating-point, so the output diverged between machines.) It matches the
+ * traced boundary's accuracy, as `ROUND_TOL_PX` does for whole primitives.
  */
-const CONIC_TOL_PX = 0.6
+const CONIC_TOL_PX = 0.15
 
 /** Fit the run's samples to a circle first, then an ellipse; null if neither fits. */
 function fitConic(samples: Pt[]): Conic | null {
@@ -141,13 +145,16 @@ function fitConic(samples: Pt[]): Conic | null {
 
 /**
  * Try to collapse a run of ≥2 consecutive cubics (starting at `start`) into one
- * `A`, or null when the run is not a clean circular/elliptical arc.
+ * `A`. Returns the arc; `NOT_ARC` when the run is not a clean circular/elliptical
+ * arc; or `NO_EMIT` when it is one but no `A` on the output grid reproduces it
+ * within tolerance (an arc near half a turn, whose center the SVG endpoint form
+ * reconstructs ill-conditioned from a rounded radius).
  */
 function collapseToArc(
   start: Pt,
   cubics: Extract<PathCommand, { type: 'C' }>[],
   precision: number,
-): PathCommand | null {
+): PathCommand | typeof NOT_ARC | typeof NO_EMIT {
   // Dense boundary samples: each anchor plus three interior points per cubic.
   const samples: Pt[] = [start]
   let prev = start
@@ -161,7 +168,7 @@ function collapseToArc(
   const end = prev
 
   const conic = fitConic(samples)
-  if (conic === null) return null
+  if (conic === null) return NOT_ARC
   const { cx, cy, tol } = conic
 
   // Reject a direction reversal (an S-shaped run that merely samples near a
@@ -175,48 +182,78 @@ function collapseToArc(
     const d = angleDiff(ang[i], ang[i - 1])
     if (Math.abs(d) > 1e-4) {
       const s = Math.sign(d)
-      if (dir !== 0 && s !== dir) return null
+      if (dir !== 0 && s !== dir) return NOT_ARC
       dir = s
     }
     sweep += d
   }
   const absSweep = Math.abs(sweep)
-  if (absSweep < 0.5 || absSweep > 2 * Math.PI - 0.2) return null
+  if (absSweep < 0.5 || absSweep > 2 * Math.PI - 0.2) return NOT_ARC
 
   // Snap the arc parameters and endpoint to the output grid (the discretization
   // boundary), matching primitive detection.
   const p = clampPrecision(precision)
   const grid = (v: number): number => Number(v.toFixed(p))
-  const rx = grid(conic.rx)
-  const ry = grid(conic.ry)
+  const unit = 10 ** -p
   const rot = grid((conic.angle * 180) / Math.PI)
   const ex = grid(end.x)
   const ey = grid(end.y)
-  if (rx <= 0 || ry <= 0) return null
+  if (grid(conic.rx) <= 0 || grid(conic.ry) <= 0) return NOT_ARC
 
   // Of the ≤2 arcs on the fitted conic that share these endpoints, keep the one
-  // whose reconstruction actually sweeps through the samples (a center match is
-  // a cheap pre-filter; the polyline test settles minor/major and direction for
-  // circles and ellipses alike).
-  for (const largeArc of [false, true]) {
-    for (const sweepFlag of [false, true]) {
-      const arc = {
-        type: 'A' as const,
-        rx,
-        ry,
-        rotation: rot,
-        largeArc,
-        sweep: sweepFlag,
-        x: ex,
-        y: ey,
+  // whose reconstruction actually sweeps through the samples (a center match
+  // picks it; the analytic test settles minor/major and direction for circles
+  // and ellipses alike). The endpoint form places the center from the radii, so
+  // near half a turn a radius rounded to the grid moves the center far: of the
+  // grid radii around the fitted one (scaled together on an ellipse), the one
+  // whose center lands nearest the fitted center is written.
+  const candidates: { arc: Extract<PathCommand, { type: 'A' }>; miss: number; step: number }[] = []
+  for (let step = -RADIUS_STEPS; step <= RADIUS_STEPS; step++) {
+    const rx = grid(conic.rx + step * unit)
+    const ry = grid(rx * (conic.ry / conic.rx))
+    if (rx <= 0 || ry <= 0) continue
+    for (const largeArc of [false, true]) {
+      for (const sweepFlag of [false, true]) {
+        const arc = {
+          type: 'A' as const,
+          rx,
+          ry,
+          rotation: rot,
+          largeArc,
+          sweep: sweepFlag,
+          x: ex,
+          y: ey,
+        }
+        const c = arcToCenter(start.x, start.y, arc)
+        if (c === null) continue
+        candidates.push({ arc, miss: Math.hypot(c.cx - cx, c.cy - cy), step })
       }
-      const c = arcToCenter(start.x, start.y, arc)
-      if (c === null) continue
-      if (Math.hypot(c.cx - cx, c.cy - cy) > tol) continue // wrong conic of the two
-      if (arcFitsSamples(start, arc, samples, tol)) return arc
     }
   }
-  return null
+  // Nearest center first — to a thousandth of a pixel, then the radius nearest
+  // the fitted one — and the first that sweeps through the samples is written.
+  for (const { arc } of candidates.toSorted(byCenterMiss)) {
+    if (arcFitsSamples(start, arc, samples, tol)) return arc
+  }
+  return NO_EMIT
+}
+
+/** The run's samples lie on no single conic arc: growth stops. */
+const NOT_ARC = 0
+/** One conic arc, but no `A` on the output grid reproduces it: growth continues. */
+const NO_EMIT = 1
+
+/** Grid steps either side of the fitted radius tried for the best-placed center. */
+const RADIUS_STEPS = 4
+
+/** Candidate order: center miss to a thousandth of a pixel, then radius step. */
+function byCenterMiss(
+  a: { miss: number; step: number },
+  b: { miss: number; step: number },
+): number {
+  return (
+    Math.round(a.miss * 1000) - Math.round(b.miss * 1000) || Math.abs(a.step) - Math.abs(b.step)
+  )
 }
 
 /**
@@ -241,7 +278,8 @@ function segmentArcs(
     let bestLen = 0
     for (let len = 2; i + len <= cubics.length; len++) {
       const arc = collapseToArc(cur, cubics.slice(i, i + len), precision)
-      if (arc === null) break // growth stops at the first non-arc extension
+      if (arc === NOT_ARC) break // growth stops at the first non-arc extension
+      if (arc === NO_EMIT) continue
       best = arc
       bestLen = len
     }

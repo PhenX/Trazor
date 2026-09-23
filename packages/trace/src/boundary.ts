@@ -977,7 +977,7 @@ function fitOpenChain(
   const vertexIdx = optimalPolyline(points)
   let geom = points
   if (field) {
-    geom = refineRingToField(points, field)
+    geom = refineRingToField(points, field, vertexIdx)
     const last = geom.length
     geom[0] = points[0]
     geom[1] = points[1]

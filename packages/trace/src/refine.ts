@@ -71,6 +71,15 @@ const PARTIAL_LO = 0.03
 const PARTIAL_HI = 0.97
 
 /**
+ * Cosine of the turn (45°) past which an optimal-polygon vertex is a corner for
+ * the tangent estimate: each of its edges keeps its own direction up to it.
+ */
+const SMOOTH_TURN_COS = Math.cos(Math.PI / 4)
+
+/** Nudge (px) that breaks a probe's tie on a pixel boundary away from the probed point. */
+const TIE_NUDGE = 1e-6
+
+/**
  * Move each lattice boundary point onto the coverage = ½ level set of a signed
  * field, by searching along the local boundary normal for the position where the
  * coverage the image reads crosses one half — the true anti-aliased edge (inkvec
@@ -79,8 +88,12 @@ const PARTIAL_HI = 0.97
  * inside a region, negative outside, ±0.5 a fully saturated pixel, intermediate
  * an anti-aliased one; `a = value + ½` is the observed coverage.
  *
- * For each point the tangent is estimated from its two neighbours (cyclic on a
- * closed ring, clamped on an open chain) and the normal is perpendicular to it.
+ * With the optimal polygon's `vertices` (ascending indices into `ring`), a
+ * point's tangent is the direction of the polygon edge it lies on, turning
+ * towards each end's vertex direction (the bisector of a vertex's two edges, or
+ * the edge's own direction next to a corner); without them it is estimated from
+ * the point's two neighbours (cyclic on a closed ring, clamped on an open chain).
+ * The normal is perpendicular to the tangent.
  * Coverage is probed at the pixel centres nearest ±1, ±½, 0 pixels along the
  * normal; the two probes that bracket the ½ crossing locate the edge. Where the
  * profile is a clean step (saturates on both sides, monotone) a single partial
@@ -95,7 +108,11 @@ const PARTIAL_HI = 0.97
  * same sub-pixel offset (the edge slides to its true position). Omitting the
  * field leaves the exact lattice geometry (the caller passes none).
  */
-export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedField): FlatPoints {
+export function refineRingToField(
+  ring: FlatPoints,
+  field: GrayImage | SignedField,
+  vertices?: readonly number[],
+): FlatPoints {
   const w = field.width
   const h = field.height
   const data = 'data' in field ? field.data : null
@@ -130,6 +147,70 @@ export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedFie
   const neighbor = (i: number): number =>
     closed ? ((i % period) + period) % period : i < 0 ? 0 : i >= n ? n - 1 : i
 
+  // On a pixel staircase the two lattice neighbours only ever point along an
+  // axis or a diagonal, so a normal read from them searches across a slanted
+  // edge at the wrong angle and inverts its coverage through the wrong
+  // unit-square profile (0.2 px off on a 68° edge). The optimal polygon's edge
+  // through the point has the edge's own direction.
+  const edgeOf: Int32Array | null = vertices && vertices.length >= 2 ? new Int32Array(n) : null
+  const edgeDir: number[] = []
+  if (edgeOf !== null && vertices) {
+    const last = vertices.length - 1
+    for (let k = 0; k < last; k++) {
+      const a = vertices[k]
+      const b = vertices[k + 1]
+      const dx = ring[b * 2] - ring[a * 2]
+      const dy = ring[b * 2 + 1] - ring[a * 2 + 1]
+      const l = Math.hypot(dx, dy) || 1
+      edgeDir.push(dx / l, dy / l)
+      for (let i = a; i < b && i < n; i++) edgeOf[i] = k
+    }
+    for (let i = vertices[last]; i < n; i++) edgeOf[i] = last - 1
+  }
+  const edges = edgeDir.length >> 1
+  /** Direction at polygon vertex `k`: its two edges' bisector when it turns gently, else null. */
+  const vertexDir = (k: number): [number, number] | null => {
+    const kin = k === 0 ? (closed ? edges - 1 : -1) : k - 1
+    const kout = k === edges ? (closed ? 0 : -1) : k
+    if (kin < 0 || kout < 0) return null
+    const ax = edgeDir[kin * 2]
+    const ay = edgeDir[kin * 2 + 1]
+    const bx = edgeDir[kout * 2]
+    const by = edgeDir[kout * 2 + 1]
+    if (ax * bx + ay * by < SMOOTH_TURN_COS) return null
+    const x = ax + bx
+    const y = ay + by
+    const l = Math.hypot(x, y)
+    return l < 1e-12 ? null : [x / l, y / l]
+  }
+  /**
+   * Tangent at sample `i` of polygon edge k. Along the edge the true tangent
+   * turns from one vertex's direction to the next — on an arc the chord is the
+   * tangent only at its middle, up to half the turn off at its ends — so the
+   * angle is interpolated between the two vertex directions.
+   */
+  const edgeTangent = (
+    i: number,
+    polygon: readonly number[],
+    edgeIndex: Int32Array,
+  ): [number, number] => {
+    const k = edgeIndex[i]
+    const ex = edgeDir[k * 2]
+    const ey = edgeDir[k * 2 + 1]
+    if (edges < 2) return [ex, ey]
+    const a = polygon[k]
+    const b = polygon[k + 1]
+    const t = b > a ? (i - a) / (b - a) : 0
+    const d0 = vertexDir(k) ?? [ex, ey]
+    const d1 = vertexDir(k + 1) ?? [ex, ey]
+    const a0 = Math.atan2(d0[1], d0[0])
+    let da = Math.atan2(d1[1], d1[0]) - a0
+    while (da > Math.PI) da -= 2 * Math.PI
+    while (da < -Math.PI) da += 2 * Math.PI
+    const ang = a0 + da * t
+    return [Math.cos(ang), Math.sin(ang)]
+  }
+
   const out: FlatPoints = new Array(ring.length)
   for (let i = 0; i < n; i++) {
     const px = ring[i * 2]
@@ -139,10 +220,16 @@ export function refineRingToField(ring: FlatPoints, field: GrayImage | SignedFie
     // Pin the image border so a clipped straight edge is not pulled inward.
     if (px <= 0 || py <= 0 || px >= w || py >= h) continue
 
-    const ia = neighbor(i - 1)
-    const ib = neighbor(i + 1)
-    const tanx = ring[ib * 2] - ring[ia * 2]
-    const tany = ring[ib * 2 + 1] - ring[ia * 2 + 1]
+    let tanx: number
+    let tany: number
+    if (edgeOf !== null && vertices) {
+      ;[tanx, tany] = edgeTangent(i, vertices, edgeOf)
+    } else {
+      const ia = neighbor(i - 1)
+      const ib = neighbor(i + 1)
+      tanx = ring[ib * 2] - ring[ia * 2]
+      tany = ring[ib * 2 + 1] - ring[ia * 2 + 1]
+    }
     const tl = Math.hypot(tanx, tany)
     if (tl < 1e-9) continue
     const nx = -tany / tl
@@ -197,8 +284,13 @@ function solveNormal(
   const us: number[] = []
   const as: number[] = []
   for (const u of [-1, -0.5, 0, 0.5, 1]) {
-    const ix = Math.round(px + nx * u - 0.5)
-    const iy = Math.round(py + ny * u - 0.5)
+    // A lattice point ±1 px along an axis-aligned normal lands on a pixel
+    // boundary; the tie breaks away from the point, onto the pixel beyond the
+    // offset, so an edge facing −x or −y is probed like one facing +x or +y and
+    // both reach the saturated pixel outside them that the clean-step inversion
+    // needs.
+    const ix = Math.round(px + nx * u + TIE_NUDGE * nx * Math.sign(u) - 0.5)
+    const iy = Math.round(py + ny * u + TIE_NUDGE * ny * Math.sign(u) - 0.5)
     if (ix < 0 || iy < 0 || ix >= w || iy >= h) continue
     const cx = ix + 0.5
     const cy = iy + 0.5

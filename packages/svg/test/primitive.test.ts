@@ -107,6 +107,25 @@ describe('detectPrimitive — circles and ellipses (gated)', () => {
     expect(prim.ry).toBeCloseTo(20, 1)
   })
 
+  it('keeps a round outline a fraction of a pixel off any circle as a path', () => {
+    // Handles longer than a circle's square the round off by ~0.75px at the
+    // diagonals: an idealized <circle> or <ellipse> would move that boundary
+    // further than the trace measured it to (a near-pill rounded rect may still
+    // describe it).
+    const r = 30
+    const h = 0.6 * r
+    const cmds: PathCommand[] = [
+      { type: 'M', x: 50 + r, y: 40 },
+      { type: 'C', x1: 50 + r, y1: 40 + h, x2: 50 + h, y2: 40 + r, x: 50, y: 40 + r },
+      { type: 'C', x1: 50 - h, y1: 40 + r, x2: 50 - r, y2: 40 + h, x: 50 - r, y: 40 },
+      { type: 'C', x1: 50 - r, y1: 40 - h, x2: 50 - h, y2: 40 - r, x: 50, y: 40 - r },
+      { type: 'C', x1: 50 + h, y1: 40 - r, x2: 50 + r, y2: 40 - h, x: 50 + r, y: 40 },
+      { type: 'Z' },
+    ]
+    const kind = detectPrimitive(cmds, 2, true)?.kind
+    expect(kind === 'circle' || kind === 'ellipse').toBe(false)
+  })
+
   it('does not mistake a rounded blob for a circle', () => {
     const blob: PathCommand[] = [
       { type: 'M', x: 0, y: 0 },
@@ -142,6 +161,16 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
     >
     expect(p.kind).toBe('rrect')
     expect(Math.abs(p.r - r)).toBeLessThan(0.1)
+  })
+
+  it('keeps a rounded rect with one corner half a pixel off as a path', () => {
+    // Both handles of one corner pulled a pixel towards it: the arc bulges ~0.5px.
+    const cmds = roundedRectPath(10, 10, 90, 60, 12).map((c, i) =>
+      i === 2 && c.type === 'C'
+        ? { ...c, x1: c.x1 + 1, y1: c.y1 - 1, x2: c.x2 + 1, y2: c.y2 - 1 }
+        : c,
+    )
+    expect(detectPrimitive(cmds, 2, true)?.kind === 'rrect').toBe(false)
   })
 
   it('keeps a true circle as a circle, not a pill', () => {
@@ -287,6 +316,13 @@ describe('detectPrimitive — regular polygons and stars (gated)', () => {
     const v = cmds[2] as Extract<PathCommand, { type: 'L' }>
     const nudged: PathCommand[] = cmds.map((c) => (c === v ? { ...v, x: v.x + 0.4 } : c))
     expect(detectPrimitive(nudged, 2, true)?.kind).toBe('polygon')
+  })
+
+  it('keeps a pentagon with a corner a pixel off as a path', () => {
+    const cmds = regularPolygonPath(50, 50, 30, 5, 0)
+    const v = cmds[2] as Extract<PathCommand, { type: 'L' }>
+    const nudged: PathCommand[] = cmds.map((c) => (c === v ? { ...v, x: v.x + 1 } : c))
+    expect(detectPrimitive(nudged, 2, true)?.kind === 'polygon').toBe(false)
   })
 
   it('does not regularize a genuinely irregular quadrilateral', () => {

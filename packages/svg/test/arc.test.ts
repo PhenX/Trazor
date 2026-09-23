@@ -240,6 +240,19 @@ describe('fitArcs', () => {
     expect(fitArcs([start, ...bumped], 2).some((c) => c.type === 'A')).toBe(false)
   })
 
+  it('keeps a run 0.3px off its circle as cubics (the traced boundary is more accurate)', () => {
+    // A traced edge sits within a tenth or two of a pixel of the drawing; an arc
+    // that moves it 0.3px is a visible loss, however round the run looks.
+    const { start, cubics } = arcCubics(0, 0, 40, 0, Math.PI / 2, 4)
+    const bumped = cubics.map((c, i) => {
+      if (c.type !== 'C' || i === cubics.length - 1) return c
+      const s = (40 + 0.3) / 40
+      return { ...c, x: c.x * s, y: c.y * s }
+    })
+    expect(fitArcs([start, ...bumped], 2).some((c) => c.type === 'A')).toBe(false)
+    expect(fitArcs([start, ...cubics], 2).some((c) => c.type === 'A')).toBe(true)
+  })
+
   it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
     const { start, cubics } = ellipseArcCubics(100, 100, 60, 30, 0, 0, 2, 2)
     const out = fitArcs([start, ...cubics], 2)

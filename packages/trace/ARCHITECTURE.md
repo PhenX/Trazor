@@ -47,8 +47,12 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    `sums.ts`). This always runs on the **integer** lattice ring (unit steps are load-bearing for the straightness analysis).
    - _optional sub-pixel_ (`refine.ts`): with a `coverage` field, each ring point is moved onto the field's coverage = ½
      level set **after** the polygon indices are chosen — inkvec stage 07 (`refine_subpixel`, `docs/REFERENCES.md`): the
-     local tangent comes from the point's neighbours, the normal is perpendicular, and coverage is probed at the pixel
-     centres along the normal; the two probes bracketing ½ locate the edge, a clean step inverting through the exact
+     local tangent is the direction of the optimal-polygon edge the point lies on (lattice neighbours only point along
+     axes and diagonals, so a slanted edge searched across at their angle inverts through the wrong profile), turning
+     towards each end vertex's direction — the bisector of a gentle vertex (< 45°), the edge's own next to a corner — since
+     on an arc a chord is the tangent only at its middle. The normal is perpendicular, and coverage is probed at the pixel
+     centres along the normal (a probe on a pixel boundary taking the pixel beyond it, so a face towards −x or −y reads
+     like one towards +x or +y); the two probes bracketing ½ locate the edge, a clean step inverting through the exact
      half-plane coverage of a unit square (no bias towards the ½ grid, where a bilinear root-find leaves a slanted edge
      ~0.15 px fat) and a ridge or soft profile falling back to a root-find. The refined positions feed the moment sums,
      the vertex adjustment and the run fitter's samples, so each segment tracks the true anti-aliased edge instead of the
@@ -68,13 +72,34 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    a long polygon edge — and over the O(k²) spans of that candidate graph picks the segmentation and the per-span model
    (line / circular arc / G1 cubic) jointly under `0.5·χ² + λ·params` (χ² weighted by per-point `1/σ²`, `λ = ln(extent /
 precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective).
-   `σ` is small where a sample was snapped onto the sub-pixel edge, ½ px where it stayed on the lattice; a corner is a
-   forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A rounded corner the polygon split
+   `σ` is 0.1 px where a sample was snapped onto the sub-pixel edge, 0.06 px on an axis-aligned stretch of a refined
+   ring's polygon that stayed on the lattice (a hard edge the drawing put on the grid, or the image border), ½ px
+   elsewhere on the lattice. A corner is a polygon vertex (read on the unadjusted polygon) turning at least 45° (inkvec
+   `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
+   (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
+   the stub's middle. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
+   rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
    line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a
-   wholly-smooth ring collapses to one circle where it fits. Circular runs are emitted as circle-exact cubics that
+   wholly-smooth ring is one circle when that is the better description: a geometric circle fit whose reduced χ² stays
+   within τ² and whose `0.5·χ² + 3λ` undercuts the DP's cost (inkvec's whole-primitive rule — a few 2.5σ samples do not
+   veto a true circle, a real notch keeps its segments). Circular runs are emitted as circle-exact cubics that
    `@trazor/svg`'s `fitArcs` recovers as `A` arcs. `curveOptimize` sets the DP reach and candidate stride (off ⇒ shorter,
    greedier pieces).
+
+   **Geometric mode** (`smoothing ≤ 0.5` — the flat-ink profile's sharp icons and glyphs trace at 0.25, the illustration
+   profiles at 0.6 and up) asks for the drawing's own lines, rounds and corners, and a closed ring gets a **structural
+   refit** after the DP: every line and arc the DP chose is refitted freely to its samples (a σ-weighted total-least-
+   squares line; a geometric circle, Kåsa start and Gauss–Newton polish) instead of pinned to two of them, and each join
+   is placed where the models meet — two edges' intersection at a corner, within the chamfer allowance; the tangent
+   point of a line and a round; the sample itself where two lines or two rounds fail to meet near it (one of them is a
+   short transition whose model says little). The samples on a corner's anti-aliasing chamfer (`CORNER_CHAMFER`,
+   reaching further along sharper corners) carry no weight, and a chamfer stub between two corners collapses into one
+   corner (inkvec `adjust_vertices_at`, `sharpen_corners`). A cubic keeps its fit, re-pinned to the joins with its
+   neighbours' tangents. The refit falls back to the pinned DP fit where it would draw worse than it measured — an arc
+   sweeping far longer than its samples, a cubic whose controls leave them. Outside geometric mode refined samples are
+   read at `σ ≥ 0.2`, so higher smoothing simplifies (a hand-drawn outline's wobble spanned by one model), and there is
+   no refit: cartoons and illustrations keep their curves.
 
    The DP is kept browser-fast without changing what it draws. A span prices an
    arc or a cubic only when a curve could actually beat the pinned line — inkvec's

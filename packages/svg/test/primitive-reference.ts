@@ -88,7 +88,7 @@ function cubicMid(p0: Pt, c: Extract<PathCommand, { type: 'C' }>): Pt {
   }
 }
 
-const ROUND_TOL_PX = 0.6
+const ROUND_TOL_PX = 0.15
 
 function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
   if (ops.length < 3 || !ops.every((o) => o.type === 'C')) return null
@@ -196,7 +196,7 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
   if (hx <= 0 || hy <= 0) return null
 
   const maxR = Math.min(hx, hy)
-  const tol = Math.max(0.75, maxR * 0.03)
+  const tol = 0.2
 
   const maxErr = (r: number): number => {
     let err = 0
@@ -379,7 +379,7 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
   const ang = pts.map((p) => Math.atan2(p.y - cy, p.x - cx))
   const rMax = Math.max(...rad)
   if (rMax < 3) return null
-  const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
+  const tol = 0.3
 
   const bx0 = Math.min(...pts.map((p) => p.x))
   const bx1 = Math.max(...pts.map((p) => p.x))
