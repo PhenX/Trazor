@@ -217,6 +217,57 @@ describe('quantize — k-means path', () => {
     expect(nearestToRim(filtered)).toBeGreaterThan(80)
   })
 
+  it('rescues a thin stroke color the edge-free training pool never saw', () => {
+    // Two-pixel dark strokes on jittered paper: every stroke pixel is an edge
+    // pixel, so a pool of non-edge pixels trains every centroid on the paper.
+    const INK: [number, number, number] = [26, 32, 44]
+    const rng = mulberry32(7)
+    const onStroke = (y: number): boolean => y % 12 >= 5 && y % 12 < 7
+    const img = rasterOf(60, 60, (_x, y) => {
+      if (onStroke(y)) return [...INK, 255] as Rgba
+      const j = (): number => ((rng() * 9) | 0) - 4
+      return [clampByte(248 + j()), clampByte(246 + j()), clampByte(240 + j()), 255] as Rgba
+    })
+    const sampleMask = maskOf(60, 60, (_x, y) => y % 12 < 4 || y % 12 > 7)
+    const res = quantize(img, { ...baseOpts, k: 3, seed: 1, sampleMask })
+    let best = Infinity
+    for (let c = 0; c < res.paletteHex.length; c++) {
+      best = Math.min(
+        best,
+        Math.abs(res.paletteRgb[c * 3] - INK[0]) +
+          Math.abs(res.paletteRgb[c * 3 + 1] - INK[1]) +
+          Math.abs(res.paletteRgb[c * 3 + 2] - INK[2]),
+      )
+    }
+    expect(best).toBeLessThan(30)
+    // Every stroke pixel is labeled with the rescued ink, not the paper.
+    const ink = res.labels.data[6 * 60]
+    for (let x = 0; x < 60; x++) expect(res.labels.data[6 * 60 + x]).toBe(ink)
+  })
+
+  it('does not rescue a rim that blends into the masked-out background', () => {
+    // A disk over transparency, composited on white as the engine hands it over:
+    // its anti-aliased outer rim is a blend of the disk and the white outside
+    // the mask, not a color of its own — the free slot stays unused.
+    const DISK: [number, number, number] = [40, 110, 190]
+    const img = rasterOf(48, 48, (x, y) => {
+      const cover = Math.max(0, Math.min(1, 16.5 - Math.hypot(x + 0.5 - 24, y + 0.5 - 24)))
+      const mix = (c: number): number => clampByte(Math.round(c * cover + 255 * (1 - cover)))
+      return [mix(DISK[0]), mix(DISK[1]), mix(DISK[2]), 255] as Rgba
+    })
+    const mask = maskOf(48, 48, (x, y) => Math.hypot(x + 0.5 - 24, y + 0.5 - 24) < 16.5)
+    const sampleMask = maskOf(48, 48, (x, y) => Math.hypot(x + 0.5 - 24, y + 0.5 - 24) < 15)
+    const res = quantize(img, { ...baseOpts, k: 2, seed: 1, mask, sampleMask })
+    for (let c = 0; c < res.paletteHex.length; c++) {
+      if (res.counts[c] === 0) continue
+      const d =
+        Math.abs(res.paletteRgb[c * 3] - DISK[0]) +
+        Math.abs(res.paletteRgb[c * 3 + 1] - DISK[1]) +
+        Math.abs(res.paletteRgb[c * 3 + 2] - DISK[2])
+      expect(d).toBeLessThan(30)
+    }
+  })
+
   it('assigns every pixel of a repeated color the same label (memoized final pass)', () => {
     // 40 distinct colors (> k) tiled so each appears in many pixels; the
     // memoized labeling must give one color exactly one label everywhere.
