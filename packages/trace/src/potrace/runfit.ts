@@ -339,8 +339,12 @@ function emitSpanDP(
 
   const cand = buildCandidates(pts, splits, last, opts.stride)
   const K = cand.length - 1 // candidate index of `last`
-  const tanAt = (ci: number): [number, number] =>
-    ci === 0 ? t0 : ci === K ? t1 : centralTangent(pts, cand[ci])
+  // Candidate tangents, computed once: the span endpoints keep the given corner /
+  // seam tangents, interior candidates use the central-difference data tangent.
+  const tans: [number, number][] = new Array(K + 1)
+  tans[0] = t0
+  tans[K] = t1
+  for (let ci = 1; ci < K; ci++) tans[ci] = centralTangent(pts, cand[ci])
 
   // DP over candidate indices: best[m] = cheapest description of cand[0..m].
   const best = new Float64Array(K + 1).fill(Infinity)
@@ -350,17 +354,22 @@ function emitSpanDP(
 
   for (let i = 0; i < K; i++) {
     if (best[i] === Infinity) continue
-    const ta = tanAt(i)
+    const ta = tans[i]
     let over = 0
     const jHi = Math.min(K, i + opts.reach)
     for (let j = i + 1; j <= jHi; j++) {
-      const fit = spanCost(pts, sig, cand[i], cand[j], ta, tanAt(j), opts, j === i + 1)
-      if (fit) {
-        const total = best[i] + fit.cost
+      const c = spanCost(pts, sig, cand[i], cand[j], ta, tans[j], opts, j === i + 1)
+      if (c < SPAN_INADMISSIBLE) {
+        const total = best[i] + c
         if (total < best[j]) {
           best[j] = total
           from[j] = i
-          seg[j] = fit.seg
+          seg[j] =
+            spanKind === 'arc'
+              ? { a: cand[i], b: cand[j], kind: 'arc', circle: spanCircle }
+              : spanKind === 'cubic'
+                ? { a: cand[i], b: cand[j], kind: 'cubic', cubic: spanCubic }
+                : { a: cand[i], b: cand[j], kind: 'line' }
         }
         over = 0
       } else if (++over >= PRUNE_PATIENCE) {
@@ -464,16 +473,24 @@ function dedupeSorted(xs: number[]): number[] {
   return out
 }
 
-interface SpanFit {
-  cost: number
-  seg: SegFit
-}
+/** Cost returned by {@link spanCost} when no model is admissible on the span. */
+const SPAN_INADMISSIBLE = Infinity
+/**
+ * Winning model of the most recent {@link spanCost} call. The DP reads these only
+ * when the span improves a node, so one `SegFit` is allocated per kept segment
+ * rather than one per candidate pair the DP examines.
+ */
+let spanKind: SegKind = 'line'
+let spanCircle: Circle | undefined
+let spanCubic: Cubic | undefined
 
 /**
- * The cheapest admissible model (line / arc / cubic) explaining samples
+ * Cost of the cheapest admissible model (line / arc / cubic) explaining samples
  * `pts[first..last]` under `0.5·χ² + λ·params`, with the span's end tangents
- * `ta`/`tb`, or null when none is admissible. When `atomic` (a candidate-
- * adjacent span) the best-effort model is returned so the DP always has a path.
+ * `ta`/`tb`, or {@link SPAN_INADMISSIBLE} when none is admissible. The winning
+ * model is left in `spanKind`/`spanCircle`/`spanCubic` for the caller to read.
+ * When `atomic` (a candidate-adjacent span) the best-effort model is returned so
+ * the DP always has a path.
  */
 function spanCost(
   pts: FlatPoints,
@@ -484,52 +501,80 @@ function spanCost(
   tb: [number, number],
   opts: RunFitOptions,
   atomic: boolean,
-): SpanFit | null {
+): number {
   if (last - first <= 1) {
-    return { cost: opts.lambda * PARAMS_LINE, seg: { a: first, b: last, kind: 'line' } }
+    spanKind = 'line'
+    return opts.lambda * PARAMS_LINE
   }
 
-  const cost = (chi2: number, params: number): number => 0.5 * chi2 + opts.lambda * params
-
+  const lambda = opts.lambda
   const line = lineDeviation(pts, sig, first, last, opts)
-  let bestCost = Infinity
-  let best: SegFit | null = null
-  const consider = (d: Dev, params: number, seg: SegFit): void => {
-    if (d.worst > 1) return
-    const c = cost(d.chi2, params)
-    if (c < bestCost) {
-      bestCost = c
-      best = seg
-    }
+  let bestCost = SPAN_INADMISSIBLE
+  let bestKind: SegKind | null = null
+  let bestCircle: Circle | undefined
+  let bestCubic: Cubic | undefined
+  const lineOK = line.worst <= 1
+  if (lineOK) {
+    bestCost = 0.5 * line.chi2 + lambda * PARAMS_LINE
+    bestKind = 'line'
   }
-  consider(line, PARAMS_LINE, { a: first, b: last, kind: 'line' })
 
-  // Only price an arc / cubic when the line is not already the cheap winner
-  // (inkvec's O(1) floor pre-check keeps straight runs from paying for a fit).
-  const lineCost = line.worst <= 1 ? cost(line.chi2, PARAMS_LINE) : Infinity
-  const tryCurve = lineCost > opts.lambda * PARAMS_LINE + 1e-9 || line.worst > 1
+  // inkvec's O(1) floor pre-check (`curves.rs`): a 6-parameter curve can only
+  // undercut the pinned 2-parameter line when the line's own description length
+  // already exceeds what any curve would cost — `0.5·χ²_line > (6−2)·λ`. A
+  // straight-enough run never pays for an arc or a cubic fit.
+  const tryCurve = !lineOK || 0.5 * line.chi2 > (PARAMS_CUBIC - PARAMS_LINE) * lambda
 
   if (tryCurve) {
     const circle = fitCircleThrough(pts, first, last)
+    let arcOK = false
     if (circle && arcSweepMonotone(pts, first, last, circle)) {
       const cd = circleDeviation(pts, sig, first, last, circle, opts)
-      consider(cd, PARAMS_ARC, { a: first, b: last, kind: 'arc', circle })
+      if (cd.worst <= 1) {
+        arcOK = true
+        const c = 0.5 * cd.chi2 + lambda * PARAMS_ARC
+        if (c < bestCost) {
+          bestCost = c
+          bestKind = 'arc'
+          bestCircle = circle
+        }
+      }
     }
-    const cubic = fitCubicRun(pts, first, last, ta, tb)
-    const cbd = cubicDeviation(pts, sig, first, last, cubic, opts)
-    consider(cbd, PARAMS_CUBIC, { a: first, b: last, kind: 'cubic', cubic })
+    // The cubic carries the span's only per-point-to-curve scan, so it is fit
+    // only where no circular arc covers the run (a smooth non-circular span,
+    // the shape inkvec fits as a cubic); an admissible arc emits as one `A`.
+    if (!arcOK) {
+      const cubic = fitCubicRun(pts, first, last, ta, tb)
+      const cbd = cubicDeviation(pts, sig, first, last, cubic, opts)
+      if (cbd.worst <= 1) {
+        const c = 0.5 * cbd.chi2 + lambda * PARAMS_CUBIC
+        if (c < bestCost) {
+          bestCost = c
+          bestKind = 'cubic'
+          bestCubic = cubic
+        }
+      }
+    }
   }
 
-  if (best !== null) return { cost: bestCost, seg: best }
-  if (!atomic) return null
+  if (bestKind !== null) {
+    spanKind = bestKind
+    spanCircle = bestCircle
+    spanCubic = bestCubic
+    return bestCost
+  }
+  if (!atomic) return SPAN_INADMISSIBLE
   // A candidate-adjacent span nothing explains within the band: the lower-
   // residual of a line and a cubic, so the DP is never stuck.
   const cubic = fitCubicRun(pts, first, last, ta, tb)
   const cbd = cubicDeviation(pts, sig, first, last, cubic, opts)
   if (line.worst <= cbd.worst) {
-    return { cost: cost(line.chi2, PARAMS_LINE), seg: { a: first, b: last, kind: 'line' } }
+    spanKind = 'line'
+    return 0.5 * line.chi2 + lambda * PARAMS_LINE
   }
-  return { cost: cost(cbd.chi2, PARAMS_CUBIC), seg: { a: first, b: last, kind: 'cubic', cubic } }
+  spanKind = 'cubic'
+  spanCubic = cubic
+  return 0.5 * cbd.chi2 + lambda * PARAMS_CUBIC
 }
 
 /**
@@ -669,7 +714,14 @@ function circleDeviation(
   return { chi2, worst }
 }
 
-/** Residuals of the interior samples to the cubic (coarse parameter scan). */
+/**
+ * Residuals of the interior samples to the cubic. Each sample is projected by its
+ * chord-length parameter refined by one Newton step onto the curve (the cubic was
+ * least-squares fit to these samples at those parameters, so the projection is the
+ * fit residual), a conservative over-estimate of the true point-to-curve distance
+ * — never a bulge the band would miss — at one curve evaluation per sample instead
+ * of a dense scan.
+ */
 function cubicDeviation(
   pts: FlatPoints,
   sig: number[],
@@ -678,10 +730,33 @@ function cubicDeviation(
   c: Cubic,
   opts: RunFitOptions,
 ): Dev {
+  // Chord-length position of each sample along the run, normalized to [0, 1].
+  const count = last - first + 1
+  let acc = 0
+  let prevx = pts[first * 2]
+  let prevy = pts[first * 2 + 1]
   let worst = 0
   let chi2 = 0
+  // Total chord length for normalization.
+  let totalLen = 0
+  for (let k = 1; k < count; k++) {
+    const a = first + k
+    totalLen += Math.hypot(pts[a * 2] - pts[(a - 1) * 2], pts[a * 2 + 1] - pts[(a - 1) * 2 + 1])
+  }
+  const total = totalLen > 1e-12 ? totalLen : 1
   for (let i = first + 1; i < last; i++) {
-    const d = distancePointCubic(c, pts[i * 2], pts[i * 2 + 1])
+    acc += Math.hypot(pts[i * 2] - prevx, pts[i * 2 + 1] - prevy)
+    prevx = pts[i * 2]
+    prevy = pts[i * 2 + 1]
+    const px = pts[i * 2]
+    const py = pts[i * 2 + 1]
+    const t = refineParam(c, px, py, acc / total)
+    const mt = 1 - t
+    const qx =
+      mt * mt * mt * c.p0x + 3 * mt * mt * t * c.c1x + 3 * mt * t * t * c.c2x + t * t * t * c.p3x
+    const qy =
+      mt * mt * mt * c.p0y + 3 * mt * mt * t * c.c1y + 3 * mt * t * t * c.c2y + t * t * t * c.p3y
+    const d = Math.hypot(qx - px, qy - py)
     const s = sig[i]
     chi2 += (d * d) / (s * s)
     const w = d / bandAt(sig, i, opts)
@@ -863,22 +938,6 @@ function admissibleCircle(pts: FlatPoints, sig: number[], opts: RunFitOptions): 
     if (w > worst) worst = w
   }
   return worst <= 1 ? circle : null
-}
-
-/** Distance from a point to a cubic by a coarse parameter scan (fit-free). */
-function distancePointCubic(c: Cubic, px: number, py: number): number {
-  let best = Infinity
-  for (let i = 0; i <= 16; i++) {
-    const t = i / 16
-    const mt = 1 - t
-    const x =
-      mt * mt * mt * c.p0x + 3 * mt * mt * t * c.c1x + 3 * mt * t * t * c.c2x + t * t * t * c.p3x
-    const y =
-      mt * mt * mt * c.p0y + 3 * mt * mt * t * c.c1y + 3 * mt * t * t * c.c2y + t * t * t * c.p3y
-    const d = (x - px) * (x - px) + (y - py) * (y - py)
-    if (d < best) best = d
-  }
-  return Math.sqrt(best)
 }
 
 /** Emit an arc from A to B along `circle` as ≤90° circle-exact cubics. */
