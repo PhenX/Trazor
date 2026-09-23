@@ -76,6 +76,20 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    `@trazor/svg`'s `fitArcs` recovers as `A` arcs. `curveOptimize` sets the DP reach and candidate stride (off ⇒ shorter,
    greedier pieces).
 
+   The DP is kept browser-fast without changing what it draws. A span prices an
+   arc or a cubic only when a curve could actually beat the pinned line — inkvec's
+   O(1) description-length floor, `0.5·χ²_line > (params_cubic − params_line)·λ`
+   — so a straight-enough run pays for no fit, and the cubic (a span's only
+   point-to-curve scan) is fit only where no admissible arc already covers the
+   run. A cubic's residual is read at each sample's chord-length parameter (its
+   least-squares fit residual, a conservative bound on the true point-to-curve
+   distance), not by a dense nearest-point scan. Because the DP scores `O(k²)`
+   spans per ring and a high-resolution illustration carries far more boundary
+   samples than an icon, the reach falls off with the image extent (full below
+   700 px, then `∝ (700/extent)²` down to a floor): a large canvas is fit with a
+   shorter window — the merge pass re-joins any run it split — while an icon keeps
+   the full reach and its output is byte-for-byte unchanged.
+
 `curveMode` short-circuits this: `polygon` stops after step 3 (emitting the adjusted polygon); `pixel` skips it entirely
 for exact rectilinear paths.
 
