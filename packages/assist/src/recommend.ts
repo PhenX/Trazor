@@ -62,6 +62,16 @@ const NATIVE_MAX_SIDE = 2048
  */
 const FLAT_INK_SMOOTHING = 0.25
 
+/**
+ * Share of pixels identical to their right and down neighbors above which flat
+ * art is noise-free: a vector render whose fills are exact, not a compressed or
+ * scanned image whose fills are only near-uniform.
+ */
+const PRISTINE_FLAT_DENSITY = 0.9
+
+/** Largest palette the settings accept. */
+const MAX_PALETTE = 64
+
 /** With at least this fraction of genuinely colored pixels, an image is not grayscale. */
 const COLORED_FRACTION_MIN = 0.05
 
@@ -332,9 +342,16 @@ export function recommendSettings(
     // keeps a small palette and file; simple low-color images are untouched.
     const suggested = suggestPaletteSize(a)
     const rich = a.distinctColors > 32
-    const chosen = rich
+    let chosen = rich
       ? Math.max(getProfile(profileId).patch.paletteSize ?? suggested, suggested)
       : suggested
+    // Noise-free flat art: every fill color also fills a flat run, and the
+    // anti-aliasing adds only rim colors, so the flat colors are the palette the
+    // drawing used. A budget below their count forces distinct fills to share;
+    // one above it spends entries on rim blends, which ring each shape in a band
+    // of their own and hold its edge off the anti-aliased boundary it refines to.
+    const flatColors = a.distinctColors - a.rimColors
+    if (a.flatDensity >= PRISTINE_FLAT_DENSITY) chosen = clampInt(flatColors, 2, MAX_PALETTE)
     patch.paletteSize = chosen
     if (rich) patch.autoPaletteSize = true
     if (a.distinctColors >= 65536) {

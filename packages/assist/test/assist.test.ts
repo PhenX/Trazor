@@ -649,6 +649,21 @@ describe('recommendSettings — region-growing gates', () => {
     expect(wide.patch.maxDimension).toBeUndefined()
   })
 
+  it('gives noise-free flat art a palette entry for every flat color it fills', () => {
+    // A vector render: every fill is exact, so the colors that fill a flat run
+    // are the drawing's own. A budget below their count would merge fills.
+    const mosaic = flatArt({ flatDensity: 0.95, distinctColors: 900, rimColors: 860 })
+    expect(recommendSettings(mosaic).patch.paletteSize).toBe(40)
+    // A two-color shape's rim blends get no entries of their own either: a band
+    // of them around the shape would hold its edge off the anti-aliased boundary.
+    const shape = flatArt({ flatDensity: 0.97, distinctColors: 13, rimColors: 11 })
+    expect(recommendSettings(shape).patch.paletteSize).toBe(2)
+    // Noisy art gets no such count: its flat runs are few and meaningless.
+    expect(
+      recommendSettings(flatArt({ distinctColors: 900, rimColors: 860 })).patch.paletteSize,
+    ).toBe(24)
+  })
+
   it('grows regions for many-color, gradient-free flat art', () => {
     expect(recommendSettings(flatArt()).patch.segmentation).toBe('regions')
   })
