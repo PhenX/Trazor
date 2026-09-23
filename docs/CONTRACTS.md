@@ -498,9 +498,10 @@ export interface RingFit {
   extent: number
 }
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
-// §2.3.1); null when the ring is too short to carry a polygon. Depends on the ring and the field
-// only — never on smoothing, curve optimization or the corner threshold — so a caller may compute it
-// once and re-fit it many times.
+// §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted
+// polygon would enclose under three quarters of its lattice area (the caller then emits the exact
+// lattice ring). Depends on the ring and the field only — never on smoothing, curve optimization or
+// the corner threshold — so a caller may compute it once and re-fit it many times.
 export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
