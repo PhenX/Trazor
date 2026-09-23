@@ -17,6 +17,7 @@ import {
   mulberry32,
   rgbToHex,
   rgbToLab,
+  oklabToRgb,
   rgbToOklab,
 } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
@@ -254,6 +255,187 @@ function orderByCountDesc(counts: ArrayLike<number>, len: number): number[] {
   for (let i = 0; i < len; i++) order[i] = i
   order.sort((a, b) => counts[b] - counts[a] || a - b)
   return order
+}
+
+/** Distance (working space) beyond every centroid for an edge pixel to count as an unseen color. */
+const RESCUE_FAR = 0.15
+/** Distance (encoded RGB, 0–1) within which a pixel is a blend of two centroids — a rim, not a color. */
+const RESCUE_MIX = 0.06
+/** Two centroids nearer than this (working space) are one color: the later one may be reassigned. */
+const RESCUE_DUPLICATE = 0.06
+/** At most this many colors are rescued. */
+const RESCUE_MAX = 4
+/** Unseen pixels needed (share of the in-mask pixels, and a floor) before a color is rescued. */
+const RESCUE_SHARE = 0.001
+const RESCUE_MIN_PIXELS = 16
+
+/**
+ * Give a centroid to a color the edge-free training pool never saw. Every
+ * pixel of a stroke one to three pixels wide is an edge pixel, so an
+ * edge-aware pool (which keeps anti-aliased rims from claiming palette
+ * entries) leaves out thin features entirely: a chart of hairlines on paper
+ * trains every centroid on the paper. After training, the in-mask pixels
+ * outside the pool that sit farther than RESCUE_FAR from every centroid, and
+ * off every segment between two centroids (a rim is a blend of the two colors
+ * it separates, a stroke is not; the pixels outside `mask` count as one more
+ * color, the background a shape's outer rim blends into), are unseen color.
+ * When enough of them exist,
+ * the most extreme quarter of them — the stroke cores, not their partial rims —
+ * becomes a centroid, taking the slot of an empty or duplicate one. With no
+ * such slot the palette is left as trained. Deterministic: fixed scan order,
+ * no sampling. Mutates `cent`.
+ */
+function rescueEdgeColors(
+  cent: Float32Array,
+  k: number,
+  cnt: Uint32Array,
+  data: Uint8ClampedArray,
+  feat: Float32Array | null,
+  mask: Uint8Array | null,
+  smask: Uint8Array,
+  n: number,
+): void {
+  let inMask = 0
+  for (let i = 0; i < n; i++) if (mask === null || mask[i] !== 0) inMask++
+  const need = Math.max(RESCUE_MIN_PIXELS, RESCUE_SHARE * inMask)
+  const featAt = (i: number, out: Float64Array): void => {
+    if (feat !== null) {
+      out[0] = feat[i * 3]
+      out[1] = feat[i * 3 + 1]
+      out[2] = feat[i * 3 + 2]
+    } else {
+      out[0] = data[i * 4] / 255
+      out[1] = data[i * 4 + 1] / 255
+      out[2] = data[i * 4 + 2] / 255
+    }
+  }
+  const f = new Float64Array(3)
+  const used = new Uint8Array(k)
+  for (let c = 0; c < k; c++) used[c] = cnt[c] > 0 ? 1 : 0
+  // The background outside the mask, in encoded RGB (the working image carries
+  // it composited): a shape's outer rim is a blend of its color and this one.
+  let bgN = 0
+  const bg = [0, 0, 0]
+  if (mask !== null) {
+    for (let i = 0; i < n; i++) {
+      if (mask[i] !== 0) continue
+      bg[0] += data[i * 4]
+      bg[1] += data[i * 4 + 1]
+      bg[2] += data[i * 4 + 2]
+      bgN++
+    }
+  }
+  for (let round = 0; round < RESCUE_MAX; round++) {
+    // Centroid colors in encoded RGB for the blend test.
+    const rgb = new Float64Array(k * 3)
+    for (let c = 0; c < k; c++) {
+      if (feat !== null) {
+        const [r, g, b] = oklabToRgb(cent[c * 3], cent[c * 3 + 1], cent[c * 3 + 2])
+        rgb[c * 3] = r
+        rgb[c * 3 + 1] = g
+        rgb[c * 3 + 2] = b
+      } else {
+        rgb[c * 3] = cent[c * 3]
+        rgb[c * 3 + 1] = cent[c * 3 + 1]
+        rgb[c * 3 + 2] = cent[c * 3 + 2]
+      }
+    }
+    const live: number[] = []
+    for (let c = 0; c < k; c++) if (used[c]) live.push(c)
+    // Blend endpoints: every live centroid, and the background when there is one.
+    const ends: number[] = []
+    for (const c of live) ends.push(rgb[c * 3], rgb[c * 3 + 1], rgb[c * 3 + 2])
+    if (bgN > 0) ends.push(bg[0] / bgN / 255, bg[1] / bgN / 255, bg[2] / bgN / 255)
+    const m = ends.length / 3
+    const unseen: number[] = []
+    const far: number[] = []
+    for (let i = 0; i < n; i++) {
+      if (smask[i] !== 0 || (mask !== null && mask[i] === 0)) continue
+      featAt(i, f)
+      let d2 = Infinity
+      for (const c of live) {
+        const dx = f[0] - cent[c * 3]
+        const dy = f[1] - cent[c * 3 + 1]
+        const dz = f[2] - cent[c * 3 + 2]
+        const v = dx * dx + dy * dy + dz * dz
+        if (v < d2) d2 = v
+      }
+      if (d2 <= RESCUE_FAR * RESCUE_FAR) continue
+      const pr = data[i * 4] / 255
+      const pg = data[i * 4 + 1] / 255
+      const pb = data[i * 4 + 2] / 255
+      let blend = false
+      for (let a = 0; a < m && !blend; a++) {
+        for (let b = a + 1; b < m; b++) {
+          const ex = ends[b * 3] - ends[a * 3]
+          const ey = ends[b * 3 + 1] - ends[a * 3 + 1]
+          const ez = ends[b * 3 + 2] - ends[a * 3 + 2]
+          const e2 = ex * ex + ey * ey + ez * ez
+          if (e2 < 1e-9) continue
+          let t =
+            ((pr - ends[a * 3]) * ex + (pg - ends[a * 3 + 1]) * ey + (pb - ends[a * 3 + 2]) * ez) /
+            e2
+          t = t < 0 ? 0 : t > 1 ? 1 : t
+          const qx = pr - ends[a * 3] - t * ex
+          const qy = pg - ends[a * 3 + 1] - t * ey
+          const qz = pb - ends[a * 3 + 2] - t * ez
+          if (qx * qx + qy * qy + qz * qz < RESCUE_MIX * RESCUE_MIX) {
+            blend = true
+            break
+          }
+        }
+      }
+      if (blend) continue
+      unseen.push(i)
+      far.push(d2)
+    }
+    if (unseen.length < need) return
+    // A slot: an unused centroid, else the later of the nearest duplicate pair.
+    let slot = -1
+    for (let c = 0; c < k; c++) {
+      if (!used[c]) {
+        slot = c
+        break
+      }
+    }
+    if (slot < 0) {
+      let best = RESCUE_DUPLICATE * RESCUE_DUPLICATE
+      for (let a = 0; a < live.length; a++) {
+        for (let b = a + 1; b < live.length; b++) {
+          const ca = live[a]
+          const cb = live[b]
+          const dx = cent[ca * 3] - cent[cb * 3]
+          const dy = cent[ca * 3 + 1] - cent[cb * 3 + 1]
+          const dz = cent[ca * 3 + 2] - cent[cb * 3 + 2]
+          const v = dx * dx + dy * dy + dz * dz
+          if (v < best) {
+            best = v
+            slot = cnt[ca] < cnt[cb] ? ca : cb
+          }
+        }
+      }
+    }
+    if (slot < 0) return
+    // The most extreme quarter of the unseen pixels: the cores, not their rims.
+    const order = unseen
+      .map((_, j) => j)
+      .toSorted((p, q) => far[q] - far[p] || unseen[p] - unseen[q])
+    const take = Math.max(1, order.length >> 2)
+    let sx = 0
+    let sy = 0
+    let sz = 0
+    for (let j = 0; j < take; j++) {
+      featAt(unseen[order[j]], f)
+      sx += f[0]
+      sy += f[1]
+      sz += f[2]
+    }
+    cent[slot * 3] = sx / take
+    cent[slot * 3 + 1] = sy / take
+    cent[slot * 3 + 2] = sz / take
+    used[slot] = 1
+    cnt[slot] = take
+  }
 }
 
 export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeResult {
@@ -543,6 +725,14 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
       cent[cc + 2] = nz
     }
     if (maxMove < 1e-4) break
+  }
+
+  // Colors that live only on edges — a hairline, a thin bar, a glyph stem a
+  // pixel or two wide — never reach the edge-free pool, so no centroid learns
+  // them and their pixels fall to the nearest fill. Give such a color a
+  // centroid in place of a redundant one (see rescueEdgeColors).
+  if (poolIdx !== null && smask !== null) {
+    rescueEdgeColors(cent, k, cnt, data, feat, mask, smask, n)
   }
 
   // Final pass: label every in-mask pixel by nearest centroid, accumulating
