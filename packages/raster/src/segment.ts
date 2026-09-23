@@ -89,6 +89,20 @@ const DEFAULT_MIN_AREA = 16
 const SRM_FLOOR = 0.03
 
 /**
+ * Share of in-mask pixels exactly equal to their four neighbors at which an
+ * image is noise-free flat art — a vector render, where anti-aliasing touches
+ * only the edges and every fill is exact.
+ */
+const PRISTINE_SHARE = 0.85
+
+/**
+ * Merge floor for noise-free flat art in place of `SRM_FLOOR`: a sixth of a
+ * JND. Two large exact fills that far apart are two colors the drawing used
+ * (two greens of a mosaic), not one fill the noise split.
+ */
+const PRISTINE_FLOOR = 0.005
+
+/**
  * A region's palette color is the mean of its *flat interior* pixels — its core —
  * when that core can speak for it: an anti-aliased rim is a mixture of two
  * colors, and letting it into the mean tints every region toward its neighbors
@@ -193,6 +207,18 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
       }
     }
   }
+
+  // Noise-free flat art (fills whose pixels equal all their neighbors) carries no
+  // compression or sensor noise for the merge floor to absorb: a difference
+  // between two large flat regions is one the drawing made.
+  let inMask = 0
+  let exact = 0
+  for (let i = 0; i < n; i++) {
+    if (mask !== null && mask[i] === 0) continue
+    inMask++
+    if (grad[i] === 0) exact++
+  }
+  const floor = inMask > 0 && exact >= PRISTINE_SHARE * inMask ? PRISTINE_FLOOR : SRM_FLOOR
 
   // ---- 2. Markers: 4-connected components of flat in-mask pixels ----
   const region = new Int32Array(n).fill(-1)
@@ -373,6 +399,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     coreN,
     mergeThreshold,
     sizeBias,
+    floor,
     minArea,
     maxRegions,
   )
@@ -862,6 +889,7 @@ function mergeRegions(
   coreN: Int32Array,
   mergeThreshold: number,
   sizeBias: number,
+  floor: number,
   minArea: number,
   maxRegions: number,
 ): Int32Array {
@@ -895,13 +923,14 @@ function mergeRegions(
   // Size-aware merge tolerance (Nock & Nielsen 2004). Off (`sizeBias === 0`) it
   // is the flat `mergeThreshold` — byte-identical. On, the per-region bound
   // b(|R|) = SRM_SCALE / sqrt(|R|) decays with area, so the pair limit floors at
-  // `SRM_FLOOR` for two large regions (near-identical to merge) and rises for
-  // small ones (a sliver folds freely). Root sizes, so it tracks each round.
+  // `floor` (SRM_FLOOR, or PRISTINE_FLOOR on noise-free art) for two large
+  // regions (near-identical to merge) and rises for small ones (a sliver folds
+  // freely). Root sizes, so it tracks each round.
   const SRM_SCALE = 0.5
   const mergeLimit = (a: number, b: number): number =>
     sizeBias <= 0
       ? mergeThreshold
-      : SRM_FLOOR + sizeBias * SRM_SCALE * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
+      : floor + sizeBias * SRM_SCALE * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
   const union = (a: number, b: number): void => {
     // Fold the smaller into the larger (keep the dominant color id stable).
     const keep = size[a] >= size[b] ? a : b
@@ -995,10 +1024,10 @@ function mergeRegions(
   // separate black outlines become one palette color. Greedy by descending size,
   // so the largest region of a color is the representative. Perceptual-distance
   // gated, so it can never merge genuinely different colors (a blue strap into a
-  // black outline). Under size-aware merging it uses the near-duplicate `SRM_FLOOR`
+  // black outline). Under size-aware merging it uses the near-duplicate `floor`
   // so it consolidates true duplicates without re-merging the close-but-distinct
   // dominant colors the adjacency pass deliberately kept apart.
-  const consolidateDist = sizeBias > 0 ? SRM_FLOOR : mergeThreshold
+  const consolidateDist = sizeBias > 0 ? floor : mergeThreshold
   const roots: number[] = []
   for (let i = 0; i < regionCount; i++) if (find(i) === i) roots.push(i)
   roots.sort((a, b) => size[b] - size[a] || a - b)

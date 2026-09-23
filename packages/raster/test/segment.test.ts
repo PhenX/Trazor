@@ -101,6 +101,25 @@ describe('segmentRegions — region growing', () => {
     expect(seg.labels.count).toBe(1)
   })
 
+  it('keeps two exact fills a drawing made apart, and folds them when noise could have split them', () => {
+    // Two greens of a mosaic (ΔE ≈ 0.03, the noise floor SRM_FLOOR): rendered
+    // exactly they are two colors, with sensor-like jitter they are one.
+    const A: Rgba = [0x45, 0xd3, 0x68, 255]
+    const B: Rgba = [0x58, 0xd3, 0x45, 255]
+    const exact = rasterOf(160, 40, (x) => (x < 80 ? A : B))
+    expect(segmentRegions(exact, { mergeSizeBias: 0.8 }).labels.count).toBe(2)
+    let seed = 11
+    const jitter = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return (seed % 5) - 2
+    }
+    const noisy = rasterOf(160, 40, (x) => {
+      const c = x < 80 ? A : B
+      return [c[0] + jitter(), c[1] + jitter(), c[2] + jitter(), 255] as Rgba
+    })
+    expect(segmentRegions(noisy, { mergeSizeBias: 0.8 }).labels.count).toBe(1)
+  })
+
   it('never exceeds the region cap, however distinct the remaining hues', () => {
     // Six vivid fields: every cap below six is met exactly, down to one color.
     const cols: Rgba[] = [
