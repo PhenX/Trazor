@@ -628,6 +628,24 @@ describe('recommendSettings — region-growing gates', () => {
     ...over,
   })
 
+  it('traces a source only slightly above the default size at its own size', () => {
+    // Under the default trace size nothing changes; just above it, a mild
+    // shrink would thin strokes below the segmentation's core size, so the
+    // source keeps its size; well past it, the speed cap applies.
+    expect(recommendSettings(flatArt()).patch.maxDimension).toBeUndefined()
+    const mild = recommendSettings(flatArt({ width: 1800, height: 1120, pixels: 2_016_000 }))
+    expect(mild.patch.maxDimension).toBe(1800)
+    expect(mild.rationaleKeys.some((k) => k.code === 'nativeSize')).toBe(true)
+    const tall = recommendSettings(flatArt({ width: 900, height: 2048, pixels: 1_843_200 }))
+    expect(tall.patch.maxDimension).toBe(2048)
+    const large = recommendSettings(flatArt({ width: 3000, height: 2000, pixels: 6_000_000 }))
+    expect(large.patch.maxDimension).toBe(1600)
+    expect(large.rationaleKeys.some((k) => k.code === 'largeSource')).toBe(true)
+    expect(large.rationaleKeys.some((k) => k.code === 'nativeSize')).toBe(false)
+    const wide = recommendSettings(flatArt({ width: 2600, height: 1000, pixels: 2_600_000 }))
+    expect(wide.patch.maxDimension).toBeUndefined()
+  })
+
   it('grows regions for many-color, gradient-free flat art', () => {
     expect(recommendSettings(flatArt()).patch.segmentation).toBe('regions')
   })
