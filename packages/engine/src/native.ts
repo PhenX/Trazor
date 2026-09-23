@@ -55,6 +55,7 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
+  encodedOfLightness,
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
@@ -72,6 +73,7 @@ import {
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
+  toEncodedLuma,
   toGrayscale,
   toOklabBuffer,
   TRANSLUCENT_MAX_ALPHA,
@@ -2046,8 +2048,15 @@ async function inkPipeline(
     } else {
       const t =
         settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
-      mask = binarize(gray, t, settings.invert, opaque)
-      if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
+      // The threshold is a lightness; the mask and the field read it in encoded
+      // luma, where an anti-aliased edge's coverage is linear. On neutral pixels
+      // the two orders agree, so the mask is the lightness threshold's; the field
+      // then inverts the rasterizer's blend instead of lightness's cube-root curve,
+      // which read every edge pixel as less ink than it holds.
+      const luma = toEncodedLuma(image)
+      const tl = encodedOfLightness(t)
+      mask = binarize(luma, tl, settings.invert, opaque)
+      if (settings.curveMode !== 'pixel') coverage = signedThresholdField(luma, tl, settings.invert)
     }
     // A learned coverage hint (FieldEnhancer) replaces the field derived from the
     // degraded input, so refinement snaps ring vertices to the clean edge. Quantized

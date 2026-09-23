@@ -14,7 +14,7 @@ export {
   TRANSLUCENT_MIN_ALPHA,
 } from './background'
 export type { FlattenResult } from './background'
-export { toGrayscale, toOklabBuffer } from './convert'
+export { encodedOfLightness, toEncodedLuma, toGrayscale, toOklabBuffer } from './convert'
 export { detectEdges } from './edges'
 export { fitRegionGradients } from './gradient'
 export type { GradientOptions, GradientResult } from './gradient'

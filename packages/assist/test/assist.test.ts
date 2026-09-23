@@ -474,12 +474,15 @@ describe('recommendSettings', () => {
     expect(rec.patch.mode).toBe('bw')
   })
 
-  it('thresholds clean two-tone art midway between its tones and paints its measured ink', () => {
+  it('thresholds clean two-tone art at half coverage between its tones and paints its measured ink', () => {
     const rec = recommendSettings(analyzeImage(inkOnTransparent()))
     expect(rec.profileId).toBe('bw-sketch')
     expect(rec.patch.thresholdMode).toBe('fixed')
-    expect(rec.patch.threshold).toBeGreaterThan(120)
-    expect(rec.patch.threshold).toBeLessThan(136)
+    // Black on white blends linearly in encoded values: half coverage is the
+    // gray at encoded luma ½, lightness ≈ 0.6 — not the lightness midpoint 0.5,
+    // which cuts every anti-aliased edge at 61 % coverage and insets the outline.
+    expect(rec.patch.threshold).toBeGreaterThanOrEqual(150)
+    expect(rec.patch.threshold).toBeLessThanOrEqual(155)
     expect(rec.patch.fillColor).toBe('#000000')
     // Anti-aliased transparency: the cut sits at half coverage.
     expect(rec.patch.alphaThreshold).toBe(128)
