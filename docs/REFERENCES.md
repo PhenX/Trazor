@@ -207,6 +207,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (`packages/raster/src/segment.ts`) folds regions by |A|·|B|/(|A|+|B|)·ΔE²
   until the color budget is met, so the budget's damage lands on the smallest,
   closest regions.
+- **Azriel Rosenfeld, “Digital Straight Line Segments”, _IEEE Transactions on
+  Computers_ C-23(12), 1974.** The digitization of a straight line is an
+  8-connected arc: at a slope under 45° it steps to the next row across a
+  corner. The region-growing segmentation's last rescue pass
+  (`packages/raster/src/segment.ts`, `RESCUE_PASSES`) grows its blobs across
+  corners for that reason — an anti-aliased hairline's darkest pixels are such a
+  digitization, and grown across sides only they break into specks.
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).
