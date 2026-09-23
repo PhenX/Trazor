@@ -69,21 +69,30 @@ image — the verdict reads MIXED only because no GMSD move clears the band on t
 
 ## After (auto settings)
 
-| 512 px (38)   |   GMSD | CIEDE2000 |     ΔE | spurious | scale GMSD | coords |  gzip |    ms |
-| ------------- | -----: | --------: | -----: | -------: | ---------: | -----: | ----: | ----: |
-| Trazor before | 0.0712 |     0.631 | 0.0177 |   0.0285 |     0.0788 |    807 | 1 531 |   160 |
-| Trazor after  | 0.0421 |     0.247 | 0.0026 |   0.0080 |     0.0542 |    717 | 1 405 |   137 |
-| inkvec        | 0.0148 |     0.071 | 0.0008 |   0.0038 |     0.0181 |    282 | 1 160 | 1 686 |
+The multi-model **bounded DP curve fit** (`runfit.ts`, inkvec stage 11 in a
+browser-fast form) then replaced the per-run refit: each smooth run is segmented
+and drawn (line / arc / G1 cubic) under one description-length objective, which
+is where the emoji families' GMSD comes from. It first cost ~3.4× the trace time
+and a fifth more coordinates; the line-first pricing, the deferred cubic, the
+sample-parameter cubic residual, the leaner span loop and the extent-scaled reach
+bring the time back (512 px mean 621 → 283 ms, close to the pre-DP head) with the
+DP's quality kept. The rows below are the current branch head against the inkvec
+CLI on the same corpus render (so Trazor and inkvec are directly comparable; the
+earlier pre-DP write-up above used a different render and is not).
 
-Per family after (GMSD Trazor / inkvec): Lucide 0.059 / 0.0085, Material 0.039 / 0.0052, Noto 0.039 / 0.032,
-OpenMoji 0.035 / 0.012, Simple Icons 0.050 / 0.020, Twemoji 0.033 / 0.016. Per-image wins Trazor / inkvec: GMSD
-2 / 36 (was 0 / 38).
+| 512 px (38)         |   GMSD | CIEDE2000 |     ΔE | spurious | scale GMSD | coords |  gzip |    ms |
+| ------------------- | -----: | --------: | -----: | -------: | ---------: | -----: | ----: | ----: |
+| Trazor (bounded DP) | 0.0239 |     0.159 | 0.0015 |   0.0042 |     0.0336 |    597 | 1 292 |   283 |
+| inkvec              | 0.0153 |     0.063 | 0.0006 |   0.0024 |     0.0207 |    303 | 1 424 | 1 614 |
 
-| 128 px (50)   |   GMSD | CIEDE2000 |     ΔE | spurious | scale GMSD | coords |  gzip |  ms |
-| ------------- | -----: | --------: | -----: | -------: | ---------: | -----: | ----: | --: |
-| Trazor before | 0.1162 |     1.742 | 0.0332 |   0.0266 |     0.1513 |  1 475 | 1 270 |  34 |
-| Trazor after  | 0.0933 |     1.136 | 0.0120 |   0.0088 |     0.1244 |    671 | 1 221 |  44 |
-| inkvec        | 0.0338 |     0.349 | 0.0034 |   0.0031 |     0.0499 |    396 | 1 460 | 757 |
+Per family (GMSD Trazor / inkvec): Lucide 0.0154 / 0.0080, Material 0.0134 / 0.0040, Noto 0.0362 / 0.0329,
+OpenMoji 0.0359 / 0.0132, Simple Icons 0.0251 / 0.0225, Twemoji 0.0211 / 0.0163, synthetic 0.0128 / 0.0003.
+Trazor's gzip is below inkvec's on this corpus (the cubic runs compress well) though its coordinate count is ~2×.
+
+| 128 px (50)         |   GMSD | CIEDE2000 |     ΔE | spurious | scale GMSD | coords |  gzip |  ms |
+| ------------------- | -----: | --------: | -----: | -------: | ---------: | -----: | ----: | --: |
+| Trazor (bounded DP) | 0.0624 |     0.814 | 0.0083 |   0.0070 |     0.0875 |    472 |   966 |  77 |
+| inkvec              | 0.0338 |     0.349 | 0.0034 |   0.0031 |     0.0499 |    396 | 1 666 | 660 |
 
 ## What remains, and why
 
@@ -108,5 +117,8 @@ OpenMoji 0.035 / 0.012, Simple Icons 0.050 / 0.020, Twemoji 0.033 / 0.016. Per-i
 - **Gradients** are off by default (358 → 70 coordinates on the synthetic ramp when on, +50 % time) and autoK's Oklab
   0.03 merge floor is far stricter near black than inkvec's CIEDE2000 1.5.
 
-Not worth porting: the multi-model dynamic program itself, the 48-iteration boundary solve, symmetry enforcement, the
-planar-map rewrite, and 2-decimal emission (measured: no quality change, +24 % gzip).
+The multi-model dynamic program itself is now ported in a browser-fast form (the bounded DP curve fit above): the DP
+runs over a bounded candidate set rather than every point, prices a curve fit only when it could beat the line, defers
+the cubic behind the arc, and scales its reach down on large canvases — trace time within ~1.5× the pre-DP head. Still
+not worth porting: the 48-iteration boundary solve, symmetry enforcement, the planar-map rewrite, and 2-decimal
+emission (measured: no quality change, +24 % gzip).

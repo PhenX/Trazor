@@ -236,6 +236,48 @@ describe('run-fit dynamic program', () => {
     expect(last.y).toBeCloseTo(geom[(N - 1) * 2 + 1], 6)
   })
 
+  it('bounds the DP span window on a large canvas without leaving the band', () => {
+    // A gentle 70° arc of radius 400, densely sampled: one long smooth run the DP
+    // would span with its full reach on a small canvas.
+    const R = 400
+    const N = 240
+    const geom: number[] = []
+    const sigma: number[] = []
+    for (let i = 0; i < N; i++) {
+      const a = -0.6 + (1.2 * i) / (N - 1)
+      geom.push(400 + R * Math.cos(a), 400 + R * Math.sin(a))
+      sigma.push(0.2)
+    }
+    const base = {
+      alphamax: (0.75 * 4) / 3,
+      lambda: descriptionLambda(4000),
+      tau: runTau(),
+      band: runBand(0.2),
+      reach: mergeReach(true),
+      stride: candidateStride(true),
+    }
+    const full = fitOpenRuns(geom, sigma, [0, N - 1], { ...base, extent: 512 })
+    const scaled = fitOpenRuns(geom, sigma, [0, N - 1], { ...base, extent: 4000 })
+    // The scaled window is deterministic.
+    const scaledAgain = fitOpenRuns(geom, sigma, [0, N - 1], { ...base, extent: 4000 })
+    expect(JSON.stringify(scaledAgain)).toBe(JSON.stringify(scaled))
+    // A large canvas shrinks the reach, so it never fits fewer segments than the
+    // full window — it breaks the run into more pieces, it does not fit it looser.
+    expect(scaled.length).toBeGreaterThanOrEqual(full.length)
+    // Bounding the window moves where the breaks fall, never the fidelity: every
+    // emitted point stays on the true arc within the admissibility band.
+    for (const cmds of [full, scaled]) {
+      const pts = samplePath([{ type: 'M', x: geom[0], y: geom[1] } as PathCommand, ...cmds])
+      for (const [x, y] of pts) {
+        expect(Math.abs(Math.hypot(x - 400, y - 400) - R)).toBeLessThan(0.6)
+      }
+    }
+    // An extent at or below the threshold leaves the reach at full — identical to
+    // supplying none, so a small image is byte-for-byte unaffected.
+    const none = fitOpenRuns(geom, sigma, [0, N - 1], base)
+    expect(JSON.stringify(full)).toBe(JSON.stringify(none))
+  })
+
   it('is deterministic', () => {
     const { mask, field } = diskMaskField(128, 64, 64, 40)
     const a = JSON.stringify(trace(mask, field))
