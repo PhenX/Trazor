@@ -1,4 +1,5 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
+import { signedAreaFlat } from '@trazor/core'
 import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
@@ -145,6 +146,9 @@ export function closedPathToCommands(
   return polygonToCommands(ring, ringPolygon(ring, field ?? opts.coverage), opts)
 }
 
+/** Share of a ring's lattice area its adjusted polygon has to enclose to carry a fit. */
+const POLYGON_AREA_FLOOR = 0.75
+
 /**
  * The polygon half of the chain for one closed ring (Selinger 2003, §2.2 +
  * §2.3.1): optimal polygon, then least-squares vertex adjustment, plus the
@@ -173,6 +177,14 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   const geom = field ? refineRingToField(ext, field) : ext
   const sums = computeSums(geom)
   const polygon = adjustVertices(geom, sums, vertexIdx, true)
+  // A ring a pixel wide — a hairline, a stroke's counter — has its two sides
+  // inside the straightness tube of the same lines, and the least-squares
+  // vertices draw them together until the polygon encloses a fraction of the
+  // ring; it keeps its exact lattice outline instead. A wider ring's polygon
+  // runs through its lattice corners and keeps its area within a few percent.
+  if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * Math.abs(signedAreaFlat(ring))) {
+    return null
+  }
   const sigma = ringSigmas(ext, geom, field !== undefined)
   const extent = field ? Math.max(field.width, field.height) : 0
   return { polygon, geom, vertices: vertexIdx, sigma, refined: field !== undefined, extent }

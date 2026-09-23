@@ -49,6 +49,41 @@ describe('segmentRegions — region growing', () => {
     expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
 
+  it('rescues a downscaled glyph stem that has no flat core', () => {
+    // A grey stem three pixels wide on paper, as a downscale leaves it: its
+    // columns carry 85 %, 100 % and 85 % of the ink and a 40 % rim column sits
+    // on each side, so no pixel is flat and step 2 seeds no marker in it. The
+    // rescue pass has to carve the stem's own pixels out of the rim web: a blob
+    // that also takes the rim columns in reads as too close to the paper on
+    // its across-axis, fails the enclosure test, and the flood then hands the
+    // whole stem to the paper.
+    const paper: Rgba = [247, 245, 242, 255]
+    const ink = [134, 142, 150]
+    const mix = (t: number): Rgba => [
+      Math.round(ink[0] * t + paper[0] * (1 - t)),
+      Math.round(ink[1] * t + paper[1] * (1 - t)),
+      Math.round(ink[2] * t + paper[2] * (1 - t)),
+      255,
+    ]
+    const cover = [0.4, 0.85, 1, 0.85, 0.4]
+    const w = 48
+    const img = rasterOf(w, 60, (x, y) => {
+      if (y < 10 || y >= 50) return paper
+      const k = x - 18
+      return k >= 0 && k < cover.length ? mix(cover[k]) : paper
+    })
+    const seg = segmentRegions(img, { minRegionArea: 4 })
+    const paperLabel = seg.labels.data[30 * w + 4]
+    const stem = seg.labels.data[30 * w + 20]
+    expect(stem).not.toBe(paperLabel)
+    for (let y = 10; y < 50; y++) {
+      for (const x of [19, 20, 21]) expect(seg.labels.data[y * w + x]).toBe(stem)
+    }
+    // The region's color is the stroke's, not a mixture drawn toward the paper.
+    const red = parseInt(seg.paletteHex[stem].slice(1, 3), 16)
+    expect(red).toBeLessThan(160)
+  })
+
   it('separates distinct flat blocks and keeps every color', () => {
     const img = rasterOf(40, 40, (x, y) => {
       if (y < 20 && x < 20) return [220, 30, 30, 255]

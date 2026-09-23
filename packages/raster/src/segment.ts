@@ -121,8 +121,13 @@ function coreSpeaks(coreN: number, size: number): boolean {
 // one web, and a soft rim (navy → teal → blue) is a chain of small steps, so a
 // step-to-step bound would drift right across it; bounding to the mean instead
 // keeps a blob color-tight — a glyph's strokes come out as one near-uniform
-// blob, cut off where the rim begins.
-const RESCUE_COHERENCE = 0.2
+// blob, cut off where the rim begins. The bound has to stop at the rim's first
+// pixel: for a mid-grey stroke on paper the rim sits ≈0.07 away at 80 %
+// coverage, ≈0.13 at 60 % and ≈0.19 at 45 %, and a blob that takes those pixels
+// in dilutes the extreme share measured below under RESCUE_ENCLOSURE for any
+// stroke only a few pixels wide, so the flood then dissolves the stroke into
+// its field. 0.1 keeps the blob to the stroke's own pixels (≥ ~70 % coverage).
+const RESCUE_COHERENCE = 0.1
 // Farthest a pixel looks, in each of the four directions and over any unmarked
 // pixel, for the marker on that side (the field). Only a feature's own rim lies
 // between it and its field; anything farther has no field to be enclosed by.

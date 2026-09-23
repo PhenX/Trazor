@@ -1,6 +1,7 @@
 import type { GrayImage, LabelMap, PathCommand } from '@trazor/core'
+import { arcToCenter } from '@trazor/core'
 import type { TraceCurveOptions } from './closed'
-import { closedPathToCommands } from './closed'
+import { closedPathToCommands, pixelCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'
 import { optimalPolyline } from './potrace/polyfit'
 import {
@@ -14,7 +15,7 @@ import {
 } from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
-import { reverseCommands } from './paths'
+import { cubicAt, reverseCommands } from './paths'
 import { negatedField, pairwiseField, refineRingToField, signedFieldOf } from './refine'
 import type { SignedField } from './refine'
 
@@ -313,6 +314,119 @@ function withRefine(
 }
 
 /**
+ * Share of a ring's lattice area under which its fitted outline has collapsed
+ * and the ring keeps its exact lattice outline instead. Every chain is fitted
+ * on its own between the junction corners it shares, so a region no wider than
+ * a pixel — a hairline stem, the one-pixel sliver of a rim between two fills —
+ * has each chain around it fitted onto the same chord and closes to no area at
+ * all, whichever way its neighbours are drawn. Any other fit stays within a
+ * pixel of its lattice (the straightness tube), which cannot cost a ring half
+ * its area, so nothing else reaches the floor.
+ */
+const RING_AREA_FLOOR = 0.5
+
+/** Samples per curve when a fitted ring's area is measured. */
+const AREA_CURVE_SAMPLES = 8
+
+/**
+ * Signed area enclosed by one fitted ring (`M … Z`), its curves sampled at
+ * AREA_CURVE_SAMPLES points; the lattice shoelace's sign convention.
+ */
+function fittedRingArea(commands: readonly PathCommand[]): number {
+  let twice = 0
+  let sx = 0
+  let sy = 0
+  let px = 0
+  let py = 0
+  const to = (x: number, y: number): void => {
+    twice += px * y - x * py
+    px = x
+    py = y
+  }
+  for (const c of commands) {
+    switch (c.type) {
+      case 'M':
+        sx = px = c.x
+        sy = py = c.y
+        break
+      case 'L':
+        to(c.x, c.y)
+        break
+      case 'Q': {
+        const x0 = px
+        const y0 = py
+        for (let k = 1; k <= AREA_CURVE_SAMPLES; k++) {
+          const t = k / AREA_CURVE_SAMPLES
+          const u = 1 - t
+          to(
+            u * u * x0 + 2 * u * t * c.x1 + t * t * c.x,
+            u * u * y0 + 2 * u * t * c.y1 + t * t * c.y,
+          )
+        }
+        break
+      }
+      case 'C': {
+        const x0 = px
+        const y0 = py
+        for (let k = 1; k <= AREA_CURVE_SAMPLES; k++) {
+          const [x, y] = cubicAt(x0, y0, c.x1, c.y1, c.x2, c.y2, c.x, c.y, k / AREA_CURVE_SAMPLES)
+          to(x, y)
+        }
+        break
+      }
+      case 'A': {
+        const arc = arcToCenter(px, py, c)
+        if (arc) {
+          const cos = Math.cos(arc.phi)
+          const sin = Math.sin(arc.phi)
+          for (let k = 1; k < AREA_CURVE_SAMPLES; k++) {
+            const a = arc.theta1 + (arc.dTheta * k) / AREA_CURVE_SAMPLES
+            const ex = arc.rx * Math.cos(a)
+            const ey = arc.ry * Math.sin(a)
+            to(arc.cx + cos * ex - sin * ey, arc.cy + sin * ex + cos * ey)
+          }
+        }
+        to(c.x, c.y)
+        break
+      }
+      case 'Z':
+        to(sx, sy)
+        break
+    }
+  }
+  return twice / 2
+}
+
+/** Whether a fitted ring lost most of the area its lattice ring encloses. */
+function collapsed(commands: readonly PathCommand[], latticeArea: number): boolean {
+  return Math.abs(fittedRingArea(commands)) < RING_AREA_FLOOR * Math.abs(latticeArea)
+}
+
+/** A chain instance's lattice points in travel order, appended to `into` (the first pair skipped when continuing a ring). */
+function appendLattice(
+  chains: readonly BoundaryChain[],
+  inst: Instance,
+  into: number[],
+  skipFirst: boolean,
+): void {
+  const p = chains[inst.chain].points
+  const n = p.length >> 1
+  if (inst.forward) {
+    for (let k = skipFirst ? 1 : 0; k < n; k++) into.push(p[k * 2], p[k * 2 + 1])
+  } else {
+    for (let k = n - 1 - (skipFirst ? 1 : 0); k >= 0; k--) into.push(p[k * 2], p[k * 2 + 1])
+  }
+}
+
+/** The exact lattice ring the instances walk, collinear points collapsed. */
+function latticeRing(chains: readonly BoundaryChain[], insts: readonly Instance[]): PathCommand[] {
+  const poly: number[] = []
+  insts.forEach((inst, k) => appendLattice(chains, inst, poly, k > 0))
+  if (poly.length >= 2) poly.length -= 2 // the closing point repeats the start
+  return pixelCommands(poly)
+}
+
+/**
  * Assemble the regions of a partition from the fitted chains: each region walks
  * the chain instances around every one of its rings, reusing the identical fit
  * (reversed for the left-hand instance). `fits` must be parallel to
@@ -386,7 +500,8 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
           start.used = true
           const area = (start.forward ? startChain.shoelace : -startChain.shoelace) / 2
           if (area < 0) holeCount++
-          commands.push(...ringCommandsOf(start))
+          const fitted = ringCommandsOf(start)
+          commands.push(...(collapsed(fitted, area) ? latticeRing(chains, [start]) : fitted))
           continue
         }
 
@@ -397,9 +512,11 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
         const sx = start.forward ? p[0] : p[p.length - 2]
         const sy = start.forward ? p[1] : p[p.length - 1]
         ringCmds.push({ type: 'M', x: sx, y: sy })
+        const insts: Instance[] = []
         let inst = start
         for (;;) {
           inst.used = true
+          insts.push(inst)
           const c = chains[inst.chain]
           ringArea += inst.forward ? c.shoelace : -c.shoelace
           ringCmds.push(...runCommandsOf(inst))
@@ -411,7 +528,9 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
         }
         ringCmds.push({ type: 'Z' })
         if (ringArea / 2 < 0) holeCount++
-        commands.push(...ringCmds)
+        commands.push(
+          ...(collapsed(ringCmds, ringArea / 2) ? latticeRing(chains, insts) : ringCmds),
+        )
       }
     }
     if (commands.length > 0) {
@@ -478,17 +597,6 @@ export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]):
       ]),
     ))
   }
-  /** The chain's lattice points in travel order, appended to `into` (the first pair skipped after the ring's opening move). */
-  const appendLattice = (inst: Instance, into: number[], skipFirst: boolean): void => {
-    const p = chains[inst.chain].points
-    const n = p.length >> 1
-    if (inst.forward) {
-      for (let k = skipFirst ? 1 : 0; k < n; k++) into.push(p[k * 2], p[k * 2 + 1])
-    } else {
-      for (let k = n - 1 - (skipFirst ? 1 : 0); k >= 0; k--) into.push(p[k * 2], p[k * 2 + 1])
-    }
-  }
-
   // Per-region instance index, identical to assembleRegions: a chain is walked
   // forward by the region on its right, reversed by the region on its left.
   const regionInstances = new Map<number, Map<number, Instance[]>>()
@@ -553,12 +661,13 @@ export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]):
           start.used = true
           const area = (start.forward ? startChain.shoelace : -startChain.shoelace) / 2
           const poly: number[] = []
-          appendLattice(start, poly, false)
+          appendLattice(chains, start, poly, false)
           if (poly.length >= 2) poly.length -= 2 // drop the duplicated closing point
           const outside = start.forward ? startChain.left : startChain.right
+          const fitted = ringCommandsOf(start)
           raw.push({
             label,
-            commands: ringCommandsOf(start),
+            commands: collapsed(fitted, area) ? pixelCommands(poly) : fitted,
             area,
             poly,
             probeX,
@@ -583,7 +692,7 @@ export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]):
           ringArea += inst.forward ? c.shoelace : -c.shoelace
           if ((inst.forward ? c.left : c.right) < 0) touchesTransparent = true
           ringCmds.push(...runCommandsOf(inst))
-          appendLattice(inst, poly, !firstInst)
+          appendLattice(chains, inst, poly, !firstInst)
           firstInst = false
           const [ex, ey] = instEnd(chains, inst)
           const nextList = byCorner.get(cornerKey(ex, ey))
@@ -595,7 +704,7 @@ export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]):
         if (poly.length >= 2) poly.length -= 2 // drop the closing point (equals the start)
         raw.push({
           label,
-          commands: ringCmds,
+          commands: collapsed(ringCmds, ringArea / 2) ? pixelCommands(poly) : ringCmds,
           area: ringArea / 2,
           poly,
           probeX,
