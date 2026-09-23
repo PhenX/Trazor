@@ -253,6 +253,33 @@ describe('fitArcs', () => {
     expect(fitArcs([start, ...cubics], 2).some((c) => c.type === 'A')).toBe(true)
   })
 
+  it('does not read two near-collinear cubics as the flank of a sliver ellipse', () => {
+    // A straight edge traced as two cubics sits within a few hundredths of a
+    // pixel of an ellipse a quarter-pixel thick, and its samples pass the conic
+    // test; an arc of that ellipse runs round its far end between two samples.
+    const start: PathCommand = { type: 'M', x: 27.1, y: 26.5 }
+    const cubics: PathCommand[] = [
+      { type: 'C', x1: 28, y1: 26.3, x2: 29.1, y2: 26, x: 30, y: 26 },
+      { type: 'C', x1: 52.7, y1: 26, x2: 75.3, y2: 25.9, x: 98, y: 26.1 },
+      { type: 'C', x1: 105.9, y1: 26.2, x2: 114, y2: 34.1, x: 114, y: 42 },
+    ]
+    expect(fitArcs([start, ...cubics], 2).some((c) => c.type === 'A')).toBe(false)
+  })
+
+  it('does not read a gently bowed run as half of a thin ellipse', () => {
+    // A traced edge bowing two pixels over sixty lies near half an ellipse two
+    // pixels thick at a few points of each cubic, yet between them that arc
+    // strays almost half a pixel off the long cubic and turns back at both ends.
+    const start: PathCommand = { type: 'M', x: 200.77, y: 348.67 }
+    const cubics: PathCommand[] = [
+      { type: 'C', x1: 185.48, y1: 359.94, x2: 168.2, y2: 367.83, x: 150.9, y: 375.6 },
+      { type: 'C', x1: 149.18, y1: 376.38, x2: 147.24, y2: 377.17, x: 145.34, y: 377.25 },
+    ]
+    for (const precision of [1, 2]) {
+      expect(fitArcs([start, ...cubics], precision).some((c) => c.type === 'A')).toBe(false)
+    }
+  })
+
   it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
     const { start, cubics } = ellipseArcCubics(100, 100, 60, 30, 0, 0, 2, 2)
     const out = fitArcs([start, ...cubics], 2)
