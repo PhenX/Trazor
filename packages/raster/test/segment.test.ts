@@ -84,6 +84,52 @@ describe('segmentRegions — region growing', () => {
     expect(red).toBeLessThan(160)
   })
 
+  it('rescues hairlines a pixel wide as well as stems', () => {
+    // Black ink on paper, anti-aliased by exact pixel coverage, as a clock face's
+    // numerals are drawn: a "0" a pixel wide and a slanted stroke a little
+    // wider. Their ink spreads over 20–95 % coverage, so almost no pixel is the
+    // stroke's own color and the tight rescue pass breaks them into specks under
+    // the minimum area; at a shallow slope the stroke's darkest runs meet only
+    // at their corners. The second pass has to carve each whole, or the flood
+    // hands it to the paper.
+    const paper = 250
+    const ink = 15
+    const hairline = (w: number, h: number, inside: (x: number, y: number) => boolean) => {
+      const cover = new Float64Array(w * h)
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let c = 0
+          for (let sy = 0; sy < 8; sy++) {
+            for (let sx = 0; sx < 8; sx++) if (inside(x + (sx + 0.5) / 8, y + (sy + 0.5) / 8)) c++
+          }
+          cover[y * w + x] = c / 64
+        }
+      }
+      const img = rasterOf(w, h, (x, y) => {
+        const v = Math.round(ink * cover[y * w + x] + paper * (1 - cover[y * w + x]))
+        return [v, v, v, 255]
+      })
+      const seg = segmentRegions(img, { minRegionArea: 4 })
+      let dark = 0
+      let kept = 0
+      for (let p = 0; p < w * h; p++) {
+        if (cover[p] < 0.5) continue
+        dark++
+        if (seg.labels.data[p] !== seg.labels.data[0]) kept++
+      }
+      return kept / dark
+    }
+    const ring = hairline(40, 40, (x, y) => Math.abs(Math.hypot(x - 20.3, y - 19.6) - 7) <= 0.5)
+    expect(ring).toBeGreaterThan(0.9)
+    const [ax, ay, bx, by] = [5, 10, 55, 25]
+    const len = Math.hypot(bx - ax, by - ay)
+    const stroke = hairline(60, 40, (x, y) => {
+      const t = ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / (len * len)
+      return t >= 0 && t <= 1 && Math.abs((x - ax) * (by - ay) - (y - ay) * (bx - ax)) / len <= 0.65
+    })
+    expect(stroke).toBeGreaterThan(0.9)
+  })
+
   it('separates distinct flat blocks and keeps every color', () => {
     const img = rasterOf(40, 40, (x, y) => {
       if (y < 20 && x < 20) return [220, 30, 30, 255]

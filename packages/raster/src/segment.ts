@@ -130,18 +130,34 @@ function coreSpeaks(coreN: number, size: number): boolean {
  * disturbing genuine anti-aliased edges — which sit *between two* colors and must
  * still split.
  */
-// Oklab ΔE an unmarked pixel must be within of a growing blob's *running mean*
-// to join it. Anti-aliasing/compression 4-connects every edge in the image into
-// one web, and a soft rim (navy → teal → blue) is a chain of small steps, so a
-// step-to-step bound would drift right across it; bounding to the mean instead
-// keeps a blob color-tight — a glyph's strokes come out as one near-uniform
-// blob, cut off where the rim begins. The bound has to stop at the rim's first
-// pixel: for a mid-grey stroke on paper the rim sits ≈0.07 away at 80 %
-// coverage, ≈0.13 at 60 % and ≈0.19 at 45 %, and a blob that takes those pixels
-// in dilutes the extreme share measured below under RESCUE_ENCLOSURE for any
-// stroke only a few pixels wide, so the flood then dissolves the stroke into
-// its field. 0.1 keeps the blob to the stroke's own pixels (≥ ~70 % coverage).
-const RESCUE_COHERENCE = 0.1
+// The rescue's passes. Each carves blobs out of the unmarked web: a pixel joins a
+// growing blob while within `coherence` (Oklab ΔE) of the blob's *running mean*.
+// Anti-aliasing/compression 4-connects every edge in the image into one web, and
+// a soft rim (navy → teal → blue) is a chain of small steps, so a step-to-step
+// bound would drift right across it; bounding to the mean instead keeps a blob
+// color-tight — a glyph's strokes come out as one near-uniform blob, cut off
+// where the rim begins.
+//
+// The first pass stops at the rim's first pixel: for a mid-grey stroke on paper
+// the rim sits ≈0.07 away at 80 % coverage, ≈0.13 at 60 % and ≈0.19 at 45 %, and
+// a blob that takes those pixels in dilutes the extreme share measured below
+// under RESCUE_ENCLOSURE for any stroke only a few pixels wide, so the flood then
+// dissolves the stroke into its field. 0.1 keeps the blob to the stroke's own
+// pixels (≥ ~70 % coverage). A feature whose anti-aliasing spreads its ink over
+// 20–95 % coverage — a dot, a hairline a pixel wide — has few such pixels and
+// breaks into specks under the minimum area, so the second pass carves what the
+// first left unmarked at 0.2. A hairline at a shallow slope is broken even there:
+// its darkest runs meet only at their corners (a digital line is 8-connected), so
+// the third pass also grows across corners. It comes last because a dot grown
+// across its corners takes in its own rim and reads as a mixture of dot and
+// field; rescued by then, the dot is a marker, and — like a stroke's after the
+// first pass — its rim, a mixture of it and the paper, fails the extreme test and
+// is left to the flood.
+const RESCUE_PASSES: readonly { coherence: number; diagonal: boolean }[] = [
+  { coherence: 0.1, diagonal: false },
+  { coherence: 0.2, diagonal: false },
+  { coherence: 0.2, diagonal: true },
+]
 // Farthest a pixel looks, in each of the four directions and over any unmarked
 // pixel, for the marker on that side (the field). Only a feature's own rim lies
 // between it and its field; anything farther has no field to be enclosed by.
@@ -316,26 +332,32 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   // A feature too thin to hold a flat core would otherwise be dissolved by the
   // flood into the field around it; give each such isolated component its own
   // marker, seeded with its own mean color, so the flood grows it as itself.
-  const rescued = rescueMarkerlessFeatures(
-    ok,
-    region,
-    w,
-    h,
-    n,
-    mask,
-    mL,
-    mA,
-    mB,
-    regionCount,
-    Math.max(1, minArea),
-  )
-  for (const f of rescued) {
-    const id = regionCount++
-    grow(id)
-    mL[id] = f.mL
-    mA[id] = f.mA
-    mB[id] = f.mB
-    size[id] = f.size
+  // Tight blobs first (a stroke's own pixels), then what they left (a dot, a
+  // hairline), then across corners (a hairline at a shallow slope).
+  for (const { coherence, diagonal } of RESCUE_PASSES) {
+    const rescued = rescueMarkerlessFeatures(
+      ok,
+      region,
+      w,
+      h,
+      n,
+      mask,
+      mL,
+      mA,
+      mB,
+      regionCount,
+      Math.max(1, minArea),
+      coherence,
+      diagonal,
+    )
+    for (const f of rescued) {
+      const id = regionCount++
+      grow(id)
+      mL[id] = f.mL
+      mA[id] = f.mA
+      mB[id] = f.mB
+      size[id] = f.size
+    }
   }
 
   // ---- 3. Priority flood: grow markers over edge/ramp pixels ----
@@ -583,10 +605,11 @@ interface RescuedFeature {
  * Finding those features is not just a matter of connected components: on an
  * anti-aliased or compressed image every edge in the picture is 4-connected into
  * one unmarked web, so the "&" is not an island. Each blob is grown color-tight —
- * a pixel joins only while within `RESCUE_COHERENCE` of the blob's running mean —
+ * a pixel joins only while within `coherence` of the blob's running mean —
  * which carves a coherent feature (a glyph's near-uniform strokes) back out of
  * that web and stops where the color ramps toward the field, even when the ramp
- * is a chain of small steps.
+ * is a chain of small steps. `coherence` is the bound and `diagonal` whether a
+ * blob grows across corners too (one of `RESCUE_PASSES`).
  *
  * A blob is rescued as its own marker (seeded with its mean color) when it spans
  * at least `minArea` pixels and, for at least `RESCUE_ENCLOSURE` of its pixels, it
@@ -617,13 +640,22 @@ function rescueMarkerlessFeatures(
   mB: Float64Array,
   regionCount: number,
   minArea: number,
+  coherence: number,
+  diagonal: boolean,
 ): RescuedFeature[] {
-  const coh2 = RESCUE_COHERENCE * RESCUE_COHERENCE
+  const coh2 = coherence * coherence
 
   // ---- 1. Carve color-tight blobs out of the unmarked web ----
   // `order` holds each blob's pixels contiguously in [start, start+len). A pixel
-  // joins a blob only while within RESCUE_COHERENCE of the blob's running mean.
+  // joins a blob only while within `coherence` of the blob's running mean.
   const blobId = new Int32Array(n).fill(-1)
+  const fits = (q: number, bL: number, bA: number, bB: number): boolean => {
+    if (blobId[q] !== -1 || region[q] !== -1 || (mask !== null && mask[q] === 0)) return false
+    const dl = ok[q * 3] - bL
+    const da = ok[q * 3 + 1] - bA
+    const db = ok[q * 3 + 2] - bB
+    return dl * dl + da * da + db * db < coh2
+  }
   const order = new Int32Array(n)
   const stack = new Int32Array(n)
   let cap = 64
@@ -661,53 +693,44 @@ function rescueMarkerlessFeatures(
       const bA = sumA / count
       const bB = sumB / count
       const x = p - ((p / w) | 0) * w
-      // Grow to an unmarked in-mask neighbor within RESCUE_COHERENCE of the running mean.
-      if (x > 0) {
-        const q = p - 1
-        if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - bL
-          const da = ok[q * 3 + 1] - bA
-          const db = ok[q * 3 + 2] - bB
-          if (dl * dl + da * da + db * db < coh2) {
-            blobId[q] = id
-            stack[sp++] = q
-          }
-        }
+      // Grow to an unmarked in-mask neighbor within `coherence` of the running mean:
+      // the four sides, and the four corners on a diagonal pass.
+      if (x > 0 && fits(p - 1, bL, bA, bB)) {
+        blobId[p - 1] = id
+        stack[sp++] = p - 1
       }
-      if (x < w - 1) {
-        const q = p + 1
-        if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - bL
-          const da = ok[q * 3 + 1] - bA
-          const db = ok[q * 3 + 2] - bB
-          if (dl * dl + da * da + db * db < coh2) {
-            blobId[q] = id
-            stack[sp++] = q
-          }
-        }
+      if (x < w - 1 && fits(p + 1, bL, bA, bB)) {
+        blobId[p + 1] = id
+        stack[sp++] = p + 1
       }
-      if (p >= w) {
-        const q = p - w
-        if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - bL
-          const da = ok[q * 3 + 1] - bA
-          const db = ok[q * 3 + 2] - bB
-          if (dl * dl + da * da + db * db < coh2) {
-            blobId[q] = id
-            stack[sp++] = q
-          }
-        }
+      if (p >= w && fits(p - w, bL, bA, bB)) {
+        blobId[p - w] = id
+        stack[sp++] = p - w
       }
-      if (p < n - w) {
-        const q = p + w
-        if (blobId[q] === -1 && region[q] === -1 && (mask === null || mask[q] !== 0)) {
-          const dl = ok[q * 3] - bL
-          const da = ok[q * 3 + 1] - bA
-          const db = ok[q * 3 + 2] - bB
-          if (dl * dl + da * da + db * db < coh2) {
-            blobId[q] = id
-            stack[sp++] = q
-          }
+      if (p < n - w && fits(p + w, bL, bA, bB)) {
+        blobId[p + w] = id
+        stack[sp++] = p + w
+      }
+      if (diagonal) {
+        const up = p >= w
+        const down = p < n - w
+        const left = x > 0
+        const right = x < w - 1
+        if (up && left && fits(p - w - 1, bL, bA, bB)) {
+          blobId[p - w - 1] = id
+          stack[sp++] = p - w - 1
+        }
+        if (up && right && fits(p - w + 1, bL, bA, bB)) {
+          blobId[p - w + 1] = id
+          stack[sp++] = p - w + 1
+        }
+        if (down && left && fits(p + w - 1, bL, bA, bB)) {
+          blobId[p + w - 1] = id
+          stack[sp++] = p + w - 1
+        }
+        if (down && right && fits(p + w + 1, bL, bA, bB)) {
+          blobId[p + w + 1] = id
+          stack[sp++] = p + w + 1
         }
       }
     }
