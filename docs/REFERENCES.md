@@ -117,6 +117,14 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   fit (smallest-eigenvector of the design scatter). Used, with the points
   normalized for conditioning, to recover `<ellipse>` center/radii/angle
   (`packages/svg/src/fit.ts`).
+- **Paul D. Sampson, “Fitting conic sections to ‘very scattered’ data: An
+  iterative refinement of the Bookstein algorithm”, _Computer Graphics and Image
+  Processing_ 18(1), 1982.** The first-order geometric distance from a point to
+  a conic, `|F|/|∇F|` of its implicit form. `fitArcs` accepts an arc only where
+  every sample, about a pixel apart along the run, lies within tolerance by
+  this distance (`packages/svg/src/arc.ts` `conicDistance`): the radial distance
+  in the unit-circle frame shrinks by `ry/rx` near the sharp ends of a thin
+  ellipse, where half of one two pixels thick passed for a gently bowed run.
 - **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements

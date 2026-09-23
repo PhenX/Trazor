@@ -167,9 +167,10 @@ check, and an accept test that reconstructs each candidate arc and keeps the one
 (an analytic on-arc test — each sample transformed into the ellipse's local frame, required on the unit circle and inside
 the swept angle range — so minor/major and direction are settled the same way for both conics, exactly at every radius),
 with radii/rotation/endpoint snapped to the precision grid. The acceptance tolerance is a fixed **absolute** sub-pixel
-budget (0.6px), not radius-scaled — a radius-scaled tolerance let a large, only-roughly-circular run collapse to an arc
-that rendered visibly off, and which runs crossed the boundary depended on platform floating-point, so the output diverged
-between machines (the render check caught it). Because a spline-traced boundary is one long cubic run (straight
+budget (0.15px by the conic's first-order Sampson distance, at samples about a pixel apart along the run), not
+radius-scaled — a radius-scaled tolerance let a large, only-roughly-circular run collapse to an arc that rendered visibly
+off, and which runs crossed the boundary depended on platform floating-point, so the output diverged between machines
+(the render check caught it). Because a spline-traced boundary is one long cubic run (straight
 edges and corners smoothed into cubics, not separated by `L`s), `fitArcs` **segments** an embedded arc out of a longer
 run rather than only collapsing line-bounded runs — so a pie wedge, half-disc or oval frame from the real tracer loses its
 many-cubic curved side. It runs before `optimizePathData`, gated on `roundPrimitives` (a sub-pixel change, so cutout and
