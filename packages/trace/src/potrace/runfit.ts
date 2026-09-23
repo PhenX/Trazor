@@ -28,7 +28,9 @@ import { cornerAt } from './smooth'
  * G1 cubic) jointly. `smoothing`/`cornerThreshold` keep their meaning as the
  * corner prior (a corner is a forced breakpoint; a non-corner join keeps the
  * shared data tangent, so it stays G1). After the DP a single merge pass folds
- * adjacent cubics one cubic explains (inkvec `merge_free_cubics`).
+ * adjacent cubics one cubic explains (inkvec `merge_free_cubics`), and outside
+ * geometric mode the span is refit as a G1 spline, so a chord the DP drew
+ * across a curve does not leave a kink at either end ({@link g1Refit}).
  *
  * A circular span is emitted as circle-exact cubics so `@trazor/svg`'s `fitArcs`
  * recovers an `A` command when the output is optimized while the unoptimized
@@ -303,6 +305,7 @@ export function fitClosedRuns(
       [seam[0], seam[1]],
       opts,
       dpCost,
+      true,
     )
     const whole = wholeRingCircle(pts, sig, opts, dpCost[0])
     if (whole) {
@@ -645,6 +648,7 @@ function spanSegments(
   t1: [number, number],
   opts: RunFitOptions,
   costOut?: number[],
+  periodic = false,
 ): SegFit[] {
   const last = (pts.length >> 1) - 1
   if (last <= 1) return last === 1 ? [{ a: 0, b: 1, kind: 'line' }] : []
@@ -701,6 +705,11 @@ function spanSegments(
   segs.reverse()
   if (costOut) costOut[0] = best[K]
   mergeFreeCubics(pts, sig, segs, opts)
+  if (!geometricMode(opts) && segs.length > 1) {
+    const tau = g1Tau(pts, sig, segs, opts)
+    const smooth = g1Refit(pts, sig, segs, periodic, tau < opts.tau ? { ...opts, tau } : opts)
+    if (smooth) return smooth
+  }
   return segs
 }
 
@@ -2046,4 +2055,1281 @@ function cyclicRun(
     sig[s] = sigma[idx]
   }
   return { pts, sig }
+}
+
+// --- G1 refit (illustration mode) ------------------------------------------------------
+
+/** Rounds of the alternating G1 solve: shared directions, each piece's arms, reparameterization. */
+const G1_ROUNDS = 3
+/** Pieces either side of a changed one that a local re-solve refits. */
+const G1_LOCAL = 2
+/** Rounds of splitting the pieces the spline cannot keep inside the band. */
+const G1_SPLIT_ROUNDS = 4
+/** Rounds of the per-piece fallback ladder. */
+const G1_FALLBACK_ROUNDS = 8
+/** Rounds of knot removal. */
+const G1_MERGE_ROUNDS = 6
+/** Reparameterizations of a merged piece's fit. */
+const G1_MERGE_REPARAMS = 2
+/**
+ * Gain from the refined samples' RMS residual about the DP's fit (in σ) to the
+ * refit's band scale ({@link g1Tau}): the mode's band from a residual of half σ
+ * up, narrower below.
+ */
+const G1_NOISE_GAIN = 2
+/** Narrowest band scale the refit holds a clean edge to. */
+const G1_BAND_MIN = 0.5
+/** Refined samples from which a span's residual measures its noise. */
+const G1_NOISE_SAMPLES = 8
+/** Ridge (relative to a knot's own data weight) holding a direction near its last estimate. */
+const G1_RIDGE = 1e-3
+/** Weight pinning a knot's direction to a pinned neighbour's (a chord's, an arc's). */
+const G1_PIN = 1e8
+/** Turn (degrees) at which two DP lines are a chain of chords rather than one straight edge. */
+const G1_LINE_KINK_DEG = 3
+/** Longest control arm, as a fraction of the chord (inkvec `MAX_ARM`). */
+const G1_MAX_ARM = 1
+/** Shortest control arm, as a fraction of the chord (inkvec's admissible arms, `candidates.rs`). */
+const G1_MIN_ARM = 0.02
+/**
+ * Sample intervals under which a piece is a short one: too short to split or
+ * to free its directions, and, ending on an unrefined lattice point, a
+ * staircase step.
+ */
+const G1_SHORT = 4
+/**
+ * Most a G1 piece may turn between its ends (radians): one cubic holds a
+ * quarter circle to a few ten-thousandths of its radius, a half circle only to
+ * about two percent — the same quarter-turn split as an arc's cubics.
+ */
+const G1_MAX_TURN = Math.PI / 2
+/**
+ * How far, in bands, a piece may stray from its sample polyline between two
+ * samples. The band bounds the samples, and the zigzag between noisy samples is
+ * not the edge, so only an excursion well past it — a loop — is refused.
+ */
+const G1_MID_BANDS = 2
+/** Sample intervals either side searched for the one nearest a between-samples point. */
+const G1_MID_WINDOW = 3
+/**
+ * Samples from which a failing piece is split again rather than given up on;
+ * a shorter one may be replaced by the chords through its samples.
+ */
+const G1_POLY_MAX = 8
+
+/**
+ * One piece of the G1 spline. `cubic` pieces are solved; `line` (a straight edge
+ * of the drawing) and `arc` (the DP's circle) keep their geometry and pin the
+ * direction at their knots, so their neighbours meet them smoothly; `fixed` is a
+ * DP segment (or a chord between two samples) kept as it is, with a break at
+ * each end.
+ */
+interface G1Piece {
+  kind: 'cubic' | 'line' | 'arc' | 'fixed'
+  seg?: SegFit
+  cubic: Cubic
+  u: Float64Array
+  armS: number
+  armE: number
+  chi2: number
+  worst: number
+  /** Changed since the last solve: the next local re-solve refits around it. */
+  touched: boolean
+}
+
+function unit2(x: number, y: number): [number, number] | null {
+  const l = Math.hypot(x, y)
+  return l > 1e-12 && Number.isFinite(l) ? [x / l, y / l] : null
+}
+
+/** Unit direction a fitted segment leaves its start with. */
+function segStartDir(pts: FlatPoints, s: SegFit): [number, number] {
+  const ax = pts[s.a * 2]
+  const ay = pts[s.a * 2 + 1]
+  if (s.kind === 'cubic' && s.cubic) {
+    const c = s.cubic
+    const d = unit2(c.c1x - c.p0x, c.c1y - c.p0y) ?? unit2(c.c2x - c.p0x, c.c2y - c.p0y)
+    if (d) return d
+  } else if (s.kind === 'arc' && s.circle) {
+    const c = s.circle
+    let tx = -(ay - c.cy)
+    let ty = ax - c.cx
+    if (tx * (pts[(s.a + 1) * 2] - ax) + ty * (pts[(s.a + 1) * 2 + 1] - ay) < 0) {
+      tx = -tx
+      ty = -ty
+    }
+    const d = unit2(tx, ty)
+    if (d) return d
+  }
+  return unit2(pts[s.b * 2] - ax, pts[s.b * 2 + 1] - ay) ?? [1, 0]
+}
+
+/** Unit direction a fitted segment arrives at its end with. */
+function segEndDir(pts: FlatPoints, s: SegFit): [number, number] {
+  const bx = pts[s.b * 2]
+  const by = pts[s.b * 2 + 1]
+  if (s.kind === 'cubic' && s.cubic) {
+    const c = s.cubic
+    const d = unit2(c.p3x - c.c2x, c.p3y - c.c2y) ?? unit2(c.p3x - c.c1x, c.p3y - c.c1y)
+    if (d) return d
+  } else if (s.kind === 'arc' && s.circle) {
+    const c = s.circle
+    let tx = -(by - c.cy)
+    let ty = bx - c.cx
+    if (tx * (bx - pts[(s.b - 1) * 2]) + ty * (by - pts[(s.b - 1) * 2 + 1]) < 0) {
+      tx = -tx
+      ty = -ty
+    }
+    const d = unit2(tx, ty)
+    if (d) return d
+  }
+  return unit2(bx - pts[s.a * 2], by - pts[s.a * 2 + 1]) ?? [1, 0]
+}
+
+/** Unit tangent of a cubic at parameter t (forward), or null where it vanishes. */
+function cubicDirAt(c: Cubic, t: number): [number, number] | null {
+  const mt = 1 - t
+  const dx =
+    3 * mt * mt * (c.c1x - c.p0x) + 6 * mt * t * (c.c2x - c.c1x) + 3 * t * t * (c.p3x - c.c2x)
+  const dy =
+    3 * mt * mt * (c.c1y - c.p0y) + 6 * mt * t * (c.c2y - c.c1y) + 3 * t * t * (c.p3y - c.c2y)
+  return unit2(dx, dy)
+}
+
+/** Point of a cubic at parameter t. */
+function cubicPointAt(c: Cubic, t: number): [number, number] {
+  const mt = 1 - t
+  const b0 = mt * mt * mt
+  const b1 = 3 * mt * mt * t
+  const b2 = 3 * mt * t * t
+  const b3 = t * t * t
+  return [
+    b0 * c.p0x + b1 * c.c1x + b2 * c.c2x + b3 * c.p3x,
+    b0 * c.p0y + b1 * c.c1y + b2 * c.c2y + b3 * c.p3y,
+  ]
+}
+
+/** The straight cubic from sample a to sample b (a chord's placeholder geometry). */
+function chordCubic(pts: FlatPoints, a: number, b: number): Cubic {
+  const ax = pts[a * 2]
+  const ay = pts[a * 2 + 1]
+  const bx = pts[b * 2]
+  const by = pts[b * 2 + 1]
+  return {
+    p0x: ax,
+    p0y: ay,
+    c1x: ax + (bx - ax) / 3,
+    c1y: ay + (by - ay) / 3,
+    c2x: ax + (2 * (bx - ax)) / 3,
+    c2y: ay + (2 * (by - ay)) / 3,
+    p3x: bx,
+    p3y: by,
+  }
+}
+
+/**
+ * The G1 piece through samples a..b leaving along `ds` and arriving along `de`
+ * (unit directions): its two arm lengths by σ-weighted least squares at the
+ * parameters `u` — Schneider's fit with the directions fixed, weighted as the
+ * joint solve weighs the samples — held to [G1_MIN_ARM, G1_MAX_ARM] of the
+ * chord. The residual is a convex quadratic in the arms, so when its minimum lies
+ * outside that box the constrained one lies on the box's boundary: the best of
+ * the four edges, on each the other arm clamped. A piece of a sample or two
+ * cannot place two arms by itself — its free minimum is often a negative arm or
+ * one several chords long — and gets the admissible arms that fit it best.
+ */
+function fitG1Cubic(
+  pts: FlatPoints,
+  sig: number[],
+  a: number,
+  b: number,
+  u: Float64Array,
+  ds: [number, number],
+  de: [number, number],
+): Cubic {
+  const p0x = pts[a * 2]
+  const p0y = pts[a * 2 + 1]
+  const p3x = pts[b * 2]
+  const p3y = pts[b * 2 + 1]
+  let c00 = 0
+  let c01 = 0
+  let c11 = 0
+  let x0 = 0
+  let x1 = 0
+  for (let i = a + 1; i < b; i++) {
+    const t = u[i - a]
+    const mt = 1 - t
+    const b0 = mt * mt * mt
+    const b1 = 3 * mt * mt * t
+    const b2 = 3 * mt * t * t
+    const b3 = t * t * t
+    const w = 1 / (sig[i] * sig[i])
+    const ax = b1 * ds[0]
+    const ay = b1 * ds[1]
+    const ex = -b2 * de[0]
+    const ey = -b2 * de[1]
+    const rx = pts[i * 2] - (b0 + b1) * p0x - (b2 + b3) * p3x
+    const ry = pts[i * 2 + 1] - (b0 + b1) * p0y - (b2 + b3) * p3y
+    c00 += w * (ax * ax + ay * ay)
+    c01 += w * (ax * ex + ay * ey)
+    c11 += w * (ex * ex + ey * ey)
+    x0 += w * (ax * rx + ay * ry)
+    x1 += w * (ex * rx + ey * ry)
+  }
+  const L = Math.hypot(p3x - p0x, p3y - p0y)
+  const lo = G1_MIN_ARM * L
+  const hi = G1_MAX_ARM * L
+  let armS = L / 3
+  let armE = L / 3
+  if (c00 > 0 && c11 > 0) {
+    const clamp = (v: number): number => (v < lo ? lo : v > hi ? hi : v)
+    const cost = (s: number, e: number): number =>
+      c00 * s * s + 2 * c01 * s * e + c11 * e * e - 2 * (x0 * s + x1 * e)
+    const det = c00 * c11 - c01 * c01
+    const s = (x0 * c11 - x1 * c01) / det
+    const e = (c00 * x1 - c01 * x0) / det
+    if (det > 1e-12 * c00 * c11 && s >= lo && s <= hi && e >= lo && e <= hi) {
+      armS = s
+      armE = e
+    } else {
+      let best = Infinity
+      for (const bound of [lo, hi]) {
+        const e1 = clamp((x1 - c01 * bound) / c11)
+        const s2 = clamp((x0 - c01 * bound) / c00)
+        const q1 = cost(bound, e1)
+        const q2 = cost(s2, bound)
+        if (q1 < best) {
+          best = q1
+          armS = bound
+          armE = e1
+        }
+        if (q2 < best) {
+          best = q2
+          armS = s2
+          armE = bound
+        }
+      }
+    }
+  }
+  return {
+    p0x,
+    p0y,
+    c1x: p0x + armS * ds[0],
+    c1y: p0y + armS * ds[1],
+    c2x: p3x - armE * de[0],
+    c2y: p3y - armE * de[1],
+    p3x,
+    p3y,
+  }
+}
+
+/** Cumulative chord length along the samples (`cum[0]` = 0), for {@link chordParams}. */
+function chordLengths(pts: FlatPoints): Float64Array {
+  const n = pts.length >> 1
+  const cum = new Float64Array(n)
+  for (let i = 1; i < n; i++) {
+    const dx = pts[i * 2] - pts[(i - 1) * 2]
+    const dy = pts[i * 2 + 1] - pts[(i - 1) * 2 + 1]
+    cum[i] = cum[i - 1] + Math.sqrt(dx * dx + dy * dy)
+  }
+  return cum
+}
+
+/** Chord-length parameters of samples a..b, normalized to [0, 1], from {@link chordLengths}. */
+function chordParams(cum: Float64Array, a: number, b: number): Float64Array {
+  const u = new Float64Array(b - a + 1)
+  const total = cum[b] - cum[a] || 1
+  for (let i = a + 1; i < b; i++) u[i - a] = (cum[i] - cum[a]) / total
+  u[b - a] = 1
+  return u
+}
+
+/**
+ * One Newton reparameterization of samples a..b onto `c` (Schneider 1990), or
+ * null when the parameters would stop increasing.
+ */
+function reparamOnto(pts: FlatPoints, a: number, c: Cubic, u: Float64Array): Float64Array | null {
+  const n = u.length
+  const nu = new Float64Array(n)
+  nu[n - 1] = 1
+  let prev = 0
+  for (let i = 1; i < n - 1; i++) {
+    const t = refineParam(c, pts[(a + i) * 2], pts[(a + i) * 2 + 1], u[i])
+    if (t <= prev || t >= 1) return null
+    nu[i] = t
+    prev = t
+  }
+  return nu
+}
+
+/**
+ * Symmetric tridiagonal solve (Thomas algorithm), `off[k]` coupling k and k+1,
+ * for two right-hand sides at once. Null on a vanishing pivot.
+ */
+function solveTridiag(
+  diag: Float64Array,
+  off: Float64Array,
+  rx: Float64Array,
+  ry: Float64Array,
+): [Float64Array, Float64Array] | null {
+  const n = diag.length
+  const cp = new Float64Array(n)
+  const dx = new Float64Array(n)
+  const dy = new Float64Array(n)
+  let m = diag[0]
+  if (!(Math.abs(m) > 1e-300)) return null
+  cp[0] = n > 1 ? off[0] / m : 0
+  dx[0] = rx[0] / m
+  dy[0] = ry[0] / m
+  for (let i = 1; i < n; i++) {
+    m = diag[i] - off[i - 1] * cp[i - 1]
+    if (!(Math.abs(m) > 1e-300)) return null
+    cp[i] = i < n - 1 ? off[i] / m : 0
+    dx[i] = (rx[i] - off[i - 1] * dx[i - 1]) / m
+    dy[i] = (ry[i] - off[i - 1] * dy[i - 1]) / m
+  }
+  for (let i = n - 2; i >= 0; i--) {
+    dx[i] -= cp[i] * dx[i + 1]
+    dy[i] -= cp[i] * dy[i + 1]
+  }
+  return [dx, dy]
+}
+
+/**
+ * Cyclic symmetric tridiagonal solve, `corner` coupling n−1 and 0, by the
+ * Sherman–Morrison correction of a plain tridiagonal solve (Press et al.,
+ * Numerical Recipes, §2.7). n ≥ 3.
+ */
+function solveCyclic(
+  diag: Float64Array,
+  off: Float64Array,
+  corner: number,
+  rx: Float64Array,
+  ry: Float64Array,
+): [Float64Array, Float64Array] | null {
+  const n = diag.length
+  const gamma = -diag[0]
+  const bb = Float64Array.from(diag)
+  bb[0] = diag[0] - gamma
+  bb[n - 1] = diag[n - 1] - (corner * corner) / gamma
+  const x = solveTridiag(bb, off, rx, ry)
+  const uu = new Float64Array(n)
+  uu[0] = gamma
+  uu[n - 1] = corner
+  const z = solveTridiag(bb, off, uu, uu)
+  if (!x || !z) return null
+  const zz = z[0]
+  const den = 1 + zz[0] + (corner * zz[n - 1]) / gamma
+  if (!(Math.abs(den) > 1e-300)) return null
+  const fx = (x[0][0] + (corner * x[0][n - 1]) / gamma) / den
+  const fy = (x[1][0] + (corner * x[1][n - 1]) / gamma) / den
+  for (let i = 0; i < n; i++) {
+    x[0][i] -= fx * zz[i]
+    x[1][i] -= fy * zz[i]
+  }
+  return x
+}
+
+/**
+ * Whether a G1 piece stays between its samples: both arms within
+ * {@link G1_MAX_ARM} of the chord, a turn of at most {@link G1_MAX_TURN} from
+ * end to end, and at the middle of every sample interval the curve within
+ * {@link G1_MID_BANDS} bands of the nearest sample interval. The sample
+ * residuals alone miss a piece whose forced end directions throw a loop out
+ * between two samples it still passes through.
+ */
+function g1Shaped(
+  pts: FlatPoints,
+  sig: number[],
+  a: number,
+  b: number,
+  c: Cubic,
+  u: Float64Array,
+  opts: RunFitOptions,
+): boolean {
+  const lim = G1_MAX_ARM * Math.hypot(c.p3x - c.p0x, c.p3y - c.p0y) + 1e-9
+  if (
+    Math.hypot(c.c1x - c.p0x, c.c1y - c.p0y) > lim ||
+    Math.hypot(c.c2x - c.p3x, c.c2y - c.p3y) > lim
+  ) {
+    return false
+  }
+  const d0 = cubicDirAt(c, 0)
+  const d1 = cubicDirAt(c, 1)
+  if (d0 && d1 && d0[0] * d1[0] + d0[1] * d1[1] < Math.cos(G1_MAX_TURN)) return false
+  // Whether (qx, qy) lies within G1_MID_BANDS bands of sample interval j.
+  const near = (qx: number, qy: number, j: number): boolean => {
+    const ax = pts[j * 2]
+    const ay = pts[j * 2 + 1]
+    const ex = pts[(j + 1) * 2] - ax
+    const ey = pts[(j + 1) * 2 + 1] - ay
+    const ll = ex * ex + ey * ey
+    const k = ll < 1e-18 ? 0 : Math.max(0, Math.min(1, ((qx - ax) * ex + (qy - ay) * ey) / ll))
+    const band = Math.max(bandAt(sig, j, opts), bandAt(sig, j + 1, opts))
+    return Math.hypot(qx - ax - k * ex, qy - ay - k * ey) <= G1_MID_BANDS * band
+  }
+  for (let i = a; i < b; i++) {
+    const [qx, qy] = cubicPointAt(c, 0.5 * (u[i - a] + u[i + 1 - a]))
+    if (near(qx, qy, i)) continue
+    // Else any interval nearby: a parameterization that lags a sample or two
+    // does not read as a loop, and a loop is far from all of them.
+    let ok = false
+    const lo = Math.max(a, i - G1_MID_WINDOW)
+    const hi = Math.min(b - 1, i + G1_MID_WINDOW)
+    for (let j = lo; j <= hi && !ok; j++) ok = j !== i && near(qx, qy, j)
+    if (!ok) return false
+  }
+  return true
+}
+
+/**
+ * A least-squares cubic through samples a..b with both end directions free
+ * (endpoints pinned): the two control points by weighted linear least squares
+ * at chord-length parameters, then three Newton reparameterizations.
+ */
+function fitFreeCubic(
+  pts: FlatPoints,
+  sig: number[],
+  cum: Float64Array,
+  a: number,
+  b: number,
+): Cubic {
+  let u = chordParams(cum, a, b)
+  const p0x = pts[a * 2]
+  const p0y = pts[a * 2 + 1]
+  const p3x = pts[b * 2]
+  const p3y = pts[b * 2 + 1]
+  const solve = (): Cubic => {
+    let a11 = 0
+    let a12 = 0
+    let a22 = 0
+    let rx1 = 0
+    let rx2 = 0
+    let ry1 = 0
+    let ry2 = 0
+    for (let i = 0; i < u.length; i++) {
+      const t = u[i]
+      const mt = 1 - t
+      const b0 = mt * mt * mt
+      const b1 = 3 * mt * mt * t
+      const b2 = 3 * mt * t * t
+      const b3 = t * t * t
+      const w = 1 / (sig[a + i] * sig[a + i])
+      const ex = pts[(a + i) * 2] - b0 * p0x - b3 * p3x
+      const ey = pts[(a + i) * 2 + 1] - b0 * p0y - b3 * p3y
+      a11 += w * b1 * b1
+      a12 += w * b1 * b2
+      a22 += w * b2 * b2
+      rx1 += w * b1 * ex
+      rx2 += w * b2 * ex
+      ry1 += w * b1 * ey
+      ry2 += w * b2 * ey
+    }
+    const det = a11 * a22 - a12 * a12
+    if (Math.abs(det) < 1e-12) return chordCubic(pts, a, b)
+    return {
+      p0x,
+      p0y,
+      c1x: (rx1 * a22 - rx2 * a12) / det,
+      c1y: (ry1 * a22 - ry2 * a12) / det,
+      c2x: (rx2 * a11 - rx1 * a12) / det,
+      c2y: (ry2 * a11 - ry1 * a12) / det,
+      p3x,
+      p3y,
+    }
+  }
+  let c = solve()
+  for (let iter = 0; iter < 3; iter++) {
+    const nu = reparamOnto(pts, a, c, u)
+    if (!nu) break
+    u = nu
+    c = solve()
+  }
+  return c
+}
+
+/**
+ * τ the G1 refit holds a span to: the mode's, narrowed on a clean edge. The RMS
+ * residual of the refined samples about the DP's fit (in σ) measures the edge's
+ * noise; below half σ the band narrows with it, to {@link G1_BAND_MIN}. Lattice
+ * samples carry the staircase rather than the edge's noise and do not count.
+ */
+function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptions): number {
+  const refined = sig.map((v) => (v >= SIGMA_LATTICE ? Infinity : v))
+  let chi2 = 0
+  let n = 0
+  for (const sg of segs) {
+    chi2 += modelChi2(pts, refined, sg, opts)
+    for (let i = sg.a + 1; i < sg.b; i++) if (sig[i] < SIGMA_LATTICE) n++
+  }
+  if (n < G1_NOISE_SAMPLES) return opts.tau
+  return opts.tau * Math.max(G1_BAND_MIN, Math.min(1, G1_NOISE_GAIN * Math.sqrt(chi2 / n)))
+}
+
+/**
+ * Illustration mode's G1 refit of a span's DP segmentation: every join inside a
+ * corner-to-corner span made tangent-continuous.
+ *
+ * The DP prices a chord at two parameters and a curve at six, so it paves a
+ * gently curving outline with chords, and each chord meets the next at a kink
+ * the per-sample residual never sees — the polygon look of a traced cartoon.
+ * inkvec charges a tangent break in its DP and snaps the joins it leaves smooth
+ * to one tangent afterwards (`multimodel.rs` `refine`); here, since a span has no
+ * corner inside it by construction, every join inside is made G1, the model of
+ * Plass & Stone (1983, piecewise parametric cubics with tangent continuity):
+ *
+ * 1. The DP's breakpoints become knots. A DP line that is a straight edge of the
+ *    drawing — inside the refit's band, no line beside it turning away, no
+ *    neighbouring arc whose circle runs through its samples, its samples not
+ *    bowed like a chord across a curve — stays a chord, and a DP arc inside the
+ *    band keeps its circle unless it meets such a chord or another kept arc at
+ *    a turn; both pin the direction at their knots. Everything else becomes a
+ *    cubic piece, an arc that gave up its circle one per quarter turn (a cubic
+ *    holds a quarter circle, not a half). The band is the mode's, narrowed on a
+ *    clean edge ({@link g1Tau}) so the spline does not spend it where the
+ *    drawing is sharp.
+ * 2. Each knot carries one direction shared by the two pieces meeting there,
+ *    solved by linear least squares over all the span's samples (a symmetric
+ *    tridiagonal system in the knot tangents, cyclic on a smooth loop), then each
+ *    piece's two arm lengths with the directions fixed, held to the lengths a
+ *    G1 cubic may take ({@link fitG1Cubic}), then a Newton reparameterization —
+ *    alternated.
+ * 3. A piece the spline cannot keep inside the band — or that takes a wrong
+ *    shape: an arm longer than its chord, a turn past a quarter circle, a loop
+ *    between two samples — is split at its worst sample. A piece that still
+ *    fails climbs a ladder, a step per round: a staircase step of the lattice
+ *    merges into a smooth neighbour; a long piece is split again, clear of its
+ *    ends; a chord if a chord is admissible (its neighbours then meet it
+ *    smoothly); free directions at its knots (a turn the corner rule let through
+ *    becomes a corner); the chords through its samples. Whatever still fails
+ *    takes, without a re-solve, the DP's own segments over the DP knots around
+ *    it. Each repair is re-solved within {@link G1_LOCAL} pieces of it: the
+ *    knot directions couple neighbours, and a solve reaching past them would
+ *    move admissible pieces out of the band, which the next round would repair
+ *    in turn.
+ * 4. Knots are removed where the merged piece stays inside the band and the
+ *    description length `0.5·χ² + λ·params` does not grow — with the outer
+ *    directions kept, or re-chosen by a free fit with the smooth neighbours refit
+ *    to meet them — and the whole span is solved once more, kept when every
+ *    piece stays inside the band and χ² does not grow.
+ *
+ * `periodic`: the span is a whole smooth loop, its seam a knot like the others.
+ * Returns null when there is nothing to refit (the caller keeps the DP's).
+ */
+function g1Refit(
+  pts: FlatPoints,
+  sig: number[],
+  segs: SegFit[],
+  periodic: boolean,
+  opts: RunFitOptions,
+): SegFit[] | null {
+  const M0 = segs.length
+  if (M0 < 2) return null
+  const lambda = opts.lambda
+  const cum = chordLengths(pts)
+  const knots: number[] = [segs[0].a]
+  for (const s of segs) knots.push(s.b)
+  const dpKnots = knots.slice()
+  // Directions at the knots, as the DP's models leave them: the bisector at a
+  // smooth knot, each side's own at the span's ends.
+  const dIn: [number, number][] = []
+  const dOut: [number, number][] = []
+  for (let k = 0; k <= M0; k++) {
+    const inc = k > 0 ? segEndDir(pts, segs[k - 1]) : periodic ? segEndDir(pts, segs[M0 - 1]) : null
+    const out = k < M0 ? segStartDir(pts, segs[k]) : periodic ? segStartDir(pts, segs[0]) : null
+    const o = out ?? (inc as [number, number])
+    const i = inc ?? o
+    const shared = periodic || (k > 0 && k < M0)
+    const bis = unit2(o[0] + i[0], o[1] + i[1]) ?? o
+    dIn.push(shared ? bis : i)
+    dOut.push(shared ? bis : o)
+  }
+  // A break lets the two sides of a knot keep their own directions.
+  const brk: number[] = new Array(knots.length).fill(0)
+  if (!periodic) {
+    brk[0] = 1
+    brk[M0] = 1
+  }
+  const setBrk = (k: number): void => {
+    brk[k] = 1
+    if (periodic && (k === 0 || k === knots.length - 1)) {
+      brk[0] = 1
+      brk[knots.length - 1] = 1
+    }
+  }
+  const newPieceAt = (a: number, b: number): G1Piece => {
+    const L = Math.hypot(pts[b * 2] - pts[a * 2], pts[b * 2 + 1] - pts[a * 2 + 1])
+    return {
+      kind: 'cubic',
+      cubic: chordCubic(pts, a, b),
+      u: chordParams(cum, a, b),
+      armS: L / 3,
+      armE: L / 3,
+      chi2: Infinity,
+      worst: Infinity,
+      touched: true,
+    }
+  }
+  let pieces: G1Piece[] = []
+  for (let q = 0; q < M0; q++) pieces.push(newPieceAt(knots[q], knots[q + 1]))
+
+  // 1. Straight edges stay chords; arcs keep their circles where they meet their
+  //    pinned neighbours smoothly.
+  const chord = (sg: SegFit): [number, number] | null =>
+    unit2(pts[sg.b * 2] - pts[sg.a * 2], pts[sg.b * 2 + 1] - pts[sg.a * 2 + 1])
+  const cosKink = Math.cos((G1_LINE_KINK_DEG * Math.PI) / 180)
+  // Whether neighbour `u` shows line `v` to be a chord across a curve: a line at a
+  // turn beside it (one under a third of v's length does not count — a short piece
+  // where a straight edge starts its round), or an arc whose circle runs through
+  // v's samples.
+  const chordOf = (u: SegFit | undefined, v: SegFit): boolean => {
+    if (!u) return false
+    if (u.kind === 'arc' && u.circle) {
+      return circleDeviation(pts, sig, v.a, v.b, u.circle, opts).worst <= 1
+    }
+    if (u.kind !== 'line' || 3 * (u.b - u.a) < v.b - v.a) return false
+    const du = chord(u)
+    const dv = chord(v)
+    return !du || !dv || du[0] * dv[0] + du[1] * dv[1] < cosKink
+  }
+  // A DP model is kept only inside the refit's band, which is narrower than the
+  // DP's on a clean edge ({@link g1Tau}): one outside it is refit as the spline.
+  for (let q = 0; q < M0; q++) {
+    const sg = segs[q]
+    if (sg.kind === 'arc' && sg.circle) {
+      if (circleDeviation(pts, sig, sg.a, sg.b, sg.circle, opts).worst > 1) continue
+      pieces[q].kind = 'arc'
+      pieces[q].seg = sg
+      continue
+    }
+    if (sg.kind !== 'line' || sg.b - sg.a < 2) continue
+    if (lineDeviation(pts, sig, sg.a, sg.b, opts).worst > 1) continue
+    const prev = q > 0 ? segs[q - 1] : periodic ? segs[M0 - 1] : undefined
+    const next = q + 1 < M0 ? segs[q + 1] : periodic ? segs[0] : undefined
+    if (chordOf(prev, sg) || chordOf(next, sg)) continue
+    // A chord across a curve bows: more residual than the noise explains, which a
+    // circle explains far better.
+    const circle = fitCircleThrough(pts, sg.a, sg.b)
+    const lineChi2 = lineDeviation(pts, sig, sg.a, sg.b, opts).chi2
+    if (
+      circle &&
+      lineChi2 > sg.b - sg.a - 1 &&
+      4 * circleDeviation(pts, sig, sg.a, sg.b, circle, opts).chi2 < lineChi2
+    ) {
+      continue
+    }
+    pieces[q].kind = 'line'
+  }
+  // An arc meeting a pinned neighbour at a turn gives up its circle — its ends
+  // are a chord's or another circle's, not the drawing's tangent points — and
+  // becomes a G1 piece that takes the neighbour's direction.
+  const pinnedStart = (q: number): [number, number] | null =>
+    pieces[q].kind === 'line' ? chord(segs[q]) : segStartDir(pts, segs[q])
+  const pinnedEnd = (q: number): [number, number] | null =>
+    pieces[q].kind === 'line' ? chord(segs[q]) : segEndDir(pts, segs[q])
+  const turns = (u: [number, number] | null, v: [number, number] | null): boolean =>
+    !u || !v || u[0] * v[0] + u[1] * v[1] < cosKink
+  for (let q = 0; q < M0; q++) {
+    if (pieces[q].kind !== 'arc') continue
+    const prev = q > 0 ? q - 1 : periodic ? M0 - 1 : -1
+    const next = q + 1 < M0 ? q + 1 : periodic ? 0 : -1
+    const atPrev =
+      prev >= 0 &&
+      prev !== q &&
+      pieces[prev].kind !== 'cubic' &&
+      turns(pinnedEnd(prev), segStartDir(pts, segs[q]))
+    const atNext =
+      next >= 0 &&
+      next !== q &&
+      pieces[next].kind !== 'cubic' &&
+      turns(segEndDir(pts, segs[q]), pinnedStart(next))
+    if (atPrev || atNext) {
+      pieces[q].kind = 'cubic'
+      pieces[q].seg = undefined
+    }
+  }
+  const unpinned: number[] = []
+  for (let q = 0; q < M0; q++) {
+    if (segs[q].kind === 'arc' && segs[q].circle && pieces[q].kind === 'cubic') unpinned.push(q)
+  }
+  // An unpinned arc is split at equal turns into pieces a cubic can hold.
+  for (let r = unpinned.length - 1; r >= 0; r--) {
+    const q = unpinned[r]
+    const c = segs[q].circle
+    if (!c) continue
+    const a = knots[q]
+    const b = knots[q + 1]
+    const ang: number[] = []
+    let acc = 0
+    let prev = Math.atan2(pts[a * 2 + 1] - c.cy, pts[a * 2] - c.cx)
+    for (let i = a; i <= b; i++) {
+      const t = Math.atan2(pts[i * 2 + 1] - c.cy, pts[i * 2] - c.cx)
+      let d = t - prev
+      if (d > Math.PI) d -= 2 * Math.PI
+      if (d < -Math.PI) d += 2 * Math.PI
+      acc += i > a ? d : 0
+      ang.push(acc)
+      prev = t
+    }
+    const parts = Math.ceil(Math.abs(acc) / G1_MAX_TURN - 1e-9)
+    let at = q
+    for (let j = 1; j < parts; j++) {
+      const target = (acc * j) / parts
+      let i = a + 1
+      while (i < b - 1 && Math.abs(ang[i - a]) < Math.abs(target)) i++
+      if (i <= knots[at] || i >= b) continue
+      const dir = unit2(-(pts[i * 2 + 1] - c.cy), pts[i * 2] - c.cx) ?? centralTangent(pts, i)
+      const fw = centralTangent(pts, i)
+      const d: [number, number] = dir[0] * fw[0] + dir[1] * fw[1] < 0 ? [-dir[0], -dir[1]] : dir
+      knots.splice(at + 1, 0, i)
+      brk.splice(at + 1, 0, 0)
+      dIn.splice(at + 1, 0, d)
+      dOut.splice(at + 1, 0, d)
+      pieces.splice(at, 1, newPieceAt(knots[at], i), newPieceAt(i, knots[at + 2]))
+      at++
+    }
+  }
+  // Two pinned pieces meeting cannot share one direction: their join keeps its break.
+  const pinnedPair = (): void => {
+    const m = pieces.length
+    for (let q = 1; q < m; q++)
+      if (pieces[q - 1].kind !== 'cubic' && pieces[q].kind !== 'cubic') setBrk(q)
+    if (periodic && m > 1 && pieces[0].kind !== 'cubic' && pieces[m - 1].kind !== 'cubic') setBrk(0)
+  }
+  pinnedPair()
+
+  // 2. The joint solve.
+  const fitArms = (q: number): void => {
+    const p = pieces[q]
+    if (p.kind !== 'cubic') return
+    const ds = dOut[q]
+    const de = dIn[q + 1]
+    const c = fitG1Cubic(pts, sig, knots[q], knots[q + 1], p.u, ds, de)
+    p.cubic = c
+    p.armS = Math.hypot(c.c1x - c.p0x, c.c1y - c.p0y)
+    p.armE = Math.hypot(c.c2x - c.p3x, c.c2y - c.p3y)
+  }
+  const reparam = (q: number): void => {
+    const p = pieces[q]
+    if (p.kind !== 'cubic' || p.u.length <= 2) return
+    const nu = reparamOnto(pts, knots[q], p.cubic, p.u)
+    if (nu) p.u = nu
+  }
+  const measure = (q: number): void => {
+    const p = pieces[q]
+    const a = knots[q]
+    const b = knots[q + 1]
+    if (p.kind === 'fixed') {
+      p.chi2 = p.seg ? modelChi2(pts, sig, p.seg, opts) : 0
+      p.worst = 0
+      return
+    }
+    const d =
+      p.kind === 'line'
+        ? lineDeviation(pts, sig, a, b, opts)
+        : p.kind === 'arc' && p.seg?.circle
+          ? circleDeviation(pts, sig, a, b, p.seg.circle, opts)
+          : cubicDeviation(pts, sig, a, b, p.cubic, opts)
+    p.chi2 = d.chi2
+    p.worst = d.worst
+    if (p.kind === 'cubic' && !g1Shaped(pts, sig, a, b, p.cubic, p.u, opts)) p.worst = Infinity
+  }
+  // Solve the knot tangents of pieces lo..hi. Unknowns run along the span, one
+  // per smooth knot and two at a break; each piece couples its start and end
+  // unknowns, so the normal equations are tridiagonal (cyclic when a smooth seam
+  // closes the whole loop). A pinned piece contributes no data but pins its
+  // knots' directions, and so does a piece outside the window at its end knots.
+  const solveDirs = (lo: number, hi: number): void => {
+    const M = pieces.length
+    const sIdx = new Int32Array(M)
+    const eIdx = new Int32Array(M)
+    let idx = 0
+    for (let q = lo; q <= hi; q++) {
+      if (q > lo && brk[q]) idx++
+      sIdx[q] = idx
+      idx++
+      eIdx[q] = idx
+    }
+    let nT = idx + 1
+    const whole = lo === 0 && hi === M - 1
+    let cyclic = false
+    if (whole && periodic && !brk[0]) {
+      eIdx[M - 1] = 0
+      nT = idx
+      cyclic = true
+    }
+    if (cyclic && nT < 2) return
+    const t0x = new Float64Array(nT)
+    const t0y = new Float64Array(nT)
+    for (let q = lo; q <= hi; q++) {
+      t0x[sIdx[q]] = dOut[q][0]
+      t0y[sIdx[q]] = dOut[q][1]
+      t0x[eIdx[q]] = dIn[q + 1][0]
+      t0y[eIdx[q]] = dIn[q + 1][1]
+    }
+    const diag = new Float64Array(nT)
+    const off = new Float64Array(nT)
+    const rx = new Float64Array(nT)
+    const ry = new Float64Array(nT)
+    const pin = new Float64Array(nT)
+    const pinX = new Float64Array(nT)
+    const pinY = new Float64Array(nT)
+    let corner = 0
+    if (!whole) {
+      // A window's end knot shared with a piece outside it keeps its direction.
+      const outside = (k: number): boolean => !brk[k] && (periodic || (k > 0 && k < M))
+      if (outside(lo)) {
+        pin[sIdx[lo]] += 1
+        pinX[sIdx[lo]] += dOut[lo][0]
+        pinY[sIdx[lo]] += dOut[lo][1]
+      }
+      if (outside(hi + 1)) {
+        pin[eIdx[hi]] += 1
+        pinX[eIdx[hi]] += dIn[hi + 1][0]
+        pinY[eIdx[hi]] += dIn[hi + 1][1]
+      }
+    }
+    for (let q = lo; q <= hi; q++) {
+      const p = pieces[q]
+      const a = knots[q]
+      const b = knots[q + 1]
+      const s = sIdx[q]
+      const e = eIdx[q]
+      if (p.kind !== 'cubic') {
+        const ds =
+          p.kind === 'line'
+            ? unit2(pts[b * 2] - pts[a * 2], pts[b * 2 + 1] - pts[a * 2 + 1])
+            : p.kind === 'arc' && p.seg
+              ? segStartDir(pts, p.seg)
+              : dOut[q]
+        const de =
+          p.kind === 'line' ? ds : p.kind === 'arc' && p.seg ? segEndDir(pts, p.seg) : dIn[q + 1]
+        if (ds && de) {
+          pin[s] += 1
+          pinX[s] += ds[0]
+          pinY[s] += ds[1]
+          pin[e] += 1
+          pinX[e] += de[0]
+          pinY[e] += de[1]
+        }
+        continue
+      }
+      // Sample i on the piece: B(u) = (b0+b1)·P0 + (b2+b3)·P3 + b1·armS·Ts − b2·armE·Te.
+      const p0x = pts[a * 2]
+      const p0y = pts[a * 2 + 1]
+      const p3x = pts[b * 2]
+      const p3y = pts[b * 2 + 1]
+      let dss = 0
+      let dee = 0
+      let dse = 0
+      let rsx = 0
+      let rsy = 0
+      let rex = 0
+      let rey = 0
+      for (let i = a + 1; i < b; i++) {
+        const t = p.u[i - a]
+        const mt = 1 - t
+        const b0 = mt * mt * mt
+        const b1 = 3 * mt * mt * t
+        const b2 = 3 * mt * t * t
+        const b3 = t * t * t
+        const w = 1 / (sig[i] * sig[i])
+        const ex = pts[i * 2] - (b0 + b1) * p0x - (b2 + b3) * p3x
+        const ey = pts[i * 2 + 1] - (b0 + b1) * p0y - (b2 + b3) * p3y
+        const ca = b1 * p.armS
+        const cc = -b2 * p.armE
+        dss += w * ca * ca
+        dee += w * cc * cc
+        dse += w * ca * cc
+        rsx += w * ca * ex
+        rsy += w * ca * ey
+        rex += w * cc * ex
+        rey += w * cc * ey
+      }
+      diag[s] += dss
+      diag[e] += dee
+      rx[s] += rsx
+      ry[s] += rsy
+      rx[e] += rex
+      ry[e] += rey
+      if (e === s + 1) off[s] += dse
+      else corner += dse
+    }
+    for (let k = 0; k < nT; k++) {
+      if (pin[k] > 0) {
+        const r = G1_PIN * (diag[k] + 1)
+        t0x[k] = pinX[k] / pin[k]
+        t0y[k] = pinY[k] / pin[k]
+        diag[k] += r
+        rx[k] += r * t0x[k]
+        ry[k] += r * t0y[k]
+      } else {
+        const r = G1_RIDGE * diag[k] + 1e-9
+        diag[k] += r
+        rx[k] += r * t0x[k]
+        ry[k] += r * t0y[k]
+      }
+    }
+    let sol: [Float64Array, Float64Array] | null
+    if (!cyclic) sol = solveTridiag(diag, off, rx, ry)
+    else if (nT === 2) {
+      const a01 = off[0] + corner
+      const det = diag[0] * diag[1] - a01 * a01
+      sol =
+        Math.abs(det) > 1e-300
+          ? [
+              Float64Array.of(
+                (rx[0] * diag[1] - a01 * rx[1]) / det,
+                (diag[0] * rx[1] - a01 * rx[0]) / det,
+              ),
+              Float64Array.of(
+                (ry[0] * diag[1] - a01 * ry[1]) / det,
+                (diag[0] * ry[1] - a01 * ry[0]) / det,
+              ),
+            ]
+          : null
+    } else sol = solveCyclic(diag, off, corner, rx, ry)
+    if (!sol) return
+    // Unit directions; the magnitude folds into the arms (refit next anyway). A
+    // reversed or vanishing solution keeps the previous direction.
+    const D: [number, number][] = new Array(nT)
+    const mag = new Float64Array(nT)
+    for (let k = 0; k < nT; k++) {
+      const x = sol[0][k]
+      const y = sol[1][k]
+      const l = Math.hypot(x, y)
+      if (l > 1e-9 && Number.isFinite(l) && x * t0x[k] + y * t0y[k] > 0) {
+        D[k] = [x / l, y / l]
+        mag[k] = pin[k] > 0 ? 1 : l
+      } else {
+        D[k] = unit2(t0x[k], t0y[k]) ?? [1, 0]
+        mag[k] = 1
+      }
+    }
+    for (let q = lo; q <= hi; q++) {
+      dOut[q] = D[sIdx[q]]
+      dIn[q + 1] = D[eIdx[q]]
+      pieces[q].armS *= mag[sIdx[q]]
+      pieces[q].armE *= mag[eIdx[q]]
+    }
+    if (cyclic) {
+      dIn[0] = dOut[0]
+      dOut[M] = dIn[M]
+    }
+  }
+  const fitRange = (lo: number, hi: number): void => {
+    for (let round = 0; round < G1_ROUNDS; round++) {
+      solveDirs(lo, hi)
+      for (let q = lo; q <= hi; q++) fitArms(q)
+      for (let q = lo; q <= hi; q++) reparam(q)
+      for (let q = lo; q <= hi; q++) fitArms(q)
+    }
+    for (let q = lo; q <= hi; q++) {
+      measure(q)
+      pieces[q].touched = false
+    }
+  }
+  const fitAll = (): void => fitRange(0, pieces.length - 1)
+  // Re-solve around the pieces changed since the last solve: a repair is local,
+  // and a solve reaching past it would move admissible pieces out of the band.
+  const refitTouched = (): void => {
+    const M = pieces.length
+    let q = 0
+    while (q < M) {
+      if (!pieces[q].touched) {
+        q++
+        continue
+      }
+      const lo = Math.max(0, q - G1_LOCAL)
+      let hi = Math.min(M - 1, q + G1_LOCAL)
+      for (let k = q + 1; k < M && k <= hi + G1_LOCAL; k++) {
+        if (pieces[k].touched) hi = Math.min(M - 1, k + G1_LOCAL)
+      }
+      fitRange(lo, hi)
+      q = hi + 1
+    }
+  }
+  const bad = (): boolean => pieces.some((p) => p.worst > 1)
+  // The sample of piece q farthest (in bands) from it, `margin` intervals clear of its ends.
+  const worstSample = (q: number, margin = 2): number => {
+    const p = pieces[q]
+    const a = knots[q]
+    const b = knots[q + 1]
+    let best = -1
+    let bestW = -1
+    for (let i = a + margin; i <= b - margin; i++) {
+      const [qx, qy] = cubicPointAt(p.cubic, p.u[i - a])
+      const w = Math.hypot(qx - pts[i * 2], qy - pts[i * 2 + 1]) / bandAt(sig, i, opts)
+      if (w > bestW) {
+        bestW = w
+        best = i
+      }
+    }
+    return best
+  }
+  const splitAt = (q: number, i: number): void => {
+    const p = pieces[q]
+    const dir = cubicDirAt(p.cubic, p.u[i - knots[q]]) ?? centralTangent(pts, i)
+    knots.splice(q + 1, 0, i)
+    brk.splice(q + 1, 0, 0)
+    dIn.splice(q + 1, 0, dir)
+    dOut.splice(q + 1, 0, dir)
+    pieces.splice(q, 1, newPieceAt(knots[q], i), newPieceAt(i, knots[q + 2]))
+  }
+  // Replace the pieces between knot indices lo..hi by `repl` kept as they are,
+  // with a break at every knot.
+  const replace = (lo: number, hi: number, repl: SegFit[]): void => {
+    const fixed: G1Piece[] = repl.map((sg) => ({
+      ...newPieceAt(sg.a, sg.b),
+      kind: 'fixed' as const,
+      seg: sg,
+      chi2: modelChi2(pts, sig, sg, opts),
+      worst: 0,
+    }))
+    const inner = repl.slice(0, -1).map((sg) => sg.b)
+    knots.splice(lo + 1, hi - lo - 1, ...inner)
+    brk.splice(lo + 1, hi - lo - 1, ...inner.map(() => 1))
+    dIn.splice(lo + 1, hi - lo - 1, ...repl.slice(0, -1).map((sg) => segEndDir(pts, sg)))
+    dOut.splice(lo + 1, hi - lo - 1, ...repl.slice(1).map((sg) => segStartDir(pts, sg)))
+    pieces.splice(lo, hi - lo, ...fixed)
+    setBrk(lo)
+    setBrk(lo + repl.length)
+    dOut[lo] = segStartDir(pts, repl[0])
+    dIn[lo + repl.length] = segEndDir(pts, repl[repl.length - 1])
+  }
+  // The DP's segments over the DP knots around piece q, replacing the pieces
+  // between them; returns the knot index the replacement starts at, or -1.
+  const replaceByDp = (q: number): number => {
+    const a = knots[q]
+    const b = knots[q + 1]
+    let A = a
+    let B = b
+    for (const k of dpKnots) {
+      if (k <= a) A = k
+      if (k >= b) {
+        B = k
+        break
+      }
+    }
+    const lo = knots.indexOf(A)
+    const hi = knots.indexOf(B, lo)
+    const repl = segs.filter((sg) => sg.a >= A && sg.b <= B)
+    if (lo < 0 || hi <= lo || repl.length === 0) return -1
+    replace(lo, hi, repl)
+    return lo
+  }
+
+  fitAll()
+  // 3. Splits, then the fallback ladder.
+  for (let round = 0; round < G1_SPLIT_ROUNDS && bad(); round++) {
+    let split = false
+    for (let q = pieces.length - 1; q >= 0; q--) {
+      const p = pieces[q]
+      if (p.worst <= 1 || p.kind !== 'cubic' || knots[q + 1] - knots[q] < G1_SHORT) continue
+      const i = worstSample(q)
+      if (i < 0) continue
+      splitAt(q, i)
+      split = true
+    }
+    if (!split) break
+    refitTouched()
+  }
+  for (let round = 0; round < G1_FALLBACK_ROUNDS && bad(); round++) {
+    let changed = false
+    for (let q = pieces.length - 1; q >= 0; q--) {
+      const p = pieces[q]
+      if (p.worst <= 1 || p.kind !== 'cubic') continue
+      changed = true
+      const a = knots[q]
+      const b = knots[q + 1]
+      // A piece of a sample or two ending on an unrefined lattice point is a
+      // staircase step: its chord's direction is the lattice's, not the edge's,
+      // so its knot goes into a smooth neighbour rather than pinning a chord.
+      const step = b - a < G1_SHORT && (sig[a] >= SIGMA_LATTICE || sig[b] >= SIGMA_LATTICE)
+      const intoLeft = q > 0 && !brk[q] && pieces[q - 1].kind === 'cubic'
+      const intoRight = q + 1 < pieces.length && !brk[q + 1] && pieces[q + 1].kind === 'cubic'
+      if (step && (intoLeft || intoRight)) {
+        const left =
+          intoLeft && (!intoRight || knots[q] - knots[q - 1] >= knots[q + 2] - knots[q + 1])
+        const k = left ? q : q + 1
+        knots.splice(k, 1)
+        brk.splice(k, 1)
+        dIn.splice(k, 1)
+        dOut.splice(k, 1)
+        // Judged after the round's re-solve, not by the loop reaching it next.
+        pieces.splice(k - 1, 2, { ...newPieceAt(knots[k - 1], knots[k]), worst: 0 })
+      } else if (b - a >= G1_POLY_MAX) {
+        // A long piece gets another knot first: a chord pinned across a bend
+        // would turn its neighbours away at both ends. Neither part is short, so
+        // no step merge takes the knot back out and the ladder does not cycle.
+        splitAt(q, worstSample(q, G1_SHORT))
+      } else if (
+        (!step || (brk[q] && brk[q + 1])) &&
+        lineDeviation(pts, sig, a, b, opts).worst <= 1
+      ) {
+        p.kind = 'line'
+        p.cubic = chordCubic(pts, a, b)
+        p.touched = true
+      } else if (b - a >= G1_SHORT && (!brk[q] || !brk[q + 1])) {
+        setBrk(q)
+        setBrk(q + 1)
+        p.touched = true
+      } else {
+        const repl: SegFit[] = []
+        for (let i = a; i < b; i++) repl.push({ a: i, b: i + 1, kind: 'line' })
+        replace(q, q + 1, repl)
+      }
+    }
+    // Only pinned pieces fail: nothing here can help them.
+    if (!changed) break
+    pinnedPair()
+    refitTouched()
+  }
+  // Last resort, without a re-solve (so no admissible piece moves).
+  let dirty = false
+  for (let q = pieces.length - 1; q >= 0 && bad(); q--) {
+    if (pieces[q].worst <= 1) continue
+    const lo = replaceByDp(q)
+    if (lo >= 0) {
+      q = lo
+      dirty = true
+    }
+  }
+  if (bad()) return null
+
+  // 4. Knot removal.
+  const paramsOf = (p: G1Piece): number => {
+    const kind = p.kind === 'cubic' ? 'cubic' : p.kind === 'line' ? 'line' : (p.seg?.kind ?? 'line')
+    return kind === 'line' ? PARAMS_LINE : kind === 'arc' ? PARAMS_ARC : PARAMS_CUBIC
+  }
+  const fitPiece = (a: number, b: number, ds: [number, number], de: [number, number]): G1Piece => {
+    let u = chordParams(cum, a, b)
+    let c = fitG1Cubic(pts, sig, a, b, u, ds, de)
+    for (let it = 0; it < G1_MERGE_REPARAMS; it++) {
+      const nu = reparamOnto(pts, a, c, u)
+      if (!nu) break
+      u = nu
+      c = fitG1Cubic(pts, sig, a, b, u, ds, de)
+    }
+    const d = cubicDeviation(pts, sig, a, b, c, opts)
+    return {
+      kind: 'cubic',
+      cubic: c,
+      u,
+      armS: Math.hypot(c.c1x - c.p0x, c.c1y - c.p0y),
+      armE: Math.hypot(c.c2x - c.p3x, c.c2y - c.p3y),
+      chi2: d.chi2,
+      worst: g1Shaped(pts, sig, a, b, c, u, opts) ? d.worst : Infinity,
+      touched: false,
+    }
+  }
+  // A merge at knot q reads pieces q−2..q+1, so after one is taken at knot k only
+  // knots k−3..k+2 can decide differently: the rest are not tried again.
+  const stale: number[] = new Array(knots.length).fill(1)
+  for (let round = 0; round < G1_MERGE_ROUNDS; round++) {
+    let changed = false
+    let q = 1
+    while (q < pieces.length) {
+      const A = pieces[q - 1]
+      const B = pieces[q]
+      if (!stale[q] || brk[q] || A.kind !== 'cubic' || B.kind !== 'cubic') {
+        q++
+        continue
+      }
+      const a = knots[q - 1]
+      const b = knots[q + 1]
+      const oldCost = 0.5 * (A.chi2 + B.chi2) + lambda * (paramsOf(A) + paramsOf(B))
+      let dirL = dOut[q - 1]
+      let dirR = dIn[q + 1]
+      let merged = fitPiece(a, b, dirL, dirR)
+      let newL: G1Piece | null = null
+      let newR: G1Piece | null = null
+      let accept = merged.worst <= 1 && 0.5 * merged.chi2 + lambda * PARAMS_CUBIC <= oldCost
+      if (!accept && b - a >= 3) {
+        // The merged piece chooses its own end directions (a free cubic); a G1
+        // neighbour across a smooth knot is refit to meet it, a pinned one keeps
+        // its direction and so does the merged piece.
+        const free = fitFreeCubic(pts, sig, cum, a, b)
+        const fL =
+          unit2(free.c1x - free.p0x, free.c1y - free.p0y) ??
+          unit2(free.c2x - free.p0x, free.c2y - free.p0y)
+        const fR =
+          unit2(free.p3x - free.c2x, free.p3y - free.c2y) ??
+          unit2(free.p3x - free.c1x, free.p3y - free.c1y)
+        const leftSmooth = !brk[q - 1] && q - 2 >= 0
+        const rightSmooth = !brk[q + 1] && q + 1 < pieces.length
+        const leftFree = brk[q - 1] === 1 || (leftSmooth && pieces[q - 2].kind === 'cubic')
+        const rightFree = brk[q + 1] === 1 || (rightSmooth && pieces[q + 1].kind === 'cubic')
+        if (fL && fR && (leftFree || rightFree)) {
+          if (leftFree) dirL = fL
+          if (rightFree) dirR = fR
+          merged = fitPiece(a, b, dirL, dirR)
+          let cost = 0.5 * merged.chi2 + lambda * PARAMS_CUBIC
+          let base = oldCost
+          let ok = merged.worst <= 1
+          if (ok && leftFree && leftSmooth) {
+            newL = fitPiece(knots[q - 2], a, dOut[q - 2], dirL)
+            ok = newL.worst <= 1
+            cost += 0.5 * newL.chi2
+            base += 0.5 * pieces[q - 2].chi2
+          }
+          if (ok && rightFree && rightSmooth) {
+            newR = fitPiece(b, knots[q + 2], dirR, dIn[q + 2])
+            ok = newR.worst <= 1
+            cost += 0.5 * newR.chi2
+            base += 0.5 * pieces[q + 1].chi2
+          }
+          accept = ok && cost <= base
+        }
+      }
+      if (!accept) {
+        stale[q] = 0
+        q++
+        continue
+      }
+      dirty = true
+      if (newL) pieces[q - 2] = newL
+      if (newR) pieces[q + 1] = newR
+      dOut[q - 1] = dirL
+      dIn[q + 1] = dirR
+      if (!brk[q - 1]) dIn[q - 1] = dirL
+      if (!brk[q + 1]) dOut[q + 1] = dirR
+      pieces.splice(q - 1, 2, merged)
+      knots.splice(q, 1)
+      brk.splice(q, 1)
+      dIn.splice(q, 1)
+      dOut.splice(q, 1)
+      stale.splice(q, 1)
+      for (let k = Math.max(0, q - 3); k <= Math.min(stale.length - 1, q + 2); k++) stale[k] = 1
+      changed = true
+    }
+    if (!changed) break
+  }
+  // The whole span solved once more when a merge or the last resort changed it,
+  // kept when every piece stays inside the band and χ² does not grow.
+  if (dirty) {
+    const saved = pieces.map((p) => ({ ...p, cubic: { ...p.cubic }, u: Float64Array.from(p.u) }))
+    const savedIn = dIn.map((d): [number, number] => [d[0], d[1]])
+    const savedOut = dOut.map((d): [number, number] => [d[0], d[1]])
+    const before = saved.reduce((s, p) => s + p.chi2, 0)
+    fitAll()
+    if (bad() || pieces.reduce((s, p) => s + p.chi2, 0) > before) {
+      pieces = saved
+      for (let k = 0; k < savedIn.length; k++) {
+        dIn[k] = savedIn[k]
+        dOut[k] = savedOut[k]
+      }
+    }
+  }
+
+  const out: SegFit[] = []
+  for (let q = 0; q < pieces.length; q++) {
+    const p = pieces[q]
+    const a = knots[q]
+    const b = knots[q + 1]
+    if ((p.kind === 'fixed' || p.kind === 'arc') && p.seg) out.push(p.seg)
+    else if (p.kind === 'line' || p.kind === 'fixed') out.push({ a, b, kind: 'line' })
+    else out.push({ a, b, kind: 'cubic', cubic: p.cubic })
+  }
+  return out
 }
