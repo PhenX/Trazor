@@ -51,6 +51,8 @@ export interface RunFitOptions {
   reach: number
   /** Coarse candidate stride (samples): a candidate at least every `stride` points. */
   stride: number
+  /** Image extent (longer side, px); scales the reach down on large canvases. */
+  extent?: number
 }
 
 /** Parameter counts priced by the description length (inkvec `curves.rs`). */
@@ -116,6 +118,27 @@ export function mergeReach(curveOptimize: boolean): number {
 }
 
 /**
+ * Reach scaled down on a large canvas. The DP scores O(K·reach) spans over a
+ * ring's candidates and a high-resolution illustration carries far more boundary
+ * samples than an icon, so above `EXTENT_FULL_BELOW` px the reach falls off as
+ * `1/extent` (floored at {@link MIN_REACH}) to keep the browser fast; the merge
+ * pass re-joins any long run a smaller reach split, and the fine detail an
+ * illustration would spend the extra reach on is below the visible threshold at
+ * that size. An icon (small extent, or an unknown one) keeps the full reach, so
+ * its fit is unchanged.
+ */
+const EXTENT_FULL_BELOW = 700
+const MIN_REACH = 6
+function scopeReach(opts: RunFitOptions): RunFitOptions {
+  const extent = opts.extent ?? 0
+  if (extent <= EXTENT_FULL_BELOW) return opts
+  const r = EXTENT_FULL_BELOW / extent
+  const scaled = Math.round(opts.reach * r * r)
+  const reach = scaled < MIN_REACH ? MIN_REACH : scaled > opts.reach ? opts.reach : scaled
+  return reach === opts.reach ? opts : { ...opts, reach }
+}
+
+/**
  * Coarse candidate stride (samples). The optimal-polygon vertices are the DP's
  * base breakpoints; a stride and the curvature sign changes subdivide only a
  * polygon edge long enough (`≥ stride` samples) to hide a bow — a coarse chord
@@ -167,6 +190,7 @@ export function fitClosedRuns(
   const n = (geom.length >> 1) - 1 // distinct ring points (last repeats first)
   const mv = (polygon.length >> 1) - 1 // distinct polygon vertices
   if (n < 3 || mv < 3) return null
+  opts = scopeReach(opts)
 
   // Corners among the polygon vertices, cyclically, under alphamax/cornerThreshold.
   const cornerVerts: number[] = []
@@ -272,6 +296,7 @@ export function fitOpenRuns(
   if (n === 2) {
     return [{ type: 'L', x: geom[2], y: geom[3] }]
   }
+  opts = scopeReach(opts)
 
   const mv = vertices.length
   const cornerPos: number[] = [0]

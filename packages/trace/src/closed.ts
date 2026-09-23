@@ -214,6 +214,7 @@ export function polygonToCommands(
     band: runBand(opts.optTolerance),
     reach: mergeReach(opts.curveOptimize),
     stride: candidateStride(opts.curveOptimize),
+    extent: fit.extent,
   })
   // A ring too short for a meaningful run fit falls back to the exact lattice.
   return commands ?? pixelCommands(ring)
