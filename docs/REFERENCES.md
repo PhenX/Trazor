@@ -125,6 +125,11 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **David Arthur & Sergei Vassilvitskii, “k-means++: The Advantages of Careful
   Seeding”, _SODA_ 2007.** Palette clustering seeding
   (`packages/raster/src/quantize.ts`).
+- **ITU-R Recommendation BT.709, “Parameter values for the HDTV standards for
+  production and international programme exchange”.** The luma weights
+  (0.2126, 0.7152, 0.0722) of `toEncodedLuma` (`packages/raster/src/convert.ts`),
+  applied to the gamma-encoded channels a rasterizer blends an anti-aliased edge
+  in, so the bw threshold field is linear in an edge pixel's coverage.
 - **Nobuyuki Otsu, “A Threshold Selection Method from Gray-Level Histograms”,
   _IEEE Trans. SMC_ 9(1), 1979.** Automatic binarization threshold
   (`packages/raster/src/threshold.ts`).

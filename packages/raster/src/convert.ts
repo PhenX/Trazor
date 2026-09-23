@@ -6,7 +6,7 @@
  * sRGB→linear LUT so converting a whole image allocates nothing per pixel and
  * produces bit-identical values to calling the core helper.
  */
-import { srgbToLinear } from '@trazor/core'
+import { linearToSrgb, srgbToLinear } from '@trazor/core'
 import type { GrayImage, RasterImage } from '@trazor/core'
 
 /** `srgbToLinear(v / 255)` for every byte value. */
@@ -51,4 +51,32 @@ export function toGrayscale(image: RasterImage): GrayImage {
     out[i] = L < 0 ? 0 : L > 1 ? 1 : L
   }
   return { width, height, data: out }
+}
+
+/**
+ * Encoded luma per pixel: Rec. 709 weights over the gamma-encoded channels, in
+ * [0, 1]. A rasterizer blends an anti-aliased edge's two colors linearly in the
+ * encoded values (sRGB compositing), so across a two-tone edge this is linear in
+ * the pixel's coverage — lightness ({@link toGrayscale}) is not: black at
+ * coverage 0.31 over white reads 0.75 in Oklab L, which a linear reading takes
+ * for coverage 0.25. On a neutral gray it equals the gray's encoded value.
+ */
+export function toEncodedLuma(image: RasterImage): GrayImage {
+  const { width, height, data } = image
+  const n = width * height
+  const out = new Float32Array(n)
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    out[i] = (0.2126 * data[p] + 0.7152 * data[p + 1] + 0.0722 * data[p + 2]) / 255
+  }
+  return { width, height, data: out }
+}
+
+/**
+ * The encoded value of the neutral gray whose Oklab lightness is `lightness`:
+ * the level in {@link toEncodedLuma}'s domain that a lightness threshold stands
+ * for (a neutral gray's lightness is the cube root of its linear luminance).
+ */
+export function encodedOfLightness(lightness: number): number {
+  const L = lightness < 0 ? 0 : lightness > 1 ? 1 : lightness
+  return linearToSrgb(L * L * L)
 }

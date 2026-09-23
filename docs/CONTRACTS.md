@@ -198,6 +198,12 @@ export function absorbMixtureLabels(
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
 export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
+// Rec. 709 luma of the gamma-encoded channels, [0,1]: linear in an anti-aliased two-tone edge's
+// coverage (a rasterizer blends in the encoded values), where lightness is not.
+export function toEncodedLuma(image: RasterImage): GrayImage
+// The encoded value of the neutral gray at Oklab lightness `lightness` (clamped to [0,1]): the level in
+// toEncodedLuma's domain that a lightness threshold stands for.
+export function encodedOfLightness(lightness: number): number
 
 // quantize.ts
 export interface QuantizeOptions {

@@ -1,5 +1,5 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
-import { DEFAULT_SETTINGS, clamp, clampInt, getProfile } from '@trazor/core'
+import { DEFAULT_SETTINGS, clamp, clampInt, getProfile, hexToRgb, srgbToLinear } from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -268,7 +268,7 @@ export function recommendSettings(
   // measured color, not black.
   if (patch.mode === 'bw' && isCleanFlatArt(a) && isBilevelInk(a)) {
     patch.thresholdMode = 'fixed'
-    patch.threshold = clampInt(Math.round((255 * (a.inkLightness + a.paperLightness)) / 2), 1, 254)
+    patch.threshold = coverageMidThreshold(a.inkHex, a.paperHex)
     patch.fillColor = a.inkHex
     r.add(
       'flatInk',
@@ -430,6 +430,26 @@ function traceSize(a: ImageAnalysis, patch: Partial<VectorizeSettings>, r: Ratio
     patch.maxDimension = longest
     r.add('nativeSize', 'Traced at native size — a mild downscale would thin fine strokes.')
   }
+}
+
+/**
+ * The lightness threshold (0-255) at which an anti-aliased edge between `inkHex`
+ * and `paperHex` is half covered. A rasterizer blends the two colors linearly in
+ * their encoded values, so half coverage is the midpoint of the two encoded lumas
+ * — well above the midpoint of their lightnesses (black on white: lightness 0.6,
+ * not 0.5, where a threshold at 0.5 cuts every edge at 61 % coverage and insets
+ * the outline). Expressed as the lightness of the neutral gray at that luma, the
+ * domain the engine's threshold is read in.
+ */
+function coverageMidThreshold(inkHex: string, paperHex: string): number {
+  const mid = (encodedLuma(inkHex) + encodedLuma(paperHex)) / 2
+  return clampInt(Math.round(255 * Math.cbrt(srgbToLinear(mid))), 1, 254)
+}
+
+/** Rec. 709 luma of a hex color's encoded (not linearized) channels, in [0, 1]. */
+function encodedLuma(hex: string): number {
+  const rgb = hexToRgb(hex) ?? [0, 0, 0]
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
 }
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
