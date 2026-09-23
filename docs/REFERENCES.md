@@ -22,8 +22,23 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Curves”, in _Graphics Gems_, Academic Press, 1990.**
   Least-squares cubic Bézier fitting with iterative reparameterization
   (Newton-Raphson) and recursive splitting at max-error points. Used for open
-  polylines (centerline strokes) in `packages/trace/src/fit.ts` and for the
-  per-run cubic of the multi-model fitter (`packages/trace/src/potrace/runfit.ts`).
+  polylines (centerline strokes) in `packages/trace/src/fit.ts`, for the
+  per-run cubic of the multi-model fitter and for the arm lengths of the
+  illustration-mode G1 spline pieces, there σ-weighted and held to inkvec's
+  admissible arms (`packages/trace/src/potrace/runfit.ts` `fitG1Cubic`).
+- **Michael Plass and Maureen Stone, “Curve-Fitting with Piecewise Parametric
+  Cubics”, _Computer Graphics_ 17(3) (SIGGRAPH ’83), 1983.** Least-squares
+  fitting of piecewise parametric cubics with tangent continuity at the knots.
+  The illustration-mode G1 refit of `packages/trace/src/potrace/runfit.ts`
+  (`g1Refit`) takes the run fitter's breakpoints as knots and solves one shared
+  direction per knot by linear least squares over the span's samples,
+  alternated with the pieces' arm lengths and a Newton reparameterization.
+- **William H. Press, Saul A. Teukolsky, William T. Vetterling and Brian P.
+  Flannery, _Numerical Recipes_, 3rd ed., Cambridge University Press, 2007,
+  §2.4 (tridiagonal systems) and §2.7 (cyclic tridiagonal systems via the
+  Sherman–Morrison formula).** The G1 refit's knot-tangent system is symmetric
+  tridiagonal along a span and cyclic around a smooth loop
+  (`solveTridiag`/`solveCyclic` in `runfit.ts`).
 - **logolabs, “inkvec” — curve fitting (stage 11, Apache-2.0), and Raph Levien’s
   `kurbo` cubic fitter it builds on.** <https://github.com/logolabs/inkvec>
   (`crates/inkvec-fit/{lib,multimodel,curves,merge,primitives}.rs`,
@@ -53,7 +68,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   — and joined where the models meet; and a whole loop is one circle when its
   reduced χ² stays within τ² and its description costs no more than the DP's
   (the whole-primitive rule of `primitives.rs`), so a few outlying samples do not
-  veto it the way a per-sample band would.
+  veto it the way a per-sample band would. At higher smoothing (illustration
+  mode) the joins inkvec's DP charges a tangent break for, and snaps to one
+  tangent after it where it left them smooth (`multimodel.rs` `refine`,
+  `tangents.rs` `break_cost`), are all made G1 by the refit after Plass & Stone
+  (below), its pieces' arms held to the 0.02–1 chord inkvec admits a G1 cubic's
+  arms in (`candidates.rs`, `MAX_ARM`; `multimodel.rs` `polish_arms` refines
+  arms inside such a box).
 - **logolabs, “inkvec” — sub-pixel boundary refinement (stage 07, Apache-2.0).**
   <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/planar.rs`
   `refine_subpixel`/`edge_offset`, `docs/algorithm/07-subpixel.md`). Each boundary

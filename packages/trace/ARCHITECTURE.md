@@ -23,7 +23,8 @@ src/
     adjust.ts     least-squares vertex adjustment (constrained to the unit square)
     smooth.ts     corner analysis (alphamax) → corners vs smooth vertices
     runfit.ts     multi-model run fit: a bounded dynamic program over candidate breakpoints picks
-                  the segmentation and the per-span model (line / circular arc / G1 cubic) by MDL
+                  the segmentation and the per-span model (line / circular arc / G1 cubic) by MDL;
+                  the structural refit (geometric mode) or the G1 spline refit (illustration mode)
 ```
 
 ## Three entry points
@@ -97,9 +98,34 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    reaching further along sharper corners) carry no weight, and a chamfer stub between two corners collapses into one
    corner (inkvec `adjust_vertices_at`, `sharpen_corners`). A cubic keeps its fit, re-pinned to the joins with its
    neighbours' tangents. The refit falls back to the pinned DP fit where it would draw worse than it measured — an arc
-   sweeping far longer than its samples, a cubic whose controls leave them. Outside geometric mode refined samples are
-   read at `σ ≥ 0.2`, so higher smoothing simplifies (a hand-drawn outline's wobble spanned by one model), and there is
-   no refit: cartoons and illustrations keep their curves.
+   sweeping far longer than its samples, a cubic whose controls leave them.
+
+   **Illustration mode** (`smoothing > 0.5`) reads refined samples at `σ ≥ 0.2`, so higher smoothing simplifies (a
+   hand-drawn outline's wobble spanned by one model), and makes every join inside a span smooth. The DP prices a chord
+   at two parameters and a curve at six, so it paves a gently curving outline with chords that meet at kinks the
+   per-sample residual never sees — the polygon look of a traced cartoon. After the DP the span's breakpoints become the
+   knots of a **G1 cubic spline** (Plass & Stone 1983): each knot carries one direction shared by the two pieces meeting
+   there, solved by linear least squares over all the span's samples (a symmetric tridiagonal system in the knot
+   tangents, cyclic on a smooth loop), alternated with each piece's two arm lengths and a Newton reparameterization. The
+   arms are fit by σ-weighted least squares with the directions fixed and held to 0.02–1 chord (inkvec's admissible
+   arms): a piece of a sample or two cannot place two arms by itself, and its free fit — a negative arm, or one several
+   chords long — would otherwise swing the shared directions. The spline is held to the mode's band, narrowed on a clean
+   edge: the refined samples' RMS residual about the DP's fit measures the edge's noise, and below half σ the band
+   narrows with it, to half. A DP line that is a straight edge of the drawing — inside that band, no line beside it
+   turning away, no neighbouring arc whose circle runs through its samples, no bow above the noise — stays a line, and a
+   DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin their
+   knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic piece
+   per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples, carries
+   an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a fallback
+   ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the
+   step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule
+   let through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own segments.
+   Each repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve reaching
+   further moves admissible pieces out of the band for the next round to repair. Knots are then removed wherever the
+   merged piece stays inside the band and the description length does not grow — the outer directions kept, or
+   re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more, kept
+   when every piece stays inside the band and χ² does not grow. A cutout chain is refit once, like any span, so an edge
+   two regions share stays one fit.
 
    The DP is kept browser-fast without changing what it draws. A span prices an
    arc or a cubic only when a curve could actually beat the pinned line — inkvec's
