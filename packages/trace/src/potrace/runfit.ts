@@ -72,15 +72,47 @@ const TAU = 2
 const REPARAM_ITERS = 1
 /**
  * Base positional uncertainty σ (px) of a sample snapped onto the coverage
- * ½-level (inkvec `contour.rs` base ≈ 0.05; a browser-fast field localizes an
- * anti-aliased edge to ~0.2 px and still jitters sample to sample).
+ * ½-level (inkvec `contour.rs` base ≈ 0.05). Measured against the drawing,
+ * refined points on clean anti-aliased edges land within about 0.05–0.1 px.
  */
-const SIGMA_REFINED = 0.2
+const SIGMA_REFINED = 0.1
 /**
- * σ of a sample left on the integer lattice — a hard edge, the image border, or
+ * σ of a sample left on the lattice along an axis-aligned stretch of the
+ * optimal polygon: a hard edge the drawing put on the pixel grid (or the image
+ * border), where the lattice point is the edge — tighter than any refined point.
+ */
+const SIGMA_HARD = 0.06
+/**
+ * σ of a sample left on the integer lattice elsewhere — a hard slanted edge or
  * an un-refined ring: it carries the ±0.5 px pixel-quantization staircase.
  */
 const SIGMA_LATTICE = 0.5
+/**
+ * σ the fit reads refined samples at outside geometric mode: higher smoothing
+ * asks it to simplify, and a looser σ lets one model span a hand-drawn
+ * outline's wobble instead of buying segments to follow it.
+ */
+const SIGMA_SMOOTH = 0.2
+/**
+ * Smoothing at or below which fits run in geometric mode: the flat-ink profile
+ * (sharp-cornered art) traces at 0.25, the illustration profiles at 0.6 and up.
+ */
+const GEOMETRIC_SMOOTHING = 0.5
+
+/**
+ * Whether a fit runs in geometric mode: low smoothing asks for the drawing's
+ * own lines, rounds and corners, so samples keep their measured σ and closed
+ * rings get the structural refit ({@link fitClosedRefit}).
+ */
+function geometricMode(opts: RunFitOptions): boolean {
+  return opts.alphamax <= (GEOMETRIC_SMOOTHING * 4) / 3 + 1e-9
+}
+
+/** Sample σ as the fit reads it: loosened to SIGMA_SMOOTH outside geometric mode. */
+function modeSigma(sigma: number[], opts: RunFitOptions): number[] {
+  if (geometricMode(opts)) return sigma
+  return sigma.map((v) => (v < SIGMA_SMOOTH ? SIGMA_SMOOTH : v))
+}
 
 /** Description-length weight λ from the image extent (longer side, px). */
 export function descriptionLambda(extent: number): number {
@@ -95,17 +127,34 @@ export function runTau(): number {
 
 /**
  * Per-point σ (px) for a ring's samples: a point snapped off the lattice onto
- * the sub-pixel edge is more certain than the ±0.5 px lattice, a point left in
- * place (hard edge, border, un-refined) carries the staircase. `lattice` is the
- * pre-refinement geometry; `geom` the (possibly) refined geometry; both flat.
+ * the sub-pixel edge is more certain than the ±0.5 px lattice; a point left in
+ * place carries the staircase, unless it lies on an axis-aligned stretch of the
+ * optimal polygon `vertices` of a refined ring — a hard edge on the pixel grid,
+ * which the lattice point sits on exactly. `lattice` is the pre-refinement
+ * geometry, `geom` the (possibly) refined geometry, both flat.
  */
-export function ringSigmas(lattice: FlatPoints, geom: FlatPoints, refined: boolean): number[] {
+export function ringSigmas(
+  lattice: FlatPoints,
+  geom: FlatPoints,
+  refined: boolean,
+  vertices?: readonly number[],
+): number[] {
   const n = geom.length >> 1
+  const axis = new Uint8Array(n)
+  if (refined && vertices) {
+    for (let k = 0; k + 1 < vertices.length; k++) {
+      const a = vertices[k]
+      const b = vertices[k + 1]
+      if (lattice[a * 2] === lattice[b * 2] || lattice[a * 2 + 1] === lattice[b * 2 + 1]) {
+        for (let i = a; i <= b && i < n; i++) axis[i] = 1
+      }
+    }
+  }
   const sigma = new Array<number>(n)
   for (let i = 0; i < n; i++) {
     const moved =
       refined && (geom[i * 2] !== lattice[i * 2] || geom[i * 2 + 1] !== lattice[i * 2 + 1])
-    sigma[i] = moved ? SIGMA_REFINED : SIGMA_LATTICE
+    sigma[i] = moved ? SIGMA_REFINED : axis[i] ? SIGMA_HARD : SIGMA_LATTICE
   }
   return sigma
 }
@@ -191,59 +240,114 @@ export function fitClosedRuns(
   const mv = (polygon.length >> 1) - 1 // distinct polygon vertices
   if (n < 3 || mv < 3) return null
   opts = scopeReach(opts)
+  sigma = modeSigma(sigma, opts)
 
-  // Corners among the polygon vertices, cyclically, under alphamax/cornerThreshold.
-  const cornerVerts: number[] = []
+  // Corners among the polygon vertices, cyclically, read on the unadjusted
+  // polygon (its lattice vertices on the refined ring): the vertex adjustment
+  // pulls smooth vertices onto the chord and makes their turn angles erratic
+  // (inkvec `curves.rs`). A corner turns at least CORNER_TURN_DEG — the drawing
+  // turned there, not a round the pixels quantized — and is one under
+  // alphamax/cornerThreshold, so the smoothing setting keeps its say.
+  // A sharp corner the anti-aliasing cut across has two vertices a stub apart,
+  // each turning only part of the way: the pair is judged as one vertex at the
+  // stub's middle, between the vertices beyond it.
+  const vx = (i: number): number => geom[vertices[i] * 2]
+  const vy = (i: number): number => geom[vertices[i] * 2 + 1]
+  const isCorner = (
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+  ): boolean =>
+    turnDeg(ax, ay, bx, by, cx, cy) >= CORNER_TURN_DEG &&
+    cornerAt(ax, ay, bx, by, cx, cy, opts.alphamax, opts.cornerThreshold)
+  const corner = new Uint8Array(mv)
   for (let i = 0; i < mv; i++) {
     const ip = (i + mv - 1) % mv
     const inx = (i + 1) % mv
-    if (
-      cornerAt(
-        polygon[ip * 2],
-        polygon[ip * 2 + 1],
-        polygon[i * 2],
-        polygon[i * 2 + 1],
-        polygon[inx * 2],
-        polygon[inx * 2 + 1],
-        opts.alphamax,
-        opts.cornerThreshold,
-      )
-    ) {
-      cornerVerts.push(i)
+    if (isCorner(vx(ip), vy(ip), vx(i), vy(i), vx(inx), vy(inx))) corner[i] = 1
+    const in2 = (i + 2) % mv
+    if (mv > 3 && Math.hypot(vx(inx) - vx(i), vy(inx) - vy(i)) <= CHAMFER_SPAN) {
+      const mx = (vx(i) + vx(inx)) / 2
+      const my = (vy(i) + vy(inx)) / 2
+      if (isCorner(vx(ip), vy(ip), mx, my, vx(in2), vy(in2))) {
+        corner[i] = 1
+        corner[inx] = 1
+      }
     }
   }
+  const cornerVerts: number[] = []
+  for (let i = 0; i < mv; i++) if (corner[i]) cornerVerts.push(i)
 
+  if (geometricMode(opts)) {
+    const refit = fitClosedRefit(geom, sigma, vertices, polygon, cornerVerts, n, mv, opts)
+    if (refit) return refit
+  }
   const out: PathCommand[] = []
   if (cornerVerts.length === 0) {
-    // Wholly smooth ring: try one circle over every sample, else open at the
-    // guaranteed convex start and run the DP around the loop with a G1 seam.
+    // Wholly smooth ring: one circle over every sample when that is the better
+    // description, else open at the guaranteed convex start and run the DP
+    // around the loop with a G1 seam.
     const { pts, sig } = cyclicRun(geom, sigma, 0, 0, n)
-    out.push({ type: 'M', x: geom[0], y: geom[1] })
-    const circle = admissibleCircle(pts, sig, opts)
-    if (circle) {
-      emitFullCircle(out, geom[0], geom[1], circle, pts)
+    const splits: number[] = []
+    for (let p = 1; p < mv; p++) splits.push(vertices[p])
+    const seam = centralTangent(pts, 0)
+    const dpCost = [Infinity]
+    const segs = spanSegments(
+      pts,
+      sig,
+      splits,
+      [seam[0], seam[1]],
+      [seam[0], seam[1]],
+      opts,
+      dpCost,
+    )
+    const whole = wholeRingCircle(pts, sig, opts, dpCost[0])
+    if (whole) {
+      const [sx, sy] = projectCircle(whole, pts[0], pts[1])
+      out.push({ type: 'M', x: sx, y: sy })
+      emitFullCircle(out, sx, sy, whole, pts)
     } else {
-      const splits: number[] = []
-      for (let p = 1; p < mv; p++) splits.push(vertices[p])
-      const seam = centralTangent(pts, 0)
-      emitSpanDP(out, pts, sig, splits, [seam[0], seam[1]], [seam[0], seam[1]], opts)
+      out.push({ type: 'M', x: geom[0], y: geom[1] })
+      for (const sg of segs) emitSeg(out, pts, sg)
     }
     out.push({ type: 'Z' })
     return out
   }
 
-  // Runs corner → corner (cyclic). Each run's endpoints are the corner apexes —
-  // the adjusted polygon vertices (Selinger §2.3.1) — pinned; the two runs
-  // meeting at a corner keep distinct tangents, so the corner stays sharp.
-  const apex = (cv: number): [number, number] => [polygon[cv * 2], polygon[cv * 2 + 1]]
+  // Runs corner → corner (cyclic). Each run's endpoints are the corner apexes,
+  // pinned; the two runs meeting at a corner keep distinct tangents, so the
+  // corner stays sharp.
+  const apexCache = new Map<number, [number, number]>()
+  // A sharp tip the anti-aliasing cut across comes out of the polygon as two
+  // corners joined by a stub a pixel or two long: both take the meeting point
+  // of the edges beyond the stub, and the stub's span drops out.
+  for (let c = 0; c < cornerVerts.length && cornerVerts.length > 2; c++) {
+    const hit = tipApex(geom, sigma, vertices, n, mv, cornerVerts, c)
+    if (hit) {
+      apexCache.set(cornerVerts[c], hit)
+      apexCache.set(cornerVerts[(c + 1) % cornerVerts.length], hit)
+    }
+  }
+  const apex = (cv: number): [number, number] => {
+    const hit = apexCache.get(cv)
+    if (hit) return hit
+    const fallback: [number, number] = [polygon[cv * 2], polygon[cv * 2 + 1]]
+    const a = sharpApex(geom, sigma, vertices, n, mv, cv, fallback)
+    apexCache.set(cv, a)
+    return a
+  }
   const [x0, y0] = apex(cornerVerts[0])
   out.push({ type: 'M', x: x0, y: y0 })
   for (let c = 0; c < cornerVerts.length; c++) {
     const cvA = cornerVerts[c]
     const cvB = cornerVerts[(c + 1) % cornerVerts.length]
-    const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
     const [ax, ay] = apex(cvA)
     const [bx, by] = apex(cvB)
+    if (ax === bx && ay === by && cornerVerts.length > 1) continue // a collapsed tip's stub
+    const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
     pts[0] = ax
     pts[1] = ay
     pts[pts.length - 2] = bx
@@ -254,6 +358,173 @@ export function fitClosedRuns(
   }
   out.push({ type: 'Z' })
   return out
+}
+
+/** Least turn (degrees) at a corner (inkvec `CORNER_DEGREES`). */
+const CORNER_TURN_DEG = 45
+
+/** Turn (degrees) at b between the directions a→b and b→c. */
+function turnDeg(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
+  const ux = bx - ax
+  const uy = by - ay
+  const wx = cx - bx
+  const wy = cy - by
+  return (Math.atan2(Math.abs(ux * wy - uy * wx), ux * wx + uy * wy) * 180) / Math.PI
+}
+
+/** Samples nearer a vertex than this (px) sit on its anti-aliasing chamfer (inkvec CORNER_CHAMFER). */
+const CORNER_CHAMFER = 1
+/** Turn from which two edge lines' meeting may cross the chamfer (inkvec CORNER_TURN_MIN). */
+const CORNER_TURN_MIN = Math.PI / 6
+
+/** σ-weighted total-least-squares line over cyclic samples a..b, the chamfer at both ends dropped. */
+function edgeLine(
+  geom: FlatPoints,
+  sigma: number[],
+  a: number,
+  b: number,
+  n: number,
+): { cx: number; cy: number; dx: number; dy: number } | null {
+  const ax = geom[a * 2]
+  const ay = geom[a * 2 + 1]
+  const bx = geom[b * 2]
+  const by = geom[b * 2 + 1]
+  const steps = (b - a + n) % n
+  const collect = (trim: boolean): number[] => {
+    const idx: number[] = []
+    for (let s = 0; s <= steps; s++) {
+      const i = (a + s) % n
+      const x = geom[i * 2]
+      const y = geom[i * 2 + 1]
+      if (
+        trim &&
+        (Math.hypot(x - ax, y - ay) <= CORNER_CHAMFER ||
+          Math.hypot(x - bx, y - by) <= CORNER_CHAMFER)
+      )
+        continue
+      idx.push(i)
+    }
+    return idx
+  }
+  let idx = collect(true)
+  if (idx.length < 3) idx = collect(false)
+  if (idx.length < 2) return null
+  let sw = 0
+  let mx = 0
+  let my = 0
+  for (const i of idx) {
+    const w = 1 / (sigma[i] * sigma[i])
+    sw += w
+    mx += w * geom[i * 2]
+    my += w * geom[i * 2 + 1]
+  }
+  mx /= sw
+  my /= sw
+  let sxx = 0
+  let sxy = 0
+  let syy = 0
+  for (const i of idx) {
+    const w = 1 / (sigma[i] * sigma[i])
+    const x = geom[i * 2] - mx
+    const y = geom[i * 2 + 1] - my
+    sxx += w * x * x
+    sxy += w * x * y
+    syy += w * y * y
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+  let dx = Math.cos(theta)
+  let dy = Math.sin(theta)
+  if (dx * (bx - ax) + dy * (by - ay) < 0) {
+    dx = -dx
+    dy = -dy
+  }
+  return { cx: mx, cy: my, dx, dy }
+}
+
+/**
+ * The tip where corner `cornerVerts[c]` and the next corner are joined by a
+ * polygon edge no longer than CHAMFER_SPAN — the chamfer the anti-aliasing
+ * cut across one sharp corner: the meeting point of the edge before the stub
+ * and the edge after it, both fitted without their chamfer samples, when the
+ * two turns agree and it lies within the corner allowance of the stub's
+ * middle. Otherwise null.
+ */
+function tipApex(
+  geom: FlatPoints,
+  sigma: number[],
+  vertices: number[],
+  n: number,
+  mv: number,
+  cornerVerts: number[],
+  c: number,
+): [number, number] | null {
+  const cvA = cornerVerts[c]
+  const cvB = cornerVerts[(c + 1) % cornerVerts.length]
+  if (cvB !== (cvA + 1) % mv) return null
+  const va = vertices[cvA]
+  const vb = vertices[cvB]
+  const ax = geom[va * 2]
+  const ay = geom[va * 2 + 1]
+  const bx = geom[vb * 2]
+  const by = geom[vb * 2 + 1]
+  if (Math.hypot(bx - ax, by - ay) > CHAMFER_SPAN) return null
+  const lp = edgeLine(geom, sigma, vertices[(cvA - 1 + mv) % mv], va, n)
+  const ln = edgeLine(geom, sigma, vb, vertices[(cvB + 1) % mv], n)
+  if (!lp || !ln) return null
+  // Both corners turn the same way: a tip or a notch, not a step.
+  const sx = bx - ax
+  const sy = by - ay
+  const turnA = lp.dx * sy - lp.dy * sx
+  const turnB = sx * ln.dy - sy * ln.dx
+  if (turnA * turnB <= 0) return null
+  const cross = lp.dx * ln.dy - lp.dy * ln.dx
+  if (Math.abs(cross) < 1e-6) return null
+  const t = ((ln.cx - lp.cx) * ln.dy - (ln.cy - lp.cy) * ln.dx) / cross
+  const hx = lp.cx + lp.dx * t
+  const hy = lp.cy + lp.dy * t
+  const turn = Math.atan2(Math.abs(cross), lp.dx * ln.dx + lp.dy * ln.dy)
+  const allowed =
+    0.5 + Math.min(3, CORNER_CHAMFER / Math.max(0.2, Math.sin(0.5 * (Math.PI - turn))))
+  const mx = (ax + bx) / 2
+  const my = (ay + by) / 2
+  return Math.hypot(hx - mx, hy - my) <= allowed ? [hx, hy] : null
+}
+
+/**
+ * A corner's apex as the meeting of its two edges' fitted lines (inkvec
+ * adjust_vertices_at): the samples beside a corner lie on the anti-aliasing
+ * chamfer, inside the true corner, so the edges — fitted without them — are
+ * intersected. Accepted within an allowance that grows with the corner's
+ * sharpness; otherwise `fallback`.
+ */
+function sharpApex(
+  geom: FlatPoints,
+  sigma: number[],
+  vertices: number[],
+  n: number,
+  mv: number,
+  cv: number,
+  fallback: [number, number],
+): [number, number] {
+  const vi = vertices[cv]
+  const vp = vertices[(cv - 1 + mv) % mv]
+  const vn = vertices[(cv + 1) % mv]
+  const lp = edgeLine(geom, sigma, vp, vi, n)
+  const ln = edgeLine(geom, sigma, vi, vn, n)
+  if (!lp || !ln) return fallback
+  const cross = lp.dx * ln.dy - lp.dy * ln.dx
+  if (Math.abs(cross) < 1e-6) return fallback
+  const t = ((ln.cx - lp.cx) * ln.dy - (ln.cy - lp.cy) * ln.dx) / cross
+  const hx = lp.cx + lp.dx * t
+  const hy = lp.cy + lp.dy * t
+  const turn = Math.atan2(Math.abs(cross), lp.dx * ln.dx + lp.dy * ln.dy)
+  const base = 0.5
+  const allowed =
+    turn >= CORNER_TURN_MIN
+      ? base + Math.min(3, CORNER_CHAMFER / Math.max(0.2, Math.sin(0.5 * (Math.PI - turn))))
+      : base
+  if (Math.hypot(hx - geom[vi * 2], hy - geom[vi * 2 + 1]) <= allowed) return [hx, hy]
+  return fallback
 }
 
 /**
@@ -297,6 +568,7 @@ export function fitOpenRuns(
     return [{ type: 'L', x: geom[2], y: geom[3] }]
   }
   opts = scopeReach(opts)
+  sigma = modeSigma(sigma, opts)
 
   const mv = vertices.length
   const cornerPos: number[] = [0]
@@ -361,6 +633,21 @@ function emitSpanDP(
     out.push({ type: 'L', x: pts[2], y: pts[3] })
     return
   }
+  for (const s of spanSegments(pts, sig, splits, t0, t1, opts)) emitSeg(out, pts, s)
+}
+
+/** The DP's chosen segments over one span (see {@link emitSpanDP}), merged. */
+function spanSegments(
+  pts: FlatPoints,
+  sig: number[],
+  splits: number[],
+  t0: [number, number],
+  t1: [number, number],
+  opts: RunFitOptions,
+  costOut?: number[],
+): SegFit[] {
+  const last = (pts.length >> 1) - 1
+  if (last <= 1) return last === 1 ? [{ a: 0, b: 1, kind: 'line' }] : []
 
   const cand = buildCandidates(pts, splits, last, opts.stride)
   const K = cand.length - 1 // candidate index of `last`
@@ -412,8 +699,9 @@ function emitSpanDP(
     segs.push(s)
   }
   segs.reverse()
+  if (costOut) costOut[0] = best[K]
   mergeFreeCubics(pts, sig, segs, opts)
-  for (const s of segs) emitSeg(out, pts, s)
+  return segs
 }
 
 /** Nothing admissible for this many growing spans ⇒ stop scanning (inkvec cut-off). */
@@ -949,22 +1237,6 @@ function fitCircleKasa(pts: FlatPoints, first: number, last: number): Circle | n
   return { cx, cy, r }
 }
 
-/** Free Kåsa circle over all samples, admissible under the band, else null. */
-function admissibleCircle(pts: FlatPoints, sig: number[], opts: RunFitOptions): Circle | null {
-  const n = pts.length >> 1
-  if (n < 4) return null
-  const circle = fitCircleKasa(pts, 0, n - 1)
-  if (!circle) return null
-  // Score every sample (a full loop has no pinned interior endpoints).
-  let worst = 0
-  for (let i = 0; i < n; i++) {
-    const d = Math.abs(Math.hypot(pts[i * 2] - circle.cx, pts[i * 2 + 1] - circle.cy) - circle.r)
-    const w = d / bandAt(sig, i, opts)
-    if (w > worst) worst = w
-  }
-  return worst <= 1 ? circle : null
-}
-
 /** Emit an arc from A to B along `circle` as ≤90° circle-exact cubics. */
 function emitArc(
   out: PathCommand[],
@@ -1052,6 +1324,646 @@ function emitArcSpan(
     px = nx
     py = ny
   }
+}
+
+// ---------------------------------------------------------------------------
+// Structural refit: free models and geometric joins.
+// ---------------------------------------------------------------------------
+
+interface FreeLine {
+  cx: number
+  cy: number
+  dx: number
+  dy: number
+}
+
+/** One ring segment after the refit: its model and the span samples it covers. */
+interface RingSeg {
+  kind: SegKind
+  line?: FreeLine
+  circle?: Circle
+  /** Span-local sample arrays the segment was fitted on, and its range in them. */
+  pts: FlatPoints
+  sig: number[]
+  a: number
+  b: number
+  /** Whether the join at the segment's start is a corner (else smooth). */
+  cornerStart: boolean
+  /** Corner apex estimate at the segment's start (corner joins only). */
+  apexX: number
+  apexY: number
+  /** Measured vertex at the start (corner joins only), for the allowance. */
+  vertX: number
+  vertY: number
+  /** Samples the free models leave out (span apexes, corner chamfers). */
+  skip: (i: number) => boolean
+}
+
+/** σ-weighted total-least-squares line over pts[a..b], `skip` samples left out. */
+function fitLineFree(
+  pts: FlatPoints,
+  sig: number[],
+  a: number,
+  b: number,
+  skip: (i: number) => boolean,
+): FreeLine | null {
+  let sw = 0
+  let mx = 0
+  let my = 0
+  let count = 0
+  for (let i = a; i <= b; i++) {
+    if (skip(i)) continue
+    const w = 1 / (sig[i] * sig[i])
+    sw += w
+    mx += w * pts[i * 2]
+    my += w * pts[i * 2 + 1]
+    count++
+  }
+  if (count < 2 || sw <= 0) return null
+  mx /= sw
+  my /= sw
+  let sxx = 0
+  let sxy = 0
+  let syy = 0
+  for (let i = a; i <= b; i++) {
+    if (skip(i)) continue
+    const w = 1 / (sig[i] * sig[i])
+    const x = pts[i * 2] - mx
+    const y = pts[i * 2 + 1] - my
+    sxx += w * x * x
+    sxy += w * x * y
+    syy += w * y * y
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+  let dx = Math.cos(theta)
+  let dy = Math.sin(theta)
+  if (dx * (pts[b * 2] - pts[a * 2]) + dy * (pts[b * 2 + 1] - pts[a * 2 + 1]) < 0) {
+    dx = -dx
+    dy = -dy
+  }
+  return { cx: mx, cy: my, dx, dy }
+}
+
+/** Geometric (orthogonal-distance) circle fit over pts[a..b]: Kåsa start, Gauss-Newton polish. */
+function fitCircleFree(
+  pts: FlatPoints,
+  sig: number[],
+  a: number,
+  b: number,
+  skip: (i: number) => boolean,
+): Circle | null {
+  const idx: number[] = []
+  for (let i = a; i <= b; i++) if (!skip(i)) idx.push(i)
+  if (idx.length < 3) return null
+  const flat: FlatPoints = []
+  for (const i of idx) flat.push(pts[i * 2], pts[i * 2 + 1])
+  const start = fitCircleKasa(flat, 0, idx.length - 1)
+  if (!start) return null
+  let { cx, cy, r } = start
+  for (let iter = 0; iter < 6; iter++) {
+    // Normal equations of the weighted residuals d_i = |p_i − c| − r.
+    const A = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    const g = [0, 0, 0]
+    for (const i of idx) {
+      const px = pts[i * 2] - cx
+      const py = pts[i * 2 + 1] - cy
+      const d = Math.hypot(px, py)
+      if (d < 1e-9) continue
+      const w = 1 / (sig[i] * sig[i])
+      const res = d - r
+      const j0 = -px / d
+      const j1 = -py / d
+      const j2 = -1
+      const J = [j0, j1, j2]
+      for (let u = 0; u < 3; u++) {
+        g[u] += w * J[u] * res
+        for (let v = 0; v < 3; v++) A[u * 3 + v] += w * J[u] * J[v]
+      }
+    }
+    const step = solve3(A, g)
+    if (!step) break
+    cx -= step[0]
+    cy -= step[1]
+    r -= step[2]
+    if (Math.abs(step[0]) + Math.abs(step[1]) + Math.abs(step[2]) < 1e-7) break
+  }
+  if (!isFinite(r) || r < 1e-6 || r > 1e7) return null
+  return { cx, cy, r }
+}
+
+/** Parameters a whole-ring circle writes: its center and radius. */
+const PARAMS_CIRCLE = 3
+
+/**
+ * A whole ring as one circle, when the measurement accepts it and it is the
+ * cheaper description: a geometric fit whose reduced χ² is within τ² (an rms
+ * residual inside τ standard deviations — the per-sample band would reject a
+ * true circle of a few hundred samples on its few ordinary 2.5σ outliers), and
+ * whose `0.5·χ² + λ·3` undercuts `dpCost`, the DP's segmentation of the same
+ * ring (inkvec's primitive rule). A real notch fails the cost test: the
+ * segments that follow it buy back far more χ² than their parameters cost.
+ */
+function wholeRingCircle(
+  pts: FlatPoints,
+  sig: number[],
+  opts: RunFitOptions,
+  dpCost: number,
+): Circle | null {
+  const n = pts.length >> 1
+  if (n < 5) return null
+  const circle = fitCircleFree(pts, sig, 0, n - 2, () => false)
+  if (!circle) return null
+  let chi2 = 0
+  for (let i = 0; i < n - 1; i++) {
+    const d = Math.hypot(pts[i * 2] - circle.cx, pts[i * 2 + 1] - circle.cy) - circle.r
+    chi2 += (d * d) / (sig[i] * sig[i])
+  }
+  if (chi2 > opts.tau * opts.tau * Math.max(1, n - 4)) return null
+  return 0.5 * chi2 + opts.lambda * PARAMS_CIRCLE <= dpCost ? circle : null
+}
+
+/** Solve the 3×3 system A·x = b (row-major); null when singular. */
+function solve3(A: number[], b: number[]): [number, number, number] | null {
+  const [a, bb, c, d, e, f, g, h, i] = A
+  const det = a * (e * i - f * h) - bb * (d * i - f * g) + c * (d * h - e * g)
+  if (Math.abs(det) < 1e-12) return null
+  const x = (b[0] * (e * i - f * h) - bb * (b[1] * i - f * b[2]) + c * (b[1] * h - e * b[2])) / det
+  const y = (a * (b[1] * i - f * b[2]) - b[0] * (d * i - f * g) + c * (d * b[2] - b[1] * g)) / det
+  const z = (a * (e * b[2] - b[1] * h) - bb * (d * b[2] - b[1] * g) + b[0] * (d * h - e * g)) / det
+  return [x, y, z]
+}
+
+function projectLine(l: FreeLine, x: number, y: number): [number, number] {
+  const t = (x - l.cx) * l.dx + (y - l.cy) * l.dy
+  return [l.cx + t * l.dx, l.cy + t * l.dy]
+}
+
+function projectCircle(c: Circle, x: number, y: number): [number, number] {
+  const dx = x - c.cx
+  const dy = y - c.cy
+  const d = Math.hypot(dx, dy)
+  if (d < 1e-12) return [x, y]
+  return [c.cx + (dx * c.r) / d, c.cy + (dy * c.r) / d]
+}
+
+function intersectLines(p: FreeLine, q: FreeLine): [number, number] | null {
+  const cross = p.dx * q.dy - p.dy * q.dx
+  if (Math.abs(cross) < 1e-9) return null
+  const t = ((q.cx - p.cx) * q.dy - (q.cy - p.cy) * q.dx) / cross
+  return [p.cx + p.dx * t, p.cy + p.dy * t]
+}
+
+/** The intersection of a line and a circle nearest (nx, ny), or null. */
+function intersectLineCircle(
+  l: FreeLine,
+  c: Circle,
+  nx: number,
+  ny: number,
+): [number, number] | null {
+  const fx = l.cx - c.cx
+  const fy = l.cy - c.cy
+  const bq = fx * l.dx + fy * l.dy
+  const cq = fx * fx + fy * fy - c.r * c.r
+  const disc = bq * bq - cq
+  if (disc < 0) return null
+  const sq = Math.sqrt(disc)
+  const p1: [number, number] = [l.cx + l.dx * (-bq - sq), l.cy + l.dy * (-bq - sq)]
+  const p2: [number, number] = [l.cx + l.dx * (-bq + sq), l.cy + l.dy * (-bq + sq)]
+  return Math.hypot(p1[0] - nx, p1[1] - ny) <= Math.hypot(p2[0] - nx, p2[1] - ny) ? p1 : p2
+}
+
+/** The intersection of two circles nearest (nx, ny), or null. */
+function intersectCircles(c1: Circle, c2: Circle, nx: number, ny: number): [number, number] | null {
+  const dx = c2.cx - c1.cx
+  const dy = c2.cy - c1.cy
+  const d = Math.hypot(dx, dy)
+  if (d < 1e-9 || d > c1.r + c2.r || d < Math.abs(c1.r - c2.r)) return null
+  const a = (c1.r * c1.r - c2.r * c2.r + d * d) / (2 * d)
+  const h = Math.sqrt(Math.max(0, c1.r * c1.r - a * a))
+  const mx = c1.cx + (a * dx) / d
+  const my = c1.cy + (a * dy) / d
+  const p1: [number, number] = [mx + (h * dy) / d, my - (h * dx) / d]
+  const p2: [number, number] = [mx - (h * dy) / d, my + (h * dx) / d]
+  return Math.hypot(p1[0] - nx, p1[1] - ny) <= Math.hypot(p2[0] - nx, p2[1] - ny) ? p1 : p2
+}
+
+/** Farthest a smooth join may move from its breakpoint sample (px). */
+const JOIN_REACH = 1
+
+/** The point where two consecutive segments meet, from their models. */
+function resolveJoin(prev: RingSeg, next: RingSeg, px: number, py: number): [number, number] {
+  const near = (q: [number, number] | null, reach: number): q is [number, number] =>
+    q !== null && Math.hypot(q[0] - px, q[1] - py) <= reach
+  if (next.cornerStart) {
+    // A corner: where the two models meet, within the chamfer allowance.
+    const qx = next.apexX
+    const qy = next.apexY
+    let hit: [number, number] | null = null
+    let allowed = JOIN_REACH
+    if (prev.kind === 'line' && next.kind === 'line' && prev.line && next.line) {
+      hit = intersectLines(prev.line, next.line)
+      const cross = prev.line.dx * next.line.dy - prev.line.dy * next.line.dx
+      const turn = Math.atan2(
+        Math.abs(cross),
+        prev.line.dx * next.line.dx + prev.line.dy * next.line.dy,
+      )
+      allowed =
+        turn >= CORNER_TURN_MIN
+          ? 0.5 + Math.min(3, CORNER_CHAMFER / Math.max(0.2, Math.sin(0.5 * (Math.PI - turn))))
+          : 0.5
+      if (hit && Math.hypot(hit[0] - next.vertX, hit[1] - next.vertY) <= allowed) return hit
+      return [qx, qy]
+    }
+    if (prev.line && next.circle) hit = intersectLineCircle(prev.line, next.circle, qx, qy)
+    else if (prev.circle && next.line) hit = intersectLineCircle(next.line, prev.circle, qx, qy)
+    else if (prev.circle && next.circle) hit = intersectCircles(prev.circle, next.circle, qx, qy)
+    if (hit && Math.hypot(hit[0] - qx, hit[1] - qy) <= 1.5) return hit
+    return [qx, qy]
+  }
+  // A smooth join: where the two models meet (lines crossing, a line tangent to
+  // a round), near the sample. Where two lines or two rounds do not meet near
+  // it, one of them is a short transition fitted on a handful of samples and
+  // its model says little; the sample itself, measured on the edge, is the
+  // join — averaging the two projections would drag a long, exact edge off its
+  // line toward the stub's. A round beside a line keeps the line, the
+  // better-determined of the two.
+  if (prev.line && next.line) {
+    const x = intersectLines(prev.line, next.line)
+    if (near(x, JOIN_REACH)) return x
+    return [px, py]
+  }
+  if (prev.line && next.circle) {
+    const f = projectLine(prev.line, next.circle.cx, next.circle.cy)
+    if (near(f, JOIN_REACH)) return f
+    return projectLine(prev.line, px, py)
+  }
+  if (prev.circle && next.line) {
+    const f = projectLine(next.line, prev.circle.cx, prev.circle.cy)
+    if (near(f, JOIN_REACH)) return f
+    return projectLine(next.line, px, py)
+  }
+  if (prev.circle && next.circle) return [px, py]
+  if (prev.line) return projectLine(prev.line, px, py)
+  if (next.line) return projectLine(next.line, px, py)
+  if (prev.circle) return projectCircle(prev.circle, px, py)
+  if (next.circle) return projectCircle(next.circle, px, py)
+  return [px, py]
+}
+
+/** Unit tangent of a line/arc model at (x, y), oriented along travel from (fx, fy) to (tx, ty). */
+function modelTangent(
+  s: RingSeg,
+  x: number,
+  y: number,
+  fx: number,
+  fy: number,
+  tx: number,
+  ty: number,
+): [number, number] | null {
+  let dx: number
+  let dy: number
+  if (s.line) {
+    dx = s.line.dx
+    dy = s.line.dy
+  } else if (s.circle) {
+    dx = -(y - s.circle.cy)
+    dy = x - s.circle.cx
+    const l = Math.hypot(dx, dy)
+    if (l < 1e-12) return null
+    dx /= l
+    dy /= l
+  } else return null
+  if (dx * (tx - fx) + dy * (ty - fy) < 0) {
+    dx = -dx
+    dy = -dy
+  }
+  return [dx, dy]
+}
+
+/**
+ * Closed-ring fit with free models and geometric joins: the DP picks each
+ * corner-to-corner span's segmentation and models as before, then every line
+ * and arc is refitted to its samples by least squares (a line or circle
+ * through measured points averages their noise; a chord pinned to two of them
+ * inherits theirs), and each join is placed where the models meet — the
+ * intersection at a corner, the tangent point at a smooth join — so a straight
+ * edge, a rounded corner or a sharp tip lands where the drawing put it. A
+ * cubic keeps its fit, re-pinned to the joins with its neighbours' tangents.
+ */
+function fitClosedRefit(
+  geom: FlatPoints,
+  sigma: number[],
+  vertices: number[],
+  polygon: FlatPoints,
+  cornerVerts: number[],
+  n: number,
+  mv: number,
+  opts: RunFitOptions,
+): PathCommand[] | null {
+  const segs: RingSeg[] = []
+  if (cornerVerts.length === 0) {
+    const { pts, sig } = cyclicRun(geom, sigma, 0, 0, n)
+    const splits: number[] = []
+    for (let p = 1; p < mv; p++) splits.push(vertices[p])
+    const seam = centralTangent(pts, 0)
+    const dpCost = [Infinity]
+    const dp = spanSegments(pts, sig, splits, [seam[0], seam[1]], [seam[0], seam[1]], opts, dpCost)
+    const whole = wholeRingCircle(pts, sig, opts, dpCost[0])
+    if (whole) {
+      const [sx, sy] = projectCircle(whole, pts[0], pts[1])
+      const out: PathCommand[] = [{ type: 'M', x: sx, y: sy }]
+      emitFullCircle(out, sx, sy, whole, pts)
+      out.push({ type: 'Z' })
+      return out
+    }
+    for (const d of dp) segs.push(makeSeg(pts, sig, d, false, false, 0, 0, 0, 0))
+  } else {
+    const apexCache = new Map<number, [number, number]>()
+    const apexOf = (cv: number): [number, number] => {
+      const hit = apexCache.get(cv)
+      if (hit) return hit
+      const fallback: [number, number] = [polygon[cv * 2], polygon[cv * 2 + 1]]
+      const a = sharpApex(geom, sigma, vertices, n, mv, cv, fallback)
+      apexCache.set(cv, a)
+      return a
+    }
+    for (let c = 0; c < cornerVerts.length; c++) {
+      const cvA = cornerVerts[c]
+      const cvB = cornerVerts[(c + 1) % cornerVerts.length]
+      const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
+      const [ax, ay] = apexOf(cvA)
+      const [bx, by] = apexOf(cvB)
+      const vax = pts[0]
+      const vay = pts[1]
+      const last = (pts.length >> 1) - 1
+      const vbx = pts[last * 2]
+      const vby = pts[last * 2 + 1]
+      pts[0] = ax
+      pts[1] = ay
+      pts[pts.length - 2] = bx
+      pts[pts.length - 1] = by
+      // The samples a corner's anti-aliasing cut across lie off both its edges;
+      // they carry no evidence of either, so the DP neither fits nor splits for them.
+      const ra = chamferRadius(geom, vertices, mv, cvA)
+      const rb = chamferRadius(geom, vertices, mv, cvB)
+      for (let i = 1; i < last; i++) {
+        const x = pts[i * 2]
+        const y = pts[i * 2 + 1]
+        const inA = Math.min(Math.hypot(x - vax, y - vay), Math.hypot(x - ax, y - ay)) <= ra
+        const inB = Math.min(Math.hypot(x - vbx, y - vby), Math.hypot(x - bx, y - by)) <= rb
+        if (inA || inB) sig[i] = CHAMFER_SIGMA
+      }
+      const t0 = forwardTangent(pts, 0)
+      const t1 = forwardTangent(pts, pts.length / 2 - 1)
+      const dp = spanSegments(pts, sig, splits, t0, t1, opts)
+      dp.forEach((d, k) => segs.push(makeSeg(pts, sig, d, k === 0, true, ax, ay, vax, vay)))
+    }
+  }
+  collapseChamfers(segs)
+  const m = segs.length
+  if (m === 0) return null
+  // Joins: join[k] is where segment k starts (and segment k−1 ends).
+  const join: [number, number][] = new Array(m)
+  for (let k = 0; k < m; k++) {
+    const prev = segs[(k - 1 + m) % m]
+    const next = segs[k]
+    const px = next.pts[next.a * 2]
+    const py = next.pts[next.a * 2 + 1]
+    join[k] = m === 1 ? [px, py] : resolveJoin(prev, next, px, py)
+  }
+  const out: PathCommand[] = [{ type: 'M', x: join[0][0], y: join[0][1] }]
+  for (let k = 0; k < m; k++) {
+    const s = segs[k]
+    const [sx, sy] = join[k]
+    const [ex, ey] = join[(k + 1) % m]
+    if (s.kind === 'line' || (!s.circle && s.kind === 'arc')) {
+      out.push({ type: 'L', x: ex, y: ey })
+    } else if (s.kind === 'arc' && s.circle) {
+      const c = s.circle
+      const a0 = Math.atan2(sy - c.cy, sx - c.cx)
+      const span = sampleSweep(c, s.pts, s.a, s.b, a0, Math.atan2(ey - c.cy, ex - c.cx))
+      // An arc far longer than the samples it describes has turned the long
+      // way round its circle: the ring falls back to the pinned fit.
+      if (c.r * Math.abs(span) > 2 * samplePathLength(s.pts, s.a, s.b) + 3) return null
+      emitArcSpan(out, c, a0, span, sx, sy, ex, ey)
+    } else {
+      // Cubic: re-pinned to the joins; a smooth join inherits its neighbour's tangent.
+      const pts = s.pts.slice()
+      pts[s.a * 2] = sx
+      pts[s.a * 2 + 1] = sy
+      pts[s.b * 2] = ex
+      pts[s.b * 2 + 1] = ey
+      const prev = segs[(k - 1 + m) % m]
+      const nxt = segs[(k + 1) % m]
+      let t0 = forwardTangent(pts, s.a)
+      let t1 = forwardTangent(pts, s.b - 1)
+      if (!s.cornerStart) {
+        const t = modelTangent(prev, sx, sy, sx, sy, ex, ey)
+        if (t) t0 = t
+      }
+      if (!nxt.cornerStart) {
+        const t = modelTangent(nxt, ex, ey, sx, sy, ex, ey)
+        if (t) t1 = t
+      }
+      let c = fitCubicRun(pts, s.a, s.b, t0, t1)
+      if (s.b - s.a >= 2) {
+        // A tangent borrowed from a neighbour fitted on a few samples can be far
+        // off; a cubic forced through it leaves its own samples. Keep the data's
+        // own end tangents when the borrowed ones cannot stay inside the band.
+        const dev = cubicDeviation(pts, s.sig, s.a, s.b, c, opts)
+        if (dev.worst > 1) {
+          const own = fitCubicRun(
+            pts,
+            s.a,
+            s.b,
+            forwardTangent(pts, s.a),
+            forwardTangent(pts, s.b - 1),
+          )
+          if (cubicDeviation(pts, s.sig, s.a, s.b, own, opts).chi2 < dev.chi2) c = own
+        }
+      }
+      // Control points far outside the samples: the ring falls back to the pinned fit.
+      if (!controlsNearSamples(c, s.pts, s.a, s.b)) return null
+      out.push({ type: 'C', x1: c.c1x, y1: c.c1y, x2: c.c2x, y2: c.c2y, x: ex, y: ey })
+    }
+  }
+  out.push({ type: 'Z' })
+  return out
+}
+
+/** Polyline length of pts[a..b]. */
+function samplePathLength(pts: FlatPoints, a: number, b: number): number {
+  let len = 0
+  for (let i = a + 1; i <= b; i++)
+    len += Math.hypot(pts[i * 2] - pts[(i - 1) * 2], pts[i * 2 + 1] - pts[(i - 1) * 2 + 1])
+  return len
+}
+
+/**
+ * Signed sweep from angle a0 to a1 around `c` that follows the samples: of the
+ * two arcs joining the ends, the one nearer the samples' own unwrapped angular
+ * travel. One mid sample cannot decide it on a near-straight arc of a huge
+ * circle, where the ends are displaced joins and a sample can fall outside.
+ */
+function sampleSweep(
+  c: Circle,
+  pts: FlatPoints,
+  a: number,
+  b: number,
+  a0: number,
+  a1: number,
+): number {
+  let travel = 0
+  let prev = Math.atan2(pts[a * 2 + 1] - c.cy, pts[a * 2] - c.cx)
+  for (let i = a + 1; i <= b; i++) {
+    const ang = Math.atan2(pts[i * 2 + 1] - c.cy, pts[i * 2] - c.cx)
+    let d = ang - prev
+    while (d > Math.PI) d -= 2 * Math.PI
+    while (d <= -Math.PI) d += 2 * Math.PI
+    travel += d
+    prev = ang
+  }
+  const dEnd = wrap2pi(a1 - a0)
+  const other = dEnd - 2 * Math.PI
+  return Math.abs(dEnd - travel) <= Math.abs(other - travel) ? dEnd : other
+}
+
+/** Whether a cubic's control points stay near the samples it was fitted to. */
+function controlsNearSamples(c: Cubic, pts: FlatPoints, a: number, b: number): boolean {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = a; i <= b; i++) {
+    const x = pts[i * 2]
+    const y = pts[i * 2 + 1]
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  const pad = Math.max(4, Math.hypot(maxX - minX, maxY - minY))
+  const inside = (x: number, y: number): boolean =>
+    x >= minX - pad && x <= maxX + pad && y >= minY - pad && y <= maxY + pad
+  return inside(c.c1x, c.c1y) && inside(c.c2x, c.c2y)
+}
+
+/** σ given to a sample on a corner's chamfer: large enough that it constrains nothing. */
+const CHAMFER_SIGMA = 1e3
+
+/**
+ * How far along its edges a corner's anti-aliasing reaches (px): a pixel at a
+ * right angle, further as the corner sharpens (CORNER_CHAMFER / sin of half
+ * the interior angle, inkvec's allowance), at most three.
+ */
+function chamferRadius(geom: FlatPoints, vertices: number[], mv: number, cv: number): number {
+  const vi = vertices[cv]
+  const vp = vertices[(cv - 1 + mv) % mv]
+  const vn = vertices[(cv + 1) % mv]
+  const turn =
+    (turnDeg(
+      geom[vp * 2],
+      geom[vp * 2 + 1],
+      geom[vi * 2],
+      geom[vi * 2 + 1],
+      geom[vn * 2],
+      geom[vn * 2 + 1],
+    ) *
+      Math.PI) /
+    180
+  const half = 0.5 * (Math.PI - turn)
+  return Math.min(3, Math.max(CORNER_CHAMFER, CORNER_CHAMFER / Math.max(0.2, Math.sin(half))))
+}
+
+/** Longest segment (px) between two corners still read as the chamfer of one corner. */
+const CHAMFER_SPAN = 2.5
+
+/**
+ * A sharp corner the anti-aliasing cut across comes out of the polygon as two
+ * corners joined by a stub a pixel or two long (a star's tip). The stub is
+ * the chamfer, not an edge: drop it, and let its neighbours meet in one corner
+ * at their intersection, estimated at the stub's midpoint. Mutates `segs`.
+ */
+function collapseChamfers(segs: RingSeg[]): void {
+  for (let guard = 0; guard < segs.length && segs.length > 3; guard++) {
+    let hit = -1
+    for (let k = 0; k < segs.length; k++) {
+      const s = segs[k]
+      const nxt = segs[(k + 1) % segs.length]
+      if (!s.cornerStart || !nxt.cornerStart) continue
+      const ax = s.pts[s.a * 2]
+      const ay = s.pts[s.a * 2 + 1]
+      const bx = s.pts[s.b * 2]
+      const by = s.pts[s.b * 2 + 1]
+      if (Math.hypot(bx - ax, by - ay) > CHAMFER_SPAN) continue
+      const prev = segs[(k - 1 + segs.length) % segs.length]
+      if (!prev.line && !prev.circle) continue
+      if (!nxt.line && !nxt.circle) continue
+      hit = k
+      break
+    }
+    if (hit < 0) return
+    const s = segs[hit]
+    const nxt = segs[(hit + 1) % segs.length]
+    nxt.apexX = (s.pts[s.a * 2] + s.pts[s.b * 2]) / 2
+    nxt.apexY = (s.pts[s.a * 2 + 1] + s.pts[s.b * 2 + 1]) / 2
+    nxt.vertX = nxt.apexX
+    nxt.vertY = nxt.apexY
+    segs.splice(hit, 1)
+  }
+}
+
+/** A DP segment as a ring segment with its model refitted freely. */
+function makeSeg(
+  pts: FlatPoints,
+  sig: number[],
+  d: SegFit,
+  cornerStart: boolean,
+  spanHasCorners: boolean,
+  apexX: number,
+  apexY: number,
+  vertX: number,
+  vertY: number,
+): RingSeg {
+  const last = (pts.length >> 1) - 1
+  // Leave out the span's apex endpoints (estimates, not samples) and, next to a
+  // corner, the chamfer the anti-aliasing cut across it.
+  const ax = pts[0]
+  const ay = pts[1]
+  const bx = pts[last * 2]
+  const by = pts[last * 2 + 1]
+  const skip = (i: number): boolean => {
+    if (!spanHasCorners) return false
+    if (i === 0 || i === last) return true
+    if (sig[i] >= CHAMFER_SIGMA) return true
+    const x = pts[i * 2]
+    const y = pts[i * 2 + 1]
+    return (
+      Math.hypot(x - ax, y - ay) <= CORNER_CHAMFER || Math.hypot(x - bx, y - by) <= CORNER_CHAMFER
+    )
+  }
+  const seg: RingSeg = {
+    kind: d.kind,
+    pts,
+    sig,
+    a: d.a,
+    b: d.b,
+    cornerStart,
+    apexX,
+    apexY,
+    vertX,
+    vertY,
+    skip,
+  }
+  if (d.kind === 'line') {
+    const l = fitLineFree(pts, sig, d.a, d.b, skip)
+    if (l) seg.line = l
+    else seg.kind = 'line'
+  } else if (d.kind === 'arc') {
+    const c = fitCircleFree(pts, sig, d.a, d.b, skip) ?? d.circle
+    if (c) seg.circle = c
+  }
+  return seg
 }
 
 /** Central-difference unit tangent at sample `i` (forward at the ends). */

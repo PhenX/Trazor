@@ -135,9 +135,11 @@ describe('exterior edges against transparency', () => {
       // level set, and the multi-model run fitter fits those points directly (not
       // the polygon's chords), so the emitted curve carries none of the Selinger
       // chain's circumscribe/inscribe bias: the outline sits on the true circle to
-      // a few hundredths of a pixel, not a fraction of a pixel inside it.
+      // a few hundredths of a pixel, not a fraction of a pixel inside it. Each
+      // point searches along the normal of the arc itself — the polygon edge's
+      // direction, turned towards its vertices' — not a chord's.
       expect(Math.abs(mean - R)).toBeLessThan(0.02)
-      expect(maxDev).toBeLessThan(0.1)
+      expect(maxDev).toBeLessThan(0.03)
     })
 
     it(`${layering}: follows the cut level — a fainter cut traces a larger outline`, async () => {
@@ -176,13 +178,14 @@ describe('exterior edges against transparency', () => {
     const shape = (result.document?.shapes ?? [])[0]
     expect(shape).toBeDefined()
     const pts = outline(shape.commands)
-    // An anchor sits near the true apex — the sharp tip survives (an acute tip's
-    // exact position is inherently soft in the coverage, so the bound is loose).
+    // An anchor sits on the true apex: the anti-aliasing cut the tip off across
+    // a short stub, whose two corners are judged as one, and the edges beyond
+    // it meet where the drawing put the point.
     const nearTip = pts.reduce(
       (m, [x, y]) => Math.min(m, Math.hypot(x - TIP_X, y - TIP_Y)),
       Infinity,
     )
-    expect(nearTip).toBeLessThan(2)
+    expect(nearTip).toBeLessThan(0.25)
   })
 
   it('lands a rotated square on its true slanted edges, off the lattice', () => {
@@ -190,14 +193,16 @@ describe('exterior edges against transparency', () => {
     const ring = decomposeMask(mask, 'minority', 1)[0].points
     const refined = ringPolygon(ring, alphaCoverageField(alpha, W_SQ, W_SQ, 128))
       ?.polygon as number[]
-    // Every refined vertex sits within a tenth of a pixel of the true square
-    // boundary: the exact half-plane inversion places a slanted edge on its own
-    // sub-pixel line, where a bilinear root-find leaves it biased fat by ~0.15 px.
+    // Every refined vertex sits within a few hundredths of a pixel of the true
+    // square boundary: the exact half-plane inversion places a slanted edge on its
+    // own sub-pixel line, where a bilinear root-find leaves it biased fat by
+    // ~0.15 px, and the normal it searches along is the polygon edge's own, not
+    // the staircase's (lattice neighbours only point along axes and diagonals).
     let maxDev = 0
     for (let i = 0; i < refined.length - 2; i += 2) {
       maxDev = Math.max(maxDev, distToSquare(refined[i], refined[i + 1]))
     }
-    expect(maxDev).toBeLessThan(0.1)
+    expect(maxDev).toBeLessThan(0.06)
   })
 
   it('places a thin sub-pixel stroke on both of its edges, without collapsing it', () => {

@@ -493,8 +493,10 @@ export function closedPathToCommands(
 // last) that `polygon` curveMode emits and that decides the corners; `geom` is the refined ring
 // geometry the multi-model run fitter samples; `vertices` are the optimal polygon's ascending sample
 // indices into `geom`; `sigma` is the per-point positional uncertainty (px, parallel to `geom`) the
-// fitter weights χ² by; `refined` is whether `geom` was snapped to a sub-pixel field; `extent` is the
-// field's longer side (px, 0 when unknown) for the fitter's description-length weight λ.
+// fitter weights χ² by — 0.1 for a point refined off the lattice, 0.06 for a lattice point on an
+// axis-aligned stretch of a refined ring's polygon (a hard edge on the grid), 0.5 elsewhere on the
+// lattice; `refined` is whether `geom` was snapped to a sub-pixel field; `extent` is the field's longer
+// side (px, 0 when unknown) for the fitter's description-length weight λ.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
@@ -509,6 +511,17 @@ export interface RingFit {
 // lattice ring). Depends on the ring and the field only — never on smoothing, curve optimization or
 // the corner threshold — so a caller may compute it once and re-fit it many times.
 export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null
+// Move each lattice boundary point onto the field's coverage = ½ level set by a search along the local
+// normal (inkvec `refine_subpixel`), a clean step inverted through the exact half-plane coverage of a
+// pixel. The normal is the optimal-polygon edge's (`vertices`: ascending indices into `ring`), turning
+// towards each end vertex's own direction; without `vertices` it is read from the point's two
+// neighbours. A point stays put on the image border, with no partial probe (a hard edge), or where the
+// profile never crosses ½. Returns a new array, parallel to `ring`.
+export function refineRingToField(
+  ring: FlatPoints,
+  field: GrayImage | SignedField,
+  vertices?: readonly number[],
+): FlatPoints
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
 // 4-neighbor on the other side: left, right, up, down), an exterior edge the transparency coverage

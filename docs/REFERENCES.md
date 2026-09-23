@@ -40,7 +40,20 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   as breakpoints, the discrete-curvature sign changes and a coarse stride inside
   a long edge) rather than inkvec’s DP over every point, with the corner prior
   from `smoothing`/`cornerThreshold`, an endpoint-pinned circle fit (so the arc
-  scored is the arc drawn) and a monotone-sweep gate on the arc.
+  scored is the arc drawn) and a monotone-sweep gate on the arc. At low smoothing
+  (geometric mode) it follows inkvec's structural model too: a corner is a vertex
+  of the unadjusted polygon turning at least `CORNER_DEGREES` (45°); the samples
+  within the anti-aliasing chamfer of a corner (`CORNER_CHAMFER`, reaching
+  `1/sin(½·interior)` along sharper corners) carry no weight, and the corner is
+  placed where its two fitted edges meet within that allowance
+  (`adjust_vertices_at`), a chamfer stub of at most 2.5 px between two corners
+  collapsing into one (`sharpen_corners`, `SHARPEN_MAX_CHORD`); lines and arcs
+  are refitted freely — a σ-weighted total-least-squares line (the smaller
+  eigenvalue of the weighted scatter, inkvec's `chi2_line`) and a geometric circle
+  — and joined where the models meet; and a whole loop is one circle when its
+  reduced χ² stays within τ² and its description costs no more than the DP's
+  (the whole-primitive rule of `primitives.rs`), so a few outlying samples do not
+  veto it the way a per-sample band would.
 - **logolabs, “inkvec” — sub-pixel boundary refinement (stage 07, Apache-2.0).**
   <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/planar.rs`
   `refine_subpixel`/`edge_offset`, `docs/algorithm/07-subpixel.md`). Each boundary
@@ -93,6 +106,12 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`),
   and for the arc model of the multi-model run fitter
   (`packages/trace/src/potrace/runfit.ts`).
+- **Walter Gander, Gene H. Golub & Rolf Strebel, “Least-squares fitting of
+  circles and ellipses”, _BIT Numerical Mathematics_ 34(4), 1994.** Geometric
+  (orthogonal-distance) circle fitting by Gauss–Newton from an algebraic start;
+  the free circle model of the geometric-mode refit
+  (`packages/trace/src/potrace/runfit.ts` `fitCircleFree`), started from Kåsa's
+  fit, whose algebraic residual is biased on a short, strongly curved arc.
 - **Andrew Fitzgibbon, Maurizio Pilu & Robert Fisher, “Direct least square
   fitting of ellipses”, _IEEE Trans. PAMI_ 21(5), 1999.** Direct conic ellipse
   fit (smallest-eigenvector of the design scatter). Used, with the points
@@ -102,7 +121,11 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements
   arc bounds and arc→Bézier reconstruction (`packages/core/src/path.ts`
-  `arcToCenter`, `packages/svg/src/arc.ts` `arcToCubics`).
+  `arcToCenter`, `packages/svg/src/arc.ts` `arcToCubics`). Near half a turn the
+  endpoint form reconstructs the centre ill-conditioned from the radius: rounding
+  the radius to the output grid by ε moves the centre by about √(2rε), so
+  `fitArcs` tries the grid radii around the fitted one and keeps the one whose
+  reconstructed centre lands nearest the fitted centre.
 
 ## Color & quantization (packages/core, packages/raster)
 

@@ -108,9 +108,26 @@ function detectRect(start: Pt, ops: readonly LineOp[], scale: number): Primitive
  * relative: it bounds how far the emitted `<circle>`/`<ellipse>` can render from
  * the traced boundary at every radius, so a large, only-roughly-round shape is
  * not accepted as an idealized element that renders visibly off (which a
- * radius-scaled tolerance allowed, non-deterministically across platforms).
+ * radius-scaled tolerance allowed, non-deterministically across platforms). The
+ * budget is the traced boundary's own accuracy: refined edges sit within about
+ * a tenth of a pixel of the drawing, and a primitive that moves them further
+ * trades a true edge for a rounder one — on a hard edge, a visible band.
  */
-const ROUND_TOL_PX = 0.6
+const ROUND_TOL_PX = 0.15
+
+/**
+ * Rounded-rect acceptance tolerance in pixels, on the same reasoning as
+ * `ROUND_TOL_PX`: every boundary sample within this of the fitted shape.
+ */
+const RRECT_TOL_PX = 0.2
+
+/**
+ * Regular-polygon acceptance tolerance in pixels: every outline sample within
+ * this of the ideal figure. A figure whose traced corners are visibly rounded
+ * stays a path, since snapping them sharp moves the edge by more than the trace
+ * measured it to.
+ */
+const POLYGON_TOL_PX = 0.3
 
 /**
  * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
@@ -270,7 +287,7 @@ function detectRoundedRect(
   if (hx <= 0 || hy <= 0) return null
 
   const maxR = Math.min(hx, hy)
-  const tol = Math.max(0.75, maxR * 0.03)
+  const tol = RRECT_TOL_PX
 
   // Every point of a rounded rect with corner radius r lies within
   // `(1 − 1/√2)·r + tol` of its bounding box, and the radius search cannot
@@ -502,7 +519,7 @@ function detectRegularPolygon(
     by1 = Math.max(by1, py[i])
   }
   if (rMax < 3) return null
-  const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
+  const tol = POLYGON_TOL_PX
 
   // A genuine regular figure spans the same bounding box as the outline it was
   // fit to. Reject a candidate whose extent diverges — the polar corner search

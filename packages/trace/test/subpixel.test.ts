@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
-import { traceMask } from '@trazor/trace'
+import { decomposeMask, ringPolygon, traceMask } from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,
@@ -60,6 +60,43 @@ describe('sub-pixel boundary refinement', () => {
     expect(topBin).toBeCloseTo(4, 1)
     expect(Math.abs(leftRef - 5.3)).toBeLessThan(0.2)
     expect(Math.abs(topRef - 4.4)).toBeLessThan(0.2)
+  })
+
+  it('places every face of a bar on its true edge, whichever way it faces', () => {
+    // Exact box coverage of [10.3, 20.7] × [8.2, 40.8]: each face's rim pixel
+    // reads its true offset, and the probe past it reaches the saturated pixel
+    // on either side — for a face towards −x or −y as for one towards +x or +y.
+    const [x0, x1, y0, y1] = [10.3, 20.7, 8.2, 40.8]
+    const w = 32
+    const h = 48
+    const m = new Uint8Array(w * h)
+    const data = new Float32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const cx = Math.max(0, Math.min(x + 1, x1) - Math.max(x, x0))
+        const cy = Math.max(0, Math.min(y + 1, y1) - Math.max(y, y0))
+        data[y * w + x] = cx * cy - 0.5
+        if (cx * cy >= 0.5) m[y * w + x] = 1
+      }
+    }
+    const ring = decomposeMask({ width: w, height: h, data: m }, 'minority', 1)[0].points
+    const fit = ringPolygon(ring, { width: w, height: h, data })
+    if (!fit) throw new Error('no polygon')
+    // Worst miss per face, over the points along its middle.
+    const miss = [0, 0, 0, 0]
+    for (let i = 0; i < fit.geom.length; i += 2) {
+      const x = fit.geom[i]
+      const y = fit.geom[i + 1]
+      if (y > 12 && y < 36) {
+        const f = x < 15 ? 0 : 1
+        miss[f] = Math.max(miss[f], Math.abs(x - (f === 0 ? x0 : x1)))
+      }
+      if (x > 13 && x < 18) {
+        const f = y < 20 ? 2 : 3
+        miss[f] = Math.max(miss[f], Math.abs(y - (f === 2 ? y0 : y1)))
+      }
+    }
+    expect(Math.max(...miss)).toBeLessThan(0.01)
   })
 
   it('leaves an axis-aligned integer rectangle at its exact corners', () => {
