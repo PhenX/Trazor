@@ -1,5 +1,5 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
-import { clamp, clampInt, getProfile } from '@trazor/core'
+import { DEFAULT_SETTINGS, clamp, clampInt, getProfile } from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -41,6 +41,16 @@ const ACHROMATIC_CHROMA = 0.03
  * compressed/rescaled graphics carry noise everywhere and never reach this.
  */
 const FLAT_ART_MIN_DENSITY = 0.15
+
+/**
+ * Longest side up to which a source traces at its own size rather than at the
+ * default trace size. A source just above that size would shrink only mildly,
+ * and a mild shrink costs the most for the least: a stroke a few pixels wide
+ * loses the flat core the segmentation seeds a region from and dissolves into
+ * its field, for a speed gain of a few percent. Beyond this side the cap's
+ * saving is real and the large-source rule keeps it.
+ */
+const NATIVE_MAX_SIDE = 2048
 
 /**
  * Smoothing for clean two-tone art (icons, glyphs). Their corners are real and
@@ -295,10 +305,7 @@ export function recommendSettings(
       `${INK_TONE_LEVELS} gray tones — enough to separate paper, faint lines and ink, few enough to posterize the scan's texture instead of tracing it.`,
       { levels: INK_TONE_LEVELS },
     )
-    if (a.pixels > 4_000_000) {
-      patch.maxDimension = 1600
-      r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
-    }
+    traceSize(a, patch, r)
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -403,10 +410,7 @@ export function recommendSettings(
     )
   }
 
-  if (a.pixels > 4_000_000) {
-    patch.maxDimension = 1600
-    r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
-  }
+  traceSize(a, patch, r)
 
   if (a.edgeDensity > 0.2 && (patch.mode === 'bw' || patch.mode === 'centerline')) {
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 8)
@@ -414,6 +418,18 @@ export function recommendSettings(
   }
 
   return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+}
+
+/** The trace size for the source: native up to NATIVE_MAX_SIDE, capped past 4 MP. */
+function traceSize(a: ImageAnalysis, patch: Partial<VectorizeSettings>, r: Rationale): void {
+  const longest = Math.max(a.width, a.height)
+  if (a.pixels > 4_000_000) {
+    patch.maxDimension = 1600
+    r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
+  } else if (longest > DEFAULT_SETTINGS.maxDimension && longest <= NATIVE_MAX_SIDE) {
+    patch.maxDimension = longest
+    r.add('nativeSize', 'Traced at native size — a mild downscale would thin fine strokes.')
+  }
 }
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {

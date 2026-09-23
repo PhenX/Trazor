@@ -96,7 +96,9 @@ for exact rectilinear paths.
 The chain is exported in two halves, split where the curve settings first matter: **`ringPolygon(ring, field?)`** runs
 steps 2-3 and returns a **`RingFit`** (the adjusted polygon for `polygon` mode and corner detection, the refined ring
 geometry the run fitter samples with its per-point σ, and the segmentation vertex indices), or `null` for a ring too
-short to carry one; it
+short to carry one, or a pixel wide — its two sides lie inside the straightness tube of the same lines and the
+least-squares vertices would draw them together, so a polygon enclosing under three quarters of the ring's lattice
+area is refused and the ring is emitted as its exact lattice outline; it
 depends on the ring and the optional field alone, while **`polygonToCommands(ring, fit, opts)`** runs steps 4-5 under
 `smoothing`, `curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed;
 `shapesFromPaths` takes the `RingFit`s for a whole path array as an optional argument. Holding them is what lets the
@@ -141,7 +143,11 @@ The three steps are separately exported, because step 3 is the expensive one and
 other: **`extractChains(labels)`** → `ChainNetwork` (steps 1-2, a function of the label map alone),
 **`fitChain(network, i, opts)`** → `ChainFit` (step 3 for one chain, callable in any order or in another thread — the
 engine's helper pool farms these out), and **`assembleRegions(network, fits)`** → `RegionShape[]` (step 4).
-`traceLabelMap` is the three composed, and `fitChains` is `fitChain` over the whole network.
+`traceLabelMap` is the three composed, and `fitChains` is `fitChain` over the whole network. A region no wider than a
+pixel — a hairline stem, a one-pixel sliver of a rim between two fills — has every chain around it fitted onto the same
+chord between the junction corners they share, so its fitted ring closes to no area; the assembly (regions and faces
+alike) measures each ring against its lattice area and emits the exact lattice ring for one that keeps under half of
+it, overlapping its neighbours' fits by the pixel it is wide rather than vanishing.
 
 A `ChainFit` carries up to two forms of the same chain, because a region reaches a chain in one of two ways: `open` is
 the forward run **without** a leading `M` (the form a ring splices in as it passes through), and a chain that returns to
