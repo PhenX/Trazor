@@ -496,7 +496,9 @@ export function closedPathToCommands(
 // fitter weights χ² by — 0.1 for a point refined off the lattice, 0.06 for a lattice point on an
 // axis-aligned stretch of a refined ring's polygon (a hard edge on the grid), 0.5 elsewhere on the
 // lattice; `refined` is whether `geom` was snapped to a sub-pixel field; `extent` is the field's longer
-// side (px, 0 when unknown) for the fitter's description-length weight λ.
+// side (px, 0 when unknown) for the fitter's description-length weight λ; `coverage` is the observed
+// coverage around a refined ring at most 64 px across, which a whole-ring circle or ellipse must render
+// no worse than the fitted outline it replaces.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
@@ -504,6 +506,19 @@ export interface RingFit {
   sigma: number[]
   refined: boolean
   extent: number
+  coverage?: CoveragePatch
+}
+// The field read as the coverage of what a ring encloses (its sign taken from the ring's own edges, so a
+// hole's patch is the hole's coverage), over the ring's lattice box plus 2 px: `data[(y − y0)·w + x − x0]`
+// in [0, 1]; `weight` is 1 within 1.5 px of a sample the field moved off the lattice (a measured edge) and
+// 0 elsewhere.
+export interface CoveragePatch {
+  x0: number
+  y0: number
+  w: number
+  h: number
+  data: Float32Array
+  weight: Uint8Array
 }
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
 // §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted

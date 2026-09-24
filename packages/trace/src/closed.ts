@@ -15,6 +15,8 @@ import {
 } from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
+import { coveragePatch } from './coverage'
+import type { CoveragePatch } from './coverage'
 import { refineRingToField } from './refine'
 import type { SignedField } from './refine'
 
@@ -72,6 +74,11 @@ export interface RingFit {
   refined: boolean
   /** Image extent (longer side, px) for the run fitter's λ; 0 when unknown. */
   extent: number
+  /**
+   * The observed coverage around a small refined ring, which a whole-ring
+   * circle or ellipse must render no worse than the outline it replaces.
+   */
+  coverage?: CoveragePatch
 }
 
 /**
@@ -188,7 +195,17 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   }
   const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx)
   const extent = field ? Math.max(field.width, field.height) : 0
-  return { polygon, geom, vertices: vertexIdx, sigma, refined: field !== undefined, extent }
+  const fit: RingFit = {
+    polygon,
+    geom,
+    vertices: vertexIdx,
+    sigma,
+    refined: field !== undefined,
+    extent,
+  }
+  const coverage = field ? coveragePatch(ext, geom, field) : undefined
+  if (coverage) fit.coverage = coverage
+  return fit
 }
 
 /**
@@ -228,6 +245,7 @@ export function polygonToCommands(
     reach: mergeReach(opts.curveOptimize),
     stride: candidateStride(opts.curveOptimize),
     extent: fit.extent,
+    coverage: fit.coverage,
   })
   // A ring too short for a meaningful run fit falls back to the exact lattice.
   return commands ?? pixelCommands(ring)

@@ -81,10 +81,22 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    the stub's middle. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
    rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
-   line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a
-   wholly-smooth ring is one circle when that is the better description: a geometric circle fit whose reduced χ² stays
-   within τ² and whose `0.5·χ² + 3λ` undercuts the DP's cost (inkvec's whole-primitive rule — a few 2.5σ samples do not
-   veto a true circle, a real notch keeps its segments). Circular runs are emitted as circle-exact cubics that
+   line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a ring
+   is one circle when that is the better description: a geometric circle fit whose reduced χ² stays within τ², that
+   goes once round its center, and whose `0.5·χ² + 3λ` undercuts the DP's cost (inkvec's whole-primitive rule — a few
+   2.5σ samples do not veto a true circle, a real notch keeps its segments). Outside geometric mode a ring measured
+   against a coverage field is offered an ellipse the same way (five parameters; the fit started from the samples'
+   moments and refined by Levenberg–Marquardt on the first-order distance, then judged by the exact orthogonal one),
+   and a ring the corner rule cut up is offered both against its corner spans' DP cost: a small round's lattice polygon
+   turns sharply at every vertex, and the corner rule alone would draw an eye a few pixels across as a trapezoid. A
+   ring wholly on the lattice is not offered an ellipse — its staircase strays ±0.5 px from a small ellipse and from a
+   small rectangle alike. A ring at most 64 px across carries its observed coverage (`RingFit.coverage`, from
+   `coverage.ts`: the field read as the coverage of what the ring encloses, its sign taken from the ring's own edges),
+   and a circle or ellipse replaces the fitted outline only where it renders that coverage no worse, summed over the
+   pixels within 1.5 px of a measured sample (`pathCoverageError`). Samples on the half-coverage contour cannot tell a
+   five-pixel triangle from a blob, nor the tip of a small teardrop from an ellipse's end; the pixels the contour cuts
+   across can. The measured band leaves out a stacked layer's cut under the sheet above it, which no candidate is
+   seen by. Circular runs are emitted as circle-exact cubics that
    `@trazor/svg`'s `fitArcs` recovers as `A` arcs. `curveOptimize` sets the DP reach and candidate stride (off ⇒ shorter,
    greedier pieces).
 

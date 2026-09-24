@@ -7,6 +7,7 @@ export {
   pixelCommands,
 } from './closed'
 export type { RingFit, TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
+export type { CoveragePatch } from './coverage'
 export {
   assembleFaces,
   assembleRegions,
