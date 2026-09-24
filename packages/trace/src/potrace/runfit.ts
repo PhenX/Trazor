@@ -373,13 +373,14 @@ export function fitClosedRuns(
 }
 
 /**
- * The whole-ring circle or ellipse over the closed ring `pts` (first sample
- * repeated last) when it is the cheaper description ({@link wholeRingPrimitive})
- * and, where the ring carries its observed coverage, renders it no worse than
- * `fitted` does; else `fitted`. The samples of a ring a few pixels across sit on
- * its half-coverage contour, which rounds a small triangle or square into a
- * blob a circle fits as well as the corners do — the pixels the contour cuts
- * across still show the corners.
+ * The cheapest whole-ring circle or ellipse over the closed ring `pts` (first
+ * sample repeated last) that describes it more cheaply than `fitted`
+ * ({@link ringPrimitives}) and, where the ring carries its observed coverage,
+ * renders it no worse than `fitted` does; else `fitted`. The samples of a ring
+ * a few pixels across sit on its half-coverage contour, which rounds a small
+ * triangle or square into a blob a circle fits as well as the corners do — the
+ * pixels the contour cuts across still show the corners. A circle the coverage
+ * refuses leaves the ellipse its turn: an eye a little taller than wide.
  */
 function ringPrimitiveOr(
   fitted: PathCommand[],
@@ -388,18 +389,16 @@ function ringPrimitiveOr(
   opts: RunFitOptions,
   fittedCost: number,
 ): PathCommand[] {
-  const whole = wholeRingPrimitive(pts, sig, opts, fittedCost)
-  if (!whole) return fitted
-  const prim: PathCommand[] = []
-  emitRingPrimitive(prim, whole, pts)
-  prim.push({ type: 'Z' })
-  if (
-    opts.coverage &&
-    pathCoverageError(prim, opts.coverage) > pathCoverageError(fitted, opts.coverage)
-  ) {
-    return fitted
+  let fittedError = -1
+  for (const { prim } of ringPrimitives(pts, sig, opts, fittedCost)) {
+    const cmds: PathCommand[] = []
+    emitRingPrimitive(cmds, prim, pts)
+    cmds.push({ type: 'Z' })
+    if (!opts.coverage) return cmds
+    if (fittedError < 0) fittedError = pathCoverageError(fitted, opts.coverage)
+    if (pathCoverageError(cmds, opts.coverage) <= fittedError) return cmds
   }
-  return prim
+  return fitted
 }
 
 /** Append a whole-ring primitive's closed path (from its `M`), starting near the ring's first sample. */
@@ -1745,15 +1744,8 @@ const ELLIPSE_MIN_AXIS = 0.4
 /**
  * The cheapest whole-ring primitive — a circle, or outside geometric mode an
  * ellipse — that the measurement accepts and whose `0.5·χ² + λ·params`
- * undercuts `rivalCost`, the description the ring gets otherwise (inkvec's
- * primitive rule, `fit_primitive_or_arcs`). A candidate is accepted on its
- * reduced χ² over every sample, by orthogonal distance, within τ² — an rms
- * residual inside τ standard deviations, where the per-sample band would reject
- * a true circle of a few hundred samples on its few ordinary 2.5σ outliers — and
- * an ellipse must go once round its center with semi-axes inside the ring's
- * extent. A real notch fails the cost test: the segments that follow it buy
- * back far more χ² than their parameters cost. The cost of the choice comes
- * back in `costOut[0]`.
+ * undercuts `rivalCost` ({@link ringPrimitives}); its cost comes back in
+ * `costOut[0]` (`rivalCost` when there is none).
  */
 function wholeRingPrimitive(
   pts: FlatPoints,
@@ -1762,11 +1754,33 @@ function wholeRingPrimitive(
   rivalCost: number,
   costOut?: number[],
 ): RingPrimitive | null {
+  const [best] = ringPrimitives(pts, sig, opts, rivalCost)
+  if (costOut) costOut[0] = best ? best.cost : rivalCost
+  return best ? best.prim : null
+}
+
+/**
+ * Every whole-ring primitive — a circle, and outside geometric mode an
+ * ellipse — that the measurement accepts and whose `0.5·χ² + λ·params`
+ * undercuts `rivalCost`, the description the ring gets otherwise (inkvec's
+ * primitive rule, `fit_primitive_or_arcs`), cheapest first. A candidate is
+ * accepted on its reduced χ² over every sample, by orthogonal distance, within
+ * τ² — an rms residual inside τ standard deviations, where the per-sample band
+ * would reject a true circle of a few hundred samples on its few ordinary 2.5σ
+ * outliers — and must go once round its center with its diameter inside the
+ * ring's extent. A real notch fails the cost test: the segments that follow it
+ * buy back far more χ² than their parameters cost.
+ */
+function ringPrimitives(
+  pts: FlatPoints,
+  sig: number[],
+  opts: RunFitOptions,
+  rivalCost: number,
+): { prim: RingPrimitive; cost: number }[] {
   const n = pts.length >> 1
-  if (n < 5) return null
+  if (n < 5) return []
   const m = n - 1
-  let best: RingPrimitive | null = null
-  let bestCost = rivalCost
+  const found: { prim: RingPrimitive; cost: number }[] = []
   // The ring's bounding box: a primitive's diameter spans it, no more.
   let x0 = Infinity
   let y0 = Infinity
@@ -1789,12 +1803,11 @@ function wholeRingPrimitive(
     const cost = 0.5 * chi2 + opts.lambda * PARAMS_CIRCLE
     if (
       chi2 <= opts.tau * opts.tau * Math.max(1, m - PARAMS_CIRCLE) &&
-      cost <= bestCost &&
+      cost <= rivalCost &&
       Math.abs(ellipseSweep({ ...circle, rx: circle.r, ry: circle.r, angle: 0 }, pts, m)) >
         1.9 * Math.PI
     ) {
-      best = { kind: 'circle', circle }
-      bestCost = cost
+      found.push({ prim: { kind: 'circle', circle }, cost })
     }
   }
   if (!geometricMode(opts) && measuredRing(sig, m)) {
@@ -1811,16 +1824,16 @@ function wholeRingPrimitive(
       const cost = 0.5 * chi2 + opts.lambda * PARAMS_ELLIPSE
       if (
         chi2 <= opts.tau * opts.tau * Math.max(1, m - PARAMS_ELLIPSE) &&
-        cost < bestCost &&
+        cost < rivalCost &&
         Math.abs(ellipseSweep(e, pts, m)) > 1.9 * Math.PI
       ) {
-        best = { kind: 'ellipse', ellipse: e }
-        bestCost = cost
+        found.push({ prim: { kind: 'ellipse', ellipse: e }, cost })
       }
     }
   }
-  if (costOut) costOut[0] = bestCost
-  return best
+  // The circle is found first and wins a tie: fewer parameters.
+  if (found.length === 2 && found[1].cost < found[0].cost) found.reverse()
+  return found
 }
 
 /**

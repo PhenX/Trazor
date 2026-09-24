@@ -263,6 +263,29 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     expect(worstDeviation(cmds, exact)).toBeLessThan(0.25)
   })
 
+  it('traces an eye a little taller than wide as an ellipse, not a circle', () => {
+    // A circle is the cheaper description of this ring's samples, but renders
+    // its coverage worse than the corner rule's outline does; the ellipse,
+    // which renders it better, takes its turn.
+    const [cx, cy, rx, ry, a] = [20.62, 20.13, 2.2, 2.86, 0.32]
+    const eye: [number, number][] = []
+    for (let k = 0; k < 240; k++) {
+      const t = (2 * Math.PI * k) / 240
+      const u = rx * Math.cos(t)
+      const v = ry * Math.sin(t)
+      eye.push([cx + u * Math.cos(a) - v * Math.sin(a), cy + u * Math.sin(a) + v * Math.cos(a)])
+    }
+    const exact = (x: number, y: number): number => {
+      let d = Infinity
+      for (const [ex, ey] of eye) d = Math.min(d, Math.hypot(x - ex, y - ey))
+      return d
+    }
+    const { mask, field } = polygonFieldOf(40, eye)
+    const cmds = trace(mask, field, ILLUSTRATION, 100)
+    expect(Math.max(...joinTurns(cmds))).toBeLessThan(3)
+    expect(worstDeviation(cmds, exact)).toBeLessThan(0.2)
+  })
+
   it('keeps a small triangle a triangle though its samples trace a blob', () => {
     // Five pixels across, the triangle's half-coverage contour is round enough
     // for a circle to fit its samples as closely as the corners do. The pixels

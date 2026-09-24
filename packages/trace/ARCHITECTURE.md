@@ -96,7 +96,8 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    pixels within 1.5 px of a measured sample (`pathCoverageError`). Samples on the half-coverage contour cannot tell a
    five-pixel triangle from a blob, nor the tip of a small teardrop from an ellipse's end; the pixels the contour cuts
    across can. The measured band leaves out a stacked layer's cut under the sheet above it, which no candidate is
-   seen by. Circular runs are emitted as circle-exact cubics that
+   seen by. The cheaper primitive is tried first, and a circle the coverage refuses leaves the ellipse its turn (an
+   eye a little taller than wide). Circular runs are emitted as circle-exact cubics that
    `@trazor/svg`'s `fitArcs` recovers as `A` arcs. `curveOptimize` sets the DP reach and candidate stride (off ⇒ shorter,
    greedier pieces).
 
