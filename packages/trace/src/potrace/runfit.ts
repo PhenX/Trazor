@@ -1,4 +1,6 @@
 import type { PathCommand } from '@trazor/core'
+import { pathCoverageError } from '../coverage'
+import type { CoveragePatch } from '../coverage'
 import type { FlatPoints } from '../paths'
 import { fitCubicSegment, refineParam } from '../fit'
 import type { Cubic } from '../fit'
@@ -55,6 +57,12 @@ export interface RunFitOptions {
   stride: number
   /** Image extent (longer side, px); scales the reach down on large canvases. */
   extent?: number
+  /**
+   * The observed coverage around the ring (small refined rings): a whole-ring
+   * circle or ellipse replaces the fitted outline only where it renders that
+   * coverage no worse.
+   */
+  coverage?: CoveragePatch
 }
 
 /** Parameter counts priced by the description length (inkvec `curves.rs`). */
@@ -289,9 +297,9 @@ export function fitClosedRuns(
   }
   const out: PathCommand[] = []
   if (cornerVerts.length === 0) {
-    // Wholly smooth ring: one circle over every sample when that is the better
-    // description, else open at the guaranteed convex start and run the DP
-    // around the loop with a G1 seam.
+    // Wholly smooth ring: open at the guaranteed convex start and run the DP
+    // around the loop with a G1 seam, unless one circle or ellipse over every
+    // sample is the better description.
     const { pts, sig } = cyclicRun(geom, sigma, 0, 0, n)
     const splits: number[] = []
     for (let p = 1; p < mv; p++) splits.push(vertices[p])
@@ -307,17 +315,10 @@ export function fitClosedRuns(
       dpCost,
       true,
     )
-    const whole = wholeRingCircle(pts, sig, opts, dpCost[0])
-    if (whole) {
-      const [sx, sy] = projectCircle(whole, pts[0], pts[1])
-      out.push({ type: 'M', x: sx, y: sy })
-      emitFullCircle(out, sx, sy, whole, pts)
-    } else {
-      out.push({ type: 'M', x: geom[0], y: geom[1] })
-      for (const sg of segs) emitSeg(out, pts, sg)
-    }
+    out.push({ type: 'M', x: geom[0], y: geom[1] })
+    for (const sg of segs) emitSeg(out, pts, sg)
     out.push({ type: 'Z' })
-    return out
+    return ringPrimitiveOr(out, pts, sig, opts, dpCost[0])
   }
 
   // Runs corner → corner (cyclic). Each run's endpoints are the corner apexes,
@@ -344,6 +345,8 @@ export function fitClosedRuns(
   }
   const [x0, y0] = apex(cornerVerts[0])
   out.push({ type: 'M', x: x0, y: y0 })
+  // The corner spans' description, priced to weigh a whole-ring primitive against.
+  const splitCost = [0]
   for (let c = 0; c < cornerVerts.length; c++) {
     const cvA = cornerVerts[c]
     const cvB = cornerVerts[(c + 1) % cornerVerts.length]
@@ -357,10 +360,57 @@ export function fitClosedRuns(
     pts[pts.length - 1] = by
     const t0 = forwardTangent(pts, 0)
     const t1 = forwardTangent(pts, pts.length / 2 - 1)
-    emitSpanDP(out, pts, sig, splits, t0, t1, opts)
+    emitSpanDP(out, pts, sig, splits, t0, t1, opts, splitCost)
   }
   out.push({ type: 'Z' })
+  // Outside geometric mode a ring the corner rule cut up may still be one ellipse
+  // or circle: a small round the lattice polygon renders as a few sharp turns.
+  if (!geometricMode(opts) && measuredRing(sigma, n)) {
+    const ring = cyclicRun(geom, sigma, 0, 0, n)
+    return ringPrimitiveOr(out, ring.pts, ring.sig, opts, splitCost[0])
+  }
   return out
+}
+
+/**
+ * The whole-ring circle or ellipse over the closed ring `pts` (first sample
+ * repeated last) when it is the cheaper description ({@link wholeRingPrimitive})
+ * and, where the ring carries its observed coverage, renders it no worse than
+ * `fitted` does; else `fitted`. The samples of a ring a few pixels across sit on
+ * its half-coverage contour, which rounds a small triangle or square into a
+ * blob a circle fits as well as the corners do — the pixels the contour cuts
+ * across still show the corners.
+ */
+function ringPrimitiveOr(
+  fitted: PathCommand[],
+  pts: FlatPoints,
+  sig: number[],
+  opts: RunFitOptions,
+  fittedCost: number,
+): PathCommand[] {
+  const whole = wholeRingPrimitive(pts, sig, opts, fittedCost)
+  if (!whole) return fitted
+  const prim: PathCommand[] = []
+  emitRingPrimitive(prim, whole, pts)
+  prim.push({ type: 'Z' })
+  if (
+    opts.coverage &&
+    pathCoverageError(prim, opts.coverage) > pathCoverageError(fitted, opts.coverage)
+  ) {
+    return fitted
+  }
+  return prim
+}
+
+/** Append a whole-ring primitive's closed path (from its `M`), starting near the ring's first sample. */
+function emitRingPrimitive(out: PathCommand[], prim: RingPrimitive, pts: FlatPoints): void {
+  if (prim.kind === 'ellipse') {
+    emitFullEllipse(out, prim.ellipse, pts)
+    return
+  }
+  const [sx, sy] = projectCircle(prim.circle, pts[0], pts[1])
+  out.push({ type: 'M', x: sx, y: sy })
+  emitFullCircle(out, sx, sy, prim.circle, pts)
 }
 
 /** Least turn (degrees) at a corner (inkvec `CORNER_DEGREES`). */
@@ -629,14 +679,18 @@ function emitSpanDP(
   t0: [number, number],
   t1: [number, number],
   opts: RunFitOptions,
+  costSum?: number[],
 ): void {
   const last = (pts.length >> 1) - 1
   if (last <= 0) return
   if (last === 1) {
     out.push({ type: 'L', x: pts[2], y: pts[3] })
+    if (costSum) costSum[0] += opts.lambda * PARAMS_LINE
     return
   }
-  for (const s of spanSegments(pts, sig, splits, t0, t1, opts)) emitSeg(out, pts, s)
+  const cost = [0]
+  for (const s of spanSegments(pts, sig, splits, t0, t1, opts, cost)) emitSeg(out, pts, s)
+  if (costSum) costSum[0] += cost[0]
 }
 
 /** The DP's chosen segments over one span (see {@link emitSpanDP}), merged. */
@@ -1463,32 +1517,392 @@ function fitCircleFree(
 /** Parameters a whole-ring circle writes: its center and radius. */
 const PARAMS_CIRCLE = 3
 
+/** A rotated ellipse: center, semi-axes, and the rotation (radians) of its `rx` axis. */
+interface Ellipse {
+  cx: number
+  cy: number
+  rx: number
+  ry: number
+  angle: number
+}
+
+/** Parameters a whole-ring ellipse writes: its center, semi-axes and rotation. */
+const PARAMS_ELLIPSE = 5
+
+/** A whole-ring primitive: the circle or ellipse over every sample of a closed ring. */
+type RingPrimitive = { kind: 'circle'; circle: Circle } | { kind: 'ellipse'; ellipse: Ellipse }
+
 /**
- * A whole ring as one circle, when the measurement accepts it and it is the
- * cheaper description: a geometric fit whose reduced χ² is within τ² (an rms
- * residual inside τ standard deviations — the per-sample band would reject a
- * true circle of a few hundred samples on its few ordinary 2.5σ outliers), and
- * whose `0.5·χ² + λ·3` undercuts `dpCost`, the DP's segmentation of the same
- * ring (inkvec's primitive rule). A real notch fails the cost test: the
- * segments that follow it buy back far more χ² than their parameters cost.
+ * Orthogonal distance from (x, y) to an ellipse: Eberly's robust bisection for
+ * the nearest point ("Distance from a Point to an Ellipse, an Ellipsoid, or a
+ * Hyperellipsoid", Geometric Tools, 2011), in the ellipse's first quadrant.
  */
-function wholeRingCircle(
+function ellipseDistance(e: Ellipse, x: number, y: number): number {
+  const c = Math.cos(e.angle)
+  const s = Math.sin(e.angle)
+  const dx = x - e.cx
+  const dy = y - e.cy
+  let y0 = Math.abs(dx * c + dy * s)
+  let y1 = Math.abs(-dx * s + dy * c)
+  let e0 = e.rx
+  let e1 = e.ry
+  if (e0 < e1) {
+    ;[e0, e1] = [e1, e0]
+    ;[y0, y1] = [y1, y0]
+  }
+  if (y1 > 0) {
+    if (y0 > 0) {
+      const z0 = y0 / e0
+      const z1 = y1 / e1
+      const g = z0 * z0 + z1 * z1 - 1
+      if (g === 0) return 0
+      const r0 = (e0 / e1) * (e0 / e1)
+      const n0 = r0 * z0
+      let s0 = z1 - 1
+      let s1 = g < 0 ? 0 : Math.hypot(n0, z1) - 1
+      let sm = 0
+      for (let i = 0; i < 128; i++) {
+        sm = (s0 + s1) / 2
+        if (sm === s0 || sm === s1) break
+        const q0 = n0 / (sm + r0)
+        const q1 = z1 / (sm + 1)
+        const gs = q0 * q0 + q1 * q1 - 1
+        if (gs > 0) s0 = sm
+        else if (gs < 0) s1 = sm
+        else break
+      }
+      const x0 = (r0 * y0) / (sm + r0)
+      const x1 = y1 / (sm + 1)
+      return Math.hypot(x0 - y0, x1 - y1)
+    }
+    return Math.abs(y1 - e1)
+  }
+  const numer = e0 * y0
+  const denom = e0 * e0 - e1 * e1
+  if (numer < denom) {
+    const t = numer / denom
+    return Math.hypot(e0 * t - y0, e1 * Math.sqrt(1 - t * t))
+  }
+  return Math.abs(y0 - e0)
+}
+
+/** Solve the n×n system A·x = b in place (Gaussian elimination, partial pivoting); null when singular. */
+function solveSmall(A: number[][], b: number[]): number[] | null {
+  const n = b.length
+  for (let k = 0; k < n; k++) {
+    let piv = k
+    for (let i = k + 1; i < n; i++) if (Math.abs(A[i][k]) > Math.abs(A[piv][k])) piv = i
+    if (Math.abs(A[piv][k]) < 1e-300) return null
+    ;[A[k], A[piv]] = [A[piv], A[k]]
+    ;[b[k], b[piv]] = [b[piv], b[k]]
+    for (let i = k + 1; i < n; i++) {
+      const f = A[i][k] / A[k][k]
+      for (let j = k; j < n; j++) A[i][j] -= f * A[k][j]
+      b[i] -= f * b[k]
+    }
+  }
+  const x = new Array<number>(n).fill(0)
+  for (let i = n - 1; i >= 0; i--) {
+    let v = b[i]
+    for (let j = i + 1; j < n; j++) v -= A[i][j] * x[j]
+    x[i] = v / A[i][i]
+  }
+  return x.every(Number.isFinite) ? x : null
+}
+
+/** Most samples, evenly spaced along the ring, an ellipse is refined on. */
+const ELLIPSE_FIT_SAMPLES = 256
+
+/**
+ * An ellipse fit to samples 0..m−1: started from the samples' moments (their
+ * mean and covariance, the axes of a ring sampled along its length), then
+ * refined by Levenberg–Marquardt on the σ-weighted first-order (Sampson)
+ * distance — the orthogonal distance near the curve — over at most
+ * `ELLIPSE_FIT_SAMPLES` of them. Returns the ellipse and that distance's mean
+ * square per sample (in σ), or null when the fit degenerates.
+ */
+function fitEllipseFree(
+  pts: FlatPoints,
+  sig: number[],
+  m: number,
+): { ellipse: Ellipse; spread: number } | null {
+  if (m < 6) return null
+  let sx = 0
+  let sy = 0
+  for (let i = 0; i < m; i++) {
+    sx += pts[i * 2]
+    sy += pts[i * 2 + 1]
+  }
+  const mx = sx / m
+  const my = sy / m
+  let sxx = 0
+  let syy = 0
+  let sxy = 0
+  for (let i = 0; i < m; i++) {
+    const dx = pts[i * 2] - mx
+    const dy = pts[i * 2 + 1] - my
+    sxx += dx * dx
+    syy += dy * dy
+    sxy += dx * dy
+  }
+  sxx /= m
+  syy /= m
+  sxy /= m
+  const tr = (sxx + syy) / 2
+  const det = Math.sqrt(Math.max(0, ((sxx - syy) / 2) ** 2 + sxy * sxy))
+  const l1 = tr + det
+  const l2 = tr - det
+  if (!(l2 > 1e-6)) return null
+  const k = Math.min(m, ELLIPSE_FIT_SAMPLES)
+  const idx = new Int32Array(k)
+  for (let j = 0; j < k; j++) idx[j] = Math.floor((j * m) / k)
+  // Parameters: center, log semi-axes, rotation.
+  let q = [
+    mx,
+    my,
+    Math.log(Math.sqrt(2 * l1)),
+    Math.log(Math.sqrt(2 * l2)),
+    0.5 * Math.atan2(2 * sxy, sxx - syy),
+  ]
+  const residuals = (p: number[], out: Float64Array): number => {
+    const rx = Math.exp(p[2])
+    const ry = Math.exp(p[3])
+    const c = Math.cos(p[4])
+    const s = Math.sin(p[4])
+    let cost = 0
+    for (let j = 0; j < k; j++) {
+      const i = idx[j]
+      const dx = pts[i * 2] - p[0]
+      const dy = pts[i * 2 + 1] - p[1]
+      const u = dx * c + dy * s
+      const v = -dx * s + dy * c
+      const f = (u * u) / (rx * rx) + (v * v) / (ry * ry) - 1
+      const g = 2 * Math.hypot(u / (rx * rx), v / (ry * ry))
+      const r = g > 1e-12 ? f / g / sig[i] : 0
+      out[j] = r
+      cost += r * r
+    }
+    return cost
+  }
+  const r0 = new Float64Array(k)
+  const r1 = new Float64Array(k)
+  const J = Array.from({ length: 5 }, () => new Float64Array(k))
+  let cost = residuals(q, r0)
+  let mu = 1e-3
+  const scale = Math.sqrt(l1)
+  const h = [1e-6 * scale, 1e-6 * scale, 1e-7, 1e-7, 1e-7]
+  for (let iter = 0; iter < 40; iter++) {
+    for (let a = 0; a < 5; a++) {
+      const pa = q.slice()
+      pa[a] += h[a]
+      residuals(pa, J[a])
+      for (let j = 0; j < k; j++) J[a][j] = (J[a][j] - r0[j]) / h[a]
+    }
+    const A: number[][] = Array.from({ length: 5 }, () => new Array<number>(5).fill(0))
+    const g = new Array<number>(5).fill(0)
+    for (let a = 0; a < 5; a++) {
+      for (let b = a; b < 5; b++) {
+        let v = 0
+        for (let j = 0; j < k; j++) v += J[a][j] * J[b][j]
+        A[a][b] = v
+        A[b][a] = v
+      }
+      let v = 0
+      for (let j = 0; j < k; j++) v += J[a][j] * r0[j]
+      g[a] = -v
+    }
+    let accepted = false
+    for (let tries = 0; tries < 8 && !accepted; tries++) {
+      const M = A.map((row, a) => row.map((v, b) => (a === b ? v * (1 + mu) + 1e-12 : v)))
+      const step = solveSmall(M, g.slice())
+      if (!step) {
+        mu *= 10
+        continue
+      }
+      const cand = q.map((v, a) => v + step[a])
+      const c1 = residuals(cand, r1)
+      if (c1 < cost) {
+        const gain = cost - c1
+        q = cand
+        r0.set(r1)
+        cost = c1
+        mu = Math.max(1e-9, mu / 10)
+        accepted = true
+        if (gain <= 1e-10 * Math.max(1, cost)) iter = 40
+      } else mu *= 10
+    }
+    if (!accepted) break
+  }
+  const e = { cx: q[0], cy: q[1], rx: Math.exp(q[2]), ry: Math.exp(q[3]), angle: q[4] }
+  return Number.isFinite(e.cx + e.cy + e.rx + e.ry + e.angle + cost)
+    ? { ellipse: e, spread: cost / k }
+    : null
+}
+
+/** Smallest semi-axis (px) a whole-ring ellipse may have: a sliver is not an ellipse. */
+const ELLIPSE_MIN_AXIS = 0.4
+
+/**
+ * The cheapest whole-ring primitive — a circle, or outside geometric mode an
+ * ellipse — that the measurement accepts and whose `0.5·χ² + λ·params`
+ * undercuts `rivalCost`, the description the ring gets otherwise (inkvec's
+ * primitive rule, `fit_primitive_or_arcs`). A candidate is accepted on its
+ * reduced χ² over every sample, by orthogonal distance, within τ² — an rms
+ * residual inside τ standard deviations, where the per-sample band would reject
+ * a true circle of a few hundred samples on its few ordinary 2.5σ outliers — and
+ * an ellipse must go once round its center with semi-axes inside the ring's
+ * extent. A real notch fails the cost test: the segments that follow it buy
+ * back far more χ² than their parameters cost. The cost of the choice comes
+ * back in `costOut[0]`.
+ */
+function wholeRingPrimitive(
   pts: FlatPoints,
   sig: number[],
   opts: RunFitOptions,
-  dpCost: number,
-): Circle | null {
+  rivalCost: number,
+  costOut?: number[],
+): RingPrimitive | null {
   const n = pts.length >> 1
   if (n < 5) return null
-  const circle = fitCircleFree(pts, sig, 0, n - 2, () => false)
-  if (!circle) return null
-  let chi2 = 0
-  for (let i = 0; i < n - 1; i++) {
-    const d = Math.hypot(pts[i * 2] - circle.cx, pts[i * 2 + 1] - circle.cy) - circle.r
-    chi2 += (d * d) / (sig[i] * sig[i])
+  const m = n - 1
+  let best: RingPrimitive | null = null
+  let bestCost = rivalCost
+  // The ring's bounding box: a primitive's diameter spans it, no more.
+  let x0 = Infinity
+  let y0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  for (let i = 0; i < m; i++) {
+    x0 = Math.min(x0, pts[i * 2])
+    x1 = Math.max(x1, pts[i * 2])
+    y0 = Math.min(y0, pts[i * 2 + 1])
+    y1 = Math.max(y1, pts[i * 2 + 1])
   }
-  if (chi2 > opts.tau * opts.tau * Math.max(1, n - 4)) return null
-  return 0.5 * chi2 + opts.lambda * PARAMS_CIRCLE <= dpCost ? circle : null
+  const reach = Math.hypot(x1 - x0, y1 - y0)
+  const circle = fitCircleFree(pts, sig, 0, n - 2, () => false)
+  if (circle && 2 * circle.r <= reach) {
+    let chi2 = 0
+    for (let i = 0; i < m; i++) {
+      const d = Math.hypot(pts[i * 2] - circle.cx, pts[i * 2 + 1] - circle.cy) - circle.r
+      chi2 += (d * d) / (sig[i] * sig[i])
+    }
+    const cost = 0.5 * chi2 + opts.lambda * PARAMS_CIRCLE
+    if (
+      chi2 <= opts.tau * opts.tau * Math.max(1, m - PARAMS_CIRCLE) &&
+      cost <= bestCost &&
+      Math.abs(ellipseSweep({ ...circle, rx: circle.r, ry: circle.r, angle: 0 }, pts, m)) >
+        1.9 * Math.PI
+    ) {
+      best = { kind: 'circle', circle }
+      bestCost = cost
+    }
+  }
+  if (!geometricMode(opts) && measuredRing(sig, m)) {
+    // The refined fit's first-order spread already rules out a ring far off any
+    // ellipse, before its exact distances are paid for.
+    const fit = fitEllipseFree(pts, sig, m)
+    const e = fit && fit.spread <= 4 * opts.tau * opts.tau ? fit.ellipse : null
+    if (e && Math.min(e.rx, e.ry) >= ELLIPSE_MIN_AXIS && 2 * Math.max(e.rx, e.ry) <= reach) {
+      let chi2 = 0
+      for (let i = 0; i < m; i++) {
+        const d = ellipseDistance(e, pts[i * 2], pts[i * 2 + 1])
+        chi2 += (d * d) / (sig[i] * sig[i])
+      }
+      const cost = 0.5 * chi2 + opts.lambda * PARAMS_ELLIPSE
+      if (
+        chi2 <= opts.tau * opts.tau * Math.max(1, m - PARAMS_ELLIPSE) &&
+        cost < bestCost &&
+        Math.abs(ellipseSweep(e, pts, m)) > 1.9 * Math.PI
+      ) {
+        best = { kind: 'ellipse', ellipse: e }
+        bestCost = cost
+      }
+    }
+  }
+  if (costOut) costOut[0] = bestCost
+  return best
+}
+
+/**
+ * Whether most of a ring's samples were measured against a coverage field. A
+ * ring left wholly on the lattice cannot tell a small ellipse from a small
+ * rectangle — its staircase strays ±0.5 px from either — so it is not offered
+ * one in their place.
+ */
+function measuredRing(sig: number[], m: number): boolean {
+  let measured = 0
+  for (let i = 0; i < m; i++) if (sig[i] < SIGMA_LATTICE) measured++
+  return 2 * measured >= m
+}
+
+/** Total parametric angle the samples 0..m−1 sweep about the ellipse (±2π once round). */
+function ellipseSweep(e: Ellipse, pts: FlatPoints, m: number): number {
+  const c = Math.cos(e.angle)
+  const s = Math.sin(e.angle)
+  const at = (i: number): number => {
+    const dx = pts[i * 2] - e.cx
+    const dy = pts[i * 2 + 1] - e.cy
+    return Math.atan2((-dx * s + dy * c) / e.ry, (dx * c + dy * s) / e.rx)
+  }
+  let sweep = 0
+  let prev = at(0)
+  for (let i = 1; i <= m; i++) {
+    const t = at(i % m)
+    let d = t - prev
+    if (d > Math.PI) d -= 2 * Math.PI
+    if (d < -Math.PI) d += 2 * Math.PI
+    sweep += d
+    prev = t
+  }
+  return sweep
+}
+
+/** The point of the ellipse at parameter t, and its derivative there. */
+function ellipseAt(e: Ellipse, t: number): [number, number, number, number] {
+  const c = Math.cos(e.angle)
+  const s = Math.sin(e.angle)
+  const ux = e.rx * Math.cos(t)
+  const uy = e.ry * Math.sin(t)
+  const dx = -e.rx * Math.sin(t)
+  const dy = e.ry * Math.cos(t)
+  return [e.cx + ux * c - uy * s, e.cy + ux * s + uy * c, dx * c - dy * s, dx * s + dy * c]
+}
+
+/**
+ * A whole ellipse as four quarter cubics from the point nearest the ring's
+ * first sample, in the ring's direction: each the affine image of a circle's
+ * quarter cubic, so exact to the same few ten-thousandths. Starts the path
+ * (`M`) and closes it back on its start.
+ */
+function emitFullEllipse(out: PathCommand[], e: Ellipse, pts: FlatPoints): void {
+  const m = (pts.length >> 1) - 1
+  const c = Math.cos(e.angle)
+  const s = Math.sin(e.angle)
+  const param = (i: number): number => {
+    const dx = pts[i * 2] - e.cx
+    const dy = pts[i * 2 + 1] - e.cy
+    return Math.atan2((-dx * s + dy * c) / e.ry, (dx * c + dy * s) / e.rx)
+  }
+  const t0 = param(0)
+  const sign = ellipseSweep(e, pts, m) >= 0 ? 1 : -1
+  const step = (sign * Math.PI) / 2
+  const k = (4 / 3) * Math.tan(step / 4)
+  const [sx, sy] = ellipseAt(e, t0)
+  out.push({ type: 'M', x: sx, y: sy })
+  for (let j = 0; j < 4; j++) {
+    const [ax, ay, adx, ady] = ellipseAt(e, t0 + j * step)
+    const [bx, by, bdx, bdy] = ellipseAt(e, t0 + (j + 1) * step)
+    const last = j === 3
+    out.push({
+      type: 'C',
+      x1: ax + k * adx,
+      y1: ay + k * ady,
+      x2: bx - k * bdx,
+      y2: by - k * bdy,
+      x: last ? sx : bx,
+      y: last ? sy : by,
+    })
+  }
 }
 
 /** Solve the 3×3 system A·x = b (row-major); null when singular. */
@@ -1677,11 +2091,10 @@ function fitClosedRefit(
     const seam = centralTangent(pts, 0)
     const dpCost = [Infinity]
     const dp = spanSegments(pts, sig, splits, [seam[0], seam[1]], [seam[0], seam[1]], opts, dpCost)
-    const whole = wholeRingCircle(pts, sig, opts, dpCost[0])
+    const whole = wholeRingPrimitive(pts, sig, opts, dpCost[0])
     if (whole) {
-      const [sx, sy] = projectCircle(whole, pts[0], pts[1])
-      const out: PathCommand[] = [{ type: 'M', x: sx, y: sy }]
-      emitFullCircle(out, sx, sy, whole, pts)
+      const out: PathCommand[] = []
+      emitRingPrimitive(out, whole, pts)
       out.push({ type: 'Z' })
       return out
     }

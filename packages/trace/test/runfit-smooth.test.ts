@@ -25,8 +25,48 @@ function fieldOf(
   }
 }
 
-/** Trace a mask's outer ring, against `field` when given (else on the lattice). */
-function trace(mask: BinaryMask, field: GrayImage | undefined, smoothing: number): PathCommand[] {
+/** Mask and centered area-coverage field (8×8 samples a pixel) of the polygon `vs`. */
+function polygonFieldOf(
+  size: number,
+  vs: [number, number][],
+): { mask: BinaryMask; field: GrayImage } {
+  const inside = (x: number, y: number): boolean => {
+    let odd = false
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+      const [xi, yi] = vs[i]
+      const [xj, yj] = vs[j]
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd
+    }
+    return odd
+  }
+  const mask = new Uint8Array(size * size)
+  const data = new Float32Array(size * size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let hits = 0
+      for (let j = 0; j < 8; j++) {
+        for (let i = 0; i < 8; i++) if (inside(x + (i + 0.5) / 8, y + (j + 0.5) / 8)) hits++
+      }
+      if (hits >= 32) mask[y * size + x] = 1
+      data[y * size + x] = hits / 64 - 0.5
+    }
+  }
+  return {
+    mask: { width: size, height: size, data: mask },
+    field: { width: size, height: size, data },
+  }
+}
+
+/**
+ * Trace a mask's outer ring, against `field` when given (else on the lattice);
+ * `cornerThreshold` as the illustration profiles set it when given.
+ */
+function trace(
+  mask: BinaryMask,
+  field: GrayImage | undefined,
+  smoothing: number,
+  cornerThreshold?: number,
+): PathCommand[] {
   const outer = decomposeMask(mask, 'minority', 1).find((p) => p.area > 0)
   if (!outer) throw new Error('no outer ring')
   const fit = ringPolygon(outer.points, field)
@@ -36,6 +76,7 @@ function trace(mask: BinaryMask, field: GrayImage | undefined, smoothing: number
     curveOptimize: true,
     optTolerance: 0.2,
     coverage: field,
+    cornerThreshold,
   })
 }
 
@@ -190,5 +231,81 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     expect(worstDeviation(cmds, sd, nearBump)).toBeLessThan(0.2)
     // No facet: a kept chord and a kept arc may meet at up to 3°, nothing more.
     expect(Math.max(...joinTurns(cmds))).toBeLessThan(3)
+  })
+
+  it('traces a small oval the corner rule cuts up as one ellipse', () => {
+    // An eye a few pixels across: its lattice polygon turns sharply at every
+    // vertex, so the corner rule cuts it into a few chords and a curve. The
+    // whole ring is one ellipse, cheaper to describe and closer to the drawing.
+    const [cx, cy, rx, ry, a] = [20.3, 19.6, 2.3, 3.2, 0.3]
+    const frame = (x: number, y: number): [number, number] => [
+      (x - cx) * Math.cos(a) + (y - cy) * Math.sin(a),
+      -(x - cx) * Math.sin(a) + (y - cy) * Math.cos(a),
+    ]
+    // First-order signed distance for the field; the exact one to measure by.
+    const field = (x: number, y: number): number => {
+      const [u, v] = frame(x, y)
+      const f = (u * u) / (rx * rx) + (v * v) / (ry * ry) - 1
+      return f / (2 * Math.hypot(u / (rx * rx), v / (ry * ry)) + 1e-9)
+    }
+    const exact = (x: number, y: number): number => {
+      const [u, v] = frame(x, y)
+      let d = Infinity
+      for (let k = 0; k < 4000; k++) {
+        const t = (2 * Math.PI * k) / 4000
+        d = Math.min(d, Math.hypot(u - rx * Math.cos(t), v - ry * Math.sin(t)))
+      }
+      return d
+    }
+    const { mask, field: coverage } = fieldOf(40, field)
+    const cmds = trace(mask, coverage, ILLUSTRATION, 100)
+    expect(Math.max(...joinTurns(cmds))).toBeLessThan(3)
+    expect(worstDeviation(cmds, exact)).toBeLessThan(0.25)
+  })
+
+  it('keeps a small triangle a triangle though its samples trace a blob', () => {
+    // Five pixels across, the triangle's half-coverage contour is round enough
+    // for a circle to fit its samples as closely as the corners do. The pixels
+    // the contour cuts across at each tip still show the corners, and the
+    // circle does not render them.
+    const { mask, field } = polygonFieldOf(40, [
+      [17.22, 21.43],
+      [22.07, 23.31],
+      [21.82, 18.93],
+    ])
+    const cmds = trace(mask, field, ILLUSTRATION, 100)
+    expect(joinTurns(cmds).filter((t) => t > 45)).toHaveLength(3)
+  })
+
+  it('keeps the point of a small teardrop', () => {
+    // A highlight drawn as a drop: an ellipse is within the band of its samples
+    // everywhere but at the tip, and renders the tip rounded off.
+    const drop: [number, number][] = []
+    for (let k = 0; k < 240; k++) {
+      const t = (2 * Math.PI * k) / 240
+      const x = 7 * Math.cos(t)
+      const y = 4 * Math.sin(t) * Math.abs(Math.sin(t / 2))
+      drop.push([
+        20.3 + x * Math.cos(1) - y * Math.sin(1),
+        20.6 + x * Math.sin(1) + y * Math.cos(1),
+      ])
+    }
+    const { mask, field } = polygonFieldOf(44, drop)
+    const cmds = trace(mask, field, ILLUSTRATION, 100)
+    expect(Math.max(...joinTurns(cmds))).toBeGreaterThan(45)
+  })
+
+  it('keeps a small rectangle a rectangle', () => {
+    // As small as the oval, but its sides are straight and its corners sharp:
+    // no ellipse comes within the band of its samples.
+    const [x0, y0, x1, y1] = [16.3, 15.6, 24.1, 21.4]
+    const sd = (x: number, y: number): number => {
+      const px = Math.max(x0 - x, x - x1)
+      const py = Math.max(y0 - y, y - y1)
+      return Math.hypot(Math.max(px, 0), Math.max(py, 0)) + Math.min(Math.max(px, py), 0)
+    }
+    const { mask, field } = fieldOf(40, sd)
+    const cmds = trace(mask, field, ILLUSTRATION, 100)
+    expect(joinTurns(cmds).filter((t) => t > 45)).toHaveLength(4)
   })
 })

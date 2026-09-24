@@ -69,7 +69,14 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   reduced χ² stays within τ² and its description costs no more than the DP's
   (the whole-primitive rule of `primitives.rs`), so a few outlying samples do not
   veto it the way a per-sample band would. At higher smoothing (illustration
-  mode) the joins inkvec's DP charges a tangent break for, and snaps to one
+  mode) a measured ring is offered an ellipse as well, and a ring the corner rule
+  cut up is offered both against its corner spans' cost — inkvec's
+  `fit_primitive_or_arcs`, which offers every closed boundary a circle, an
+  ellipse and a rounded rectangle whatever its corners. Such a primitive must
+  also render the ring's observed coverage no worse than the fitted outline —
+  the rendered-coverage comparison of inkvec's boundary solve (stage 08, below),
+  used here as a judge between two candidates rather than as a fit
+  (`packages/trace/src/coverage.ts` `pathCoverageError`). The joins inkvec's DP charges a tangent break for, and snaps to one
   tangent after it where it left them smooth (`multimodel.rs` `refine`,
   `tangents.rs` `break_cost`), are all made G1 by the refit after Plass & Stone
   (below), its pieces' arms held to the 0.02–1 chord inkvec admits a G1 cubic's
@@ -146,6 +153,13 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   this distance (`packages/svg/src/arc.ts` `conicDistance`): the radial distance
   in the unit-circle frame shrinks by `ry/rx` near the sharp ends of a thin
   ellipse, where half of one two pixels thick passed for a gently bowed run.
+  The whole-ring ellipse of the run fitter is refined by Levenberg–Marquardt on
+  the same distance (`packages/trace/src/potrace/runfit.ts` `fitEllipseFree`).
+- **David Eberly, “Distance from a Point to an Ellipse, an Ellipsoid, or a
+  Hyperellipsoid”, Geometric Tools, 2011.** The nearest point on an ellipse by
+  a robust bisection on the root of its one-variable characteristic function.
+  The exact orthogonal distance a whole-ring ellipse is judged by
+  (`packages/trace/src/potrace/runfit.ts` `ellipseDistance`).
 - **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements
