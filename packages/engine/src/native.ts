@@ -106,6 +106,7 @@ import type {
   HelperShapeMeta,
   HelperUnitPaint,
 } from './protocol'
+import { sheetSetback } from './setback'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -1518,6 +1519,7 @@ async function colorPipeline(
       const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
       const polygonSets: (RingFit | null)[][] | undefined = layers && wantPolygons ? [] : undefined
       const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
+      const position = paintPositions(plan)
       await decomposeStackedLayers(
         labels,
         plan,
@@ -1525,17 +1527,26 @@ async function colorPipeline(
         traceMinArea,
         startLayers,
         async (label, paths, mask, island) => {
-          const polygons = wantPolygons
-            ? layerPolygons(
-                paths,
-                fieldFor(
+          const field = fieldFor(
+            mask,
+            plan.stackLabels,
+            island ? label : -1,
+            opacityOf(label) !== undefined,
+          )
+          // A base layer's edge under a sheet above it is set back beneath the
+          // sheet; an island is painted over everything and hides nothing.
+          const hidden =
+            field && !island
+              ? {
                   mask,
-                  plan.stackLabels,
-                  island ? label : -1,
-                  opacityOf(label) !== undefined,
-                ),
-              )
-            : undefined
+                  labels: plan.stackLabels,
+                  position,
+                  layer: position[label],
+                  width: image.width,
+                  height: image.height,
+                }
+              : undefined
+          const polygons = wantPolygons ? layerPolygons(paths, field, hidden) : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
           await paintLayer(label, paths, polygons)
@@ -1559,10 +1570,49 @@ async function colorPipeline(
  * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`,
  * refined against the layer's boundary `field` when one applies (its color
  * edges and the transparency coverage); without one they depend on the rings
- * alone.
+ * alone. With `hidden` — a base layer's stacking — each ring's edges that run
+ * under a sheet painted above it are set back beneath that sheet
+ * (`sheetSetback`).
  */
-function layerPolygons(paths: CrackPath[], field?: SignedField): (RingFit | null)[] {
-  return paths.map((p) => ringPolygon(p.points, field))
+function layerPolygons(
+  paths: CrackPath[],
+  field?: SignedField,
+  hidden?: LayerStacking,
+): (RingFit | null)[] {
+  return paths.map((p) =>
+    ringPolygon(
+      p.points,
+      field,
+      hidden
+        ? sheetSetback(
+            p.points,
+            hidden.mask,
+            hidden.labels,
+            hidden.position,
+            hidden.layer,
+            hidden.width,
+            hidden.height,
+          )
+        : undefined,
+    ),
+  )
+}
+
+/** Where one base layer sits in the stack: what `sheetSetback` reads. */
+interface LayerStacking {
+  mask: Uint8Array
+  labels: Int32Array
+  position: Int32Array
+  layer: number
+  width: number
+  height: number
+}
+
+/** Each label's paint position among the base layers (−1 for a label not in `order`). */
+function paintPositions(plan: StackPlan): Int32Array {
+  const position = new Int32Array(plan.labelCount).fill(-1)
+  for (let i = 0; i < plan.order.length; i++) position[plan.order[i]] = i
+  return position
 }
 
 /**

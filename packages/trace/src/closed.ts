@@ -165,11 +165,21 @@ const POLYGON_AREA_FLOOR = 0.75
  * a ring too short to carry a polygon (the caller falls back to the exact
  * lattice path).
  *
- * It depends on the ring and the optional sub-pixel `field` only — never on
- * smoothing, curve optimization or the corner threshold — so a caller may
- * compute it once and re-fit it many times through {@link polygonToCommands}.
+ * It depends on the ring, the optional sub-pixel `field` and `setback` only —
+ * never on smoothing, curve optimization or the corner threshold — so a caller
+ * may compute it once and re-fit it many times through {@link polygonToCommands}.
+ *
+ * `setback` (per ring point, with a `field`; {@link refineRingToField}) sets an
+ * edge that runs hidden under a sheet painted above it back beneath that sheet.
+ * Such a point is fitted no tighter than a lattice point — where it lies under
+ * the sheet does not show — and stays out of the coverage patch, whose observed
+ * edge is the sheet's own.
  */
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null {
+export function ringPolygon(
+  ring: FlatPoints,
+  field?: GrayImage | SignedField,
+  setback?: ArrayLike<number>,
+): RingFit | null {
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
   ext.push(ring[0], ring[1])
@@ -182,7 +192,7 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   // the polygon's edges, then feeds the moment sums, the vertex adjustment and
   // the run fitter's samples, so each fit tracks the true edge rather than the
   // staircase.
-  const geom = field ? refineRingToField(ext, field, vertexIdx) : ext
+  const geom = field ? refineRingToField(ext, field, vertexIdx, setback) : ext
   const sums = computeSums(geom)
   const polygon = adjustVertices(geom, sums, vertexIdx, true)
   // A ring a pixel wide — a hairline, a stroke's counter — has its two sides
@@ -193,7 +203,7 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * Math.abs(signedAreaFlat(ring))) {
     return null
   }
-  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx)
+  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx, setback)
   const extent = field ? Math.max(field.width, field.height) : 0
   const fit: RingFit = {
     polygon,
@@ -203,9 +213,26 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
     refined: field !== undefined,
     extent,
   }
-  const coverage = field ? coveragePatch(ext, geom, field) : undefined
+  const coverage = field ? coveragePatch(ext, measuredOnly(ext, geom, setback), field) : undefined
   if (coverage) fit.coverage = coverage
   return fit
+}
+
+/** `geom` with every set-back point returned to the lattice, so it reads as unmeasured. */
+function measuredOnly(
+  lattice: FlatPoints,
+  geom: FlatPoints,
+  setback: ArrayLike<number> | undefined,
+): FlatPoints {
+  if (!setback) return geom
+  const m = setback.length
+  const out = geom.slice()
+  for (let i = 0; i < out.length >> 1; i++) {
+    if (setback[i % m] === 0) continue
+    out[i * 2] = lattice[i * 2]
+    out[i * 2 + 1] = lattice[i * 2 + 1]
+  }
+  return out
 }
 
 /**

@@ -57,9 +57,8 @@ exports[`gradient scenes > 'glow over a sky ramp (stacked overlay)' 1`] = `
   "gradients": [
     "g0 linear (119,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
     "g1 radial c(151,61) r26 0:#fff078 1:#fff078@0",
-    "url(#g1) over url(#g0)",
   ],
-  "paths": 7,
+  "paths": 6,
 }
 `;
 

@@ -31,6 +31,7 @@ import type {
   HelperStackMessage,
   WorkerScope,
 } from './protocol'
+import { sheetSetback } from './setback'
 
 /**
  * The working image whose RGBA bytes boundary refinement reads directly, and,
@@ -286,7 +287,26 @@ export function installHelperHandler(scope: WorkerScope): void {
       entry = { paths }
       if (wantPolygons) {
         const field = refine ? layerFieldOf(st, unit, refine, translucent) : undefined
-        entry.polygons = paths.map((p) => ringPolygon(p.points, field))
+        // A base layer's edge under a sheet above it is set back beneath the
+        // sheet (the coordinator's `layerPolygons`); an island hides nothing.
+        const base = field !== undefined && unit < st.order.length
+        entry.polygons = paths.map((p) =>
+          ringPolygon(
+            p.points,
+            field,
+            base
+              ? sheetSetback(
+                  p.points,
+                  st.mask.data,
+                  st.labels,
+                  st.position,
+                  unit,
+                  st.msg.width,
+                  st.msg.height,
+                )
+              : undefined,
+          ),
+        )
       }
       st.layers.set(unit, entry)
     }
