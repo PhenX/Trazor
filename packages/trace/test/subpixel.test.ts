@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
-import { decomposeMask, ringPolygon, traceMask } from '@trazor/trace'
+import { decomposeMask, refineRingToField, ringPolygon, traceMask } from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,
@@ -97,6 +97,35 @@ describe('sub-pixel boundary refinement', () => {
       }
     }
     expect(Math.max(...miss)).toBeLessThan(0.01)
+  })
+
+  it('keeps each side of a thin line on its own edge', () => {
+    // A dark line one pixel tall (row 10, 30 % coverage of the fill) runs
+    // between two parts of one fill, so the search along a normal from either
+    // side spans the whole line and meets both of its edges. The region above
+    // ends on the line's top edge (y ≈ 10.21) and the region below starts on its
+    // bottom edge (y ≈ 10.79): neither side may take the other's crossing.
+    const w = 24
+    const h = 16
+    const data = new Float32Array(w * h).fill(0.5)
+    for (let x = 0; x < w; x++) data[10 * w + x] = -0.2
+    const field = { width: w, height: h, data }
+    const sideOf = (top: number, bottom: number, edgeY: number): number => {
+      const m = new Uint8Array(w * h)
+      for (let y = top; y < bottom; y++) for (let x = 3; x < 21; x++) m[y * w + x] = 1
+      const ring = decomposeMask({ width: w, height: h, data: m }, 'minority', 1)[0].points
+      const refined = refineRingToField(ring, field)
+      let worst = 0
+      for (let i = 0; i < ring.length; i += 2) {
+        if (ring[i + 1] !== edgeY || ring[i] < 6 || ring[i] > 18) continue
+        worst = Math.max(worst, Math.abs(refined[i + 1] - edgeY))
+      }
+      return worst
+    }
+    // The ½ crossing sits 0.5 / 0.7 of a pixel past the fill's last centre.
+    const inset = 0.5 / 0.7 - 0.5
+    expect(sideOf(2, 10, 10)).toBeCloseTo(inset, 2)
+    expect(sideOf(11, 14, 11)).toBeCloseTo(inset, 2)
   })
 
   it('leaves an axis-aligned integer rectangle at its exact corners', () => {

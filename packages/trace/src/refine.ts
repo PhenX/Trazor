@@ -99,9 +99,11 @@ const TIE_NUDGE = 1e-6
  * profile is a clean step (saturates on both sides, monotone) a single partial
  * pixel inverts through the exact half-plane coverage of a unit square
  * ({@link edgeOffset}), which — unlike a bilinear root-find between pixel centres
- * — carries no bias towards the ½ grid; otherwise the crossing is found by a
- * root-find along the normal. A point is left in place on the image border, where
- * no probe is partial (a hard edge), or where the profile never crosses ½.
+ * — carries no bias towards the ½ grid; otherwise a root-find along the normal
+ * takes the crossing nearest the point among those running the way coverage
+ * steps across it (across a thin line both of its edges fall inside the span).
+ * A point is left in place on the image border, where no probe is partial (a
+ * hard edge), or where the profile never crosses ½.
  *
  * This de-staircases an anti-aliased edge before the polygon, vertex-adjustment
  * and run-fitting stages read it: on a straight run every point shifts by the
@@ -359,7 +361,22 @@ function solveNormal(
   }
   const stepLike = m >= 3 && (inc || dec) && min < 0.12 && max > 0.88
   if (!stepLike) {
+    // A thin feature — a line a pixel or two wide, a narrow gap — puts both of
+    // its edges inside the search span, so the scan meets two crossings, and the
+    // edge this point lies on is the one nearer it that coverage crosses the way
+    // it steps across the point (the probes nearest it on either side). The
+    // first one met from −1 is as often the far edge: a point that takes it
+    // jumps across the feature, the two sides of a thin line leapfrog each
+    // other, and the fit through them loops into beads.
     hit = null
+    let lo = -1
+    let hi = -1
+    for (let k = 0; k < m; k++) {
+      if (u[k] < 0) lo = k
+      else if (hi < 0) hi = k
+    }
+    const across =
+      lo >= 0 && hi >= 0 && Math.abs(a[hi] - a[lo]) > 0.05 ? Math.sign(a[hi] - a[lo]) : 0
     const STEPS = 9
     let prevU = 0
     let prevA = 0
@@ -367,9 +384,14 @@ function solveNormal(
     for (let s = 0; s <= STEPS; s++) {
       const uu = -1 + (2 * s) / STEPS
       const cov = coverageAt(px + nx * uu, py + ny * uu)
-      if (havePrev && (prevA - 0.5) * (cov - 0.5) <= 0 && Math.abs(cov - prevA) > 1e-9) {
-        hit = prevU + ((uu - prevU) * (0.5 - prevA)) / (cov - prevA)
-        break
+      if (
+        havePrev &&
+        (prevA - 0.5) * (cov - 0.5) <= 0 &&
+        Math.abs(cov - prevA) > 1e-9 &&
+        (across === 0 || Math.sign(cov - prevA) === across)
+      ) {
+        const crossing = prevU + ((uu - prevU) * (0.5 - prevA)) / (cov - prevA)
+        if (hit === null || Math.abs(crossing) < Math.abs(hit)) hit = crossing
       }
       prevU = uu
       prevA = cov
