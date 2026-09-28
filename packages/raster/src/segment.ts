@@ -185,10 +185,21 @@ const RESCUE_ADJACENT = 3
 // scores just above half and must not be seeded as one muddy region.
 const RESCUE_ENCLOSURE = 0.7
 // Oklab ΔE a feature's color must exceed *each* side by, and the excess
-// ΔE(b,F1) + ΔE(b,F2) − ΔE(F1,F2) must reach, for a pixel to count as an extreme.
-// Screens a same-color halo the flood absorbs anyway; a dark stroke on a mid-tone
-// field (fur, a facial line, ≈0.4) clears it, a black glyph on white (≈0.9) easily.
+// ΔE(b,F1) + ΔE(b,F2) − ΔE(F1,F2) must reach, for a pixel to count as an extreme;
+// a side nearer than this, met within `RESCUE_ADJACENT`, is the blob's own region
+// (the blob is its anti-aliased rim or a shade of it). Screens a same-color halo the
+// flood absorbs anyway; a dark stroke on a mid-tone field (fur, a facial line, ≈0.4)
+// clears it, a black glyph on white (≈0.9) easily.
 const RESCUE_MIN_CONTRAST = 0.25
+// The same bar for a line within one field — both sides the same color, closer
+// than `RESCUE_ONE_FIELD` — where no second color's rim can be mistaken for a
+// feature: a forehead crease a shade darker than its skin (≈0.2), a web line drawn
+// in black over a charcoal fill (≈0.2), a tooth's separator. Such a line is an
+// extreme once it clears half the excess bar from its field on both sides, and a
+// shade within this of the field is still the field's own.
+const RESCUE_LINE_CONTRAST = 0.125
+// Oklab ΔE within which the two sides met on an axis are one field.
+const RESCUE_ONE_FIELD = 0.1
 
 /** Oklab distance between interleaved-buffer index `i` and a mean triple. */
 function distToMean(ok: Float32Array, i: number, mL: number, mA: number, mB: number): number {
@@ -624,7 +635,8 @@ interface RescuedFeature {
  * is a color extreme between the two sides met on some axis — the first markers
  * found walking out from the pixel, over any unmarked pixel, in opposite
  * directions: at least `RESCUE_MIN_CONTRAST` from each, and farther from both
- * than they are from each other. That covers a glyph on one field, a divider
+ * than they are from each other (a line within one field, whose two sides share
+ * a color, clears the lower `RESCUE_LINE_CONTRAST`). That covers a glyph on one field, a divider
  * between two patches of one color, and a contour line between two different
  * colors. A sliver of a genuine edge ramp is a mixture of its two sides and lies
  * between them in color, however far it sits from either, so it fails and is left
@@ -801,8 +813,9 @@ function rescueMarkerlessFeatures(
    * Judge blob `id` against the sides of its pixels over the current `region`:
    * the first markers met walking out in opposite directions. A pixel is an
    * *extreme* on an axis when its blob is at least `RESCUE_MIN_CONTRAST` from
-   * both sides and farther from both than they are from each other — a mixture
-   * of its sides (a ramp sliver) is not. Returns the share of pixels that are an
+   * both sides (`RESCUE_LINE_CONTRAST` when the two sides are one field) and
+   * farther from both than they are from each other — a mixture of its sides (a
+   * ramp sliver) is not. Returns the share of pixels that are an
    * extreme on some axis, and the mean distance to the nearer side (for ordering).
    */
   const judge = (id: number): { extreme: number; contrast: number } => {
@@ -852,12 +865,14 @@ function rescueMarkerlessFeatures(
         const near = d1 < d2 ? d1 : d2
         sum += near
         seen++
-        if (near < RESCUE_MIN_CONTRAST) {
+        const across = apart(f1, f2)
+        const bar = across < RESCUE_ONE_FIELD ? RESCUE_LINE_CONTRAST : RESCUE_MIN_CONTRAST
+        if (near < bar) {
           if ((d1 <= d2 ? k1 : k2) <= RESCUE_ADJACENT) edge = true
           continue
         }
         tested++
-        if (d1 + d2 - apart(f1, f2) >= RESCUE_MIN_CONTRAST) agreed++
+        if (d1 + d2 - across >= RESCUE_MIN_CONTRAST) agreed++
       }
       if (!edge && tested > 0 && agreed === tested) extreme++
     }

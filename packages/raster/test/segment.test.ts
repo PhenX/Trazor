@@ -339,6 +339,34 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
     expect(paletteL(seg, line)).toBeLessThan(0.2)
   })
 
+  it('rescues a faint crease within one field (a wrinkle a shade darker than its skin)', () => {
+    // The profile of a forehead wrinkle on a cartoon poster, row by row across
+    // it: blue skin, a soft rim, a dark-blue core two pixels wide, a rim, skin.
+    // At ΔE ≈ 0.2 from the skin it is under the bar for a line between two
+    // colors, but both its sides are one field, so no rim can pass for it: it
+    // must come out as its own dark region.
+    const FIELD: Rgba = [91, 126, 174, 255]
+    const rows: Rgba[] = [
+      [76, 99, 120, 255],
+      [57, 71, 89, 255],
+      [48, 56, 73, 255],
+      [62, 67, 86, 255],
+      [79, 89, 113, 255],
+    ]
+    const w = 48
+    const h = 40
+    const top = 18
+    const img = rasterOf(w, h, (_x, y) =>
+      y >= top && y < top + rows.length ? rows[y - top] : FIELD,
+    )
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(2)
+    const skin = seg.labels.data[0]
+    const crease = seg.labels.data[(top + 2) * w + (w >> 1)]
+    expect(crease).not.toBe(skin)
+    expect(paletteL(seg, crease)).toBeLessThan(paletteL(seg, skin) - 0.15)
+  })
+
   it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
     // A faint bar (ΔE well under the rescue contrast gate) is one the flood
     // renders acceptably; it must not be seeded as its own region.
