@@ -1,6 +1,5 @@
 import {
   CancelledError,
-  DEFAULT_SETTINGS,
   deltaEOkSq,
   hexToRgb,
   mmPerPx,
@@ -20,11 +19,9 @@ import type {
   StageId,
   StageTiming,
   TurnPolicy,
-  VectorizeMode,
   VectorizeResult,
   VectorizeSettings,
   VectorizeWarning,
-  TrazorEngine,
   TraceChart,
   TraceStep,
   VectorDocument,
@@ -198,27 +195,6 @@ function edgeProtectMask(
   const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
-  return { width, height, data }
-}
-
-/**
- * Learned coverage hint ([0,1] GrayImage, 0.5 = boundary) → a signed coverage
- * field ([-0.5, 0.5]) at the working resolution, quantized to 1/256 steps. The
- * quantization is the discretization boundary that keeps the (possibly WebGPU)
- * hint from perturbing geometry below the trace's sub-pixel sensitivity.
- */
-function coverageHintField(
-  hint: GrayImage | undefined,
-  width: number,
-  height: number,
-): GrayImage | null {
-  if (!hint) return null
-  const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
-  const data = new Float32Array(width * height)
-  for (let i = 0; i < data.length; i++) {
-    const v = g.data[i] - 0.5
-    data[i] = Math.round(v * 256) / 256
-  }
   return { width, height, data }
 }
 
@@ -780,7 +756,6 @@ export async function vectorize(
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
-      ctx?.coverageHint,
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
@@ -1992,26 +1967,24 @@ async function inkPipeline(
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
-  coverageHint: GrayImage | undefined,
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
 ): Promise<void> {
   run.stage('palette')
   // The despeckled mask and its coverage field are reused when the image and
-  // every threshold setting behind them are unchanged. Both hints feed the mask
-  // or the field without appearing in the key, so caching is off while either is
-  // present (correctness over speed).
+  // every threshold setting behind them are unchanged. The edge hint feeds the
+  // mask without appearing in the key, so caching is off while it is present
+  // (correctness over speed).
   const canCacheInk =
     cache !== undefined &&
     imageId !== undefined &&
     cache.imageId === imageId &&
-    edgeHint === undefined &&
-    coverageHint === undefined
+    edgeHint === undefined
   const inkKey = canCacheInk ? inkKeyOf(settings) : undefined
   let entry = canCacheInk && cache.ink?.key === inkKey ? cache.ink : undefined
   // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // with no hint this is byte-identical to despeckleMask (and always null when caching).
+  // with no hint it is null (and always null when caching).
   const protect = edgeProtectMask(edgeHint, image.width, image.height)
 
   let mask: BinaryMask
@@ -2057,14 +2030,6 @@ async function inkPipeline(
       const tl = encodedOfLightness(t)
       mask = binarize(luma, tl, settings.invert, opaque)
       if (settings.curveMode !== 'pixel') coverage = signedThresholdField(luma, tl, settings.invert)
-    }
-    // A learned coverage hint (FieldEnhancer) replaces the field derived from the
-    // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
-    // (the discretization boundary) and only when a sub-pixel field applies. No hint
-    // ⇒ the classical field, byte-identical.
-    if (coverageHint && settings.curveMode !== 'pixel') {
-      const hf = coverageHintField(coverageHint, image.width, image.height)
-      if (hf) coverage = hf
     }
     await run.tick()
 
@@ -2614,14 +2579,3 @@ function warnTinyFeatures(
 function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
-
-export function createNativeEngine(): TrazorEngine {
-  return {
-    id: 'native',
-    label: 'Trazor native',
-    modes: ['color', 'grayscale', 'bw', 'centerline'] satisfies VectorizeMode[],
-    vectorize: (image, settings, ctx) => vectorize(image, settings, ctx),
-  }
-}
-
-export { DEFAULT_SETTINGS }

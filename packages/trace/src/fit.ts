@@ -135,25 +135,6 @@ export function refineParam(c: Cubic, px: number, py: number, t: number): number
   return nt < 0 ? 0 : nt > 1 ? 1 : nt
 }
 
-/** Approximate distance from a point to a cubic (coarse scan + Newton). */
-export function distanceToCubic(c: Cubic, px: number, py: number): number {
-  let bestT = 0
-  let bestD = Infinity
-  for (let i = 0; i <= 16; i++) {
-    const t = i / 16
-    const [qx, qy] = evalCubic(c, t)
-    const d = (qx - px) * (qx - px) + (qy - py) * (qy - py)
-    if (d < bestD) {
-      bestD = d
-      bestT = t
-    }
-  }
-  let t = bestT
-  for (let i = 0; i < 3; i++) t = refineParam(c, px, py, t)
-  const [qx, qy] = evalCubic(c, t)
-  return Math.min(Math.sqrt(bestD), Math.hypot(qx - px, qy - py))
-}
-
 /**
  * Fit an open polyline (flat xy) with cubics within `tolerance` px, splitting
  * at the given corner indices (sorted, exclusive of 0 and n-1). Emits commands

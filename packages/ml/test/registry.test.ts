@@ -3,14 +3,7 @@ import { MODEL_REGISTRY, overrideModelUrl } from '../src/registry'
 
 describe('MODEL_REGISTRY', () => {
   it('declares every model with a consistent id, positive size, and license', () => {
-    const ids = [
-      'u2netp',
-      'slimsam-encoder',
-      'slimsam-decoder',
-      'edge-prepass',
-      'cleanup',
-      'signed-field',
-    ] as const
+    const ids = ['u2netp', 'slimsam-encoder', 'slimsam-decoder', 'edge-prepass', 'cleanup'] as const
     expect(Object.keys(MODEL_REGISTRY).toSorted()).toEqual([...ids].toSorted())
     for (const id of ids) {
       const spec = MODEL_REGISTRY[id]
@@ -25,7 +18,7 @@ describe('MODEL_REGISTRY', () => {
       expect(MODEL_REGISTRY[id].url).toMatch(/^https:\/\//)
     }
     // The project's own models are relative paths resolved against the app's base.
-    for (const id of ['edge-prepass', 'cleanup', 'signed-field'] as const) {
+    for (const id of ['edge-prepass', 'cleanup'] as const) {
       const url = MODEL_REGISTRY[id].url
       expect(url).not.toMatch(/^https?:\/\//)
       expect(url).toMatch(/\.onnx$/)

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   ciede2000,
-  ciede2000Rgb,
   deltaEOk,
   hexToRgb,
   oklabToRgb,
@@ -119,10 +118,12 @@ describe('CIEDE2000', () => {
     ])
   })
 
-  it('ciede2000Rgb reflects the Oklab-too-strict-near-black gap', () => {
+  it('ciede2000 reflects the Oklab-too-strict-near-black gap', () => {
+    const de = (a: number, b: number): number =>
+      ciede2000(...rgbToLab(a / 255, a / 255, a / 255), ...rgbToLab(b / 255, b / 255, b / 255))
     // #000 vs #0a0a0a are two distinct inks perceptually — well above a 1.5 floor.
-    expect(ciede2000Rgb(0, 0, 0, 0x0a, 0x0a, 0x0a)).toBeGreaterThan(1.5)
+    expect(de(0, 0x0a)).toBeGreaterThan(1.5)
     // Two near-identical mid grays stay far below the floor.
-    expect(ciede2000Rgb(128, 128, 128, 129, 129, 129)).toBeLessThan(1.5)
+    expect(de(128, 129)).toBeLessThan(1.5)
   })
 })

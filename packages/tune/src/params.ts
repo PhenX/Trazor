@@ -248,12 +248,6 @@ export const DEFAULT_FREE: readonly TunableKey[] = TUNABLE_PARAMS.filter((p) => 
 
 const SPEC_BY_KEY = new Map<TunableKey, ParamSpec>(TUNABLE_PARAMS.map((p) => [p.key, p]))
 
-export function specFor(key: TunableKey): ParamSpec {
-  const spec = SPEC_BY_KEY.get(key)
-  if (!spec) throw new Error(`no tunable spec for ${key}`)
-  return spec
-}
-
 /** Parameters that apply to `mode` and whose `when` guard holds for `settings`. */
 export function applicableParams(
   keys: readonly TunableKey[],

@@ -27,10 +27,10 @@ export type {
 } from './boundary'
 export { traceCenterline } from './centerline'
 export type { CenterlineOptions, StrokePath } from './centerline'
-export { decomposeMask, ringContains, ringBounds } from './crack'
+export { decomposeMask } from './crack'
 export type { CrackPath } from './crack'
 export { simplifyOpen } from './simplify'
-export { fitOpenPolyline, fitCubicSegment, distanceToCubic } from './fit'
+export { fitOpenPolyline, fitCubicSegment } from './fit'
 export type { Cubic } from './fit'
 export { optimalPolyline, straightReach } from './potrace/polyfit'
 export {
@@ -42,7 +42,5 @@ export {
   negatedField,
 } from './refine'
 export type { SignedField, LayerFieldSource } from './refine'
-export { solveBoundary } from './solve'
-export type { SolveOptions } from './solve'
 export { reverseCommands } from './paths'
 export type { FlatPoints } from './paths'

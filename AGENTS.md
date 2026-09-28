@@ -42,8 +42,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
   svg/                     @trazor/svg — compact SVG serialization + output analysis.
   engine/                  @trazor/engine — mode pipelines, progress/cancellation, warnings, worker + client,
                            and the optional helper pool that traces layers/shapes/chains in parallel.
-  ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge,
-                           cleanup & signed-field conditioning models, via onnxruntime-web. Browser-only.
+  ml/                      @trazor/ml — background removal & click-to-segment, plus the learned edge &
+                           cleanup conditioning models, via onnxruntime-web. Browser-only.
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
   tune/                    @trazor/tune — automatic settings search: weighted objectives + adaptive
                            parameter descent. Pure, DOM-free; a consumer pairs it with the engine worker pool.

@@ -81,7 +81,7 @@ decode (consumer)
 
 - **`core`** — `RasterImage`/`GrayImage`/`BinaryMask`/`LabelMap`, the `PathCommand` model, `VectorizeSettings` (schema +
   `normalizeSettings` clamping) and `TARGET_PROFILES`, Oklab color math, geometry helpers, `mulberry32`, and the
-  `TrazorEngine`/`VectorizeResult`/progress/warning types every layer speaks.
+  `VectorizeResult`/`EngineContext`/progress/warning types every layer speaks.
 - **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
@@ -103,8 +103,8 @@ decode (consumer)
   (below), and the worker protocol: `installWorkerHandler` (worker side) + `TrazorClient`
   (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
-  `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
-  (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so a consumer works without it.
+  `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint) and `CleanupEnhancer`
+  (denoise/de-JPEG). Browser-only; fails soft so a consumer works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
 - **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring

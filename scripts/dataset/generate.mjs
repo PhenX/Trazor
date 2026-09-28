@@ -7,7 +7,6 @@
 //   input/  the degraded raster the model sees
 //   clean/  the clean scene    (cleanup / super-resolution target)
 //   edge/   the soft edge map  (edge pre-pass target)
-//   field/  the coverage field (signed-field pre-pass target)
 // plus a manifest.json with the config and per-sample split assignment.
 //
 // Work is spread across worker threads (--jobs, default: CPU count). Because
@@ -22,7 +21,7 @@ import { parseArgs, USAGE } from './config.mjs'
 import { ensureDir, sanitize, writeManifest } from './io.mjs'
 import { hashString, mulberry32, seedFor } from './random.mjs'
 import { processItem } from './sample.mjs'
-import { dirSource, proceduralItem, silhouetteItem } from './sources.mjs'
+import { dirSource, proceduralItem } from './sources.mjs'
 
 const cfg = parseArgs(process.argv.slice(2))
 if (cfg.help) {
@@ -35,7 +34,6 @@ for (const s of SPLITS) {
   ensureDir(join(cfg.out, s, 'input'))
   if (cfg.targets.includes('clean')) ensureDir(join(cfg.out, s, 'clean'))
   if (cfg.targets.includes('edge')) ensureDir(join(cfg.out, s, 'edge'))
-  if (cfg.targets.includes('field')) ensureDir(join(cfg.out, s, 'field'))
 }
 
 // Assign a split from a stable hash of the split key (mulberry32 avalanches it).
@@ -68,11 +66,10 @@ function* buildItems() {
       index++
     }
   } else {
-    // procedural and silhouette are both index-driven synthesizers; each sample is
-    // mutually independent, so it splits on its own id (no family straddles splits).
-    const itemFor = cfg.source === 'silhouette' ? silhouetteItem : proceduralItem
+    // The procedural synthesizer is index-driven; each sample is mutually
+    // independent, so it splits on its own id (no family straddles splits).
     for (let index = 0; index < cfg.count; index++) {
-      const { id, family, svg } = itemFor(index, cfg.seed)
+      const { id, family, svg } = proceduralItem(index, cfg.seed)
       yield {
         index,
         id,

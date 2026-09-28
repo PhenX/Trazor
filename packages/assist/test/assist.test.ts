@@ -418,15 +418,10 @@ describe('analyzeImage', () => {
     expect(a.twoToneCoverage).toBeGreaterThan(0.9)
     expect(a.colorfulness).toBeLessThan(0.03)
     expect(a.distinctColors).toBeGreaterThan(2) // the rim's grays
-    expect(a.translucentArea).toBeLessThan(0.01)
     expect(a.minorTonesArea).toBe(0)
     expect(a.inkHex).toBe('#000000')
     expect(a.paperHex).toBe('#ffffff')
     expect(recommendSettings(a).profileId).toBe('bw-sketch')
-  })
-
-  it('tells a translucent interior from anti-aliased edge coverage', () => {
-    expect(analyzeImage(inkWithSoftShadow()).translucentArea).toBeGreaterThan(0.1)
   })
 
   it('counts a flat third tone, which anti-aliasing never produces', () => {
@@ -622,12 +617,9 @@ describe('recommendSettings — region-growing gates', () => {
     contrast: 0.2,
     colorfulness: 0.1,
     coloredFraction: 0.5,
-    translucentArea: 0,
     minorTonesArea: 0,
     inkHex: '#000000',
     paperHex: '#ffffff',
-    inkLightness: 0,
-    paperLightness: 1,
     ...over,
   })
 

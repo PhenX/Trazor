@@ -42,5 +42,5 @@ export {
   smoothLabelsSpatial,
 } from './regions'
 export type { EnclosedComponent, MergeOptions } from './regions'
-export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
+export { despeckleMaskGuided } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'

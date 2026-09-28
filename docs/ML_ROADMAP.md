@@ -33,14 +33,14 @@ in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../packages/trace/ARCHITECTU
 
 ## Priority overview
 
-| #     | Item                                                | Fixes                              | Impact                                            | Effort | Risk                          |
-| ----- | --------------------------------------------------- | ---------------------------------- | ------------------------------------------------- | ------ | ----------------------------- |
-| **1** | ΔE-through-tracer eval harness ✅                   | selection optimizes a proxy        | unlocks measuring 2–6                             | M      | Low                           |
-| **2** | Degradation & data realism ◐                        | robustness on degraded/real inputs | High (edge + cleanup both)                        | M–L    | Low                           |
-| **3** | Learned signed-field head ◐ — measured: no headroom | shape fitting _on degraded input_  | Low (a perfect field moves the boundary ~0.04 px) | L      | Med (geometry / determinism)  |
-| **4** | Primitive / arc fitting (classical) ✅              | biggest _visible_ quality gap      | High                                              | L      | Med (geometry / cutout seams) |
-| **5** | Cleanup model capacity ✅                           | under-capacity vs its own spec     | Med                                               | S      | Low                           |
-| **6** | Bounded differentiable refinement                   | fidelity ceiling                   | Very high, long-term                              | XL     | High                          |
+| #     | Item                                            | Fixes                              | Impact                                            | Effort | Risk                          |
+| ----- | ----------------------------------------------- | ---------------------------------- | ------------------------------------------------- | ------ | ----------------------------- |
+| **1** | ΔE-through-tracer eval harness ✅               | selection optimizes a proxy        | unlocks measuring 2–6                             | M      | Low                           |
+| **2** | Degradation & data realism ◐                    | robustness on degraded/real inputs | High (edge + cleanup both)                        | M–L    | Low                           |
+| **3** | Learned signed-field head ✗ — measured, removed | shape fitting _on degraded input_  | Low (a perfect field moves the boundary ~0.04 px) | L      | Med (geometry / determinism)  |
+| **4** | Primitive / arc fitting (classical) ✅          | biggest _visible_ quality gap      | High                                              | L      | Med (geometry / cutout seams) |
+| **5** | Cleanup model capacity ✅                       | under-capacity vs its own spec     | Med                                               | S      | Low                           |
+| **6** | Bounded differentiable refinement               | fidelity ceiling                   | Very high, long-term                              | XL     | High                          |
 
 **Sequencing:** Sprint 1 = **1 → 2** (then retrain edge + cleanup, record the new baseline). Sprint 2 = **5** (quick) +
 **3**. Sprint 3 = **4**. Later = **6** (offline oracle first). Item 1 comes first because nothing else is trustworthy
@@ -115,39 +115,18 @@ regression**. Then retrain edge + cleanup and record the item-1 numbers as the n
 **Docs.** `config.mjs` USAGE, `scripts/dataset/README.md`; mark shipped corruptions in the `ML_STRATEGY.md` degradation
 list.
 
-## 3. Learned signed-field head — geometry, not just gating — **mechanism implemented, measured: no headroom**
+## 3. Learned signed-field head — geometry, not just gating — **measured: no headroom, removed**
 
-**Shipped & tested.** The bw `coverageHint` path (`EngineContext.coverageHint` → quantized signed field → `traceMask`
-`coverage`), worker/client wiring, `FieldEnhancer` (`@trazor/ml`), the `field/` dataset target
-(`coverage = 1 − Oklab L` of the clean scene), and the `field` train/predict/eval tasks. Covered by
-`packages/engine/test/coverage-hint.test.ts`: no hint is byte-identical; a clean field snaps the traced edge toward the
-true position on a hard/degraded input; `pixel` mode ignores it. Spec: [`SIGNED_FIELD_PREPASS.md`](SIGNED_FIELD_PREPASS.md).
-The **silhouette training data** now exists (`scripts/dataset --source silhouette`: one ink on a paper ground —
-glyph counters, strokes, holes, thin features at several scales — with unit tests) and the **bw-appropriate eval
-reference** too (`eval:prepass --task field` reports a boundary-displacement error against the clean silhouette
-alongside ΔE).
-
-**Measured (studio session-8 study): very little headroom.** With that data and reference in place, the studio's
-(private) study trained a first field model and measured it on the metrics its human-judged batches track — GMSD
-(primary), boundary F and chamfer — not on whole-image ΔE. Even a **perfect** clean field re-seats the traced boundary
-by only ~0.04 px on degraded silhouettes and moves GMSD/ΔE within their tie bands; the trained model does no visible
-harm and at best a marginal boundary-F gain on real degraded line art, bought with ~10 % more nodes. The boundary error
-lives in the threshold/despeckle stage, not in the sub-pixel refinement this field feeds. Consequences: the mechanism
-stays (byte-identical when off, reproducible on a pinned backend), **no `signed-field.onnx` is published**, and the
-color `pairwiseField` extension and the studio UI toggle are **on hold** until the mechanism is reconsidered.
-
-**Why.** Point-position fidelity comes from the classical sub-pixel refinement (`packages/trace/src/refine.ts`), which
-snaps ring vertices onto the zero-contour of a signed field. That field is built from the **degraded** working image
-(`signedThresholdField`), so on noisy input it tracks a corrupted edge — and the edge model can't help (it only gates
-which regions survive). A learned, denoised field makes ML improve **point positions**, the shape-fitting concern.
-
-**How (as built).** The `field/` target is the clean scene's coverage (`1 − Oklab L`, [0,1]); `TinyUNet` sigmoid head
-(task `field`) predicts it; the engine quantizes it (the discretization boundary) and uses it as the bw `coverage`,
-so refinement snaps to the clean edge. Tier-1-touching: byte-identical classical path, WASM reproducible mode. Color
-`pairwiseField` is a follow-up.
-
-**Acceptance.** On degraded b/w silhouettes, boundary-position error vs. clean ground truth and ΔE improve over the
-classical field; clean inputs unregressed; classical path byte-identical and WASM parity holds.
+The idea: the classical sub-pixel refinement (`packages/trace/src/refine.ts`) snaps ring vertices onto the zero contour
+of a field built from the **degraded** working image, so on noisy input it tracks a corrupted edge; a `TinyUNet` head
+predicting the clean scene's coverage would feed it a denoised field instead. It was built end to end (an
+`EngineContext.coverageHint` path through worker and client, a `FieldEnhancer`, a `field/` dataset target with a
+silhouette source, `field` train/predict/eval tasks) and measured in the studio's session-8 study on the metrics its
+human-judged batches track — GMSD, boundary F and chamfer. Even a **perfect** clean field re-seats the traced boundary
+by only ~0.04 px on degraded silhouettes and moves GMSD/ΔE within their tie bands; the trained model bought at best a
+marginal boundary-F gain on real degraded line art with ~10 % more nodes. The boundary error lives in the
+threshold/despeckle stage, not in the refinement this field feeds. No model was published and the whole mechanism was
+removed (engine, `@trazor/ml`, dataset and training code); git history keeps it.
 
 ## 4. Primitive / arc fitting (classical, no training) — **implemented** (cutout-arc consistency pending)
 
@@ -247,7 +226,7 @@ browser contract (normalized in → [0,1] out) — worth it but validate at expo
 - **Segmentation / quantization priors** — extend SlimSAM magic-select toward automatic object-per-layer proposals.
 - **Edge-target alternative** — the current Sobel-magnitude target caps the edge model at "Sobel-on-clean"; a thinned/NMS
   boundary or the classical tracer's own crack boundary (self-supervision) is a stronger target if the edge map ever
-  drives geometry. Largely superseded by item 3.
+  drives geometry — which item 3 found not worth it.
 - **Training-loop niceties** — cache decoded tensors / webdataset to speed epochs; optional ODS threshold sweep for the F
   metric; log the edge-pixel fraction to validate the ~5–8% assumption.
 
