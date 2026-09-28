@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { GrayImage } from '@trazor/core'
-import { coverageOf, layerField, negatedField, signedFieldOf } from '@trazor/trace'
+import {
+  coverageOf,
+  decomposeMask,
+  layerField,
+  negatedField,
+  ringPolygon,
+  signedFieldOf,
+} from '@trazor/trace'
 
 const W = 16
 const H = 12
@@ -69,6 +76,82 @@ describe('layerField', () => {
     expect(field.at(9, 5)).toBe(0.5)
     // Solid pixels still read their color edge.
     expect(Math.abs(field.at(7, 5))).toBeLessThan(0.01)
+  })
+
+  it('reads a translucent paint across the mask as a color edge, not as transparency', () => {
+    const src = scene()
+    // Red is a translucent paint (alpha 115, just under the opaque cut): its
+    // alpha coverage reads slightly negative, and the rim pixel carries the
+    // blend of both paints' alphas.
+    const alpha: GrayImage = { width: W, height: H, data: new Float32Array(W * H) }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) alpha.data[y * W + x] = x < 7 ? -0.05 : x === 7 ? 0.22 : 0.5
+    }
+    const field = layerField({ width: W, height: H, ...src, label: -1, alpha })
+    // The half-mixed rim sits on the zero contour, the translucent paint beyond
+    // it is deep outside, and the opaque side is inside.
+    expect(Math.abs(field.at(7, 5))).toBeLessThan(0.01)
+    expect(field.at(6, 5)).toBe(-0.5)
+    expect(field.at(8, 5)).toBeCloseTo(0.5, 5)
+  })
+
+  it('refines a slanted edge against a translucent paint onto the true line', () => {
+    // An opaque dark paint (label 1) right of x = 12 + y/5 over a translucent
+    // light paint (label 0, alpha 115), anti-aliased by exact area coverage and
+    // flattened over white as the working image is. At the opaque cut (128)
+    // the translucent side reads almost half covered, so a field built from
+    // alpha would place the edge at its pixel centers, a staircase.
+    const S = 40
+    const edge = (y: number): number => 12 + y / 5
+    const dark = [67, 50, 41]
+    const light = [199, 235, 251]
+    const mask = new Uint8Array(S * S)
+    const labels = new Int32Array(S * S)
+    const pixels = new Uint8ClampedArray(S * S * 4)
+    const alpha: GrayImage = { width: S, height: S, data: new Float32Array(S * S) }
+    const cut = 128 / 255
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        let hits = 0
+        for (let j = 0; j < 16; j++) {
+          for (let i = 0; i < 16; i++) if (x + (i + 0.5) / 16 > edge(y + (j + 0.5) / 16)) hits++
+        }
+        const c = hits / 256
+        const p = y * S + x
+        labels[p] = c >= 0.5 ? 1 : 0
+        mask[p] = labels[p]
+        for (let k = 0; k < 3; k++) pixels[p * 4 + k] = Math.round(c * dark[k] + (1 - c) * light[k])
+        pixels[p * 4 + 3] = 255
+        const d = (c * 255 + (1 - c) * 115) / 255 - cut
+        alpha.data[p] = d > 0 ? (d * 0.5) / (1 - cut) : (d * 0.5) / cut
+      }
+    }
+    const field = layerField({
+      width: S,
+      height: S,
+      mask,
+      labels,
+      pixels,
+      paletteRgb: new Uint8Array([...light, ...dark]),
+      label: -1,
+      alpha,
+    })
+    const [ring] = decomposeMask({ width: S, height: S, data: mask }, 'minority', 1)
+    const fit = ringPolygon(ring.points, field)
+    expect(fit).not.toBeNull()
+    const geom = fit!.geom
+    const cos = 1 / Math.hypot(1, 1 / 5)
+    let worst = 0
+    let checked = 0
+    for (let i = 0; i < geom.length; i += 2) {
+      const [x, y] = [geom[i], geom[i + 1]]
+      // The slanted edge, clear of the image border and of the corners it makes there.
+      if (y < 2 || y > S - 2 || x > 30) continue
+      worst = Math.max(worst, Math.abs(x - edge(y)) * cos)
+      checked++
+    }
+    expect(checked).toBeGreaterThan(30)
+    expect(worst).toBeLessThan(0.1)
   })
 
   it('reads a hard edge where the two palette colors coincide', () => {

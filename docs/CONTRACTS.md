@@ -525,9 +525,11 @@ export function refineRingToField(
 ): FlatPoints
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
-// 4-neighbor on the other side: left, right, up, down), an exterior edge the transparency coverage
-// (`alpha`); ±0.5 deep inside/outside; identical palette colors read as a hard edge. `label` is the
-// color painted inside the mask (a lifted island's label; −1 for a base layer: each inside pixel's own).
+// 4-neighbor on the other side: left, right, up, down) — a translucent paint included, whose alpha is
+// its opacity, not an edge; an edge against a pixel cut away as transparent reads the transparency
+// coverage (`alpha`) where the source is not solid; ±0.5 deep inside/outside; identical palette colors
+// read as a hard edge. `label` is the color painted inside the mask (a lifted island's label; −1 for a
+// base layer: each inside pixel's own).
 export interface LayerFieldSource {
   width: number
   height: number
