@@ -188,11 +188,27 @@ export function absorbMixtureLabels(
 // A seam a third region captured, handed back: a run of at most two pixels of label C across which
 // the labels are A and B (different, neither C), every pixel on the A–B blend segment and far from
 // C's color, while C's own color is off that segment, goes to A and B by summed coverage (the pixels
-// from the A side first). Mutates `labels`; returns the pixels moved. segmentRegions runs it last.
+// from the A side first). Mutates `labels`; returns the pixels moved. segmentRegions runs it after the merge.
 export function returnSeamPixels(
   image: RasterImage,
   labels: LabelMap,
   paletteRgb: Uint8Array,
+): number
+// A thin band of blend colors (a region grown along a soft edge) handed back to the two regions it runs
+// between: a 4-connected region component of mean width ≤ 6 px whose two chief neighbors A and B hold 70 %
+// of its border (the lesser a quarter of that), whose mean color lies inside the A–B sRGB blend segment
+// (within 20 levels) and whose pixels are blends too (70 % within a fifth of the A–B distance — a
+// compressed edge smears its chroma). A hair (nowhere 3 px thick) goes on that; a thicker band must also
+// spread its coverage like a ramp (P80 − P20 ≥ 0.2) and hold no flat core (`gradient` < `flatThreshold`
+// on ≤ 5 % of it), so a stroke in an intermediate color stays. Each pixel goes to A where its coverage
+// of A is ≥ ½, else to B; two passes. Mutates `labels`; returns the pixels moved. segmentRegions runs it
+// last, with its own gradient and flat threshold.
+export function dissolveBlendBands(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+  gradient: Float32Array, // per-pixel gradient magnitude, w*h
+  flatThreshold: number,
 ): number
 
 // convert.ts
@@ -320,6 +336,11 @@ export function fitRegionGradients(
   so a budget spends its damage on the smallest, closest regions first. With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
   close-but-distinct colors stay apart while small regions still fold.
+- After the merge, a seam a third region captured goes back to the two regions
+  it separates (`returnSeamPixels`), and a thin band of blend colors grown along
+  a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
+  region those passes empty is dropped and the labels renumbered in order, so
+  they stay compact.
 - Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
   candidates). Result mirrors `QuantizeResult` so the engine consumes it
   identically. Selected by `VectorizeSettings.segmentation === 'regions'`.

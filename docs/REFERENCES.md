@@ -360,8 +360,8 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   the sRGB blend inversion, from `crates/inkvec-trace/src/coverage.rs`), the
   interior palette read (`interiorPaletteColors`), the CIEDE2000 “same ink”
   merge floor (`quantize.ts`, its `SAME_INK_DE00`), the mixture-label
-  absorption pass and the seam return after region growing
-  (`packages/raster/src/mixture.ts`) — its ink-idea test
+  absorption pass, and the seam return and blend-band dissolve after region
+  growing (`packages/raster/src/mixture.ts`) — its ink-idea test
   (`crates/inkvec-trace/src/color.rs`): a label whose pixels are coverage
   blends of its two neighbors, and which fills little interior, is not an ink —
   and the treatment of an ink as color plus opacity: a flat translucent region

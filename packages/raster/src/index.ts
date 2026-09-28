@@ -18,7 +18,7 @@ export { encodedOfLightness, toEncodedLuma, toGrayscale, toOklabBuffer } from '.
 export { detectEdges } from './edges'
 export { fitRegionGradients } from './gradient'
 export type { GradientOptions, GradientResult } from './gradient'
-export { absorbMixtureLabels, returnSeamPixels } from './mixture'
+export { absorbMixtureLabels, dissolveBlendBands, returnSeamPixels } from './mixture'
 export { interiorPaletteColors } from './palette'
 export type { InteriorPalette } from './palette'
 export { quantize } from './quantize'

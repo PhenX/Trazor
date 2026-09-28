@@ -32,6 +32,11 @@
  *      blend than either side's — can run along it as a line a pixel wide; a
  *      seam run like that goes back to the two regions it separates
  *      (`returnSeamPixels`).
+ *   6. A soft edge several pixels wide can hold a flat pixel or two, and the
+ *      marker seeded there grows along the whole ramp as a band of the blend
+ *      color (a rosy line between an orange field and a blue outline). A thin
+ *      band like that, whose pixels are blends of the two regions it runs
+ *      between, dissolves back into them (`dissolveBlendBands`).
  *
  * Deterministic: fixed scan and neighbor order throughout, priority-queue ties
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
@@ -40,7 +45,7 @@
 import { createLabelMap, oklabToRgb, rgbToHex } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
-import { returnSeamPixels } from './mixture'
+import { dissolveBlendBands, returnSeamPixels } from './mixture'
 
 export interface SegmentOptions {
   /**
@@ -480,11 +485,43 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   }
   // ---- 5. A seam a third region captured goes back to the two it separates ----
   returnSeamPixels(image, labels, paletteRgb)
+  // ---- 6. A thin band of blend colors dissolves into the two regions it runs between ----
+  dissolveBlendBands(image, labels, paletteRgb, grad, flatThreshold)
   for (let p = 0; p < n; p++) {
     if (out[p] >= 0) counts[out[p]]++
   }
 
-  return { labels, paletteHex, paletteRgb, counts }
+  return dropEmptyLabels({ labels, paletteHex, paletteRgb, counts })
+}
+
+/**
+ * Renumber the labels past any the last steps emptied (a dissolved band's whole
+ * region), keeping their order, so the labels stay compact.
+ */
+function dropEmptyLabels(seg: SegmentResult): SegmentResult {
+  const { labels, paletteHex, paletteRgb, counts } = seg
+  if (!counts.includes(0)) return seg
+  const remap = new Int32Array(labels.count).fill(-1)
+  let count = 0
+  for (let l = 0; l < labels.count; l++) if (counts[l] > 0) remap[l] = count++
+  const data = labels.data
+  for (let p = 0; p < data.length; p++) if (data[p] >= 0) data[p] = remap[data[p]]
+  const hex: string[] = new Array(count)
+  const rgb = new Uint8Array(count * 3)
+  const kept = new Uint32Array(count)
+  for (let l = 0; l < labels.count; l++) {
+    const to = remap[l]
+    if (to < 0) continue
+    hex[to] = paletteHex[l]
+    rgb.set(paletteRgb.subarray(l * 3, l * 3 + 3), to * 3)
+    kept[to] = counts[l]
+  }
+  return {
+    labels: { width: labels.width, height: labels.height, data, count },
+    paletteHex: hex,
+    paletteRgb: rgb,
+    counts: kept,
+  }
 }
 
 /**

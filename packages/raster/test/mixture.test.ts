@@ -1,6 +1,6 @@
 import type { LabelMap } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
-import { absorbMixtureLabels, returnSeamPixels } from '../src/index'
+import { absorbMixtureLabels, dissolveBlendBands, returnSeamPixels } from '../src/index'
 import { rasterOf } from './helpers'
 import type { Rgba } from './helpers'
 
@@ -145,5 +145,132 @@ describe('returnSeamPixels', () => {
     const before = labels.data.slice()
     expect(returnSeamPixels(image, labels, tone)).toBe(0)
     expect(labels.data).toEqual(before)
+  })
+})
+
+describe('dissolveBlendBands', () => {
+  // 40×20: an orange field (label 0) left of a blue one (label 1), and between
+  // them the columns a test labels 2 — a band of blend colors grown along the
+  // soft edge between the two, or a stroke drawn in a color of its own.
+  const W = 40
+  const H = 20
+  const ORANGE: Rgba = [224, 87, 41, 255]
+  const BLUE: Rgba = [91, 126, 172, 255]
+  const palette = Uint8Array.from([224, 87, 41, 91, 126, 172, 157, 106, 106])
+  const FLAT = 0.02
+  /** The blend `t` of orange over blue, its green channel moved by `shift`. */
+  const mix = (t: number, shift = 0): Rgba => [
+    Math.round(ORANGE[0] * t + BLUE[0] * (1 - t)),
+    Math.round(ORANGE[1] * t + BLUE[1] * (1 - t)) + shift,
+    Math.round(ORANGE[2] * t + BLUE[2] * (1 - t)),
+    255,
+  ]
+  /**
+   * The scene with each column of `band` in its color and labeled 2 (orange
+   * left of the band, blue right of it), and a gradient that is flat only on
+   * the `flat` columns.
+   */
+  function scene(
+    band: Map<number, Rgba>,
+    flat: readonly number[] = [],
+  ): { image: ReturnType<typeof rasterOf>; labels: LabelMap; gradient: Float32Array } {
+    const first = Math.min(...band.keys())
+    const image = rasterOf(W, H, (x) => band.get(x) ?? (x < first ? ORANGE : BLUE))
+    const data = new Int32Array(W * H)
+    const gradient = new Float32Array(W * H).fill(1)
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        data[y * W + x] = band.has(x) ? 2 : x < first ? 0 : 1
+        if (flat.includes(x)) gradient[y * W + x] = 0
+      }
+    }
+    return { image, labels: { width: W, height: H, data, count: 3 }, gradient }
+  }
+  const columnLabels = (labels: LabelMap, x: number): Set<number> =>
+    new Set(Array.from({ length: H }, (_, y) => labels.data[y * W + x]))
+
+  it('hands a band of blend colors back to the two fills, split at half coverage', () => {
+    // Three columns of a ramp from orange to blue: a band thicker than a hair,
+    // holding a stretch of the ramp across it.
+    const { image, labels, gradient } = scene(
+      new Map([
+        [18, mix(0.8)],
+        [19, mix(0.55)],
+        [20, mix(0.3)],
+      ]),
+    )
+    expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(3 * H)
+    expect(census(labels)[2]).toBe(0)
+    expect(columnLabels(labels, 19)).toEqual(new Set([0]))
+    expect(columnLabels(labels, 20)).toEqual(new Set([1]))
+  })
+
+  it('hands back a hair of one blend', () => {
+    const { image, labels, gradient } = scene(new Map([[20, mix(0.6)]]))
+    expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(H)
+    expect(columnLabels(labels, 20)).toEqual(new Set([0]))
+  })
+
+  it('reads the smeared chroma of a compressed edge as a blend', () => {
+    // Chroma subsampling pushes each pixel of the edge off the blend segment —
+    // here by ~20 sRGB levels, more than a clean anti-aliased pixel ever strays
+    // — in opposite directions on either side, so the band's mean stays on it.
+    const { image, labels, gradient } = scene(
+      new Map([
+        [19, mix(0.7, 20)],
+        [20, mix(0.3, -20)],
+      ]),
+    )
+    expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(2 * H)
+    expect(columnLabels(labels, 19)).toEqual(new Set([0]))
+    expect(columnLabels(labels, 20)).toEqual(new Set([1]))
+  })
+
+  it('keeps a stroke drawn in an intermediate color', () => {
+    // Five columns: an anti-aliased column on each side of a plateau of one
+    // blend. Its coverage spreads like a ramp's, but its core is flat — a
+    // stroke painted in that color.
+    const { image, labels, gradient } = scene(
+      new Map([
+        [16, mix(0.8)],
+        [17, mix(0.5)],
+        [18, mix(0.5)],
+        [19, mix(0.5)],
+        [20, mix(0.2)],
+      ]),
+      [18],
+    )
+    const before = labels.data.slice()
+    expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(0)
+    expect(labels.data).toEqual(before)
+  })
+
+  it('keeps a line in a color of its own between the two fills', () => {
+    const dark = Uint8Array.from([224, 87, 41, 91, 126, 172, 40, 30, 30])
+    const { image, labels, gradient } = scene(
+      new Map([
+        [19, [40, 30, 30, 255]],
+        [20, [40, 30, 30, 255]],
+      ]),
+    )
+    expect(dissolveBlendBands(image, labels, dark, gradient, FLAT)).toBe(0)
+    expect(census(labels)[2]).toBe(2 * H)
+  })
+
+  it('keeps a line within one field, and a spur that meets the second only at its tip', () => {
+    // Column 10 runs inside the orange field; row 10 runs from x 12 to the blue
+    // field's edge, which it meets end-on.
+    const image = rasterOf(W, H, (x, y) =>
+      x === 10 || (y === 10 && x >= 12 && x < 20) ? mix(0.5) : x < 20 ? ORANGE : BLUE,
+    )
+    const data = new Int32Array(W * H)
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        data[y * W + x] = x === 10 || (y === 10 && x >= 12 && x < 20) ? 2 : x < 20 ? 0 : 1
+      }
+    }
+    const labels: LabelMap = { width: W, height: H, data, count: 3 }
+    const gradient = new Float32Array(W * H).fill(1)
+    expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(0)
   })
 })
