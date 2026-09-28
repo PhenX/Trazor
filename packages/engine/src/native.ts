@@ -77,6 +77,7 @@ import {
   TRANSLUCENT_MIN_ALPHA,
   zhangSuenThin,
 } from '@trazor/raster'
+import type { EnclosedComponent } from '@trazor/raster'
 import {
   assembleFaces,
   assembleRegions,
@@ -338,7 +339,7 @@ interface PaletteEntry {
  * paint order, and the island layers that follow them on top. Derived from the
  * labels and their counts, so it is byte-identical to recomputation.
  */
-interface StackPlan {
+export interface StackPlan {
   stackLabels: Int32Array
   /** Size of the label space (the palette length) the labels index into. */
   labelCount: number
@@ -1629,7 +1630,11 @@ function paintPositions(plan: StackPlan): Int32Array {
  * base, so it reads as the outline/backdrop showing between the colors stacked
  * on top: the standard layered-vinyl build (a cartoon's black outline, a flat
  * design's background). A thin outline threading between regions outscores a
- * compact blob of the same color, and a tiny dark speck never wins. The rest
+ * compact blob of the same color, and a tiny dark speck never wins. A vote this
+ * close is no vote, though: when other colors come within `BASE_CONTEST` of the
+ * leader's perimeter (a poster's backdrop against its letter fill, a cartoon's
+ * outline against its white ground), each contender's stack is built and the one
+ * whose layers trace the least edge is kept ({@link stackedEdge}). The rest
  * stack by descending area (large fields low, small details on top). Order sets
  * only which sheet is the full base and the layer/group order — never the
  * rendered pixels, since each pixel's topmost layer is its own.
@@ -1646,11 +1651,42 @@ function paintPositions(plan: StackPlan): Int32Array {
  * show through and the rendered pixels are unchanged — only the cut layers get
  * cleaner.
  */
-function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
-  const order0 = stackingOrder(labels, counts)
+export function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
+  const perim = regionPerimeters(labels)
+  const enclosedAll = findEnclosedComponents(labels)
+  const contenders = baseContenders(perim, counts)
+  if (contenders.length < 2) return planWith(labels, counts, enclosedAll, stackingOrder)
+  // A contested base: trace each contender's stack and keep the one whose
+  // layers draw the least edge (the first, most connective one on a tie).
+  let best: StackPlan | undefined
+  let bestEdge = Infinity
+  for (const base of contenders) {
+    const plan = planOnBase(labels, counts, base, enclosedAll)
+    const edge = stackedEdge(plan, labels.width)
+    if (edge < bestEdge) {
+      bestEdge = edge
+      best = plan
+    }
+  }
+  return best as StackPlan
+}
+
+/**
+ * The plan for one way of ordering the base layers: `pickOrder` orders the
+ * labels (base first), the islands buried {@link MIN_LIFT_DEPTH} or more below
+ * their surround in that order are lifted, and the painted map is ordered
+ * again.
+ */
+function planWith(
+  labels: LabelMap,
+  counts: Uint32Array,
+  enclosedAll: readonly EnclosedComponent[],
+  pickOrder: (labels: LabelMap, counts: Uint32Array) => number[],
+): StackPlan {
+  const order0 = pickOrder(labels, counts)
   const position0 = new Int32Array(counts.length).fill(-1)
   order0.forEach((l, i) => (position0[l] = i))
-  const enclosed = findEnclosedComponents(labels).filter((c) => {
+  const enclosed = enclosedAll.filter((c) => {
     const depth = position0[c.surround] - position0[c.label]
     return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
   })
@@ -1669,7 +1705,7 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
       if (l >= 0) stackCounts[l]++
     }
     stackLabels = painted
-    order = stackingOrder(
+    order = pickOrder(
       { width: labels.width, height: labels.height, data: painted, count: labels.count },
       stackCounts,
     )
@@ -1691,6 +1727,132 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
     .map((label) => ({ label, pixels: byColor.get(label) as number[] }))
 
   return { stackLabels, labelCount: counts.length, order, islands }
+}
+
+/**
+ * Share of the leading perimeter a label needs to contest the base. The
+ * perimeter vote stands for how much edge a base saves, and between two colors
+ * this close it no longer tells them apart: on a poster the backdrop and the
+ * letter fill tie, and the stacks the two build differ by a tenth of their edge.
+ */
+const BASE_CONTEST = 0.8
+/** Most contenders whose stacks are traced for a contested base. */
+const BASE_CONTENDERS = 3
+
+/**
+ * The labels contesting the base, most connective first: the one with the
+ * largest perimeter, and the others within {@link BASE_CONTEST} of it (at most
+ * {@link BASE_CONTENDERS} in all). A single contender is an uncontested base.
+ */
+function baseContenders(perim: Float64Array, counts: Uint32Array): number[] {
+  const labels: number[] = []
+  for (let l = 0; l < counts.length; l++) if (counts[l] > 0) labels.push(l)
+  labels.sort((a, b) => perim[b] - perim[a] || counts[b] - counts[a] || a - b)
+  if (labels.length === 0) return []
+  const floor = BASE_CONTEST * perim[labels[0]]
+  return labels.filter((l) => perim[l] >= floor).slice(0, BASE_CONTENDERS)
+}
+
+/** The plan with `base` pinned to the bottom and the rest by descending area. */
+export function planOnBase(
+  labels: LabelMap,
+  counts: Uint32Array,
+  base: number,
+  enclosedAll: readonly EnclosedComponent[] = findEnclosedComponents(labels),
+): StackPlan {
+  return planWith(labels, counts, enclosedAll, (_, c) => orderOnBase(c, base))
+}
+
+/** `base` first, then every other label with pixels by descending pixel count. */
+function orderOnBase(counts: Uint32Array, base: number): number[] {
+  const order: number[] = []
+  for (let l = 0; l < counts.length; l++) if (counts[l] > 0 && l !== base) order.push(l)
+  order.sort((a, b) => counts[b] - counts[a])
+  order.unshift(base)
+  return order
+}
+
+/**
+ * The edge a stacked plan's layers trace: the perimeter (cell sides facing
+ * outside) of every base layer's cut — its own color's union components through
+ * the labels painted at or above it, as {@link decomposeStackedLayers} builds
+ * them — plus every island layer's. The cuts are nested (each layer's is taken
+ * from the labels at or above it), so they are built once, top layer down: each
+ * layer's pixels join a union-find whose components keep their perimeter as
+ * they merge (a shared side takes two off), and a layer's cut is the components
+ * its own pixels landed in. Linear in the pixels, however many layers.
+ */
+export function stackedEdge(plan: StackPlan, width: number): number {
+  const labels = plan.stackLabels
+  const n = labels.length
+  const { order } = plan
+  // Pixels bucketed by label, one pass.
+  const size = new Int32Array(plan.labelCount + 1)
+  for (let p = 0; p < n; p++) if (labels[p] >= 0) size[labels[p] + 1]++
+  for (let l = 0; l < plan.labelCount; l++) size[l + 1] += size[l]
+  const bucket = new Int32Array(size[plan.labelCount])
+  const fill = size.slice(0, plan.labelCount)
+  for (let p = 0; p < n; p++) if (labels[p] >= 0) bucket[fill[labels[p]]++] = p
+
+  const parent = new Int32Array(n).fill(-1)
+  const perim = new Int32Array(n)
+  const seen = new Int32Array(n).fill(-1)
+  const find = (p: number): number => {
+    let r = p
+    while (parent[r] !== r) r = parent[r]
+    while (parent[p] !== r) {
+      const next = parent[p]
+      parent[p] = r
+      p = next
+    }
+    return r
+  }
+  const join = (p: number, q: number): void => {
+    const a = find(p)
+    const b = find(q)
+    if (a === b) {
+      perim[a] -= 2
+      return
+    }
+    const keep = a < b ? a : b
+    const drop = a < b ? b : a
+    parent[drop] = keep
+    perim[keep] += perim[drop] - 2
+  }
+  let edge = 0
+  for (let layer = order.length - 1; layer >= 0; layer--) {
+    const label = order[layer]
+    for (let k = size[label]; k < size[label + 1]; k++) {
+      const p = bucket[k]
+      parent[p] = p
+      perim[p] = 4
+      const x = p - ((p / width) | 0) * width
+      if (x > 0 && parent[p - 1] >= 0) join(p, p - 1)
+      if (x < width - 1 && parent[p + 1] >= 0) join(p, p + 1)
+      if (p >= width && parent[p - width] >= 0) join(p, p - width)
+      if (p < n - width && parent[p + width] >= 0) join(p, p + width)
+    }
+    for (let k = size[label]; k < size[label + 1]; k++) {
+      const r = find(bucket[k])
+      if (seen[r] === layer) continue
+      seen[r] = layer
+      edge += perim[r]
+    }
+  }
+  // An island layer's cut is exactly its own pixels.
+  const own = new Uint8Array(n)
+  for (const island of plan.islands) {
+    for (const p of island.pixels) own[p] = 1
+    for (const p of island.pixels) {
+      const x = p - ((p / width) | 0) * width
+      if (x === 0 || own[p - 1] === 0) edge++
+      if (x === width - 1 || own[p + 1] === 0) edge++
+      if (p < width || own[p - width] === 0) edge++
+      if (p >= n - width || own[p + width] === 0) edge++
+    }
+    for (const p of island.pixels) own[p] = 0
+  }
+  return edge
 }
 
 /** The stacked plan for this label map, from the palette entry when it holds one. */
