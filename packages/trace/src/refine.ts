@@ -403,10 +403,17 @@ export interface LayerFieldSource {
  * recovered by projecting its color onto the segment between the two palette
  * colors (`coverageOf`), the pair read per pixel from its first 4-neighbor on
  * the other side of the mask (left, right, up, down: a fixed order, so the
- * field is deterministic) — or, where the source is not solid, the exterior
- * edge against transparency, whose position the alpha coverage carries. A pixel
- * with no neighbor across the mask is deep inside or outside (±0.5); two
- * identical palette colors carry no edge information and read as a hard edge.
+ * field is deterministic) — or, against a pixel cut away as transparent, the
+ * exterior edge, whose position the alpha coverage carries where the source is
+ * not solid. A translucent paint (steam, glass, a shadow kept under the lowered
+ * cut) still meets its neighbor at a color edge: its alpha is the paint's own
+ * opacity, not the edge, and the working image composites both paints over the
+ * same ground linearly in coverage, so the projection reads that edge exactly —
+ * where the alpha coverage, taken at the opaque cut level, would pin it to the
+ * translucent pixels' centers and trace a staircase. A pixel with no neighbor
+ * across the mask is deep inside or outside (±0.5, or the alpha coverage on a
+ * soft exterior rim); two identical palette colors carry no edge information
+ * and read as a hard edge.
  */
 export function layerField(src: LayerFieldSource): SignedField {
   const { width: w, height: h, mask, labels, pixels, paletteRgb, label, alpha } = src
@@ -415,6 +422,12 @@ export function layerField(src: LayerFieldSource): SignedField {
   const project = (p: number, own: number, other: number, hard: number): number => {
     const c = coverageOf(pixels, p * 4, paletteRgb, own * 3, other * 3)
     return c < 0 ? hard : c - 0.5
+  }
+  /** The transparency coverage at `p` where the source is not solid there, else `hard`. */
+  const exterior = (p: number, hard: number): number => {
+    if (alphaData === undefined) return hard
+    const a = alphaData[p]
+    return a < SATURATED ? a : hard
   }
   /** First 4-neighbor of `p` whose mask bit is `side`, else −1. */
   const across = (p: number, x: number, y: number, side: number): number => {
@@ -429,21 +442,16 @@ export function layerField(src: LayerFieldSource): SignedField {
     height: h,
     at(x: number, y: number): number {
       const p = y * w + x
-      if (alphaData !== undefined) {
-        // Not solid: on the exterior rim or beyond it, where coverage is the edge.
-        const a = alphaData[p]
-        if (a < SATURATED) return a
-      }
       const l = labels[p]
       if (mask[p] !== 0) {
         const q = across(p, x, y, 0)
-        if (q < 0) return 0.5
-        const other = labels[q]
-        const own = label >= 0 ? label : l
-        if (other < 0 || own < 0) return 0.5
-        return project(p, own, other, 0.5)
+        if (q >= 0 && labels[q] >= 0) {
+          const own = label >= 0 ? label : l
+          return own < 0 ? 0.5 : project(p, own, labels[q], 0.5)
+        }
+        return exterior(p, 0.5)
       }
-      if (l < 0) return -0.5
+      if (l < 0) return exterior(p, -0.5)
       const q = across(p, x, y, 1)
       if (q < 0) return -0.5
       const own = label >= 0 ? label : labels[q]
