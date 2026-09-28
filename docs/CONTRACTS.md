@@ -3,7 +3,7 @@
 Authoritative API surface each package must export. `@trazor/core` (already
 implemented — read it first) defines the shared vocabulary: `RasterImage`,
 `GrayImage`, `BinaryMask`, `LabelMap`, `PathCommand`, `VectorizeSettings`,
-`VectorizeResult`, `TrazorEngine`, color/geometry helpers, `mulberry32`.
+`VectorizeResult`, `EngineContext`, color/geometry helpers, `mulberry32`.
 
 Rules that apply to every package:
 
@@ -68,8 +68,7 @@ export function parseSettingsImport(input: string): ImportedSettings
 ```ts
 // color.ts — sRGB→CIELAB (D65) and the CIEDE2000 difference (Sharma, Wu & Dalal
 // 2005), alongside the existing Oklab helpers. Components r,g,b in [0,1]; Lab
-// L* in [0,100]. `ciede2000Rgb` is the byte-triple convenience used by the
-// palette "same ink" floor.
+// L* in [0,100]. The palette's "same ink" floor is stated in these units.
 export function rgbToLab(r: number, g: number, b: number): [number, number, number]
 export function ciede2000(
   L1: number,
@@ -77,14 +76,6 @@ export function ciede2000(
   b1: number,
   L2: number,
   a2: number,
-  b2: number,
-): number
-export function ciede2000Rgb(
-  r1: number,
-  g1: number,
-  b1: number,
-  r2: number,
-  g2: number,
   b2: number,
 ): number
 ```
@@ -407,14 +398,9 @@ export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 // sampleMask so rim mixtures stay out of the palette. Deterministic.
 export function detectEdges(image: RasterImage, threshold: number): BinaryMask
 
-// morphology.ts — square structuring element, radius in px.
-export function dilate(mask: BinaryMask, radius: number): BinaryMask
-export function erode(mask: BinaryMask, radius: number): BinaryMask
-// Remove 8-connected foreground specks < minArea AND fill 4-connected background
-// holes < minArea (holes = background components not touching the border).
-export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask
-// As despeckleMask, but a component overlapping `protect` (1 = protected) is kept
-// even below minArea; `protect` null reproduces despeckleMask byte-for-byte.
+// morphology.ts — remove 8-connected foreground specks < minArea AND fill 4-connected
+// background holes < minArea (holes = background components not touching the border);
+// a component overlapping `protect` (1 = protected; null for none) is kept even below minArea.
 export function despeckleMaskGuided(
   mask: BinaryMask,
   minArea: number,
@@ -577,19 +563,6 @@ export function pairwiseField(
 ): SignedField
 export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
 export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
-// Boundary solve (inkvec stage 08): move a chain's free points at once so the geometry's exact
-// rendered coverage matches the field, by clipped-pixel-area least squares with kink + anchor priors
-// and a self-crossing guard (Fletcher–Reeves conjugate gradient). `pts` is the chain in travel order
-// (a closed ring without its duplicated close point, `cyclic` true); `free[i]` marks an unknown
-// (pinned endpoints keep a cutout partition seam-free). Deterministic (fixed `maxIters`, no clock).
-// Verified correct on the coverage-exact disk; NOT on the default trace path — see ARCHITECTURE.md.
-export function solveBoundary(
-  pts: FlatPoints,
-  field: SignedField,
-  free: readonly boolean[],
-  cyclic: boolean,
-  opts: SolveOptions, // { maxIters }
-): FlatPoints
 // The curve half of the chain from a RingFit. In `spline` mode each smooth run (the refined ring
 // points between two corners) is fitted directly to those points — line / circular arc / G1 cubic,
 // merged by description length (Selinger 2003 §2.2 for the segmentation, inkvec's multi-model fit for
@@ -899,18 +872,6 @@ export class CleanupEnhancer {
   run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
-
-export class FieldEnhancer {
-  // Optional signed-coverage pre-pass (docs/SIGNED_FIELD_PREPASS.md). Tier-1-touching
-  // (feeds sub-pixel refinement); preferBackend 'wasm' pins reproducible mode.
-  static create(opts?: {
-    preferBackend?: MlBackend
-    onProgress?: MlProgressFn
-  }): Promise<FieldEnhancer>
-  // Coverage field ([0,1] GrayImage, 0.5 = boundary) at the input resolution; large images are tiled.
-  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ field: GrayImage }>
-  dispose(): void
-}
 ```
 
 Implementation notes:
@@ -965,7 +926,6 @@ export type WorkerInMessage =
       buffer: ArrayBuffer
       settings: VectorizeSettings
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
-      coverageHint?: ArrayBuffer // optional learned coverage field ([0,1]), Float32 plane, transferred
       imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
       trace?: boolean // opt into per-stage tracing, streamed back as `trace-step`
     }
@@ -993,19 +953,16 @@ export class TrazorClient {
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
     edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
-    coverageHint?: GrayImage, // optional learned coverage field (bw sub-pixel refinement), same dimensions
     onTrace?: (step: TraceStep) => void, // opt-in step tracer; presence requests tracing from the worker
   ): Promise<VectorizeResult>
   dispose(): void
 }
-export function createNativeEngine(): TrazorEngine
 export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
   // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
-  // bw/color modes to protect detail; ctx.coverageHint (GrayImage [0,1], optional)
-  // is a learned signed-coverage field used as the bw sub-pixel `coverage`
-  // (Tier-1-touching). Absent, tracing is byte-identical to the classical path.
+  // bw/color modes to protect detail. Absent, tracing is byte-identical to the
+  // classical path.
   ctx?: EngineContext,
   // Optional worker-side reuse of preprocess/palette intermediates across runs.
   // The worker owns a single StageCache and passes a stable imageId; reuse is
@@ -1189,7 +1146,6 @@ export interface PoolJobOptions {
   affinityKey?: string
   onProgress?: (stage: StageId, overall: number) => void
   edgeHint?: GrayImage
-  coverageHint?: GrayImage
 }
 export class TrazorPool {
   constructor(createWorker: () => Worker, size: number)
@@ -1279,7 +1235,6 @@ export interface ParamSpec {
 export type TunableKey = /* keyof VectorizeSettings minus identity/cosmetic fields */
 export const TUNABLE_PARAMS: readonly ParamSpec[]
 export const DEFAULT_FREE: readonly TunableKey[] // the non-opt-in keys
-export function specFor(key: TunableKey): ParamSpec
 export function applicableParams(keys: readonly TunableKey[], mode: VectorizeMode, s: VectorizeSettings): ParamSpec[]
 export function toUnit(spec: ParamSpec, value: number): number // value → [0,1] search coord
 export function fromUnit(spec: ParamSpec, unit: number): number // [0,1] → valid value

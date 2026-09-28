@@ -3,10 +3,6 @@ import type { PathCommand } from '@trazor/core'
 /** Flat lattice polyline/polygon: [x0, y0, x1, y1, ...]. */
 export type FlatPoints = number[]
 
-export function pointCount(points: FlatPoints): number {
-  return points.length >> 1
-}
-
 /**
  * Reverse a command list produced by our tracers (single subpath starting with
  * M, optionally ending with Z). Curve control points swap roles.
@@ -68,13 +64,6 @@ export function reverseCommands(commands: readonly PathCommand[]): PathCommand[]
   }
   if (closed) out.push({ type: 'Z' })
   return out
-}
-
-/** Squared distance between two points. */
-export function distSq(ax: number, ay: number, bx: number, by: number): number {
-  const dx = ax - bx
-  const dy = ay - by
-  return dx * dx + dy * dy
 }
 
 /** Evaluate a cubic Bézier at t. */

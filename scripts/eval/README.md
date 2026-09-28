@@ -26,23 +26,19 @@ python scripts/train/predict.py --task edge --data dataset-out --split test \
 npm run eval:prepass -- --data dataset-out --pred eval-pred --split test --task edge --json eval-report.json
 ```
 
-For `cleanup`, pass `--task cleanup` to both (predictions are cleaned RGB images the tracer runs on directly). For
-`field` (the signed-field pre-pass, [`../../docs/SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md)), pass
-`--task field` to both — predictions are `[0,1]` coverage fields fed as the bw `coverageHint`, so the task defaults to
-`bw` mode. Run it on a **silhouette** dataset (`npm run dataset -- --source silhouette`), where the clean render is a
-bw ink-on-paper image, so the ΔE and boundary error are measured against a bw-appropriate reference.
+For `cleanup`, pass `--task cleanup` to both (predictions are cleaned RGB images the tracer runs on directly).
 
 ### Options (`trace-eval.ts`)
 
-| flag      | default          | meaning                                                                           |
-| --------- | ---------------- | --------------------------------------------------------------------------------- |
-| `--data`  | (required)       | dataset root (`manifest.json` + `input/ clean/ edge/`)                            |
-| `--pred`  | (required)       | predictions dir from `predict.py`                                                 |
-| `--task`  | `edge`           | `edge` (boundary hint), `cleanup` (cleaned image), or `field` (coverage hint, bw) |
-| `--split` | `test`           | `train` \| `val` \| `test`                                                        |
-| `--mode`  | settings default | `color` \| `grayscale` \| `bw` \| `centerline`                                    |
-| `--limit` | `0` (all)        | cap samples                                                                       |
-| `--json`  | —                | also write the report as JSON                                                     |
+| flag      | default          | meaning                                                |
+| --------- | ---------------- | ------------------------------------------------------ |
+| `--data`  | (required)       | dataset root (`manifest.json` + `input/ clean/ edge/`) |
+| `--pred`  | (required)       | predictions dir from `predict.py`                      |
+| `--task`  | `edge`           | `edge` (boundary hint) or `cleanup` (cleaned image)    |
+| `--split` | `test`           | `train` \| `val` \| `test`                             |
+| `--mode`  | settings default | `color` \| `grayscale` \| `bw` \| `centerline`         |
+| `--limit` | `0` (all)        | cap samples                                            |
+| `--json`  | —                | also write the report as JSON                          |
 
 ## Reading the output
 

@@ -1,4 +1,4 @@
-export { createNativeEngine, vectorize } from './native'
+export { vectorize } from './native'
 export type { StageCache, StageCacheStats, VectorizeRunOptions } from './native'
 export { installWorkerHandler } from './worker'
 export { installHelperHandler } from './helper'

@@ -38,18 +38,6 @@ export function polylineLengthFlat(coords: ArrayLike<number>): number {
   return len
 }
 
-/** Z component of the cross product of (a - o) × (b - o). */
-export function crossZ(
-  ox: number,
-  oy: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-): number {
-  return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
-}
-
 /** Distance from point (px, py) to the segment (ax, ay)-(bx, by). */
 export function distToSegment(
   px: number,

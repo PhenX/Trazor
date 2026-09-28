@@ -1,89 +1,19 @@
 /**
- * Binary morphology with a square structuring element, plus despeckling.
- * Dilate/erode are separable (two sliding-window passes); pixels outside the
- * image count as background, so erosion shrinks foreground touching the
- * border (scipy `binary_erosion` semantics with border_value 0).
+ * Despeckling of a binary mask: small foreground specks removed, small
+ * background holes filled, optionally sparing what a protect mask covers.
  */
 import { createMask } from '@trazor/core'
 import type { BinaryMask } from '@trazor/core'
 
 /**
- * One sliding 1D pass: dst = 1 where the (2r+1)-window along the axis holds
- * at least `need` foreground samples (out-of-bounds samples count 0).
- * `need` = 1 gives dilation, `need` = 2r+1 gives erosion.
- */
-function slidePass(
-  src: Uint8Array,
-  dst: Uint8Array,
-  w: number,
-  h: number,
-  r: number,
-  need: number,
-  vertical: boolean,
-): void {
-  const len = vertical ? h : w
-  const lines = vertical ? w : h
-  const stepAlong = vertical ? w : 1
-  const stepLine = vertical ? 1 : w
-  for (let line = 0; line < lines; line++) {
-    const base = line * stepLine
-    let count = 0
-    // Prime the window for position 0: samples [0, r].
-    const prime = r < len - 1 ? r : len - 1
-    for (let t = 0; t <= prime; t++) {
-      if (src[base + t * stepAlong] !== 0) count++
-    }
-    for (let pos = 0; pos < len; pos++) {
-      dst[base + pos * stepAlong] = count >= need ? 1 : 0
-      const leave = pos - r
-      if (leave >= 0 && src[base + leave * stepAlong] !== 0) count--
-      const enter = pos + r + 1
-      if (enter < len && src[base + enter * stepAlong] !== 0) count++
-    }
-  }
-}
-
-/** Set foreground where any pixel of the (2r+1)² square window is foreground. */
-export function dilate(mask: BinaryMask, radius: number): BinaryMask {
-  const { width: w, height: h, data } = mask
-  if (radius <= 0) return { width: w, height: h, data: new Uint8Array(data) }
-  const r = Math.max(1, Math.round(radius))
-  const tmp = new Uint8Array(w * h)
-  const out = new Uint8Array(w * h)
-  slidePass(data, tmp, w, h, r, 1, false)
-  slidePass(tmp, out, w, h, r, 1, true)
-  return { width: w, height: h, data: out }
-}
-
-/** Keep foreground only where the whole (2r+1)² square window is foreground. */
-export function erode(mask: BinaryMask, radius: number): BinaryMask {
-  const { width: w, height: h, data } = mask
-  if (radius <= 0) return { width: w, height: h, data: new Uint8Array(data) }
-  const r = Math.max(1, Math.round(radius))
-  const need = 2 * r + 1
-  const tmp = new Uint8Array(w * h)
-  const out = new Uint8Array(w * h)
-  slidePass(data, tmp, w, h, r, need, false)
-  slidePass(tmp, out, w, h, r, need, true)
-  return { width: w, height: h, data: out }
-}
-
-/**
  * Remove 8-connected foreground specks smaller than `minArea` and fill
  * 4-connected background holes smaller than `minArea` (a hole is a background
- * component with no pixel on the image border). Both decisions are made on
- * the input mask; a new mask is returned.
- */
-export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask {
-  return despeckleMaskGuided(mask, minArea, null)
-}
-
-/**
- * Like {@link despeckleMask}, but a component is left untouched when any of its
- * pixels overlaps `protect` (1 = protected), even when it is below `minArea` —
- * so a boundary map (e.g. EdgeEnhancer's, thresholded to a mask) keeps thin real
- * features a size filter would otherwise erase. `protect` must match the mask
- * dimensions; passing `null` reproduces {@link despeckleMask} byte-for-byte.
+ * component with no pixel on the image border). Both decisions are made on the
+ * input mask; a new mask is returned. A component is left untouched when any of
+ * its pixels overlaps `protect` (1 = protected; `null` for none), even when it
+ * is below `minArea` — so a boundary map (e.g. EdgeEnhancer's, thresholded to a
+ * mask) keeps thin real features a size filter would otherwise erase. `protect`
+ * must match the mask dimensions.
  */
 export function despeckleMaskGuided(
   mask: BinaryMask,

@@ -6,7 +6,6 @@ int8. Drop the result at models/<name>.onnx to ship it
 same-origin with the app:
 - edge → edge-prepass.onnx   (EdgeEnhancer, packages/ml/src/edge.ts)
 - cleanup → cleanup.onnx      (CleanupEnhancer, packages/ml/src/cleanup.ts)
-- field → signed-field.onnx   (FieldEnhancer, packages/ml/src/field.ts)
 """
 
 from __future__ import annotations
@@ -23,12 +22,10 @@ from model import SigmoidWrapper, TinyUNet
 DEFAULT_OUT = {
     "edge": "models/edge-prepass.onnx",
     "cleanup": "models/cleanup.onnx",
-    "field": "models/signed-field.onnx",
 }
 DEFAULT_CHECKPOINT = {
     "edge": "scripts/train/checkpoints/edge-prepass.pt",
     "cleanup": "scripts/train/checkpoints/cleanup.pt",
-    "field": "scripts/train/checkpoints/signed-field.pt",
 }
 
 

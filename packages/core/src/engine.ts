@@ -1,6 +1,5 @@
 import type { VectorDocument } from './document'
-import type { GrayImage, RasterImage } from './raster'
-import type { VectorizeMode, VectorizeSettings } from './settings'
+import type { GrayImage } from './raster'
 import type { EngineTracer } from './trace'
 
 /** Pipeline stages, in execution order, used for progress reporting. */
@@ -70,17 +69,6 @@ export interface EngineContext {
    */
   edgeHint?: GrayImage
   /**
-   * Optional learned signed-coverage field (e.g. from @trazor/ml's FieldEnhancer)
-   * at the source-image resolution: a [0,1] GrayImage where 0.5 is the boundary,
-   * >0.5 inside a region, <0.5 outside. In bw mode the pipeline quantizes it and
-   * uses it as the sub-pixel `coverage` for ring refinement — so vertices snap to
-   * the clean edge rather than the one derived from a degraded input. Absent (or in
-   * pixel curve mode), tracing is byte-identical to the classical path. This is
-   * Tier-1-touching (it moves geometry): reproducible across devices only on the
-   * WASM backend, like the roadmap's differentiable refinement pass.
-   */
-  coverageHint?: GrayImage
-  /**
    * Opt-in step tracer. When present, the pipeline streams a {@link TraceStep}
    * for each stage (intermediate rasters, distributions, metrics) for a
    * step-by-step inspector. Recording is side-effect-free — a traced run returns
@@ -95,15 +83,4 @@ export class CancelledError extends Error {
     super('vectorization cancelled')
     this.name = 'CancelledError'
   }
-}
-
-export interface TrazorEngine {
-  readonly id: string
-  readonly label: string
-  readonly modes: readonly VectorizeMode[]
-  vectorize(
-    image: RasterImage,
-    settings: VectorizeSettings,
-    ctx?: EngineContext,
-  ): Promise<VectorizeResult>
 }

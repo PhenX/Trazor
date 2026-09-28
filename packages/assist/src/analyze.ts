@@ -76,15 +76,6 @@ export interface ImageAnalysis {
    */
   coloredFraction: number
   /**
-   * Fraction of visible samples (alpha ≥ `VISIBLE_MIN_ALPHA`) that are partly
-   * transparent together with all four of their neighbors: the interior of a
-   * translucent object (a soft shadow, a glass pane, steam). An anti-aliased
-   * rim never produces one — it is a pixel wide, with solid or clear pixels on
-   * either side — so this separates translucency from edge coverage. 0 for an
-   * opaque image.
-   */
-  translucentArea: number
-  /**
    * Fraction of samples inside exactly-flat runs whose color is neither of the
    * two dominant tones: a third flat ink (a gray fill inside a black outline),
    * which anti-aliasing never produces — an intermediate rim color is never
@@ -95,10 +86,6 @@ export interface ImageAnalysis {
   inkHex: string
   /** Mean color of the lighter of the two dominant tones: its paper or ground. */
   paperHex: string
-  /** Oklab lightness of `inkHex`. */
-  inkLightness: number
-  /** Oklab lightness of `paperHex`. */
-  paperLightness: number
 }
 
 /** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
@@ -124,8 +111,6 @@ const RAMP_MIN_RANGE = 60
 
 /** Alpha at or above which a pixel counts as opaque for the area statistics. */
 const OPAQUE_MIN_ALPHA = 128
-/** Alpha from which a pixel is visible at all (the engine's default cut). */
-const VISIBLE_MIN_ALPHA = 8
 /** Alpha from which a pixel counts as solid; below it the image has meaningful alpha. */
 const SOLID_MIN_ALPHA = 250
 /** Coarse RGB bins (3 bits per channel) the dominant tones are read from. */
@@ -178,8 +163,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   let hasAlpha = false
   let sampleCount = 0
   let opaqueCount = 0
-  let visibleCount = 0
-  let translucentCount = 0
   let edgeCount = 0
   let microCount = 0
   let flatCount = 0
@@ -251,12 +234,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
         opaqueCount++
         if (gx1 <= SMOOTH_MAX_GRAD && gy1 <= SMOOTH_MAX_GRAD) smooth[gy * gw + gx] = 1
       }
-      if (a >= VISIBLE_MIN_ALPHA) {
-        visibleCount++
-        if (a < SOLID_MIN_ALPHA && partialAround(data, width, height, x, y, step)) {
-          translucentCount++
-        }
-      }
     }
   }
 
@@ -310,7 +287,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const microGradientDensity = sampleCount === 0 ? 0 : microCount / sampleCount
   const flatDensity = sampleCount === 0 ? 0 : flatCount / sampleCount
   const coloredFraction = sampleCount === 0 ? 0 : coloredCount / sampleCount
-  const translucentArea = visibleCount === 0 ? 0 : translucentCount / visibleCount
   const flatArea = opaqueCount === 0 ? 0 : flat / opaqueCount
   const rampArea = opaqueCount === 0 ? 0 : ramp / opaqueCount
   const fineArea = opaqueCount === 0 ? 0 : fine / opaqueCount
@@ -358,38 +334,10 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     contrast,
     colorfulness,
     coloredFraction,
-    translucentArea,
     minorTonesArea,
     inkHex: ink.hex,
     paperHex: paper.hex,
-    inkLightness: ink.lightness,
-    paperLightness: paper.lightness,
   }
-}
-
-/**
- * Whether every in-bounds sample neighbor (one grid step away) of the sample at
- * (x, y) is itself partly transparent — the signature of a translucent
- * interior rather than an anti-aliased rim.
- */
-function partialAround(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-  step: number,
-): boolean {
-  const partial = (px: number, py: number): boolean => {
-    const a = data[(py * width + px) * 4 + 3]
-    return a >= VISIBLE_MIN_ALPHA && a < SOLID_MIN_ALPHA
-  }
-  return (
-    (x < step || partial(x - step, y)) &&
-    (x + step >= width || partial(x + step, y)) &&
-    (y < step || partial(x, y - step)) &&
-    (y + step >= height || partial(x, y + step))
-  )
 }
 
 /**

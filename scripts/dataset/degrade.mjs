@@ -70,7 +70,7 @@ export function makeBackground(width, height, rng, enabled) {
 // Matting error: a thin colored rim just outside the shape's silhouette — the
 // halo an imperfect cutout (e.g. the app's own background removal) leaves behind.
 // Applied to a copy of the shape used only for the INPUT composite, so the clean
-// target and the edge/field targets stay halo-free and pixel-aligned. Two seeded
+// target and the edge target stay halo-free and pixel-aligned. Two seeded
 // draws (rim color + alpha) drive it, so it stays deterministic.
 export function matteHalo(shape, rng, strengthMax) {
   const { width: w, height: h, data } = shape

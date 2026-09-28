@@ -42,10 +42,6 @@ export function createRaster(width: number, height: number): RasterImage {
   return { width, height, data: new Uint8ClampedArray(width * height * 4) }
 }
 
-export function createGray(width: number, height: number): GrayImage {
-  return { width, height, data: new Float32Array(width * height) }
-}
-
 export function createMask(width: number, height: number): BinaryMask {
   return { width, height, data: new Uint8Array(width * height) }
 }

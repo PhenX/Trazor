@@ -15,14 +15,13 @@
  *
  * Predictions come from scripts/train/predict.py, laid out as
  *   <pred>/<bucket>/<field>/<base>.png   bucket ∈ {degraded, clean}
- * where <field> is `edge` (a [0,1] boundary hint), `clean` (a cleaned RGB image),
- * or `field` (a [0,1] coverage field, used as a bw coverage hint), matching --task.
- * A perfect stand-in (the dataset's own `edge/` or `field/` target) exercises the
- * whole harness with no trained model — see scripts/eval/README.md.
+ * where <field> is `edge` (a [0,1] boundary hint) or `clean` (a cleaned RGB image),
+ * matching --task. A perfect stand-in (the dataset's own `edge/` target) exercises
+ * the whole harness with no trained model — see scripts/eval/README.md.
  *
  * Usage:
  *   npm run eval:prepass -- --data <dataset-root> --pred <pred-dir> [options]
- *     --task    edge | cleanup | field  (default edge; field defaults to bw mode)
+ *     --task    edge | cleanup           (default edge)
  *     --split   train | val | test    (default test)
  *     --mode    color | grayscale | bw | centerline   (default: settings default)
  *     --limit   N                      cap samples (0 = all)
@@ -43,7 +42,7 @@ import type {
 import { vectorize } from '@trazor/engine'
 import { boundaryError, meanDeltaE, rasterizeSvg, readRgba, score } from './lib'
 
-type Task = 'edge' | 'cleanup' | 'field'
+type Task = 'edge' | 'cleanup'
 
 interface Args {
   data: string
@@ -70,7 +69,7 @@ function parseArgs(argv: string[]): Args {
         i++
         break
       case '--task':
-        a.task = val === 'cleanup' ? 'cleanup' : val === 'field' ? 'field' : 'edge'
+        a.task = val === 'cleanup' ? 'cleanup' : 'edge'
         i++
         break
       case '--split':
@@ -113,13 +112,7 @@ interface Trace {
   bErr: number
 }
 
-/**
- * Trace and score against the clean render `clean`. For the field task run in bw
- * mode, `clean` is the clean **silhouette** render (the manifest's `clean/`, which
- * for a silhouette dataset is a bw ink-on-paper image) — so both ΔE and the
- * boundary displacement are measured against a bw-appropriate reference, not a
- * color truth (docs/SIGNED_FIELD_PREPASS.md).
- */
+/** Trace and score against the clean render `clean`. */
 async function trace(
   image: RasterImage,
   clean: RasterImage,
@@ -137,8 +130,7 @@ async function trace(
 
 /**
  * The pre-pass variant for one sample, per task: edge feeds the prediction as an
- * `edgeHint`, field as a `coverageHint` (both trace the same base image), and
- * cleanup traces the predicted cleaned image directly.
+ * `edgeHint` on the base image, cleanup traces the predicted cleaned image directly.
  */
 function tracePrepass(
   task: Task,
@@ -148,7 +140,6 @@ function tracePrepass(
   settings: VectorizeSettings,
 ): Promise<Trace> {
   if (task === 'cleanup') return trace(readRgba(predPath), clean, settings)
-  if (task === 'field') return trace(base, clean, settings, { coverageHint: readHint(predPath) })
   return trace(base, clean, settings, { edgeHint: readHint(predPath) })
 }
 
@@ -276,9 +267,8 @@ function printReport(rows: BucketReport[], task: string, mode: string): void {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
-  const field = args.task === 'cleanup' ? 'clean' : args.task === 'field' ? 'field' : 'edge'
-  // The coverage hint only applies in bw mode, so the field task defaults there.
-  const mode = args.mode ?? (args.task === 'field' ? 'bw' : DEFAULT_SETTINGS.mode)
+  const field = args.task === 'cleanup' ? 'clean' : 'edge'
+  const mode = args.mode ?? DEFAULT_SETTINGS.mode
   const settings: VectorizeSettings = { ...DEFAULT_SETTINGS, mode }
 
   const manifest = JSON.parse(readFileSync(join(args.data, 'manifest.json'), 'utf8'))

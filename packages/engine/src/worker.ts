@@ -37,15 +37,12 @@ export function installWorkerHandler(scope: WorkerScope): void {
     }
     if (msg.type !== 'vectorize') return
 
-    const { id, width, height, buffer, settings, edgeHint, coverageHint, imageId, trace } = msg
+    const { id, width, height, buffer, settings, edgeHint, imageId, trace } = msg
     const image: RasterImage = { width, height, data: new Uint8ClampedArray(buffer) }
     const hint: GrayImage | undefined = edgeHint
       ? { width, height, data: new Float32Array(edgeHint) }
       : undefined
-    const cov: GrayImage | undefined = coverageHint
-      ? { width, height, data: new Float32Array(coverageHint) }
-      : undefined
-    void run(id, image, settings, hint, cov, imageId, trace, msg.withDocument)
+    void run(id, image, settings, hint, imageId, trace, msg.withDocument)
   })
 
   async function run(
@@ -53,7 +50,6 @@ export function installWorkerHandler(scope: WorkerScope): void {
     image: RasterImage,
     settings: VectorizeSettings,
     edgeHint?: GrayImage,
-    coverageHint?: GrayImage,
     imageId?: number,
     trace?: boolean,
     withDocument?: boolean,
@@ -64,7 +60,6 @@ export function installWorkerHandler(scope: WorkerScope): void {
         settings,
         {
           edgeHint,
-          coverageHint,
           shouldCancel: () => cancelled.has(id),
           onProgress: (stage, overall) => {
             const now = Date.now()

@@ -8,7 +8,7 @@ import { compositeOver, degrade, makeBackground, matteHalo } from './degrade.mjs
 import { writeGrayPng, writeRgbaPng } from './io.mjs'
 import { chance, mulberry32 } from './random.mjs'
 import { renderShape } from './render.mjs'
-import { edgeMap, fieldMap } from './targets.mjs'
+import { edgeMap } from './targets.mjs'
 
 /**
  * @param item {{ index, id, family, split, base, svg, pipeSeed }}
@@ -32,7 +32,7 @@ export function processItem(item, cfg) {
   const bg = makeBackground(cfg.resolution, cfg.resolution, rng, cfg.degrade.background)
   const clean = compositeOver(shape, bg)
   // Input-side matting halo: composite a halo'd copy of the shape over the same
-  // background for the model input, leaving clean/edge/field (from `shape`) aligned.
+  // background for the model input, leaving clean/edge (from `shape`) aligned.
   const p = cfg.degrade
   const inputScene =
     p.matteProb > 0 && chance(rng, p.matteProb)
@@ -54,17 +54,6 @@ export function processItem(item, cfg) {
       cfg.resolution,
     )
     record.edge = `${split}/edge/${base}.png`
-  }
-  if (cfg.targets.includes('field')) {
-    // Derived from the clean composite (what the bw tracer would see), not the
-    // pre-composite shape — the coverage the model must reproduce from `input`.
-    writeGrayPng(
-      join(cfg.out, split, 'field', `${base}.png`),
-      fieldMap(clean),
-      cfg.resolution,
-      cfg.resolution,
-    )
-    record.field = `${split}/field/${base}.png`
   }
   return record
 }

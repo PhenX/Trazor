@@ -58,7 +58,7 @@ export function renderShape(svg, cfg, rng) {
     // Radial lens distortion (barrel/pincushion).
     if (g.lens > 0 && chance(rng, g.lensProb)) img = lensDistort(img, uniform(rng, -g.lens, g.lens))
   }
-  // All augmentation is on the shape before targets are derived, so edge/field/clean
+  // All augmentation is on the shape before targets are derived, so edge/clean
   // stay pixel-aligned. Crop a native-size window last (from the larger render).
   if (zoom > 1) {
     const maxOff = side - base

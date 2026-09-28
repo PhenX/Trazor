@@ -218,20 +218,3 @@ export function ciede2000(
   const h = dH / Sh
   return Math.sqrt(l * l + c * c + h * h + Rt * c * h)
 }
-
-/**
- * CIEDE2000 between two sRGB byte triples (0–255), through {@link rgbToLab}. The
- * near-duplicate palette floor is stated in these perceptually even units.
- */
-export function ciede2000Rgb(
-  r1: number,
-  g1: number,
-  b1: number,
-  r2: number,
-  g2: number,
-  b2: number,
-): number {
-  const [L1, a1, bb1] = rgbToLab(r1 / 255, g1 / 255, b1 / 255)
-  const [L2, a2, bb2] = rgbToLab(r2 / 255, g2 / 255, b2 / 255)
-  return ciede2000(L1, a1, bb1, L2, a2, bb2)
-}

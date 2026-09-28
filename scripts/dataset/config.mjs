@@ -2,7 +2,7 @@
 // randomness is seeded from `seed`, so a config fully determines the dataset.
 
 export const DEFAULTS = {
-  source: 'procedural', // 'procedural' | 'silhouette' | 'dir'
+  source: 'procedural', // 'procedural' | 'dir'
   corpus: '', // directory of .svg files when source === 'dir'
   out: 'dataset-out', // output root
   count: 64, // samples to generate (procedural) or cap for 'dir' (0 = all)
@@ -11,7 +11,7 @@ export const DEFAULTS = {
   seed: 1,
   jobs: 0, // parallel worker threads; 0 = auto (CPU count), 1 = single-thread
 
-  targets: ['edge', 'clean', 'field'], // ground-truth heads to emit
+  targets: ['edge', 'clean'], // ground-truth heads to emit
   split: { train: 0.8, val: 0.1, test: 0.1 }, // assigned per source family
   geometric: {
     enabled: true,
@@ -132,8 +132,8 @@ export function parseArgs(argv) {
         throw new Error(`unknown flag --${key}`)
     }
   }
-  if (cfg.source !== 'procedural' && cfg.source !== 'silhouette' && cfg.source !== 'dir') {
-    throw new Error(`--source must be 'procedural', 'silhouette', or 'dir', got '${cfg.source}'`)
+  if (cfg.source !== 'procedural' && cfg.source !== 'dir') {
+    throw new Error(`--source must be 'procedural' or 'dir', got '${cfg.source}'`)
   }
   return cfg
 }
@@ -142,8 +142,7 @@ export const USAGE = `dataset generator — SVG corpus → rasterize → degrade
 
 Usage: npm run dataset -- [options]
 
-  --source <procedural|silhouette|dir>  sample source (default procedural)
-                             (silhouette: one ink on a paper ground, for the signed-field pre-pass)
+  --source <procedural|dir>  sample source (default procedural)
   --corpus <dir>             directory of .svg files (required for source=dir)
   --out <dir>                output root (default dataset-out)
   --count <n>                samples to generate, or cap for dir (default 64)
@@ -151,7 +150,7 @@ Usage: npm run dataset -- [options]
   --supersample <n>          anti-aliasing render scale (default 2)
   --seed <n>                 base seed (default 1)
   --jobs <n>                 parallel worker threads (default: CPU count; 1 = single-thread)
-  --targets <a,b,c>          ground-truth heads: edge,clean,field (default all three)
+  --targets <a,b>            ground-truth heads: edge,clean (default both)
   --no-geometric             disable rotate/scale/translate augmentation
   --no-jpeg                  disable JPEG degradation
   --no-background            render on white instead of a procedural background
