@@ -27,6 +27,11 @@
  *      regions together (agglomerative, closest pair first) down to the real
  *      colors; `maxRegions` then caps the count, folding the pairs whose union
  *      costs the least total squared color error (Ward 1963) until it is met.
+ *   5. The flood claims each pixel for the cheapest region already touching it,
+ *      so a third region that reaches a seam from one end — its color nearer the
+ *      blend than either side's — can run along it as a line a pixel wide; a
+ *      seam run like that goes back to the two regions it separates
+ *      (`returnSeamPixels`).
  *
  * Deterministic: fixed scan and neighbor order throughout, priority-queue ties
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
@@ -35,6 +40,7 @@
 import { createLabelMap, oklabToRgb, rgbToHex } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
+import { returnSeamPixels } from './mixture'
 
 export interface SegmentOptions {
   /**
@@ -461,6 +467,8 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     paletteRgb[lab * 3 + 2] = B
     paletteHex[lab] = rgbToHex(R, G, B)
   }
+  // ---- 5. A seam a third region captured goes back to the two it separates ----
+  returnSeamPixels(image, labels, paletteRgb)
   for (let p = 0; p < n; p++) {
     if (out[p] >= 0) counts[out[p]]++
   }

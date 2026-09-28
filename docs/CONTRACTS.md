@@ -185,6 +185,15 @@ export function absorbMixtureLabels(
   labels: LabelMap,
   paletteRgb: Uint8Array,
 ): LabelMap
+// A seam a third region captured, handed back: a run of at most two pixels of label C across which
+// the labels are A and B (different, neither C), every pixel on the A–B blend segment and far from
+// C's color, while C's own color is off that segment, goes to A and B by summed coverage (the pixels
+// from the A side first). Mutates `labels`; returns the pixels moved. segmentRegions runs it last.
+export function returnSeamPixels(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): number
 
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3

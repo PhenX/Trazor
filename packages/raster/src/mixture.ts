@@ -238,3 +238,127 @@ export function absorbMixtureLabels(
   }
   return labels
 }
+
+/**
+ * Squared sRGB distance (byte²) a seam pixel must keep from its own label's
+ * color: the A–B blend explains it at least three times as well as that label
+ * does (`RESID_MAX2` is 12², this is 36²), so a real line drawn in the label's
+ * color — whose pixels carry that color — is never taken for a seam.
+ */
+const SEAM_FAR2 = 36 * 36
+
+/** Longest run of a third label across an edge (px) that can be its anti-aliased seam. */
+const SEAM_MAX_RUN = 2
+
+/**
+ * Hand a captured seam back to the two regions it separates. A priority flood
+ * (or a nearest-color assignment) can give the anti-aliased seam between two
+ * contrasting fills to a third region that reaches it from one end — its color
+ * sits nearer the blend than either side's does — and that region then runs
+ * along the seam as a line of the wrong color a pixel wide (orange between a
+ * black cape and a cream outline). A run of at most `SEAM_MAX_RUN` pixels of
+ * label C, across which the labels on either side are A and B (different, and
+ * neither is C), is that seam when C's own color is a third color — off the
+ * A–B blend segment by `SEAM_FAR2`; a tone between the two is an intermediate
+ * ink whose thin stretches may be real, and the mixture pass owns it — and every
+ * pixel of the run lies on the segment (`RESID_MAX2`), well inside it
+ * (`T_INTERIOR`), and far from C's own color (`SEAM_FAR2`): the run's pixels go
+ * to the two sides by its summed coverage, as the blend test in
+ * {@link absorbMixtureLabels} splits a dissolved label.
+ *
+ * Mutates `labels`; `paletteRgb` is the RGB bytes per label. Returns the number
+ * of pixels moved. Deterministic: the runs are read from the labels as they
+ * were — rows first, then columns, a pixel keeping its first decision — and
+ * the moves are applied after the scan.
+ */
+export function returnSeamPixels(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): number {
+  const { width: w, height: h, data } = labels
+  const k = labels.count
+  const n = w * h
+  if (k < 3 || n === 0) return 0
+  const px = image.data
+  const target = new Int32Array(n).fill(-1)
+  const weight = new Float64Array(SEAM_MAX_RUN)
+  /** Pixel `i`'s weight of `a` against `b` when it is a seam blend far from `c`, else −1. */
+  const blendOf = (i: number, a: number, b: number, c: number): number => {
+    const p = i * 4
+    const { t, resid2 } = project(
+      px[p],
+      px[p + 1],
+      px[p + 2],
+      paletteRgb[a * 3],
+      paletteRgb[a * 3 + 1],
+      paletteRgb[a * 3 + 2],
+      paletteRgb[b * 3],
+      paletteRgb[b * 3 + 1],
+      paletteRgb[b * 3 + 2],
+    )
+    if (t < T_INTERIOR || t > 1 - T_INTERIOR || resid2 > RESID_MAX2) return -1
+    const dr = px[p] - paletteRgb[c * 3]
+    const dg = px[p + 1] - paletteRgb[c * 3 + 1]
+    const db = px[p + 2] - paletteRgb[c * 3 + 2]
+    return dr * dr + dg * dg + db * db >= SEAM_FAR2 ? t : -1
+  }
+  /** Whether label `c`'s own color is a third color, off the A–B blend segment. */
+  const third = (a: number, b: number, c: number): boolean =>
+    project(
+      paletteRgb[c * 3],
+      paletteRgb[c * 3 + 1],
+      paletteRgb[c * 3 + 2],
+      paletteRgb[a * 3],
+      paletteRgb[a * 3 + 1],
+      paletteRgb[a * 3 + 2],
+      paletteRgb[b * 3],
+      paletteRgb[b * 3 + 1],
+      paletteRgb[b * 3 + 2],
+    ).resid2 >= SEAM_FAR2
+  // Rows (step 1), then columns (step w): a run starts right after its A pixel.
+  for (const [step, span, lanes] of [
+    [1, w, h],
+    [w, h, w],
+  ] as const) {
+    for (let lane = 0; lane < lanes; lane++) {
+      const first = step === 1 ? lane * w : lane
+      for (let s = 1; s + 1 < span; s++) {
+        const i = first + s * step
+        const c = data[i]
+        const a = data[i - step]
+        if (c < 0 || a < 0 || a === c) continue
+        for (let len = 1; len <= SEAM_MAX_RUN && s + len < span; len++) {
+          const last = i + (len - 1) * step
+          if (data[last] !== c) break
+          const b = data[last + step]
+          if (b === c) continue
+          if (b < 0 || b === a || !third(a, b, c)) break
+          let seam = true
+          for (let j = 0; j < len && seam; j++) {
+            weight[j] = blendOf(i + j * step, a, b, c)
+            seam = weight[j] >= 0
+          }
+          if (!seam) break
+          // The run splits once: its summed coverage by A, rounded, is how many
+          // of its pixels (from the A side) go to A; the rest go to B.
+          let cover = 0
+          for (let j = 0; j < len; j++) cover += weight[j]
+          const toA = Math.round(cover)
+          for (let j = 0; j < len; j++) {
+            const q = i + j * step
+            if (target[q] < 0) target[q] = j < toA ? a : b
+          }
+          break
+        }
+      }
+    }
+  }
+  let moved = 0
+  for (let i = 0; i < n; i++) {
+    if (target[i] < 0) continue
+    data[i] = target[i]
+    moved++
+  }
+  return moved
+}
