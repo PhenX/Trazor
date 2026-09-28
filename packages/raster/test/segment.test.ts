@@ -49,6 +49,37 @@ describe('segmentRegions — region growing', () => {
     expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
 
+  it('leaves no band of blend colors along a soft edge', () => {
+    // An orange field meets a blue one across a ten-pixel ramp, as a blurred or
+    // downscaled outline leaves it. One pixel in the ramp is flat (its row
+    // repeats its column's color on either side), so it seeds a marker the flood
+    // grows the length of the ramp — a rosy band between the two fills. The
+    // band is no area of the drawing: it goes back to the two fills, split
+    // where the ramp crosses half coverage.
+    const w = 60
+    const h = 100
+    const orange = [224, 87, 41]
+    const blue = [91, 126, 172]
+    const coverage = (x: number, y: number): number => {
+      const c = y === 50 && (x === 29 || x === 31) ? 30 : x
+      return Math.min(1, Math.max(0, 1 - (c - 24.5) / 10))
+    }
+    const image = rasterOf(w, h, (x, y) => {
+      const t = coverage(x, y)
+      return [...orange.map((o, k) => Math.round(o * t + blue[k] * (1 - t))), 255] as Rgba
+    })
+    const seg = segmentRegions(image)
+    expect(seg.labels.count).toBe(2)
+    expect(seg.paletteHex).toHaveLength(2)
+    const fromOrange = seg.labels.data[0]
+    const fromBlue = seg.labels.data[w - 1]
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        expect(seg.labels.data[y * w + x]).toBe(coverage(x, y) >= 0.5 ? fromOrange : fromBlue)
+      }
+    }
+  })
+
   it('rescues a downscaled glyph stem that has no flat core', () => {
     // A grey stem three pixels wide on paper, as a downscale leaves it: its
     // columns carry 85 %, 100 % and 85 % of the ink and a 40 % rim column sits

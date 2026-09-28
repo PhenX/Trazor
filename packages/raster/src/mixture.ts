@@ -362,3 +362,237 @@ export function returnSeamPixels(
   }
   return moved
 }
+
+/** Mean width (px) — twice the area over the perimeter — up to which a region can be a blend band. */
+const BAND_MAX_WIDTH = 6
+
+/**
+ * Least share of a band's border the two regions it runs between must hold
+ * together, and the least share of that the lesser of the two must hold: a band
+ * runs *between* its two neighbors, so it borders both along its length — a
+ * spur that meets the second one only at its tip is not one.
+ */
+const BAND_SIDE_SHARE = 0.25
+
+/**
+ * Loosest distance of a band pixel from the A–B blend segment, as a share of
+ * the segment's length, that still reads as a blend. A compressed source keeps
+ * its lightness edge sharp but smears the chroma across it (chroma subsampling),
+ * so an anti-aliased pixel of a saturated edge sits off the segment by up to a
+ * fifth of the contrast across it — the band's mean, where those errors cancel,
+ * is held to `BAND_MEAN_RESID2` instead.
+ */
+const BAND_RESID_SHARE = 0.2
+
+/**
+ * Squared sRGB distance (byte²) of the band's mean color from the A–B blend
+ * segment up to which the band is a blend of the two. A stroke drawn in a color
+ * of its own (a neutral gray strap between a blue and a black) sits off the
+ * segment by more, on every pixel alike.
+ */
+const BAND_MEAN_RESID2 = 20 * 20
+
+/** Share of a band's pixels that must lie on the A–B blend segment (within `BAND_RESID_SHARE`). */
+const BAND_EXPLAINED = 0.7
+
+/**
+ * Least spread of a band's coverage (its 80th less its 20th percentile) for a
+ * band thicker than a hair to read as a ramp across it: a blend band covers a
+ * stretch of the ramp between its neighbors, a stroke drawn in an intermediate
+ * color holds one level.
+ */
+const BAND_RAMP_SPREAD = 0.2
+
+/**
+ * Largest share of flat pixels (the segmenter's markers) a band thicker than a
+ * hair may hold: a flat core is a stroke painted in that color, while a blend
+ * band has none, or the odd pixel of it where compression flattened the ramp.
+ */
+const BAND_FLAT_SHARE = 0.05
+
+/**
+ * Passes over the regions: a band's pixels can go to a neighbor that was a band
+ * itself, left for the next pass to settle.
+ */
+const BAND_ROUNDS = 2
+
+/**
+ * Dissolve thin blend bands into the two regions they run between. A soft edge
+ * between two contrasting fills — a blurred outline, a downscaled or compressed
+ * one — spans several pixels, and a region seeded inside that ramp (a few of
+ * its pixels flat enough to be a marker) grows along it as a band of the blend
+ * color: a rosy line between an orange field and a blue outline, a salmon rim
+ * around every orange shape on white. Such a band is no area of the drawing —
+ * each of its pixels is a coverage-weighted blend of the two fills (inkvec's
+ * ink-idea test) — so every pixel goes to the fill its coverage favors.
+ *
+ * A region component (4-connected) is such a band when it is thin (mean width
+ * at most `BAND_MAX_WIDTH`), runs between two other regions A and B (together
+ * holding `NEIGHBOR_COVERAGE` of its border, the lesser `BAND_SIDE_SHARE` of
+ * that), its mean color lies well inside the A–B blend segment (`T_INTERIOR`,
+ * `BAND_MEAN_RESID2`) and `BAND_EXPLAINED` of its pixels are blends too. A hair
+ * — nowhere three pixels thick — goes on that alone; a thicker band must also
+ * read as a ramp across it (`BAND_RAMP_SPREAD`) with no flat core
+ * (`BAND_FLAT_SHARE`), so a stroke drawn in an intermediate color is kept. A
+ * line within one field, or one whose color is off the segment (a dark outline
+ * between two colors), is never touched.
+ *
+ * Mutates `labels`; `paletteRgb` is the RGB bytes per label, `gradient` the
+ * segmenter's per-pixel gradient magnitude and `flatThreshold` its marker bound.
+ * Returns the number of pixels moved. Deterministic: each pass decides every
+ * component on the labels as they were and applies the moves after the scan.
+ */
+export function dissolveBlendBands(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+  gradient: Float32Array,
+  flatThreshold: number,
+): number {
+  let moved = 0
+  for (let round = 0; round < BAND_ROUNDS; round++) {
+    const m = dissolveBandsOnce(image, labels, paletteRgb, gradient, flatThreshold)
+    if (m === 0) break
+    moved += m
+  }
+  return moved
+}
+
+/** One pass of {@link dissolveBlendBands}. */
+function dissolveBandsOnce(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+  gradient: Float32Array,
+  flatThreshold: number,
+): number {
+  const { width: w, height: h, data } = labels
+  const k = labels.count
+  const n = w * h
+  if (k < 3 || n === 0) return 0
+  const px = image.data
+  const seen = new Uint8Array(n)
+  const members = new Int32Array(n)
+  const ts = new Float64Array(n)
+  const target = new Int32Array(n).fill(-1)
+  const sides = new Uint32Array(k)
+  const touched = new Int32Array(k)
+  const isBlock = (p: number, c: number): boolean => {
+    const x = p % w
+    const y = (p - x) / w
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = y + dy
+      if (yy < 0 || yy >= h) continue
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx
+        if (xx >= 0 && xx < w && data[yy * w + xx] !== c) return false
+      }
+    }
+    return true
+  }
+  for (let s = 0; s < n; s++) {
+    const c = data[s]
+    if (c < 0 || seen[s] !== 0) continue
+    // The component: its pixels, its border length, and the labels across that border.
+    let len = 0
+    let head = 0
+    members[len++] = s
+    seen[s] = 1
+    let per = 0
+    let touchedN = 0
+    while (head < len) {
+      const p = members[head++]
+      const x = p % w
+      for (let dir = 0; dir < 4; dir++) {
+        let q: number
+        if (dir === 0) q = x > 0 ? p - 1 : -1
+        else if (dir === 1) q = x < w - 1 ? p + 1 : -1
+        else if (dir === 2) q = p >= w ? p - w : -1
+        else q = p < n - w ? p + w : -1
+        if (q >= 0 && data[q] === c) {
+          if (seen[q] === 0) {
+            seen[q] = 1
+            members[len++] = q
+          }
+          continue
+        }
+        per++
+        const l = q >= 0 ? data[q] : -1
+        if (l < 0) continue
+        if (sides[l] === 0) touched[touchedN++] = l
+        sides[l]++
+      }
+    }
+    // The two regions it runs between (most border first, lower label on a tie).
+    let a = -1
+    let b = -1
+    let total = 0
+    for (let j = 0; j < touchedN; j++) {
+      const l = touched[j]
+      const v = sides[l]
+      total += v
+      if (a < 0 || v > sides[a] || (v === sides[a] && l < a)) {
+        b = a
+        a = l
+      } else if (b < 0 || v > sides[b] || (v === sides[b] && l < b)) {
+        b = l
+      }
+    }
+    const sa = a >= 0 ? sides[a] : 0
+    const sb = b >= 0 ? sides[b] : 0
+    for (let j = 0; j < touchedN; j++) sides[touched[j]] = 0
+    if (2 * len > BAND_MAX_WIDTH * per || b < 0) continue
+    if (sa + sb < NEIGHBOR_COVERAGE * total || sb < BAND_SIDE_SHARE * (sa + sb)) continue
+    const ar = paletteRgb[a * 3]
+    const ag = paletteRgb[a * 3 + 1]
+    const ab = paletteRgb[a * 3 + 2]
+    const br = paletteRgb[b * 3]
+    const bg = paletteRgb[b * 3 + 1]
+    const bb = paletteRgb[b * 3 + 2]
+    let sumR = 0
+    let sumG = 0
+    let sumB = 0
+    for (let j = 0; j < len; j++) {
+      const o = members[j] * 4
+      sumR += px[o]
+      sumG += px[o + 1]
+      sumB += px[o + 2]
+    }
+    const mean = project(sumR / len, sumG / len, sumB / len, ar, ag, ab, br, bg, bb)
+    if (mean.t < T_INTERIOR || mean.t > 1 - T_INTERIOR || mean.resid2 > BAND_MEAN_RESID2) continue
+    const dr = ar - br
+    const dg = ag - bg
+    const db = ab - bb
+    const bar2 = Math.max(
+      RESID_MAX2,
+      BAND_RESID_SHARE * BAND_RESID_SHARE * (dr * dr + dg * dg + db * db),
+    )
+    let explained = 0
+    let flat = 0
+    let hair = true
+    for (let j = 0; j < len; j++) {
+      const p = members[j]
+      const o = p * 4
+      const { t, resid2 } = project(px[o], px[o + 1], px[o + 2], ar, ag, ab, br, bg, bb)
+      ts[j] = t
+      if (resid2 <= bar2 && t >= T_INTERIOR && t <= 1 - T_INTERIOR) explained++
+      if (gradient[p] < flatThreshold) flat++
+      if (hair && isBlock(p, c)) hair = false
+    }
+    if (explained < BAND_EXPLAINED * len) continue
+    if (!hair) {
+      if (flat > BAND_FLAT_SHARE * len) continue
+      const sorted = ts.subarray(0, len).toSorted()
+      const spread = sorted[Math.floor(0.8 * (len - 1))] - sorted[Math.floor(0.2 * (len - 1))]
+      if (spread < BAND_RAMP_SPREAD) continue
+    }
+    for (let j = 0; j < len; j++) target[members[j]] = ts[j] >= 0.5 ? a : b
+  }
+  let moved = 0
+  for (let i = 0; i < n; i++) {
+    if (target[i] < 0) continue
+    data[i] = target[i]
+    moved++
+  }
+  return moved
+}

@@ -91,7 +91,8 @@ decode (consumer)
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
-  quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and
+  quantization for flat art — soft edges split between neighbors instead of inventing a rim color, and a thin band of
+  blend colors grown along a soft edge dissolves back into the two regions it runs between), and
   **gradient detection** (`gradient.ts`) that merges posterized ramp bands into one region painted with a single
   `<linearGradient>` or `<radialGradient>` — every fit verified on the pixels against the flat bands it replaces —
   keeps a transparent source's fades as opacity stops, and paints a semi-transparent layer stacked over a ramp (a glow
