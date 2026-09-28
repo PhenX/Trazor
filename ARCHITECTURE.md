@@ -69,7 +69,9 @@ decode (consumer)
   stretch needs no precision, so it is fitted loosely. The most connective color — the one whose regions have the largest
   total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
   standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
-  on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
+  on it). When other colors come within a fifth of that perimeter the vote cannot tell them apart (a poster's backdrop
+  against its letter fill), so each contender's stack is built and the one whose layers trace the least edge wins;
+  the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
   A region fully enclosed by one other color and buried **two or more** sheets below that surround (a base-colored
   pupil under the eye white and the face) is relabeled into its surround for the solid base layers, then repainted on
   top as its own island layer — so the layers below stay whole instead of each carrying a floating hole that would
