@@ -63,7 +63,10 @@ decode (consumer)
 ```
 
 - **stacked** layering paints regions back-to-front, each layer covering itself plus everything above it, so lower
-  shapes extend underneath and edges never crack. The most connective color — the one whose regions have the largest
+  shapes extend underneath and edges never crack. Where a sheet above reaches a lower layer's outline, that stretch of
+  the lower layer's edge is hidden, and it is set back a pixel beneath the sheet (`packages/engine/src/setback.ts`):
+  two coincident anti-aliased edges composite into a seam of the lower color along the sheet's edge, and the hidden
+  stretch needs no precision, so it is fitted loosely. The most connective color — the one whose regions have the largest
   total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
   standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
   on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.

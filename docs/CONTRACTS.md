@@ -509,19 +509,29 @@ export interface CoveragePatch {
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
 // §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted
 // polygon would enclose under three quarters of its lattice area (the caller then emits the exact
-// lattice ring). Depends on the ring and the field only — never on smoothing, curve optimization or
-// the corner threshold — so a caller may compute it once and re-fit it many times.
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): RingFit | null
+// lattice ring). Depends on the ring, the field and the set-back only — never on smoothing, curve
+// optimization or the corner threshold — so a caller may compute it once and re-fit it many times.
+// `setback` (per ring point, with a field; see refineRingToField) sets an edge hidden under a sheet
+// painted above it back beneath the sheet; such a point is fitted no tighter than a lattice point and
+// stays out of the coverage patch.
+export function ringPolygon(
+  ring: FlatPoints,
+  field?: GrayImage | SignedField,
+  setback?: ArrayLike<number>,
+): RingFit | null
 // Move each lattice boundary point onto the field's coverage = ½ level set by a search along the local
 // normal (inkvec `refine_subpixel`), a clean step inverted through the exact half-plane coverage of a
 // pixel. The normal is the optimal-polygon edge's (`vertices`: ascending indices into `ring`), turning
 // towards each end vertex's own direction; without `vertices` it is read from the point's two
 // neighbours. A point stays put on the image border, with no partial probe (a hard edge), or where the
-// profile never crosses ½. Returns a new array, parallel to `ring`.
+// profile never crosses ½. `setback`, per ring point, is a signed distance then added along the same
+// normal (positive towards the pixel on the right of the walk, y down). Returns a new array, parallel
+// to `ring`.
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
   vertices?: readonly number[],
+  setback?: ArrayLike<number>,
 ): FlatPoints
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first

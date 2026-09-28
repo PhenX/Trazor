@@ -103,6 +103,16 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   `pathCoverageError`): a solve on it was measured net-neutral on GMSD and
   regressed angular icons (the coverage-area null space wanders a straight
   boundary into a sawtooth), and was removed.
+- **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
+  (SIGGRAPH ’84)_ 18(3), 1984.** The coverage-as-alpha compositing model every
+  anti-aliasing SVG renderer follows:
+  each shape's pixel coverage is blended as an independent alpha, which is exact
+  only when the shapes' geometry within the pixel is uncorrelated. Two stacked
+  shapes drawn along the same edge are fully correlated there, and compositing
+  them leaks the lower color into the edge pixels — a seam of the base color along
+  a sheet's edge. A stacked base layer's edge that runs hidden under a sheet
+  painted above it is therefore set back beneath the sheet
+  (`packages/engine/src/setback.ts`, applied by `refineRingToField`).
 - **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
   Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
   for emitting a fitted circular arc as ≤90° circle-exact cubics

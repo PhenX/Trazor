@@ -141,13 +141,16 @@ export function runTau(): number {
  * place carries the staircase, unless it lies on an axis-aligned stretch of the
  * optimal polygon `vertices` of a refined ring — a hard edge on the pixel grid,
  * which the lattice point sits on exactly. `lattice` is the pre-refinement
- * geometry, `geom` the (possibly) refined geometry, both flat.
+ * geometry, `geom` the (possibly) refined geometry, both flat. A point with a
+ * nonzero `setback` (per ring point) runs hidden under a sheet painted above it,
+ * where no position shows, so it is held no tighter than a lattice point.
  */
 export function ringSigmas(
   lattice: FlatPoints,
   geom: FlatPoints,
   refined: boolean,
   vertices?: readonly number[],
+  setback?: ArrayLike<number>,
 ): number[] {
   const n = geom.length >> 1
   const axis = new Uint8Array(n)
@@ -165,6 +168,7 @@ export function ringSigmas(
     const moved =
       refined && (geom[i * 2] !== lattice[i * 2] || geom[i * 2 + 1] !== lattice[i * 2 + 1])
     sigma[i] = moved ? SIGMA_REFINED : axis[i] ? SIGMA_HARD : SIGMA_LATTICE
+    if (setback && setback[i % setback.length] !== 0) sigma[i] = SIGMA_LATTICE
   }
   return sigma
 }

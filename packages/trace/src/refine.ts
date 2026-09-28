@@ -107,11 +107,18 @@ const TIE_NUDGE = 1e-6
  * and run-fitting stages read it: on a straight run every point shifts by the
  * same sub-pixel offset (the edge slides to its true position). Omitting the
  * field leaves the exact lattice geometry (the caller passes none).
+ *
+ * `setback`, per ring point, is a signed distance added along the same normal
+ * after the search — positive towards the pixel on the right of the walk (y
+ * down) — so an edge that runs hidden under a sheet painted above it follows the
+ * sheet's true edge at a fixed depth beneath it. A point on the image border
+ * stays put.
  */
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
   vertices?: readonly number[],
+  setback?: ArrayLike<number>,
 ): FlatPoints {
   const w = field.width
   const h = field.height
@@ -235,9 +242,11 @@ export function refineRingToField(
     const nx = -tany / tl
     const ny = tanx / tl
     const shift = solveNormal(coverageAt, px, py, nx, ny, w, h)
-    if (shift === null) continue
-    out[i * 2] = px + nx * shift
-    out[i * 2 + 1] = py + ny * shift
+    const back = setback ? setback[i % period] : 0
+    if (shift === null && back === 0) continue
+    const move = (shift ?? 0) + back
+    out[i * 2] = px + nx * move
+    out[i * 2 + 1] = py + ny * move
   }
   return out
 }

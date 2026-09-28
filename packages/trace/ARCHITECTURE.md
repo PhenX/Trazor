@@ -57,7 +57,11 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
      half-plane coverage of a unit square (no bias towards the ½ grid, where a bilinear root-find leaves a slanted edge
      ~0.15 px fat) and a ridge or soft profile falling back to a root-find. The refined positions feed the moment sums,
      the vertex adjustment and the run fitter's samples, so each segment tracks the true anti-aliased edge instead of the
-     staircase. Hard edges (no partial pixel) and the image border are left on the lattice.
+     staircase. Hard edges (no partial pixel) and the image border are left on the lattice. A caller may pass a per-point
+     **set-back**, added along the same normal after the search: the engine sets a stacked base layer's edge back a pixel
+     beneath a sheet painted above it wherever that sheet reaches the base's outline, so the hidden edge follows the
+     sheet's true edge at depth instead of coinciding with it. A set-back point is fitted no tighter than a lattice point
+     (σ ½ px) and stays out of the coverage patch below.
 3. **Vertex adjustment** (`adjust.ts`, §2.3.1) — move each polygon vertex to the least-squares intersection of its two
    incident edge lines, constrained to the unit square around the (possibly refined) vertex.
 4. **Corner analysis** (`smooth.ts`, §2.3.2) — the `alphamax` parameter (from `settings.smoothing`) decides corner vs
