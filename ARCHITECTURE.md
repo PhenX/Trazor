@@ -50,7 +50,7 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 
 ```
 decode (consumer)
-  → resize → denoise → flatten alpha            [raster]         preprocess
+  → resize → denoise → (supersample) → flatten alpha [raster]    preprocess
   → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
                       gradients: merge ramp bands → linear/radial gradient paint [raster] (opt-in)
@@ -78,6 +78,13 @@ decode (consumer)
   drift out of alignment. A pocket with only one sheet over it keeps its single hole (it weeds and aligns fine). Because
   a color can then recur (base outline + pupil island), grouped stacked output groups by paint **layer**, not by color,
   so the two stay separate, correctly-ordered cut layers.
+- **supersampling** (`supersample` > 1, opt-in) traces at an integer multiple of the working size: the preprocessed
+  image is enlarged by bicubic interpolation (the smooth resampling Potrace's `mkbitmap -s` applies before a small
+  image is traced), so each pixel still gets one color, but on a finer grid — a line a pixel or two wide keeps its
+  shape instead of being cut to the pixel staircase. Everything downstream reads its sizes in source pixels (pixel-size
+  settings, the segmenter's gradient and size rules, the alpha translucency test, the set-back, the run fitter's
+  tolerances), and the geometry is scaled back, so the SVG keeps the working size. It costs about the square of the
+  factor in time and memory.
 - **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
   reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
   [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
@@ -87,7 +94,8 @@ decode (consumer)
 - **`core`** — `RasterImage`/`GrayImage`/`BinaryMask`/`LabelMap`, the `PathCommand` model, `VectorizeSettings` (schema +
   `normalizeSettings` clamping) and `TARGET_PROFILES`, Oklab color math, geometry helpers, `mulberry32`, and the
   `VectorizeResult`/`EngineContext`/progress/warning types every layer speaks.
-- **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
+- **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize and bicubic
+  enlargement (supersampling), gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global

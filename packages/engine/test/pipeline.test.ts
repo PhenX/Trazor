@@ -393,6 +393,83 @@ describe('native engine pipeline', () => {
   })
 })
 
+describe('supersampling', () => {
+  // An anti-aliased dark disk on white: radius 9.3 about (20.4, 19.7), each
+  // pixel's coverage integrated over a 4×4 grid.
+  const CX = 20.4
+  const CY = 19.7
+  const R = 9.3
+  function aaDisk(): RasterImage {
+    const img = createRaster(40, 40)
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 40; x++) {
+        let cov = 0
+        for (let sy = 0; sy < 4; sy++) {
+          for (let sx = 0; sx < 4; sx++) {
+            if (Math.hypot(x + (sx + 0.5) / 4 - CX, y + (sy + 0.5) / 4 - CY) <= R) cov++
+          }
+        }
+        const v = Math.round(255 - (cov / 16) * (255 - 20))
+        setPixel(img, x, y, v, v, v)
+      }
+    }
+    return img
+  }
+
+  it('traces an enlarged image and scales the geometry back to the working size', async () => {
+    for (const mode of ['color', 'bw'] as const) {
+      const s = settings({ mode, paletteSize: 4, segmentation: 'regions', supersample: 2 })
+      const result = await vectorize(aaDisk(), s, undefined, { withDocument: true })
+      expect(result.width).toBe(40)
+      expect(result.height).toBe(40)
+      expect(result.svg).toContain('viewBox="0 0 40 40"')
+      // The disk is the darkest shape; every anchor of its outline lies on the circle.
+      const shapes = result.document?.shapes ?? []
+      const luma = (fill: string | undefined): number => {
+        const c = hexToRgb(fill ?? '') ?? [255, 255, 255]
+        return c[0] + c[1] + c[2]
+      }
+      const disk = shapes.reduce((a, b) => (luma(b.fill) < luma(a.fill) ? b : a))
+      let anchors = 0
+      for (const c of disk.commands) {
+        if (c.type === 'Z') continue
+        anchors++
+        expect(Math.abs(Math.hypot(c.x - CX, c.y - CY) - R)).toBeLessThan(0.3)
+      }
+      expect(anchors).toBeGreaterThan(0)
+    }
+  })
+
+  it('sizes a cutout trap at the output size, in px or mm', async () => {
+    for (const [unit, stroke] of [
+      ['px', 'stroke-width="0.2"'],
+      ['mm', 'stroke-width="0.76"'],
+    ] as const) {
+      const result = await vectorize(
+        redSquareOnWhite(),
+        settings({
+          mode: 'color',
+          paletteSize: 4,
+          segmentation: 'regions',
+          layering: 'cutout',
+          unit,
+          gapFill: 0.2,
+          precision: 2,
+          supersample: 2,
+        }),
+      )
+      expect(result.svg).toContain(stroke)
+    }
+  })
+
+  it('is deterministic', async () => {
+    const s = settings({ mode: 'color', paletteSize: 4, segmentation: 'regions', supersample: 2 })
+    const a = await vectorize(aaDisk(), s)
+    const b = await vectorize(aaDisk(), s)
+    expect(a.svg).toBe(b.svg)
+  })
+})
+
 describe('worker protocol', () => {
   it('round-trips vectorize and cancel through a fake scope', async () => {
     const { installWorkerHandler } = await import('@trazor/engine')

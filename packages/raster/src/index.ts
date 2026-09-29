@@ -4,7 +4,7 @@
  * color-space conversion, quantization, thresholding, region cleanup,
  * morphology and skeletonization.
  */
-export { resizeGray, resizeToFit } from './resize'
+export { resizeGray, resizeToFit, upscaleImage } from './resize'
 export { bilateralFilter, gaussianBlur, medianFilter } from './filters'
 export {
   alphaCoverageField,

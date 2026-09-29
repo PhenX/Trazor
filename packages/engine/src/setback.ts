@@ -44,6 +44,8 @@ const SETBACK_MIN_RUN = 4
  * @param labels the stacked label per pixel (−1 unlabeled)
  * @param position each label's paint position among the base layers (−1 none)
  * @param layer this layer's paint position
+ * @param scale working pixels per source pixel (supersampling): the depth, the
+ *   ramp and the shortest run are source pixels, so they scale with it
  */
 export function sheetSetback(
   points: readonly number[],
@@ -53,8 +55,14 @@ export function sheetSetback(
   layer: number,
   width: number,
   height: number,
+  scale = 1,
 ): Float64Array | undefined {
   const n = points.length >> 1
+  const depthPx = SETBACK_PX * scale
+  const ramp = Math.max(1, Math.round(SETBACK_RAMP * scale))
+  const minRun = Math.max(1, Math.round(SETBACK_MIN_RUN * scale))
+  // The sheet must reach two source pixels in: the pixel that far past the inside one.
+  const reach = Math.max(1, Math.round(2 * scale) - 1)
   const hidden = new Uint8Array(n)
   const side = new Int8Array(n)
   let any = false
@@ -99,30 +107,30 @@ export function sheetSetback(
     side[i] = aIn ? 1 : -1
     const l = labels[aIn ? pa : pb]
     if (l < 0 || position[l] <= layer) continue
-    // Two pixels deep: the pixel past the inside one, away from the outside one.
-    const deepX = aIn ? 2 * ax - bx : 2 * bx - ax
-    const deepY = aIn ? 2 * ay - by : 2 * by - ay
+    // Two source pixels deep: the pixel `reach` past the inside one, away from the outside one.
+    const deepX = aIn ? ax + reach * (ax - bx) : bx + reach * (bx - ax)
+    const deepY = aIn ? ay + reach * (ay - by) : by + reach * (by - ay)
     if (!inBounds(deepX, deepY) || labels[deepY * width + deepX] !== l) continue
     hidden[i] = 1
     any = true
   }
   if (!any) return undefined
-  settleRuns(hidden, 0, SETBACK_MIN_RUN)
-  settleRuns(hidden, 1, SETBACK_MIN_RUN)
+  settleRuns(hidden, 0, minRun)
+  settleRuns(hidden, 1, minRun)
   const out = new Float64Array(n)
   any = false
   for (let i = 0; i < n; i++) {
     // Point i joins step i − 1 to step i; its depth is the hidden steps on both sides.
     let depth = 0
     while (
-      depth < SETBACK_RAMP &&
-      hidden[(i - 1 - depth + n * SETBACK_RAMP) % n] === 1 &&
+      depth < ramp &&
+      hidden[(i - 1 - depth + n * ramp) % n] === 1 &&
       hidden[(i + depth) % n] === 1
     ) {
       depth++
     }
     if (depth === 0 || side[i] === 0) continue
-    out[i] = (side[i] * SETBACK_PX * depth) / SETBACK_RAMP
+    out[i] = (side[i] * depthPx * depth) / ramp
     any = true
   }
   return any ? out : undefined

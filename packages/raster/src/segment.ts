@@ -75,6 +75,16 @@ export interface SegmentOptions {
   maxRegions?: number
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
   mask?: BinaryMask | null
+  /**
+   * Working pixels per source pixel (1 or more): the image was enlarged this
+   * many times before segmenting (supersampling). The gradient is read across a
+   * source pixel — an enlarged edge ramps over `scale` times the pixels, so
+   * one-pixel steps would read a soft edge, or a thin line's smooth crest, as
+   * flat interior — and every size and width in source pixels: a region's flat
+   * core, the size-aware merge bound, the rescue's reach, an anti-aliased seam,
+   * a blend band.
+   */
+  scale?: number
 }
 
 export interface SegmentResult {
@@ -128,9 +138,12 @@ const PRISTINE_FLOOR = 0.005
 const CORE_MIN_PIXELS = 4
 const CORE_MIN_SHARE = 0.05
 
-/** Whether a flat core of `coreN` pixels speaks for a region of `size` pixels. */
-function coreSpeaks(coreN: number, size: number): boolean {
-  return coreN >= CORE_MIN_PIXELS && coreN >= CORE_MIN_SHARE * size
+/**
+ * Whether a flat core of `coreN` pixels speaks for a region of `size` pixels,
+ * on a grid of `area` pixels per source pixel (supersampling).
+ */
+function coreSpeaks(coreN: number, size: number, area: number): boolean {
+  return coreN >= CORE_MIN_PIXELS * area && coreN >= CORE_MIN_SHARE * size
 }
 
 /**
@@ -219,6 +232,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const { width: w, height: h } = image
   const n = w * h
   const flatThreshold = opts.flatThreshold ?? DEFAULT_FLAT
+  const scale = Math.max(1, opts.scale ?? 1)
   const mergeThreshold = opts.mergeThreshold ?? DEFAULT_MERGE
   const sizeBias = Math.min(1, Math.max(0, opts.mergeSizeBias ?? 0))
   const minArea = Math.max(0, opts.minRegionArea ?? DEFAULT_MIN_AREA)
@@ -228,17 +242,21 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const ok = toOklabBuffer(image)
 
   // ---- 1. Oklab gradient magnitude (max ΔE to any 4-neighbor) ----
+  // Neighbors a source pixel apart: an enlarged image ramps over `scale` times
+  // the pixels, and a thin line's smooth crest would otherwise read as flat.
+  const step = Math.max(1, Math.round(scale))
   const grad = new Float32Array(n)
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x
-      if (x + 1 < w) {
-        const d = distToMean(ok, i, ok[(i + 1) * 3], ok[(i + 1) * 3 + 1], ok[(i + 1) * 3 + 2])
+      if (x + step < w) {
+        const j = i + step
+        const d = distToMean(ok, i, ok[j * 3], ok[j * 3 + 1], ok[j * 3 + 2])
         if (d > grad[i]) grad[i] = d
-        if (d > grad[i + 1]) grad[i + 1] = d
+        if (d > grad[j]) grad[j] = d
       }
-      if (y + 1 < h) {
-        const j = i + w
+      if (y + step < h) {
+        const j = i + step * w
         const d = distToMean(ok, i, ok[j * 3], ok[j * 3 + 1], ok[j * 3 + 2])
         if (d > grad[i]) grad[i] = d
         if (d > grad[j]) grad[j] = d
@@ -371,6 +389,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
       Math.max(1, minArea),
       coherence,
       diagonal,
+      scale,
     )
     for (const f of rescued) {
       const id = regionCount++
@@ -413,7 +432,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     }
   }
   for (let r = 0; r < regionCount; r++) {
-    if (coreSpeaks(coreN[r], size[r])) {
+    if (coreSpeaks(coreN[r], size[r], scale * scale)) {
       mL[r] = coreL[r] / coreN[r]
       mA[r] = coreA[r] / coreN[r]
       mB[r] = coreB[r] / coreN[r]
@@ -446,6 +465,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     floor,
     minArea,
     maxRegions,
+    scale,
   )
 
   // ---- Compact labels (first-appearance order) + palette ----
@@ -484,9 +504,9 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     paletteHex[lab] = rgbToHex(R, G, B)
   }
   // ---- 5. A seam a third region captured goes back to the two it separates ----
-  returnSeamPixels(image, labels, paletteRgb)
+  returnSeamPixels(image, labels, paletteRgb, scale)
   // ---- 6. A thin band of blend colors dissolves into the two regions it runs between ----
-  dissolveBlendBands(image, labels, paletteRgb, grad, flatThreshold)
+  dissolveBlendBands(image, labels, paletteRgb, grad, flatThreshold, scale)
   for (let p = 0; p < n; p++) {
     if (out[p] >= 0) counts[out[p]]++
   }
@@ -699,8 +719,11 @@ function rescueMarkerlessFeatures(
   minArea: number,
   coherence: number,
   diagonal: boolean,
+  scale: number,
 ): RescuedFeature[] {
   const coh2 = coherence * coherence
+  const reach = Math.round(RESCUE_REACH * scale)
+  const adjacent = Math.round(RESCUE_ADJACENT * scale)
 
   // ---- 1. Carve color-tight blobs out of the unmarked web ----
   // `order` holds each blob's pixels contiguously in [start, start+len). A pixel
@@ -829,11 +852,11 @@ function rescueMarkerlessFeatures(
   const promB = new Float64Array(cand.length)
   /**
    * The first marker met walking from (x, y) in direction (dx, dy), or -1 within
-   * `RESCUE_REACH`; `walked` is left holding how far it was.
+   * `RESCUE_REACH` (source pixels); `walked` is left holding how far it was.
    */
   let walked = 0
   const walk = (x: number, y: number, dx: number, dy: number): number => {
-    for (let k = 1; k <= RESCUE_REACH; k++) {
+    for (let k = 1; k <= reach; k++) {
       const xx = x + dx * k
       const yy = y + dy * k
       if (xx < 0 || yy < 0 || xx >= w || yy >= h) return -1
@@ -905,7 +928,7 @@ function rescueMarkerlessFeatures(
         const across = apart(f1, f2)
         const bar = across < RESCUE_ONE_FIELD ? RESCUE_LINE_CONTRAST : RESCUE_MIN_CONTRAST
         if (near < bar) {
-          if ((d1 <= d2 ? k1 : k2) <= RESCUE_ADJACENT) edge = true
+          if ((d1 <= d2 ? k1 : k2) <= adjacent) edge = true
           continue
         }
         tested++
@@ -975,6 +998,7 @@ function mergeRegions(
   floor: number,
   minArea: number,
   maxRegions: number,
+  scale: number,
 ): Int32Array {
   const parent = new Int32Array(regionCount)
   for (let i = 0; i < regionCount; i++) parent[i] = i
@@ -1009,11 +1033,12 @@ function mergeRegions(
   // `floor` (SRM_FLOOR, or PRISTINE_FLOOR on noise-free art) for two large
   // regions (near-identical to merge) and rises for small ones (a sliver folds
   // freely). Root sizes, so it tracks each round.
+  // Areas count source pixels: a supersampled region is `scale²` times its size.
   const SRM_SCALE = 0.5
   const mergeLimit = (a: number, b: number): number =>
     sizeBias <= 0
       ? mergeThreshold
-      : floor + sizeBias * SRM_SCALE * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
+      : floor + sizeBias * SRM_SCALE * scale * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
   const union = (a: number, b: number): void => {
     // Fold the smaller into the larger (keep the dominant color id stable).
     const keep = size[a] >= size[b] ? a : b
@@ -1026,7 +1051,7 @@ function mergeRegions(
     coreA[keep] += coreA[drop]
     coreB[keep] += coreB[drop]
     coreN[keep] += coreN[drop]
-    if (coreSpeaks(coreN[keep], nn)) {
+    if (coreSpeaks(coreN[keep], nn, scale * scale)) {
       // The merged flat interior speaks for the region; the rims it gathered do not.
       mL[keep] = coreL[keep] / coreN[keep]
       mA[keep] = coreA[keep] / coreN[keep]

@@ -21,6 +21,12 @@ export interface CoveragePatch {
   h: number
   data: Float32Array
   weight: Uint8Array
+  /**
+   * Patch pixels per unit of the paths it is compared with, 1 when absent: a
+   * supersampled ring is fitted in source pixels while its patch stays on the
+   * working grid.
+   */
+  unit?: number
 }
 
 /**
@@ -145,6 +151,7 @@ const COVERAGE_CURVE_STEPS = 16
  */
 export function pathCoverageError(cmds: readonly PathCommand[], patch: CoveragePatch): number {
   const { x0, y0, w, h, data, weight } = patch
+  const unit = patch.unit ?? 1
   // Edges (patch-relative), each subpath closed back on its start.
   const edges: number[] = []
   let cx = 0
@@ -152,7 +159,7 @@ export function pathCoverageError(cmds: readonly PathCommand[], patch: CoverageP
   let sx = 0
   let sy = 0
   const lineTo = (x: number, y: number): void => {
-    if (y !== cy) edges.push(cx - x0, cy - y0, x - x0, y - y0)
+    if (y !== cy) edges.push(cx * unit - x0, cy * unit - y0, x * unit - x0, y * unit - y0)
     cx = x
     cy = y
   }

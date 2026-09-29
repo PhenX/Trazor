@@ -266,23 +266,26 @@ const SEAM_MAX_RUN = 2
  * to the two sides by its summed coverage, as the blend test in
  * {@link absorbMixtureLabels} splits a dissolved label.
  *
- * Mutates `labels`; `paletteRgb` is the RGB bytes per label. Returns the number
- * of pixels moved. Deterministic: the runs are read from the labels as they
- * were — rows first, then columns, a pixel keeping its first decision — and
- * the moves are applied after the scan.
+ * Mutates `labels`; `paletteRgb` is the RGB bytes per label, `scale` the
+ * working pixels per source pixel (a supersampled image's seam is that many
+ * times wider). Returns the number of pixels moved. Deterministic: the runs are
+ * read from the labels as they were — rows first, then columns, a pixel keeping
+ * its first decision — and the moves are applied after the scan.
  */
 export function returnSeamPixels(
   image: RasterImage,
   labels: LabelMap,
   paletteRgb: Uint8Array,
+  scale = 1,
 ): number {
   const { width: w, height: h, data } = labels
   const k = labels.count
   const n = w * h
   if (k < 3 || n === 0) return 0
   const px = image.data
+  const maxRun = Math.max(SEAM_MAX_RUN, Math.round(SEAM_MAX_RUN * scale))
   const target = new Int32Array(n).fill(-1)
-  const weight = new Float64Array(SEAM_MAX_RUN)
+  const weight = new Float64Array(maxRun)
   /** Pixel `i`'s weight of `a` against `b` when it is a seam blend far from `c`, else −1. */
   const blendOf = (i: number, a: number, b: number, c: number): number => {
     const p = i * 4
@@ -328,7 +331,7 @@ export function returnSeamPixels(
         const c = data[i]
         const a = data[i - step]
         if (c < 0 || a < 0 || a === c) continue
-        for (let len = 1; len <= SEAM_MAX_RUN && s + len < span; len++) {
+        for (let len = 1; len <= maxRun && s + len < span; len++) {
           const last = i + (len - 1) * step
           if (data[last] !== c) break
           const b = data[last + step]
@@ -438,8 +441,9 @@ const BAND_ROUNDS = 2
  * between two colors), is never touched.
  *
  * Mutates `labels`; `paletteRgb` is the RGB bytes per label, `gradient` the
- * segmenter's per-pixel gradient magnitude and `flatThreshold` its marker bound.
- * Returns the number of pixels moved. Deterministic: each pass decides every
+ * segmenter's per-pixel gradient magnitude and `flatThreshold` its marker bound,
+ * `scale` the working pixels per source pixel (widths and the hair test are in
+ * source pixels). Returns the number of pixels moved. Deterministic: each pass decides every
  * component on the labels as they were and applies the moves after the scan.
  */
 export function dissolveBlendBands(
@@ -448,10 +452,11 @@ export function dissolveBlendBands(
   paletteRgb: Uint8Array,
   gradient: Float32Array,
   flatThreshold: number,
+  scale = 1,
 ): number {
   let moved = 0
   for (let round = 0; round < BAND_ROUNDS; round++) {
-    const m = dissolveBandsOnce(image, labels, paletteRgb, gradient, flatThreshold)
+    const m = dissolveBandsOnce(image, labels, paletteRgb, gradient, flatThreshold, scale)
     if (m === 0) break
     moved += m
   }
@@ -465,6 +470,7 @@ function dissolveBandsOnce(
   paletteRgb: Uint8Array,
   gradient: Float32Array,
   flatThreshold: number,
+  scale: number,
 ): number {
   const { width: w, height: h, data } = labels
   const k = labels.count
@@ -477,13 +483,17 @@ function dissolveBandsOnce(
   const target = new Int32Array(n).fill(-1)
   const sides = new Uint32Array(k)
   const touched = new Int32Array(k)
+  // A hair is nowhere three source pixels thick: no pixel has a full square of
+  // its own label of that side around it.
+  const r = Math.max(1, Math.round(scale))
+  const maxWidth = BAND_MAX_WIDTH * scale
   const isBlock = (p: number, c: number): boolean => {
     const x = p % w
     const y = (p - x) / w
-    for (let dy = -1; dy <= 1; dy++) {
+    for (let dy = -r; dy <= r; dy++) {
       const yy = y + dy
       if (yy < 0 || yy >= h) continue
-      for (let dx = -1; dx <= 1; dx++) {
+      for (let dx = -r; dx <= r; dx++) {
         const xx = x + dx
         if (xx >= 0 && xx < w && data[yy * w + xx] !== c) return false
       }
@@ -541,7 +551,7 @@ function dissolveBandsOnce(
     const sa = a >= 0 ? sides[a] : 0
     const sb = b >= 0 ? sides[b] : 0
     for (let j = 0; j < touchedN; j++) sides[touched[j]] = 0
-    if (2 * len > BAND_MAX_WIDTH * per || b < 0) continue
+    if (2 * len > maxWidth * per || b < 0) continue
     if (sa + sb < NEIGHBOR_COVERAGE * total || sb < BAND_SIDE_SHARE * (sa + sb)) continue
     const ar = paletteRgb[a * 3]
     const ag = paletteRgb[a * 3 + 1]

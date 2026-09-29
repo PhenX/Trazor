@@ -7,6 +7,7 @@ import {
   nowMs,
   rgbToHex,
   rgbToOklab,
+  scalePathCommands,
 } from '@trazor/core'
 import type {
   BinaryMask,
@@ -73,6 +74,7 @@ import {
   toEncodedLuma,
   toGrayscale,
   toOklabBuffer,
+  upscaleImage,
   TRANSLUCENT_MAX_ALPHA,
   TRANSLUCENT_MIN_ALPHA,
   zhangSuenThin,
@@ -546,10 +548,39 @@ function buildDocument(
   }
 }
 
+/**
+ * `s` read on a working image enlarged `scale` times (supersampling): its
+ * pixel areas scale by `scale²` and its pixel lengths by `scale`. The blur is
+ * applied before the enlargement, the curve fit reads its tolerances in source
+ * pixels (`TraceCurveOptions.scale`) and the cutout trap is sized at the output
+ * (`gapFill` may be millimetres), so none of them changes.
+ */
+function forWorkingGrid(s: VectorizeSettings, scale: number): VectorizeSettings {
+  const area = scale * scale
+  return {
+    ...s,
+    minRegionArea: s.minRegionArea * area,
+    gradientMinArea: s.gradientMinArea * area,
+    adaptiveRadius: s.adaptiveRadius * scale,
+    pruneLength: s.pruneLength * scale,
+    fitTolerance: s.fitTolerance * scale,
+    simplifyTolerance: s.simplifyTolerance * scale,
+    strokeWidth: s.strokeWidth * scale,
+  }
+}
+
+/** A gradient paint in user space scaled by `s` about the origin. */
+function scaleGradient<T extends GradientPaint>(g: T, s: number): T {
+  return g.kind === 'linear'
+    ? { ...g, x1: g.x1 * s, y1: g.y1 * s, x2: g.x2 * s, y2: g.y2 * s }
+    : { ...g, cx: g.cx * s, cy: g.cy * s, r: g.r * s }
+}
+
 /** Settings that change the preprocessed working image. */
 function preKeyOf(s: VectorizeSettings): string {
   return [
     s.maxDimension,
+    s.supersample,
     s.denoise,
     s.blurRadius,
     s.background,
@@ -624,7 +655,11 @@ export async function vectorize(
   ctx?: EngineContext,
   opts?: VectorizeRunOptions,
 ): Promise<VectorizeResult> {
-  const settings = normalizeSettings(settingsIn)
+  const requested = normalizeSettings(settingsIn)
+  // A supersampled run works on an image `scale` times the working size, so
+  // its pixel-size settings are read on that grid; the SVG keeps the size.
+  const scale = requested.supersample
+  const settings = scale === 1 ? requested : forWorkingGrid(requested, scale)
   const started = nowMs()
   const run = new Run(ctx)
   const warnings: VectorizeWarning[] = []
@@ -653,8 +688,13 @@ export async function vectorize(
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
     if (settings.blurRadius > 0) img = gaussianBlur(img, settings.blurRadius)
+    // Color segmentation would keep the cubic's ringing as colors of its own; a
+    // threshold reads the smoother contour of the plain cubic.
+    if (scale > 1) {
+      img = upscaleImage(img, scale, settings.mode === 'color' || settings.mode === 'grayscale')
+    }
     run.progress(0.7)
-    const flat = flattenImage(img, settings)
+    const flat = flattenImage(img, settings, scale)
     img = flat.image
     opaque = flat.opaque
     alpha = flat.alpha
@@ -673,6 +713,9 @@ export async function vectorize(
     }
   }
   const { width, height } = image
+  // The SVG's size: the working image before any supersampling enlarged it.
+  const outWidth = width / scale
+  const outHeight = height / scale
   await run.tick()
 
   if (run.tracing) {
@@ -683,6 +726,7 @@ export async function vectorize(
       }
       if (settings.denoise !== 'none') notes.push(`Denoise: ${settings.denoise}.`)
       if (settings.blurRadius > 0) notes.push(`Blur radius ${settings.blurRadius}.`)
+      if (scale > 1) notes.push(`Supersampled ×${scale} (bicubic) for tracing.`)
       if (settings.mode === 'grayscale') notes.push('Desaturated for grayscale tracing.')
       return {
         code: 'preprocess',
@@ -726,6 +770,7 @@ export async function vectorize(
     precision: settings.precision,
     optimize: settings.optimizeSvg,
     roundPrimitives,
+    scale: 1 / scale,
   }
   // Helper payloads are keyed by the same identities the StageCache uses, so a
   // warm run finds its rings and polygons in the helper that owns those units.
@@ -764,6 +809,20 @@ export async function vectorize(
     )
   }
 
+  if (scale > 1) {
+    // Back to the working size: the geometry was traced `scale` times larger.
+    const s = 1 / scale
+    for (let i = 0; i < shapes.length; i++) {
+      const shape = shapes[i]
+      shapes[i] = {
+        ...shape,
+        commands: scalePathCommands(shape.commands, s),
+        ...(shape.strokeWidth !== undefined ? { strokeWidth: shape.strokeWidth * s } : {}),
+      }
+    }
+    for (let i = 0; i < defs.length; i++) defs[i] = scaleGradient(defs[i], s)
+  }
+
   if (run.tracing) {
     run.emitStep(() => ({
       code: 'trace',
@@ -788,8 +847,8 @@ export async function vectorize(
     settings.groupByColor && (settings.mode === 'color' || settings.mode === 'grayscale')
   const svg = serializeSvg(
     {
-      width,
-      height,
+      width: outWidth,
+      height: outHeight,
       unit: settings.unit,
       widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
       title: settings.svgTitle || undefined,
@@ -843,7 +902,7 @@ export async function vectorize(
     })
   }
   if (settings.unit === 'mm') {
-    warnTinyFeatures(shapes, width, settings, warnings)
+    warnTinyFeatures(shapes, outWidth, settings, warnings)
   }
   if (defs.length > 0 && (settings.unit === 'mm' || settings.groupByColor)) {
     warnings.push({
@@ -857,8 +916,8 @@ export async function vectorize(
   const timings = run.finish()
   return {
     svg,
-    width,
-    height,
+    width: outWidth,
+    height: outHeight,
     palette,
     stats: {
       pathCount: analysis.pathCount,
@@ -869,7 +928,9 @@ export async function vectorize(
       stages: timings,
     },
     warnings,
-    document: opts?.withDocument ? buildDocument(shapes, defs, width, height, settings) : undefined,
+    document: opts?.withDocument
+      ? buildDocument(shapes, defs, outWidth, outHeight, settings)
+      : undefined,
   }
 }
 
@@ -953,6 +1014,7 @@ async function colorPipeline(
       minRegionArea: settings.minRegionArea,
       maxRegions: settings.paletteSize,
       mask: opaque,
+      scale: settings.supersample,
     })
     await run.tick()
     run.stage('segment')
@@ -974,7 +1036,14 @@ async function colorPipeline(
       counts = countLabels(labels)
     }
     {
-      const tl = translucentFaces(image, labels, alpha, paletteHex.length, gradients)
+      const tl = translucentFaces(
+        image,
+        labels,
+        alpha,
+        paletteHex.length,
+        gradients,
+        settings.supersample ** 2,
+      )
       fillOpacity = tl?.opacity
       inkHex = tl?.inkHex
     }
@@ -997,7 +1066,7 @@ async function colorPipeline(
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
     // fixed-palette paths, which quantize resolves without clustering).
-    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
     const clusterSample: BinaryMask = {
       width: image.width,
       height: image.height,
@@ -1123,7 +1192,14 @@ async function colorPipeline(
       counts = countLabels(labels)
     }
     if (settings.palette === null) {
-      const tl = translucentFaces(image, labels, alpha, paletteHex.length, gradients)
+      const tl = translucentFaces(
+        image,
+        labels,
+        alpha,
+        paletteHex.length,
+        gradients,
+        settings.supersample ** 2,
+      )
       fillOpacity = tl?.opacity
       inkHex = tl?.inkHex
     }
@@ -1226,6 +1302,7 @@ async function colorPipeline(
     curveOptimize: settings.curveOptimize,
     optTolerance: settings.optTolerance,
     cornerThreshold: settings.cornerThreshold,
+    scale: settings.supersample,
   }
   // With detail preservation or an edge hint, the merge above is the sole speck
   // filter — the tracer must not drop the small regions it deliberately kept.
@@ -1306,15 +1383,17 @@ async function colorPipeline(
       // Trap width in viewBox px. An mm-unit output carries a physical millimetre
       // trap: convert it through the document's mm-per-px so the overlap means the
       // same on press at any trace resolution; a px-unit trap is already viewBox px.
-      const trapScale = mmPerPx(image.width, settings.widthMm)
+      // A supersampled run traces `supersample` working pixels per viewBox pixel.
+      const ss = settings.supersample
+      const trapScale = mmPerPx(image.width / ss, settings.widthMm)
       const trapPx =
         settings.gapFill <= 0
           ? 0
           : settings.unit === 'mm'
             ? trapScale > 0
-              ? settings.gapFill / trapScale
+              ? (settings.gapFill / trapScale) * ss
               : 0
-            : settings.gapFill
+            : settings.gapFill * ss
       for (const region of regions) {
         const under = underOf(region.label)
         for (const label of under >= 0 ? [under, region.label] : [region.label]) {
@@ -1545,6 +1624,7 @@ async function colorPipeline(
                   layer: position[label],
                   width: image.width,
                   height: image.height,
+                  scale: settings.supersample,
                 }
               : undefined
           const polygons = wantPolygons ? layerPolygons(paths, field, hidden) : undefined
@@ -1593,6 +1673,7 @@ function layerPolygons(
             hidden.layer,
             hidden.width,
             hidden.height,
+            hidden.scale,
           )
         : undefined,
     ),
@@ -1607,6 +1688,8 @@ interface LayerStacking {
   layer: number
   width: number
   height: number
+  /** Working pixels per source pixel (supersampling). */
+  scale: number
 }
 
 /** Each label's paint position among the base layers (−1 for a label not in `order`). */
@@ -2303,6 +2386,7 @@ async function inkPipeline(
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
       cornerThreshold: settings.cornerThreshold,
+      scale: settings.supersample,
     }
     const helpers = helperCtx.helpers
     let traced: TracedShape[]
@@ -2542,7 +2626,7 @@ function applyGradients(
     minArea:
       settings.gradientMinArea > 0
         ? settings.gradientMinArea
-        : Math.max(GRADIENT_MIN_AREA, settings.minRegionArea),
+        : Math.max(GRADIENT_MIN_AREA * settings.supersample ** 2, settings.minRegionArea),
     // Strength loosens the growth's backtracking ceiling and lowers the required
     // color span together, so a low value keeps only clean, high-contrast ramps
     // (flat objects stay flat) and a high value tolerates more reversal and
@@ -2620,7 +2704,8 @@ function medianBin(hist: Uint32Array, base: number, total: number): number {
  * translucent pixels, so the composited rim the labeling handed it does not move
  * the color. Returns the per-label opacity and ink (both indexed by label,
  * undefined for an opaque label), or undefined when no label is translucent;
- * `paletteHex` is left untouched. Gradient labels are skipped. Deterministic:
+ * `paletteHex` is left untouched. Gradient labels are skipped. `area` is the
+ * working pixels per source pixel squared (supersampling). Deterministic:
  * histograms only.
  */
 interface Translucency {
@@ -2633,6 +2718,7 @@ function translucentFaces(
   alpha: Uint8Array | null,
   count: number,
   gradients: (GradientPaint | null)[] | undefined,
+  area: number,
 ): Translucency | undefined {
   if (alpha === null) return undefined
   const lab = labels.data
@@ -2666,7 +2752,7 @@ function translucentFaces(
   let inkHex: (string | undefined)[] | undefined
   for (let l = 0; l < count; l++) {
     if (gradients?.[l]) continue
-    if (transN[l] < MIN_TRANSLUCENT_PIXELS || transN[l] * 2 < totalN[l]) continue
+    if (transN[l] < MIN_TRANSLUCENT_PIXELS * area || transN[l] * 2 < totalN[l]) continue
     const medA = medianBin(aHist, l * 256, transN[l])
     if (medA < TRANSLUCENT_MIN_ALPHA || medA >= TRANSLUCENT_MAX_ALPHA) continue
     const r = medianBin(inkHist, l * 768, transN[l])

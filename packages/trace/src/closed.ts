@@ -1,5 +1,5 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
-import { signedAreaFlat } from '@trazor/core'
+import { scalePathCommands, signedAreaFlat } from '@trazor/core'
 import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
@@ -39,6 +39,13 @@ export interface TraceCurveOptions {
    * (byte-identical). Ignored in `pixel` curveMode.
    */
   coverage?: GrayImage
+  /**
+   * Working pixels per source pixel (supersampling), 1 when absent. The curve
+   * fit reads its tolerances, uncertainties and anti-aliasing allowances in
+   * source pixels, so a ring traced on an enlarged image is fitted there —
+   * scaled down by this, and its curves scaled back up.
+   */
+  scale?: number
 }
 
 export interface TraceMaskOptions extends TraceCurveOptions {
@@ -263,19 +270,28 @@ export function polygonToCommands(
     return out
   }
 
-  const commands = fitClosedRuns(fit.geom, fit.sigma, fit.vertices, polygon, {
-    alphamax: (opts.smoothing * 4) / 3,
-    cornerThreshold: opts.cornerThreshold,
-    lambda: descriptionLambda(fit.extent),
-    tau: runTau(),
-    band: runBand(opts.optTolerance),
-    reach: mergeReach(opts.curveOptimize),
-    stride: candidateStride(opts.curveOptimize),
-    extent: fit.extent,
-    coverage: fit.coverage,
-  })
+  const scale = opts.scale ?? 1
+  const toSource = (v: number): number => v / scale
+  const commands = fitClosedRuns(
+    scale === 1 ? fit.geom : fit.geom.map(toSource),
+    fit.sigma,
+    fit.vertices,
+    scale === 1 ? polygon : polygon.map(toSource),
+    {
+      alphamax: (opts.smoothing * 4) / 3,
+      cornerThreshold: opts.cornerThreshold,
+      lambda: descriptionLambda(fit.extent / scale),
+      tau: runTau(),
+      band: runBand(opts.optTolerance),
+      reach: mergeReach(opts.curveOptimize),
+      stride: Math.round(candidateStride(opts.curveOptimize) * scale),
+      extent: fit.extent / scale,
+      coverage: fit.coverage && scale !== 1 ? { ...fit.coverage, unit: scale } : fit.coverage,
+    },
+  )
   // A ring too short for a meaningful run fit falls back to the exact lattice.
-  return commands ?? pixelCommands(ring)
+  if (!commands) return pixelCommands(ring)
+  return scale === 1 ? commands : scalePathCommands(commands, scale)
 }
 
 /** Exact rectilinear ring (pixel mode): collinear lattice points collapsed. */

@@ -87,6 +87,8 @@ export interface HelperCurveOptions {
   curveOptimize: boolean
   optTolerance: number
   cornerThreshold: number
+  /** Working pixels per source pixel (`VectorizeSettings.supersample`). */
+  scale: number
 }
 
 /** Serialization settings for the per-shape half of the SVG a helper produces. */
@@ -94,6 +96,8 @@ export interface HelperSerializeOptions {
   precision: number
   optimize: boolean
   roundPrimitives: boolean
+  /** Source pixels per working pixel: a supersampled run's shapes are scaled by it first. */
+  scale: number
 }
 
 /** An `SvgShape` without its geometry: the paint the coordinator assigns a unit. */

@@ -236,6 +236,17 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).
+- **Robert G. Keys, “Cubic Convolution Interpolation for Digital Image
+  Processing”, _IEEE Transactions on Acoustics, Speech, and Signal Processing_
+  29(6), 1981.** The interpolating cubic with a = −½ (Catmull-Rom), exact on a
+  linear ramp. The supersampling enlargement `upscaleImage`
+  (`packages/raster/src/resize.ts`), applied premultiplied by alpha.
+- **Peter Selinger, “mkbitmap” (Potrace distribution), 2001–2019.**
+  <https://potrace.sourceforge.net/mkbitmap.html> — scales a grayscale image up
+  with a smooth (cubic) interpolation before thresholding it for Potrace, so a
+  small image traces on a finer grid; the idea behind the engine's opt-in
+  `supersample` (`packages/engine/src/native.ts`), taken from the documented
+  behavior only.
 - **C. Tomasi & R. Manduchi, “Bilateral Filtering for Gray and Color Images”,
   _ICCV_ 1998.** Edge-preserving denoise option
   (`packages/raster/src/filters.ts`).
