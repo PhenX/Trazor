@@ -1,5 +1,5 @@
 import type { GrayImage, LabelMap, PathCommand } from '@trazor/core'
-import { arcToCenter } from '@trazor/core'
+import { arcToCenter, scalePathCommands } from '@trazor/core'
 import type { TraceCurveOptions } from './closed'
 import { closedPathToCommands, pixelCommands } from './closed'
 import { adjustVertices } from './potrace/adjust'
@@ -1001,16 +1001,24 @@ function fitOpenChain(
   // endpoints keeping the partition seam-free.
   const sigma = ringSigmas(points, geom, field !== undefined)
   const extent = field ? Math.max(field.width, field.height) : 0
-  return fitOpenRuns(geom, sigma, vertexIdx, {
+  // A supersampled chain is fitted in source pixels (see `TraceCurveOptions.scale`)
+  // and scaled back, its far junction set exactly so the neighbours still meet.
+  const scale = opts.scale ?? 1
+  const fitted = fitOpenRuns(scale === 1 ? geom : geom.map((v) => v / scale), sigma, vertexIdx, {
     alphamax: (opts.smoothing * 4) / 3,
     cornerThreshold: opts.cornerThreshold,
-    lambda: descriptionLambda(extent),
+    lambda: descriptionLambda(extent / scale),
     tau: runTau(),
     band: runBand(opts.optTolerance),
     reach: mergeReach(opts.curveOptimize),
-    stride: candidateStride(opts.curveOptimize),
-    extent,
+    stride: Math.round(candidateStride(opts.curveOptimize) * scale),
+    extent: extent / scale,
   })
+  if (scale === 1 || fitted.length === 0) return fitted
+  const out = scalePathCommands(fitted, scale)
+  const end = out[out.length - 1]
+  if (end.type !== 'Z') out[out.length - 1] = { ...end, x: points[n * 2 - 2], y: points[n * 2 - 1] }
+  return out
 }
 
 /** Rectilinear open chain: direction-change lattice points only. */

@@ -63,6 +63,23 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — supersampling
+
+```ts
+// settings.ts — VectorizeSettings.supersample: trace at this integer multiple of the working size
+// (1 = off, the default; clamped to 1..4). The engine enlarges the preprocessed image with
+// raster `upscaleImage`, segments and traces it with every pixel-size setting (minRegionArea,
+// gradientMinArea ×s²; adaptiveRadius, pruneLength, fitTolerance, simplifyTolerance, strokeWidth
+// ×s) and every size rule read on that grid, and scales the geometry back by 1/s, so the SVG keeps
+// the working size (a cutout trap, `gapFill`, is sized there too). Made for anti-aliased art under
+// region growing and for bw: global quantization sees an enlarged rim as more pixels and may keep
+// it as a ring of its own. At 1 the output is byte-identical to a run without the field.
+supersample: number
+// path.ts — the same path scaled by `s` about the origin: coordinates and arc radii multiplied,
+// an arc's rotation and flags kept.
+export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[]
+```
+
 ## @trazor/core — color (CIEDE2000)
 
 ```ts
@@ -115,6 +132,12 @@ export type GradientPaint = LinearGradientPaint | RadialGradientPaint
 // resize.ts — area-averaged box downscale. Returns input object unchanged when
 // maxDimension is 0 or the image already fits. Never upscales.
 export function resizeToFit(image: RasterImage, maxDimension: number): RasterImage
+// Integer enlargement (supersampling) by bicubic Catmull-Rom interpolation (Keys 1981, a = −½),
+// pixel-center aligned and edge-clamped; colors interpolated premultiplied by alpha, un-premultiplied
+// by the interpolated alpha and clamped. `bounded` (default true) holds each separable pass between
+// the two samples it lies between, so a hard edge rings no new color (the engine bounds color and
+// grayscale runs; bw and centerline threshold the plain cubic). Returns the input object at factor ≤ 1.
+export function upscaleImage(image: RasterImage, factor: number, bounded?: boolean): RasterImage
 // Bilinear single-channel resize (e.g. an edge hint → the working resolution).
 export function resizeGray(image: GrayImage, width: number, height: number): GrayImage
 
@@ -141,9 +164,12 @@ export interface FlattenResult {
 // transparent (TRANSLUCENT_MIN_ALPHA..TRANSLUCENT_MAX_ALPHA) with a 4-neighbor within TRANSLUCENT_FLAT_DELTA
 // of its alpha. A see-through region (shadow, glass, steam) is a partial-alpha plateau, so it survives a
 // half-coverage cut at any thickness; an anti-aliased opaque rim climbs too steeply to match and stays cut.
+// `scale` (default 1) is the working pixels per source pixel of an enlarged image: the neighbor compared
+// is that many pixels away, so an enlarged rim still climbs too steeply to match.
 export function flattenImage(
   image: RasterImage,
   settings: Pick<VectorizeSettings, 'background' | 'backgroundColor' | 'alphaThreshold'>,
+  scale?: number,
 ): FlattenResult
 // Alpha bounds for a translucent-face pixel: clear below MIN (no shape), solid at/above MAX (opaque content).
 export const TRANSLUCENT_MIN_ALPHA: number // 8
@@ -189,10 +215,12 @@ export function absorbMixtureLabels(
 // the labels are A and B (different, neither C), every pixel on the A–B blend segment and far from
 // C's color, while C's own color is off that segment, goes to A and B by summed coverage (the pixels
 // from the A side first). Mutates `labels`; returns the pixels moved. segmentRegions runs it after the merge.
+// `scale` (default 1): working pixels per source pixel — the run allowed is two source pixels.
 export function returnSeamPixels(
   image: RasterImage,
   labels: LabelMap,
   paletteRgb: Uint8Array,
+  scale?: number,
 ): number
 // A thin band of blend colors (a region grown along a soft edge) handed back to the two regions it runs
 // between: a 4-connected region component of mean width ≤ 6 px whose two chief neighbors A and B hold 70 %
@@ -202,13 +230,15 @@ export function returnSeamPixels(
 // spread its coverage like a ramp (P80 − P20 ≥ 0.2) and hold no flat core (`gradient` < `flatThreshold`
 // on ≤ 5 % of it), so a stroke in an intermediate color stays. Each pixel goes to A where its coverage
 // of A is ≥ ½, else to B; two passes. Mutates `labels`; returns the pixels moved. segmentRegions runs it
-// last, with its own gradient and flat threshold.
+// last, with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel —
+// the width and the hair test are read in source pixels.
 export function dissolveBlendBands(
   image: RasterImage,
   labels: LabelMap,
   paletteRgb: Uint8Array,
   gradient: Float32Array, // per-pixel gradient magnitude, w*h
   flatThreshold: number,
+  scale?: number,
 ): number
 
 // convert.ts
@@ -276,6 +306,7 @@ export interface SegmentOptions {
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
   maxRegions?: number // hard cap: fold pairs by least added squared color error (Ward) until met; 0 = none
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
+  scale?: number // working pixels per source pixel (supersampling, default 1): gradient read a source pixel apart; sizes/widths in source pixels
 }
 export interface SegmentResult {
   labels: LabelMap // compact 0..count-1; -1 masked-out (mirrors QuantizeResult)
@@ -323,8 +354,9 @@ export function fitRegionGradients(
 
 `segmentRegions` requirements (marker-controlled watershed; Meyer 1991):
 
-- Oklab gradient = max ΔE to any 4-neighbor. Markers are 4-connected components
-  of in-mask pixels with gradient < `flatThreshold`, each seeded with its mean.
+- Oklab gradient = max ΔE to any 4-neighbor (`scale` pixels away on an enlarged
+  image). Markers are 4-connected components of in-mask pixels with gradient <
+  `flatThreshold`, each seeded with its mean.
 - A priority flood (binary min-heap keyed by Oklab distance to the claiming
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
@@ -341,6 +373,11 @@ export function fitRegionGradients(
   a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
   region those passes empty is dropped and the labels renumbered in order, so
   they stay compact.
+- On an image enlarged `scale` times (supersampling), every size and width is
+  read in source pixels — a flat core's minimum, the size-aware merge bound,
+  the rescue's reach and rim allowance, a seam run, a blend band — so an
+  enlarged image segments as its source would, on a finer grid. At `scale` 1
+  (the default) the result is unchanged.
 - Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
   candidates). Result mirrors `QuantizeResult` so the engine consumes it
   identically. Selected by `VectorizeSettings.segmentation === 'regions'`.
@@ -426,7 +463,7 @@ export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 // edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
 // (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
 // sampleMask so rim mixtures stay out of the palette. Deterministic.
-export function detectEdges(image: RasterImage, threshold: number): BinaryMask
+export function detectEdges(image: RasterImage, threshold: number, step?: number): BinaryMask // neighbors `step` px apart (default 1; a source pixel of an enlarged image)
 
 // morphology.ts — remove 8-connected foreground specks < minArea AND fill 4-connected
 // background holes < minArea (holes = background components not touching the border);
@@ -465,6 +502,7 @@ export interface TraceCurveOptions {
   optTolerance: number
   cornerThreshold?: number // interior angle (deg) below which a vertex is pinned as a corner
   coverage?: GrayImage // signed boundary field; refines ring vertices onto its zero level (ignored in pixel mode)
+  scale?: number // working pixels per source pixel (supersampling, default 1): the run fit reads its tolerances in source pixels, so a ring is fitted scaled down by this and its curves scaled back up
 }
 export interface TraceMaskOptions extends TraceCurveOptions {
   turnPolicy: TurnPolicy
@@ -535,6 +573,7 @@ export interface CoveragePatch {
   h: number
   data: Float32Array
   weight: Uint8Array
+  unit?: number // patch pixels per unit of the paths compared with it (a supersampled ring's scale); 1 when absent
 }
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
 // §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted

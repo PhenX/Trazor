@@ -37,6 +37,36 @@ export type PathCommand =
     }
   | { readonly type: 'Z' }
 
+/**
+ * The same path scaled by `s` about the origin: every coordinate and arc radius
+ * multiplied (an arc's rotation and flags are unchanged by a uniform scale).
+ */
+export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[] {
+  return commands.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M':
+      case 'L':
+        return { type: c.type, x: c.x * s, y: c.y * s }
+      case 'Q':
+        return { type: 'Q', x1: c.x1 * s, y1: c.y1 * s, x: c.x * s, y: c.y * s }
+      case 'C':
+        return {
+          type: 'C',
+          x1: c.x1 * s,
+          y1: c.y1 * s,
+          x2: c.x2 * s,
+          y2: c.y2 * s,
+          x: c.x * s,
+          y: c.y * s,
+        }
+      case 'A':
+        return { ...c, rx: c.rx * s, ry: c.ry * s, x: c.x * s, y: c.y * s }
+      case 'Z':
+        return c
+    }
+  })
+}
+
 /** Number of anchor points (M/L/Q/C/A count one each; Z counts zero). */
 export function countPathNodes(commands: readonly PathCommand[]): number {
   let nodes = 0

@@ -45,10 +45,15 @@ function compositeOver(image: RasterImage, br: number, bg: number, bb: number): 
  * - `auto`: behaves as `transparent` when any pixel has alpha < 250, else as
  *   fully opaque (composited over white — a no-op except for alpha in
  *   [250, 255) — with `opaque` `null`).
+ *
+ * `scale` is the working pixels per source pixel of an enlarged (supersampled)
+ * image: an anti-aliased rim ramps over that many times the pixels, so the
+ * translucency test compares alphas a source pixel apart.
  */
 export function flattenImage(
   image: RasterImage,
   settings: Pick<VectorizeSettings, 'background' | 'backgroundColor' | 'alphaThreshold'>,
+  scale = 1,
 ): FlattenResult {
   const { width, height, data } = image
   const n = width * height
@@ -92,7 +97,7 @@ export function flattenImage(
   // a stray rim pixel keeps its tight cut.
   let marked = 0
   {
-    const md = markFlatTranslucent(alpha, width, height)
+    const md = markFlatTranslucent(alpha, width, height, Math.max(1, Math.round(scale)))
     for (let i = 0; i < n; i++) marked += md[i]
   }
   const cut = marked >= n * TRANSLUCENT_AREA_GATE ? TRANSLUCENT_MIN_ALPHA : threshold
@@ -123,14 +128,19 @@ const TRANSLUCENT_AREA_GATE = 0.05
 /**
  * Mark each flat-translucent pixel (1): partly transparent
  * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`) with at least one
- * in-bounds 4-neighbor also partly transparent and within `TRANSLUCENT_FLAT_DELTA`
- * of its own alpha. That is the plateau of a see-through region (a shadow, glass,
+ * in-bounds 4-neighbor `step` pixels away (a source pixel of an enlarged image)
+ * also partly transparent and within `TRANSLUCENT_FLAT_DELTA` of its own alpha. That is the plateau of a see-through region (a shadow, glass,
  * steam) — captured at any thickness, down to a one-pixel wisp, since the match
  * can run along the region. An anti-aliased rim of an opaque shape has no such
  * neighbor (its coverage climbs steeply from clear to solid), so it is never
  * marked and stays cut at the threshold. Fixed scan order: deterministic.
  */
-function markFlatTranslucent(alpha: Uint8Array, width: number, height: number): Uint8Array {
+function markFlatTranslucent(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  step: number,
+): Uint8Array {
   const out = new Uint8Array(alpha.length)
   const flatWith = (a: number, b: number): boolean =>
     b >= TRANSLUCENT_MIN_ALPHA &&
@@ -143,10 +153,10 @@ function markFlatTranslucent(alpha: Uint8Array, width: number, height: number): 
       const a = alpha[i]
       if (a < TRANSLUCENT_MIN_ALPHA || a >= TRANSLUCENT_MAX_ALPHA) continue
       if (
-        (x > 0 && flatWith(a, alpha[i - 1])) ||
-        (x < width - 1 && flatWith(a, alpha[i + 1])) ||
-        (y > 0 && flatWith(a, alpha[i - width])) ||
-        (y < height - 1 && flatWith(a, alpha[i + width]))
+        (x >= step && flatWith(a, alpha[i - step])) ||
+        (x < width - step && flatWith(a, alpha[i + step])) ||
+        (y >= step && flatWith(a, alpha[i - step * width])) ||
+        (y < height - step && flatWith(a, alpha[i + step * width]))
       ) {
         out[i] = 1
       }

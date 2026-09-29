@@ -1,7 +1,7 @@
 import type { BinaryMask } from '@trazor/core'
 import { oklabToRgb } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
-import { segmentRegions } from '../src/index'
+import { segmentRegions, upscaleImage } from '../src/index'
 import { rasterOf } from './helpers'
 import type { Rgba } from './helpers'
 
@@ -76,6 +76,38 @@ describe('segmentRegions — region growing', () => {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         expect(seg.labels.data[y * w + x]).toBe(coverage(x, y) >= 0.5 ? fromOrange : fromBlue)
+      }
+    }
+  })
+
+  it('segments an enlarged soft edge as at the source size (supersampling)', () => {
+    // An orange field meets a blue one across a fourteen-pixel ramp. At the
+    // source size every ramp pixel steps ≈0.03 from its neighbor, no interior;
+    // enlarged 2× each step halves, and read a working pixel apart the whole
+    // ramp would pass as flat — one marker spanning both fields, painting them
+    // their mean. Read a source pixel apart (`scale`), it splits where the
+    // source splits, into the same two colors.
+    const w = 60
+    const h = 40
+    const orange = [235, 140, 40]
+    const blue = [40, 90, 200]
+    const image = rasterOf(w, h, (x) => {
+      const t = Math.min(1, Math.max(0, (x + 0.5 - 25) / 14))
+      return [...orange.map((o, k) => Math.round(o * (1 - t) + blue[k] * t)), 255] as Rgba
+    })
+    const opts = { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24 }
+    const source = segmentRegions(image, opts)
+    expect(source.labels.count).toBe(2)
+    const enlarged = segmentRegions(upscaleImage(image, 2), {
+      ...opts,
+      minRegionArea: 16,
+      scale: 2,
+    })
+    expect(enlarged.paletteHex).toEqual(source.paletteHex)
+    for (let y = 0; y < 2 * h; y++) {
+      for (let x = 0; x < 2 * w; x++) {
+        const at = source.labels.data[(y >> 1) * w + (x >> 1)]
+        expect(enlarged.labels.data[y * 2 * w + x]).toBe(at)
       }
     }
   })

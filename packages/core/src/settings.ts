@@ -60,6 +60,18 @@ export interface VectorizeSettings {
   // ---- Preprocessing ----
   /** Longest side is downscaled to this many pixels before tracing. 0 keeps the original size. */
   maxDimension: number
+  /**
+   * Trace at this integer multiple of the working size (1 = off, up to 4): the
+   * preprocessed image is enlarged by bicubic interpolation before it is
+   * segmented and traced, and the geometry is scaled back, so the SVG keeps
+   * the working size. Every pixel is still given one color, but on a finer
+   * grid — a line a pixel or two wide, or a dot a few pixels across, keeps
+   * its shape instead of being cut to the pixel staircase. Made for
+   * anti-aliased art under region-growing segmentation and for bw; global
+   * quantization sees the enlarged rims as more pixels and may keep them as
+   * rings of their own. Costs about `supersample²` in time and memory.
+   */
+  supersample: number
   denoise: DenoiseMode
   /** Gaussian pre-blur radius in px (0 disables). Helps noisy photos, hurts crisp art. */
   blurRadius: number
@@ -234,6 +246,7 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   mode: 'color',
 
   maxDimension: 1600,
+  supersample: 1,
   denoise: 'none',
   blurRadius: 0,
   background: 'auto',
@@ -296,6 +309,7 @@ export function normalizeSettings(
 ): VectorizeSettings {
   const s: VectorizeSettings = { ...base, ...patch }
   s.maxDimension = s.maxDimension === 0 ? 0 : clampInt(s.maxDimension, 64, 8192)
+  s.supersample = clampInt(s.supersample, 1, 4)
   s.blurRadius = clamp(s.blurRadius, 0, 10)
   s.alphaThreshold = clampInt(s.alphaThreshold, 0, 255)
   s.paletteSize = clampInt(s.paletteSize, 2, 64)
