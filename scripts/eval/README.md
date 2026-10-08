@@ -255,3 +255,29 @@ npm run eval:inkvec -- --data eval-artifacts/corpus-inkvec/512 --inkvec /tmp/ink
 
 The 128 px tier is byte-identical to the study's corpus; the 512 px renders can differ from it by encoder rounding, so
 compare against a baseline built the same way rather than against the numbers in `INKVEC_COMPARISON.md`.
+
+## Ground-truth gate — `eval:gt`
+
+Scores traces against the **artist's own SVG** rather than the raster, on inkvec's committed
+benchmark data (`bench/data` + `bench/devset_v2.json` of an inkvec checkout): the 246-icon
+`screen` set it gates on, or its stratified `dev` / `held_a` / `held_b` / `full` splits, at
+any raster tier (`128ss`, `512ss`, `1024ss`, `<tier>op` flattened onto white).
+
+```bash
+npm run eval:gt -- run --inkvec <inkvec checkout> --tier 128ss --out runs/base.json
+npm run eval:gt -- run --inkvec <inkvec checkout> --tier 128ss --engine inkvec --out runs/inkvec.json
+npm run eval:gt -- run --images <folder of PNGs> --out runs/mine.json   # no artist file: judged vs itself
+npm run eval:gt -- ab runs/base.json runs/cand.json
+```
+
+Per icon (`scripts/eval/gt/score.ts`): `de00` (mean CIEDE2000 against the artist at 1024 px,
+inkvec's gate axis), `gmsd`, the colour error split into `fillDe00` (flat interiors) and
+`bandDe00` (within a source pixel of an edge), the edge geometry alone (`edgeMiss`: the
+artist's edges to the trace's; `edgeExtra`: the reverse; source px), the palette alone
+(`inkMiss` / `inkExtra` / `inksMissed`), `ratio` (parameters over the artist's, inkvec's
+count, `svgmodel.ts`), `turning` (control-polygon turning per length — a sawtooth's
+signature), `selfRes` (render vs input, no truth needed). Rows are cached per engine
+identity (Trazor: the hash of every engine source file + settings; inkvec: the executable's
+hash + flags), so an A/B costs one fresh run. `ab` reports each axis's family-macro change
+with a paired, family-stratified bootstrap interval and a non-inferiority verdict
+(`scripts/eval/gt/stats.ts`), then the icons that moved most.

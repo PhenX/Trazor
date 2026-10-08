@@ -25,6 +25,7 @@
     "eval:tracers": "tsx scripts/eval/tracer-compare.ts",
     "eval:inkvec": "tsx scripts/eval/inkvec-compare.ts",
     "eval:ab": "node scripts/eval/ab.mjs",
+    "eval:gt": "tsx scripts/eval/gt/gate.ts",
     "bench": "tsx scripts/bench/trace-bench.ts",
     "bench:tune": "tsx scripts/bench/tune-bench.ts",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
