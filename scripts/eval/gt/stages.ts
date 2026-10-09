@@ -4,7 +4,7 @@
  * not move the boundary closer to the drawing shows at once.
  *
  *   npx tsx scripts/eval/gt/stages.ts --inkvec <inkvec checkout> [--set screen] [--tier 128ss]
- *        [--only <family|family/stem,…>] [--workers N] [--chain classic] [--s key=value …]
+ *        [--only <family|family/stem,…>] [--workers N] [--chain classic|planar|ink] [--s key=value …]
  *        [--cache <dir>] [--out <rows.json>]
  *
  * Each item's raster (`corpus.ts`; an `op` tier flattened onto white) is
@@ -659,7 +659,19 @@ const classic: ProbeChain = async (image, settings) => {
  * edge, painted or not. A
  * centerline image takes the classic chain.
  */
-const planar: ProbeChain = async (image, settings) => {
+/** The planar chain on a front end: `classic` (the v1 segmentation) or `ink` (inkvec's). */
+const planarOn =
+  (frontEnd: 'classic' | 'ink'): ProbeChain =>
+  async (image, settings) => {
+    const run = await planarRun(image, settings, frontEnd)
+    return frontEnd === 'ink' ? { ...run, route: `${run.route} (ink)` } : run
+  }
+
+async function planarRun(
+  image: RasterImage,
+  settings: VectorizeSettings,
+  frontEnd: 'classic' | 'ink',
+): Promise<ChainRun> {
   const s = normalizeSettings(settings)
   if (s.mode === 'centerline') {
     const run = await classic(image, settings)
@@ -669,6 +681,7 @@ const planar: ProbeChain = async (image, settings) => {
   const res = await vectorize(image, s, undefined, {
     withDocument: true,
     geometry: 'planar',
+    frontEnd,
     onPlanarStage: (stage, map, fits) => {
       const toSource = 1 / s.supersample
       const pad = (map.width * toSource - image.width) / 2
@@ -712,7 +725,11 @@ const planar: ProbeChain = async (image, settings) => {
 }
 
 /** The chains a run can probe, by `--chain` name. */
-export const CHAINS: Record<string, ProbeChain> = { classic, planar }
+export const CHAINS: Record<string, ProbeChain> = {
+  classic,
+  planar: planarOn('classic'),
+  ink: planarOn('ink'),
+}
 
 /** The recommender's settings for an image, `overrides` on top (as `worker.ts` traces). */
 export function recommendedSettings(

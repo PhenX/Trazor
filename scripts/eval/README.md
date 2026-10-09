@@ -296,8 +296,8 @@ the artist's file rendered at 8-16×, `truth.ts`): the lattice points, the sub-p
 fitted curves and the written SVG, each as mean / p95 / max distance in source pixels and the
 share beyond 0.25 px and 1 px. A stage that moves points away from the drawing shows at once.
 Chains register in `CHAINS` (`classic` is the current engine; `planar` reports every stage the
-planar chain's `onPlanarStage` hook passes, by its name); the header comment documents the
-options.
+planar chain's `onPlanarStage` hook passes, by its name; `ink` is the planar chain on inkvec's
+front end); the header comment documents the options.
 
 ```bash
 npx tsx scripts/eval/gt/stages.ts --inkvec <inkvec checkout> --tier 128ss --workers 2
