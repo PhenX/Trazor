@@ -107,7 +107,7 @@ import type {
   TracedShape,
 } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
-import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
+import type { Primitive, ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import type { HelperPool, StackPlanPayload } from './helper-pool'
 import type {
   HelperCurveOptions,
@@ -121,6 +121,8 @@ import {
   nestedFaces,
   setBackFit,
   ringCommands as planarRingCommands,
+  placePrimitive,
+  ringPrimitive,
   stackedLayers,
   tracePlanar,
 } from './planar'
@@ -904,6 +906,9 @@ export async function vectorize(
         ...shape,
         commands: placePathCommands(shape.commands, s, -pad, -pad),
         ...(shape.strokeWidth !== undefined ? { strokeWidth: shape.strokeWidth * s } : {}),
+        ...(shape.primitive !== undefined
+          ? { primitive: placePrimitive(shape.primitive, s, -pad) }
+          : {}),
       }
     }
     for (let i = 0; i < defs.length; i++) defs[i] = placeGradient(defs[i], s, -pad)
@@ -1625,18 +1630,21 @@ async function colorPipeline(
       label: number,
       layerShapes: readonly PathCommand[][],
       parts: readonly (ShapeOut | null)[] | undefined,
+      primitives?: readonly (Primitive | null)[],
     ): Promise<void> => {
       const layerId = done
       let at = 0
       for (const p of stackedFacePaints(label)) {
         if (layerShapes.length > 0) addColors(usedPalette, p.colors)
-        for (const commands of layerShapes) {
+        for (let k = 0; k < layerShapes.length; k++) {
+          const primitive = primitives?.[k] ?? null
           shapes.push({
-            commands,
+            commands: layerShapes[k],
             fill: p.fill,
             fillRule: 'evenodd',
             layerId,
             ...(p.unfoldable ? { unfoldable: true } : {}),
+            ...(primitive !== null ? { primitive } : {}),
           })
           if (parts) shapeParts.push(parts[at] ?? null)
           at++
@@ -1688,7 +1696,12 @@ async function colorPipeline(
       startLayers(layers.length)
       for (const layer of layers) {
         // oxlint-disable-next-line no-await-in-loop
-        await paintShapes(layer.label, layer.shapes, undefined)
+        await paintShapes(
+          layer.label,
+          layer.shapes.map((sh) => sh.commands),
+          undefined,
+          layer.shapes.map((sh) => sh.primitive),
+        )
       }
     } else if (helpers) {
       // Each layer is an independent unit: the helper rebuilds the layer's union
@@ -2527,7 +2540,14 @@ async function inkPipeline(
     for (const f of inkFaces) {
       const commands: PathCommand[] = []
       for (const ring of geo.rings[f]) commands.push(...planarRingCommands(ring, fits))
-      shapes.push({ commands, fill: settings.fillColor, fillRule: 'evenodd' })
+      const rings = geo.rings[f]
+      const primitive = rings.length === 1 ? ringPrimitive(rings[0], fits) : null
+      shapes.push({
+        commands,
+        fill: settings.fillColor,
+        fillRule: 'evenodd',
+        ...(primitive !== null ? { primitive } : {}),
+      })
     }
     run.progress(1)
   } else if (settings.mode === 'bw') {

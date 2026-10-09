@@ -33,12 +33,6 @@ const SETTINGS = normalizeSettings({
   threshold: 128,
 })
 
-/** The `d` attributes of the written SVG's paths. */
-async function pathData(image: RasterImage): Promise<string[]> {
-  const res = await vectorize(image, SETTINGS, undefined, { geometry: 'planar' })
-  return [...res.svg.matchAll(/ d="([^"]+)"/g)].map((m) => m[1])
-}
-
 /** The traced shapes' absolute commands (the document, before SVG spelling). */
 async function shapeCommands(image: RasterImage): Promise<PathCommand[][]> {
   const res = await vectorize(image, SETTINGS, undefined, {
@@ -55,28 +49,26 @@ function vertices(commands: readonly PathCommand[]): [number, number][] {
   return out
 }
 
-/** Every arc's two radii in a path's data (`A`/`a` take seven numbers each). */
-function arcRadii(d: string): number[][] {
-  const out: number[][] = []
-  for (const m of d.matchAll(/[Aa]([^A-Za-z]+)/g)) {
-    const nums = (m[1].match(/-?\d*\.?\d+(?:e-?\d+)?/g) ?? []).map(Number)
-    for (let k = 0; k + 6 < nums.length; k += 7) out.push([nums[k], nums[k + 1]])
-  }
-  return out
+/** The written SVG's elements of one kind, each as its attributes. */
+async function elements(image: RasterImage, tag: string): Promise<Record<string, number>[]> {
+  const res = await vectorize(image, SETTINGS, undefined, { geometry: 'planar' })
+  return [...res.svg.matchAll(new RegExp(`<${tag} ([^>]*)/>`, 'g'))].map((m) =>
+    Object.fromEntries(
+      [...m[1].matchAll(/([a-z]+)="([-\d.]+)"/g)].map((a) => [a[1], Number(a[2])]),
+    ),
+  )
 }
 
 describe('planar ratchet: disks stay circles', () => {
   for (const r of [3, 4, 5, 6.5, 8]) {
-    it(`a disk of radius ${r} is drawn by arcs of that radius`, async () => {
-      const ds = await pathData(render(32, 32, (x, y) => Math.hypot(x - 15.3, y - 16.2) < r))
-      expect(ds.length).toBe(1)
-      expect(/[LlHhVvCc]/.test(ds[0])).toBe(false)
-      const radii = arcRadii(ds[0])
-      expect(radii.length).toBeGreaterThanOrEqual(2)
-      for (const [rx, ry] of radii) {
-        expect(Math.abs(rx - r)).toBeLessThan(0.1)
-        expect(Math.abs(ry - r)).toBeLessThan(0.1)
-      }
+    it(`a disk of radius ${r} is a circle of that radius`, async () => {
+      const circles = await elements(
+        render(32, 32, (x, y) => Math.hypot(x - 15.3, y - 16.2) < r),
+        'circle',
+      )
+      expect(circles.length).toBe(1)
+      expect(Math.abs(circles[0].r - r)).toBeLessThan(0.1)
+      expect(Math.hypot(circles[0].cx - 15.3, circles[0].cy - 16.2)).toBeLessThan(0.05)
     })
   }
 })
@@ -84,17 +76,17 @@ describe('planar ratchet: disks stay circles', () => {
 describe('planar ratchet: rounded rectangles keep their corners', () => {
   for (const r of [3, 5, 8]) {
     it(`corner radius ${r}`, async () => {
+      const [x0, y0, x1, y1] = [5.4, 6.3, 37.2, 29.7]
       const inside = (x: number, y: number): boolean => {
-        const [x0, y0, x1, y1] = [5.4, 6.3, 37.2, 29.7]
         const dx = Math.max(x0 + r - x, 0, x - (x1 - r))
         const dy = Math.max(y0 + r - y, 0, y - (y1 - r))
         return x > x0 && x < x1 && y > y0 && y < y1 && Math.hypot(dx, dy) < r
       }
-      const ds = await pathData(render(44, 36, inside))
-      expect(ds.length).toBe(1)
-      const radii = arcRadii(ds[0])
-      expect(radii.length).toBeGreaterThanOrEqual(4)
-      for (const [rx] of radii) expect(Math.abs(rx - r)).toBeLessThan(0.25)
+      const rects = await elements(render(44, 36, inside), 'rect')
+      expect(rects.length).toBe(1)
+      expect(Math.abs(rects[0].rx - r)).toBeLessThan(0.25)
+      expect(Math.abs(rects[0].x - x0)).toBeLessThan(0.05)
+      expect(Math.abs(rects[0].width - (x1 - x0))).toBeLessThan(0.1)
     })
   }
 })
