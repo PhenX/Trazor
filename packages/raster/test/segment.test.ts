@@ -488,11 +488,17 @@ describe('segmentRegions — size-aware merge (SRM)', () => {
     expect(segmentRegions(img, { mergeSizeBias: 0.8 }).labels.count).toBe(2)
   })
 
-  it('still folds the same pair when both regions are small (size-dependent tolerance)', () => {
-    // The essence of SRM: the identical color pair merges at small scale — a
-    // sliver folds into its neighbor — but is preserved at large scale above.
-    const img = twoBlocks(24, 12)
-    expect(segmentRegions(img, { mergeSizeBias: 0.8 }).labels.count).toBe(1)
+  it('keeps a small ink no mixture of its neighbors explains (a pupil, a star)', () => {
+    // A 4×4 pink spot on coral: the size term alone would fold it, but its pixels
+    // are a color the coral around it cannot make, so it is an ink of its own.
+    const img = rasterOf(40, 40, (x, y) => (x >= 18 && x < 22 && y >= 18 && y < 22 ? PINK : CORAL))
+    const seg = segmentRegions(img, { mergeSizeBias: 0.8 })
+    expect(seg.labels.count).toBe(2)
+    expect(seg.labels.data[20 * 40 + 20]).not.toBe(seg.labels.data[0])
+    // A spot of the same ink (within 1.5 ΔE00) still folds.
+    const near = okPixel(0.6, 0.055, 0.02)
+    const same = rasterOf(40, 40, (x, y) => (x >= 18 && x < 22 && y >= 18 && y < 22 ? near : CORAL))
+    expect(segmentRegions(same, { mergeSizeBias: 0.8 }).labels.count).toBe(1)
   })
 
   it('is deterministic with size-aware merging on', () => {
