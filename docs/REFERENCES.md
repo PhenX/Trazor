@@ -200,6 +200,20 @@ uses. Each file names the inkvec files it follows.
   Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
   recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,
   _CGF_ 44(2), 2025.
+- **Transparency carried natively** (`ink/native.ts`, `ink/native-palette.ts`, `ink/fade.ts`,
+  after inkvec's `inkvec-trace/src/native.rs` and `native/{palette,fade}.rs`, identical to an
+  inkvec build on 942 transparent corpus rasters at 128 px and 161 at 512 and 1024 px, the whole
+  chain through the carve and the fades on 938): an ink is a color and an opacity, the clear
+  ground an ink like any other, every pixel kept as its color over white and its alpha (an
+  invertible form of premultiplied RGBA, Porter & Duff 1984, above); two inks are one only if they
+  look alike over white and over mid-gray, both in OKLab (Ottosson 2020, above), so white paint
+  and the clear ground stay apart; the palette walk, its blend tests and its representation
+  floor over those two grounds, a rare ink kept when it draws something (the rare-color weakness
+  of popularity quantization, P. Heckbert, “Color image quantization for frame buffer display”,
+  SIGGRAPH 1982); the band merge never joining inks of different opacity; a carved feature named
+  by a visible ink when its pixels are paint; and fades — a glow, a soft shadow, a halo — fitted
+  as one gradient with a color and an opacity at each stop, the opacity profile chosen by the
+  same description length as a fill.
 - **Band merge and carve** (`fill/bands.ts`, `fill/recovery.ts`, `fill/carve.ts`, after inkvec's
   `inkvec-trace/src/gradient/{bands,regions}.rs` and `carve.rs`, identical label maps and work
   spent to an inkvec build on 98 corpus images, 105 carved features identical): the palette's
