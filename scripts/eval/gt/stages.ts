@@ -655,11 +655,11 @@ const classic: ProbeChain = async (image, settings) => {
  * its stage hook: every edge's points after each stage that moves them, and the
  * fitted edges sampled every {@link SAMPLE_STEP}. Every planar edge separates
  * two faces, so every point is meant to lie on a true edge, painted or not. A
- * bw or centerline image takes the classic chain.
+ * centerline image takes the classic chain.
  */
 const planar: ProbeChain = async (image, settings) => {
   const s = normalizeSettings(settings)
-  if (s.mode !== 'color' && s.mode !== 'grayscale') {
+  if (s.mode === 'centerline') {
     const run = await classic(image, settings)
     return { ...run, route: `${run.route} (classic)` }
   }
@@ -697,7 +697,7 @@ const planar: ProbeChain = async (image, settings) => {
   }
   const writtenPaint = paintMap(elements, res.width, res.height, image.width, image.height)
   return {
-    route: `planar ${s.layering}`,
+    route: s.mode === 'bw' ? 'planar bw' : `planar ${s.layering}`,
     stages: [
       ...snaps.map((snap) => probe(snap.name, snap.pts, undefined)),
       probe('svg', written, writtenPaint),
