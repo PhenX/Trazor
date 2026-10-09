@@ -41,13 +41,19 @@ export interface LinearGradientPaint {
 
 /**
  * A radial gradient in user space. Colors interpolate outward from `(cx,cy)` to
- * radius `r`.
+ * radius `r`; an elliptical one reaches its last stop at semi-axis `r` along
+ * the direction `angle` and `r / aspect` across it (serialized as a
+ * `gradientTransform` about the center).
  */
 export interface RadialGradientPaint {
   kind: 'radial'
   cx: number
   cy: number
   r: number
+  /** Ratio of the semi-axis along `angle` to the one across it; absent ⇒ 1, a circle. */
+  aspect?: number
+  /** Direction of the `r` semi-axis, radians from +x towards +y; read only with `aspect`. */
+  angle?: number
   stops: GradientStop[]
 }
 

@@ -120,15 +120,13 @@ export const PAINT_TOLERANCE = 1 / 255
 
 /**
  * A fill as Trazor's {@link GradientPaint}, which interpolates its stops in
- * encoded sRGB and has no gradient transform: null for a flat fill and for an
- * elliptical radial (`aspect ≠ 1`), which it cannot express (write those with
- * {@link fillToSvg}). A linear-light profile is drawn by sRGB stops: each stop
- * interval is bisected (at offsets on the 1/1000 grid the serializer writes)
- * until the sRGB chord of every piece stays within `tolerance` of the profile.
+ * encoded sRGB: null for a flat fill. An elliptical radial keeps its aspect and
+ * angle. A linear-light profile is drawn by sRGB stops: each stop interval is
+ * bisected (at offsets on the 1/1000 grid the serializer writes) until the sRGB
+ * chord of every piece stays within `tolerance` of the profile.
  */
 export function fillToPaint(model: FillModel, tolerance = PAINT_TOLERANCE): GradientPaint | null {
   if (model.kind === 'flat') return null
-  if (model.kind === 'radial' && model.aspect !== 1) return null
   const offsets = [0, ...model.mids.map((m) => m.offset), 1]
   const colors = stopColors(model)
   const stops: GradientStop[] = [{ offset: 0, color: toHex(colors[0]) }]
@@ -154,7 +152,8 @@ export function fillToPaint(model: FillModel, tolerance = PAINT_TOLERANCE): Grad
       stops,
     }
   }
-  return { kind: 'radial', cx: model.c[0], cy: model.c[1], r: model.r, stops }
+  const radial = { kind: 'radial' as const, cx: model.c[0], cy: model.c[1], r: model.r, stops }
+  return model.aspect === 1 ? radial : { ...radial, aspect: model.aspect, angle: model.angle }
 }
 
 /** The profile's sRGB color at gradient coordinate `t`. */
