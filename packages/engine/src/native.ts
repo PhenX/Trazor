@@ -127,7 +127,7 @@ import {
   tracePlanar,
 } from './planar'
 import type { PlanarFace, PlanarRegion } from './planar'
-import { inkFrontEnd } from './ink'
+import { inkFrontEnd, intakeIsSoft, softNoise } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -440,6 +440,8 @@ export interface StageCache {
   opaque?: BinaryMask | null
   /** Source alpha per pixel when `opaque` is set (transparent handling), else null. */
   alpha?: Uint8Array | null
+  /** The intake's soft verdict on the image before supersampling (planar runs). */
+  intakeSoft?: boolean
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
   /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
@@ -556,6 +558,8 @@ export interface VectorizeRunOptions {
 interface PlanarRun {
   onStage?: VectorizeRunOptions['onPlanarStage']
   frontEnd: 'classic' | 'ink'
+  /** The intake's soft verdict (`intakeIsSoft`). */
+  soft: boolean
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -771,15 +775,21 @@ export async function vectorize(
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
+  // Whether the raster is soft (wide edges, ringing), read before any filter or
+  // enlargement widens its edges: the planar chain's noise rises to the labels'
+  // residual on a soft intake.
+  let intakeSoft = false
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
     alpha = cache.alpha ?? null
+    intakeSoft = cache.intakeSoft ?? false
     cacheStats(cache).preHits++
     run.progress(1)
   } else {
     let img = resizeToFit(source, settings.maxDimension)
     if (pad > 0) img = padImage(img, pad)
+    if (opts?.geometry === 'planar') intakeSoft = intakeIsSoft(img)
     run.progress(0.3)
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
@@ -804,6 +814,7 @@ export async function vectorize(
       cache.workImage = image
       cache.opaque = opaque
       cache.alpha = alpha
+      cache.intakeSoft = intakeSoft
       cache.palette = new Map()
       cache.ink = undefined
     }
@@ -894,7 +905,7 @@ export async function vectorize(
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
       opts?.geometry === 'planar'
-        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic' }
+        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic', soft: intakeSoft }
         : undefined,
     )
   } else {
@@ -911,7 +922,7 @@ export async function vectorize(
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
       opts?.geometry === 'planar'
-        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic' }
+        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic', soft: intakeSoft }
         : undefined,
       alpha,
     )
@@ -1121,13 +1132,18 @@ async function colorPipeline(
     await run.tick()
   } else if (useInk) {
     if (canCachePal) cacheStats(cache!).palMisses++
-    const front = inkFrontEnd(image, settings.supersample, false)
-    ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise } = front)
+    const front = inkFrontEnd(
+      image,
+      settings.supersample,
+      planarRun?.soft ?? false,
+      settings.gradients,
+    )
+    ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients } = front)
     await run.tick()
     run.stage('segment')
     await run.tick()
     if (canCachePal && palKey !== undefined) {
-      paletteEntry = { labels, paletteHex, paletteRgb, counts, sigmaNoise }
+      paletteEntry = { labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients }
       palettePut(cache!, palKey, paletteEntry)
     }
   } else if (settings.segmentation === 'regions' && settings.palette === null) {
@@ -1472,7 +1488,8 @@ async function colorPipeline(
             ink: inkOf(l),
           })),
           scale: settings.supersample,
-          sigmaNoise,
+          sigmaNoise:
+            sigmaNoise ?? (planarRun.soft ? softNoise(image, labels, paletteRgb) : undefined),
           onStage: planarRun.onStage,
         })
       : undefined
@@ -2577,12 +2594,15 @@ async function inkPipeline(
       data[i] = mask.data[i] ? 0 : opaque !== null && opaque.data[i] === 0 ? -1 : 1
     }
     const labels: LabelMap = { width: w, height: h, data, count: 2 }
+    const means = interiorMeans(image, data, 2)
+    const meanRgb = Uint8Array.from(means.flatMap((hex) => hexToRgb(hex) ?? [255, 255, 255]))
     const { geo, fits } = tracePlanar({
       labels,
       image,
       alpha,
-      paints: interiorMeans(image, data, 2).map((hex) => ({ hex })),
+      paints: means.map((hex) => ({ hex })),
       scale: settings.supersample,
+      sigmaNoise: planarRun.soft ? softNoise(image, labels, meanRgb) : undefined,
       onStage: planarRun.onStage,
     })
     const { faces } = geo.map
