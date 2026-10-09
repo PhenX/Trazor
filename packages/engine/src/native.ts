@@ -119,10 +119,10 @@ import { sheetSetback } from './setback'
 import {
   cutoutRegions,
   nestedFaces,
-  planarGeometry,
-  polylineFit,
   polylineSegments,
+  ringCommands as planarRingCommands,
   stackedLayers,
+  tracePlanar,
 } from './planar'
 
 const QUANTIZE_SEED = 0x02f6e2b1
@@ -889,6 +889,8 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
+      opts?.geometry === 'planar' ? { onStage: opts.onPlanarStage } : undefined,
+      alpha,
     )
   }
 
@@ -1415,10 +1417,24 @@ async function colorPipeline(
 
   // The planar-map chain: one map of the label map's faces whose edges every
   // layering walks, fitted once.
-  const planar = planarRun && settings.curveMode !== 'pixel' ? planarGeometry(labels) : undefined
-  if (planar) planarRun?.onStage?.('lattice', planar.map)
-  const planarFits = planar ? planar.map.edges.map(polylineFit) : undefined
-  if (planar && planarFits) planarRun?.onStage?.('fit', planar.map, planarFits)
+  const planarTrace =
+    planarRun && settings.curveMode !== 'pixel'
+      ? tracePlanar({
+          labels,
+          image,
+          alpha,
+          paints: paletteHex.map((hex, l) => ({
+            hex,
+            gradient: gradients?.[l] ?? undefined,
+            under: underOf(l) >= 0 ? paletteHex[underOf(l)] : undefined,
+            opacity: opacityOf(l),
+            ink: inkOf(l),
+          })),
+          onStage: planarRun.onStage,
+        })
+      : undefined
+  const planar = planarTrace?.geo
+  const planarFits = planarTrace?.fits
 
   if (settings.layering === 'cutout' || settings.layering === 'nested') {
     // Both partition layerings walk the same shared chain graph and fit each
@@ -2395,6 +2411,8 @@ async function inkPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
+  planarRun: { onStage?: VectorizeRunOptions['onPlanarStage'] } | undefined,
+  alpha: Uint8Array | null,
 ): Promise<void> {
   run.stage('palette')
   // The despeckled mask and its coverage field are reused when the image and
@@ -2484,7 +2502,33 @@ async function inkPipeline(
   run.stage('trace')
   setPalette([settings.fillColor])
 
-  if (settings.mode === 'bw') {
+  if (settings.mode === 'bw' && planarRun && settings.curveMode !== 'pixel') {
+    // The planar chain: ink (label 0) against paper (label 1) or transparency,
+    // each painted with the mean of its interior pixels, the ink faces emitted.
+    const { width: w, height: h } = mask
+    const data = new Int32Array(w * h)
+    for (let i = 0; i < data.length; i++) {
+      data[i] = mask.data[i] ? 0 : opaque !== null && opaque.data[i] === 0 ? -1 : 1
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 2 }
+    const { geo, fits } = tracePlanar({
+      labels,
+      image,
+      alpha,
+      paints: interiorMeans(image, data, 2).map((hex) => ({ hex })),
+      onStage: planarRun.onStage,
+    })
+    const { faces } = geo.map
+    const inkFaces: number[] = []
+    for (let f = 0; f < faces.count; f++) if (faces.label[f] === 0) inkFaces.push(f)
+    inkFaces.sort((a, b) => faces.area[b] - faces.area[a] || a - b)
+    for (const f of inkFaces) {
+      const commands: PathCommand[] = []
+      for (const ring of geo.rings[f]) commands.push(...planarRingCommands(ring, fits))
+      shapes.push({ commands, fill: settings.fillColor, fillRule: 'evenodd' })
+    }
+    run.progress(1)
+  } else if (settings.mode === 'bw') {
     // With a hint, the guided despeckle is the speck filter (it already dropped
     // everything small that the hint did not protect), so the tracer must not
     // re-drop the small features it kept — mirrors preserveDetails in color.
@@ -2620,6 +2664,50 @@ async function inkPipeline(
     }
     run.progress(1)
   }
+}
+
+/**
+ * Each label's color as `#rrggbb`: the mean of its interior pixels (all four
+ * 4-neighbours share the label), or of all its pixels when it has none.
+ */
+function interiorMeans(image: RasterImage, labels: Int32Array, count: number): string[] {
+  const { width: w, height: h, data } = image
+  const inner = new Float64Array(count * 4)
+  const all = new Float64Array(count * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      const l = labels[i]
+      if (l < 0 || l >= count) continue
+      all[l * 4] += data[i * 4]
+      all[l * 4 + 1] += data[i * 4 + 1]
+      all[l * 4 + 2] += data[i * 4 + 2]
+      all[l * 4 + 3]++
+      const inside =
+        (x === 0 || labels[i - 1] === l) &&
+        (x === w - 1 || labels[i + 1] === l) &&
+        (y === 0 || labels[i - w] === l) &&
+        (y === h - 1 || labels[i + w] === l)
+      if (!inside) continue
+      inner[l * 4] += data[i * 4]
+      inner[l * 4 + 1] += data[i * 4 + 1]
+      inner[l * 4 + 2] += data[i * 4 + 2]
+      inner[l * 4 + 3]++
+    }
+  }
+  const out: string[] = []
+  for (let l = 0; l < count; l++) {
+    const acc = inner[l * 4 + 3] > 0 ? inner : all
+    const n = Math.max(1, acc[l * 4 + 3])
+    out.push(
+      rgbToHex(
+        Math.round(acc[l * 4] / n),
+        Math.round(acc[l * 4 + 1] / n),
+        Math.round(acc[l * 4 + 2] / n),
+      ),
+    )
+  }
+  return out
 }
 
 /** Rings between a progress report and a cancel check (a power of two, minus one). */
