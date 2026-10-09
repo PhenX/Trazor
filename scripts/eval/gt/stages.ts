@@ -635,8 +635,61 @@ const classic: ProbeChain = async (image, settings) => {
   }
 }
 
+/**
+ * The planar-map chain (`vectorize(…, { geometry: 'planar' })`), read through
+ * its stage hook: every edge's points after each stage that moves them, and the
+ * fitted edges sampled every {@link SAMPLE_STEP}. Every planar edge separates
+ * two faces, so every point is meant to lie on a true edge, painted or not. A
+ * bw or centerline image takes the classic chain.
+ */
+const planar: ProbeChain = async (image, settings) => {
+  const s = normalizeSettings(settings)
+  if (s.mode !== 'color' && s.mode !== 'grayscale') {
+    const run = await classic(image, settings)
+    return { ...run, route: `${run.route} (classic)` }
+  }
+  const snaps: { name: string; pts: OwnedPoints }[] = []
+  const res = await vectorize(image, s, undefined, {
+    withDocument: true,
+    geometry: 'planar',
+    onPlanarStage: (stage, map, fits) => {
+      const toSource = image.width / map.width
+      const pts = new OwnedPoints()
+      if (fits) {
+        for (const f of fits) {
+          const cmds: PathCommand[] = [{ type: 'M', x: f.x0, y: f.y0 }, ...f.segments]
+          samplePath(cmds, toSource, SAMPLE_STEP, (x, y) => pts.add(x, y, -1))
+        }
+      } else {
+        for (const e of map.edges) {
+          for (let i = 0; i < e.points.length; i += 2)
+            pts.add(e.points[i] * toSource, e.points[i + 1] * toSource, -1)
+        }
+      }
+      snaps.push({ name: stage, pts })
+    },
+  })
+  const svgToSource = image.width / res.width
+  const geometry = extractGeometry(res.svg)
+  const elements: PaintedShape[] = geometry.shapes
+    .filter((e) => e.fill !== 'none')
+    .map((e, i) => ({ owner: i, commands: e.commands, evenOdd: e.kind === 'path' }))
+  const written = new OwnedPoints()
+  for (const e of elements) {
+    samplePath(e.commands, svgToSource, SAMPLE_STEP, (x, y) => written.add(x, y, e.owner))
+  }
+  const writtenPaint = paintMap(elements, res.width, res.height, image.width, image.height)
+  return {
+    route: `planar ${s.layering}`,
+    stages: [
+      ...snaps.map((snap) => probe(snap.name, snap.pts, undefined)),
+      probe('svg', written, writtenPaint),
+    ],
+  }
+}
+
 /** The chains a run can probe, by `--chain` name. */
-export const CHAINS: Record<string, ProbeChain> = { classic }
+export const CHAINS: Record<string, ProbeChain> = { classic, planar }
 
 /** The recommender's settings for an image, `overrides` on top (as `worker.ts` traces). */
 export function recommendedSettings(

@@ -97,6 +97,8 @@ import type {
   ChainNetwork,
   CrackPath,
   FaceShape,
+  FittedEdge,
+  PlanarMap,
   RingFit,
   SignedField,
   TracedShape,
@@ -518,6 +520,13 @@ export interface VectorizeRunOptions {
    * from (in development; see `@trazor/trace`'s planar core).
    */
   geometry?: 'classic' | 'planar'
+  /**
+   * Called with the planar map after each geometry stage of the `planar`
+   * chain (`lattice`, then each stage that moves points), and with the fitted
+   * edges after the fit (`fit`): a probe for measuring each stage. The map is
+   * live — copy what you keep.
+   */
+  onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -841,7 +850,7 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
-      opts?.geometry ?? 'classic',
+      opts?.geometry === 'planar' ? { onStage: opts.onPlanarStage } : undefined,
     )
   } else {
     await inkPipeline(
@@ -1010,7 +1019,7 @@ async function colorPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
-  geometry: 'classic' | 'planar',
+  planarRun: { onStage?: VectorizeRunOptions['onPlanarStage'] } | undefined,
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
@@ -1381,9 +1390,10 @@ async function colorPipeline(
 
   // The planar-map chain: one map of the label map's faces whose edges every
   // layering walks, fitted once.
-  const planar =
-    geometry === 'planar' && settings.curveMode !== 'pixel' ? planarGeometry(labels) : undefined
+  const planar = planarRun && settings.curveMode !== 'pixel' ? planarGeometry(labels) : undefined
+  if (planar) planarRun?.onStage?.('lattice', planar.map)
   const planarFits = planar ? planar.map.edges.map(polylineFit) : undefined
+  if (planar && planarFits) planarRun?.onStage?.('fit', planar.map, planarFits)
 
   if (settings.layering === 'cutout' || settings.layering === 'nested') {
     // Both partition layerings walk the same shared chain graph and fit each

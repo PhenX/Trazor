@@ -1133,6 +1133,10 @@ export function vectorize(
     withDocument?: boolean
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
+    // Called with the planar map after each geometry stage of the planar chain (`lattice`, then each
+    // stage that moves points) and with the fitted edges after the fit (`fit`) — a probe for the
+    // stage probes (scripts/eval/gt/stages.ts --chain planar). The map is live; copy what you keep.
+    onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
   },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
