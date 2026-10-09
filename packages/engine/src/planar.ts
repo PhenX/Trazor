@@ -352,6 +352,11 @@ export interface PlanarTraceInput {
    * a boundary in source pixels, as content units.
    */
   scale?: number
+  /**
+   * The pixel noise the sub-pixel stage divides by (encoded sRGB units), when
+   * the front end measured it; else the stage reads it off the image.
+   */
+  sigmaNoise?: number
   /** Called with the map after each stage, and with the fits after the fit. */
   onStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
 }
@@ -388,7 +393,12 @@ export function tracePlanar(input: PlanarTraceInput): {
   input.onStage?.('lattice', map)
   const image = premultipliedImage(input.image, input.alpha)
   const fills = faceFills(map.faces.label, input.paints)
-  refineSubpixel(map, image, fills)
+  refineSubpixel(
+    map,
+    image,
+    fills,
+    input.sigmaNoise !== undefined ? { sigmaNoise: input.sigmaNoise } : {},
+  )
   input.onStage?.('subpixel', map)
   refineJunctions(map)
   input.onStage?.('junctions', map)

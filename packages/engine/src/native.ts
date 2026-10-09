@@ -126,6 +126,7 @@ import {
   stackedLayers,
   tracePlanar,
 } from './planar'
+import { inkFrontEnd } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -340,6 +341,8 @@ interface PaletteEntry {
   inkHex?: (string | undefined)[]
   /** Per label, the label painted beneath it with the same geometry (an overlay's base), or -1; absent with `gradients`. */
   underlays?: Int32Array
+  /** The pixel noise the ink front end measured (encoded sRGB units); absent from the classic front end. */
+  sigmaNoise?: number
   /** Stacked layer rings for one ring key; a key change replaces the whole set. */
   rings?: LayerRings
   /**
@@ -533,12 +536,25 @@ export interface VectorizeRunOptions {
    */
   geometry?: 'classic' | 'planar'
   /**
+   * The planar chain's front end for opaque color images: `classic` (the
+   * default, the segmentation every chain shares) or `ink`, inkvec's MDL
+   * palette and region passes (`./ink`); in development. A transparent image
+   * takes the classic front end.
+   */
+  frontEnd?: 'classic' | 'ink'
+  /**
    * Called with the planar map after each geometry stage of the `planar`
    * chain (`lattice`, then each stage that moves points), and with the fitted
    * edges after the fit (`fit`): a probe for measuring each stage. The map is
    * live — copy what you keep.
    */
   onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+}
+
+/** How the planar chain runs: its stage probe and its front end. */
+interface PlanarRun {
+  onStage?: VectorizeRunOptions['onPlanarStage']
+  frontEnd: 'classic' | 'ink'
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -876,7 +892,9 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
-      opts?.geometry === 'planar' ? { onStage: opts.onPlanarStage } : undefined,
+      opts?.geometry === 'planar'
+        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic' }
+        : undefined,
     )
   } else {
     await inkPipeline(
@@ -891,7 +909,9 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
-      opts?.geometry === 'planar' ? { onStage: opts.onPlanarStage } : undefined,
+      opts?.geometry === 'planar'
+        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic' }
+        : undefined,
       alpha,
     )
   }
@@ -1051,14 +1071,16 @@ async function colorPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
-  planarRun: { onStage?: VectorizeRunOptions['onPlanarStage'] } | undefined,
+  planarRun: PlanarRun | undefined,
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
   // that shapes them are unchanged. An edge hint feeds the merge, so caching is
   // disabled while one is present (correctness over speed).
   const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
-  const palKey = canCachePal ? palKeyOf(settings) : undefined
+  // The ink front end serves opaque color images on the planar chain.
+  const useInk = planarRun?.frontEnd === 'ink' && alpha === null && settings.mode === 'color'
+  const palKey = canCachePal ? `${palKeyOf(settings)}${useInk ? '|ink' : ''}` : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
   // tracer's speck filter; null when no hint (and always null when caching).
   const protect = edgeProtectMask(edgeHint, image.width, image.height)
@@ -1072,6 +1094,7 @@ async function colorPipeline(
   let underlays: Int32Array | undefined
   let fillOpacity: (number | undefined)[] | undefined
   let inkHex: (string | undefined)[] | undefined
+  let sigmaNoise: number | undefined
 
   const cached =
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
@@ -1090,10 +1113,22 @@ async function colorPipeline(
     underlays = cached.underlays
     fillOpacity = cached.fillOpacity
     inkHex = cached.inkHex
+    sigmaNoise = cached.sigmaNoise
     cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
     await run.tick()
+  } else if (useInk) {
+    if (canCachePal) cacheStats(cache!).palMisses++
+    const front = inkFrontEnd(image, settings.supersample, false)
+    ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise } = front)
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+    if (canCachePal && palKey !== undefined) {
+      paletteEntry = { labels, paletteHex, paletteRgb, counts, sigmaNoise }
+      palettePut(cache!, palKey, paletteEntry)
+    }
   } else if (settings.segmentation === 'regions' && settings.palette === null) {
     if (canCachePal) cacheStats(cache!).palMisses++
     // Region growing (marker-controlled watershed): no global palette, so an
@@ -1436,6 +1471,7 @@ async function colorPipeline(
             ink: inkOf(l),
           })),
           scale: settings.supersample,
+          sigmaNoise,
           onStage: planarRun.onStage,
         })
       : undefined
@@ -2425,7 +2461,7 @@ async function inkPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
-  planarRun: { onStage?: VectorizeRunOptions['onPlanarStage'] } | undefined,
+  planarRun: PlanarRun | undefined,
   alpha: Uint8Array | null,
 ): Promise<void> {
   run.stage('palette')
