@@ -468,6 +468,26 @@ describe('serialize with arcs', () => {
     expect(svg).not.toContain('<path')
   })
 
+  it("puts a written rect's far edges on the output grid", () => {
+    const svg = serializeSvg(
+      {
+        width: 140,
+        height: 100,
+        unit: 'px',
+        shapes: [
+          {
+            commands: halfDisc(),
+            fill: '#000',
+            primitive: { kind: 'rrect', x: 49.34, y: 68.34, width: 68.92, height: 14.74, r: 7.37 },
+          },
+        ],
+      },
+      { precision: 1, optimizePaths: true, roundPrimitives: false },
+    )
+    // Edges 49.3 → 118.3 and 68.3 → 83.1, each rounded once.
+    expect(svg).toContain('<rect x="49.3" y="68.3" width="69" height="14.8" rx="7.4"')
+  })
+
   it('stays byte-identical (no arc) when roundPrimitives is off', () => {
     const off = serializeSvg(doc(halfDisc()), {
       precision: 2,

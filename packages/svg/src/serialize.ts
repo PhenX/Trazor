@@ -190,15 +190,43 @@ function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean
   return attrs
 }
 
+/**
+ * A rectangle's position and size as written: its four edges rounded to the
+ * output grid and the size their difference, so the far edges land on the grid
+ * as a path's vertices would (rounding `width` on its own puts `x + width` up to
+ * two steps off).
+ */
+function rectBox(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  precision: number,
+): [string, string, string, string] {
+  const q = (v: number): number => Number(formatNumber(v, precision))
+  const x0 = q(x)
+  const y0 = q(y)
+  return [
+    formatNumber(x0, precision),
+    formatNumber(y0, precision),
+    formatNumber(q(x + width) - x0, precision),
+    formatNumber(q(y + height) - y0, precision),
+  ]
+}
+
 /** A detected primitive as its SVG element (fill-rule dropped — a single region). */
 function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): string {
   const paint = paintAttrs(shape, precision, false)
   const n = (v: number): string => formatNumber(v, precision)
   switch (prim.kind) {
-    case 'rect':
-      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}"${paint}/>`
-    case 'rrect':
-      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}" rx="${n(prim.r)}"${paint}/>`
+    case 'rect': {
+      const [x, y, w, h] = rectBox(prim.x, prim.y, prim.width, prim.height, precision)
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}"${paint}/>`
+    }
+    case 'rrect': {
+      const [x, y, w, h] = rectBox(prim.x, prim.y, prim.width, prim.height, precision)
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${n(prim.r)}"${paint}/>`
+    }
     case 'circle':
       return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
     case 'ellipse': {
