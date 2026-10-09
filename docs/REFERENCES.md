@@ -162,6 +162,19 @@ follows.
   Each junction goes to the weighted least-squares meeting point of its edges' end tangents
   (lines, or quadratics where an end bends) and, where they meet tangentially, to where a
   taper vanishes: a Kåsa circle (1976) held tangent to the through boundary.
+- **The boundary solve** (`solve/band.ts`, `solve/folds.ts`, `solve/boundary.ts`, after
+  inkvec's `inkvec-trace/src/boundary_opt.rs` and `boundary_opt/band.rs`, cross-checked
+  against an inkvec build to 10⁻⁸ px): every boundary point moved at once so that the map's
+  exact rendered coverage matches the image — the region term of T. F. Chan & L. A. Vese,
+  “Active contours without edges”, _IEEE TIP_ 10(2), 2001 (as in P. Getreuer, “Chan–Vese
+  Segmentation”, _IPOL_, 2012) with each face's fill fixed, over a narrow band (D.
+  Adalsteinsson & J. A. Sethian, “A fast level set method for propagating interfaces”, _J.
+  Comput. Phys._ 118, 1995), with the kink and anchor priors scaled to the data term. Exact
+  box coverage by signed-area accumulation, the rasterizer of libart and R. Levien's
+  font-rs, an exact box filter as in J. Manson & S. Schaefer, “Wavelet Rasterization”,
+  _Computer Graphics Forum_ 30(2), 2011, with one carry per face; the analytic gradient by
+  suffix sums. Afterwards the boundaries in a self-crossing the solve made are backed off
+  (a coarse-grid join and exact segment tests).
 - **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
   optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
   search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The
