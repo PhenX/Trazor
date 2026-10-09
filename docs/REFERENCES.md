@@ -235,6 +235,14 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   and the research snaps (axis lines, `S`-reflected smooth joins on the output grid), off by
   default. Distances use the correctly rounded `hypot` of F. Borges, “An improved algorithm
   for hypot(a,b)”, arXiv:1904.09481, 2019.
+- **Curve or primitive** (`fit/choice.ts`, `fit/edge.ts`, after inkvec's
+  `inkvec-fit/src/choice.rs` and `inkvec-cli/src/pipeline.rs` `fit_boundaries`): each edge's
+  program fit and its best whole-boundary primitive compared under the one description length,
+  the curve's χ² read from the program's cut; the image frame proved a rectangle without the
+  program when its offer is below a floor no path can beat (the line floor from the smallest
+  eigenvalue of the weighted scatter, Pearson 1901; branch and bound as in Morin & Marsten
+  1976); open edges ending exactly on their nodes, the post-fit passes run where inkvec runs
+  them.
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.

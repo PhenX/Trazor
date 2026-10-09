@@ -818,6 +818,13 @@ export function fitPolyline(points: Float64Array, sigma: Float64Array, closed: b
 // The post-fit passes on one fitted edge (free-cubic merge, corner sharpening; research snaps
 // on request): the same object back when nothing changes; an open edge's ends never move.
 export function postFitPasses(edge: FittedEdge, points, sigma, cfg: FitConfig, opts?: PostFitOptions): FittedEdge
+// One planar edge described: the program's curve (post-fit passes included) or a whole primitive
+// when strictly cheaper; an open edge ends exactly on its nodes; forced point indices pin
+// vertices (no primitive then); lambdaScale prices this edge's parameters. The map is not written.
+export function fitEdge(map: PlanarMap, edgeIndex: number, cfg: FitConfig, opts?: { forced?: readonly number[]; lambdaScale?: number }): FittedEdge
+export function fitEdges(map: PlanarMap, cfg: FitConfig, opts?: { lambdaScales?: readonly number[] }): FittedEdge[]
+// An open run (interleaved points, per-point σ) fitted with both ends pinned, no primitive.
+export function fitRun(points: Float64Array, sigma: Float64Array, cfg: FitConfig): FittedEdge
 ```
 
 ## @trazor/svg
