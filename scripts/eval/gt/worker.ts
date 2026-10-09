@@ -69,8 +69,11 @@ function inputRaster(it: GtItem): { img: RasterImage; path: string } {
 async function traceTrazor(img: RasterImage): Promise<string> {
   const rec = recommendSettings(analyzeImage(img))
   const base = normalizeSettings({ ...getProfile(rec.profileId).patch, ...rec.patch })
-  const settings = normalizeSettings(job.overrides, base)
-  return (await vectorize(img, settings)).svg
+  const { geometry, ...overrides } = job.overrides as Partial<VectorizeSettings> & {
+    geometry?: 'classic' | 'planar'
+  }
+  const settings = normalizeSettings(overrides, base)
+  return (await vectorize(img, settings, undefined, { geometry })).svg
 }
 
 function traceInkvec(path: string, out: string): string {

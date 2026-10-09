@@ -1123,7 +1123,17 @@ export function vectorize(
   // helpers (optional) farms the trace and the per-shape serialization out to a HelperPool. Absent or
   // empty, the whole pipeline runs on this thread — the default. Results are placed by unit index,
   // so the SVG text, the shapes and `document` are byte-identical to a sequential run.
-  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean; helpers?: HelperPool },
+  // geometry selects the color/grayscale geometry chain: 'classic' (default) or 'planar', the
+  // planar-map core (in development) whose shared fitted edges every layering walks — cutout as one
+  // compound path per label, nested as faces over their parents, stacked as unions of faces
+  // (packages/engine/src/planar.ts).
+  opts?: {
+    imageId?: number
+    cache?: StageCache
+    withDocument?: boolean
+    helpers?: HelperPool
+    geometry?: 'classic' | 'planar'
+  },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
 // small LRU of palette/label entries (keyed internally by imageId + settings

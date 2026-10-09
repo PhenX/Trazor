@@ -111,6 +111,7 @@ import type {
   HelperUnitPaint,
 } from './protocol'
 import { sheetSetback } from './setback'
+import { cutoutRegions, nestedFaces, planarGeometry, polylineFit, stackedLayers } from './planar'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -511,6 +512,12 @@ export interface VectorizeRunOptions {
    * requests it.
    */
   withDocument?: boolean
+  /**
+   * Which geometry chain traces color and grayscale: `classic` (the default)
+   * or `planar`, the planar-map core every layering reads its fitted edges
+   * from (in development; see `@trazor/trace`'s planar core).
+   */
+  geometry?: 'classic' | 'planar'
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -834,6 +841,7 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
+      opts?.geometry ?? 'classic',
     )
   } else {
     await inkPipeline(
@@ -1002,6 +1010,7 @@ async function colorPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
+  geometry: 'classic' | 'planar',
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
@@ -1370,6 +1379,12 @@ async function colorPipeline(
   const refinesEdges = refines && (paletteHex.length > 1 || alphaField !== undefined)
   const alphaLevel = alphaField !== undefined ? settings.alphaThreshold : undefined
 
+  // The planar-map chain: one map of the label map's faces whose edges every
+  // layering walks, fitted once.
+  const planar =
+    geometry === 'planar' && settings.curveMode !== 'pixel' ? planarGeometry(labels) : undefined
+  const planarFits = planar ? planar.map.edges.map(polylineFit) : undefined
+
   if (settings.layering === 'cutout' || settings.layering === 'nested') {
     // Both partition layerings walk the same shared chain graph and fit each
     // chain once; only the assembly differs (regions vs. nested faces). Collapse
@@ -1390,9 +1405,11 @@ async function colorPipeline(
           ? undefined
           : (cmds: PathCommand[]) => fitArcs(cmds, arcPrecision),
     }
-    let network: ChainNetwork
-    let fits: ChainFit[]
-    if (helpers) {
+    let network: ChainNetwork | undefined
+    let fits: ChainFit[] | undefined
+    if (planar) {
+      // The planar chain fits its own edges.
+    } else if (helpers) {
       ;({ network, fits } = await fitChainsInHelpers(
         run,
         helpers,
@@ -1413,7 +1430,9 @@ async function colorPipeline(
 
     if (settings.layering === 'nested') {
       emitNestedFaces(
-        assembleFaces(network, fits),
+        planar && planarFits
+          ? nestedFaces(planar, planarFits)
+          : assembleFaces(network as ChainNetwork, fits as ChainFit[]),
         fillFor,
         paletteColorsFor,
         underOf,
@@ -1421,7 +1440,10 @@ async function colorPipeline(
         shapes,
       )
     } else {
-      const regions = assembleRegions(network, fits)
+      const regions =
+        planar && planarFits
+          ? cutoutRegions(planar, planarFits)
+          : assembleRegions(network as ChainNetwork, fits as ChainFit[])
       regions.sort((a, b) => b.area - a.area)
       // Trap width in viewBox px. An mm-unit output carries a physical millimetre
       // trap: convert it through the document's mm-per-px so the overlap means the
@@ -1586,7 +1608,27 @@ async function colorPipeline(
         undefined,
       )
 
-    if (helpers) {
+    if (planar && planarFits) {
+      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
+      const { faces } = planar.map
+      // Each face's label as the base layers paint it, and the lifted islands' faces.
+      const paintLabel = new Int32Array(faces.count).fill(-1)
+      for (let p = 0; p < faces.ids.length; p++) {
+        const f = faces.ids[p]
+        if (paintLabel[f] < 0) paintLabel[f] = plan.stackLabels[p]
+      }
+      const islands = plan.islands.map((isl) => {
+        const own = new Set<number>()
+        for (const p of isl.pixels) own.add(faces.ids[p])
+        return { label: isl.label, faces: [...own].toSorted((a, b) => a - b) }
+      })
+      const layers = stackedLayers(planar, planarFits, paintLabel, plan.order, islands)
+      startLayers(layers.length)
+      for (const layer of layers) {
+        // oxlint-disable-next-line no-await-in-loop
+        await paintShapes(layer.label, layer.shapes, undefined)
+      }
+    } else if (helpers) {
       // Each layer is an independent unit: the helper rebuilds the layer's union
       // flood from the shared plan, decomposes it, fits the curve chain and
       // serializes its shapes. Units come back in layer order, so the paint

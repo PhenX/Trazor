@@ -5,7 +5,7 @@
  *   npx tsx scripts/eval/gt/gate.ts run (--inkvec <inkvec checkout> [--set screen] [--tier 128ss]
  *        | --images <dir of PNGs, judged against themselves>)
  *        [--engine trazor|inkvec] [--exe <inkvec binary>] [--args "<inkvec flags>"]
- *        [--s key=value ...] [--workers N] [--only <family|family/stem,…>] [--keep <dir>] [--out run.json]
+ *        [--s key=value ...] [--geometry classic|planar] [--workers N] [--only <family|family/stem,…>] [--keep <dir>] [--out run.json]
  *   npx tsx scripts/eval/gt/gate.ts ab <base.json> <cand.json>
  *   npx tsx scripts/eval/gt/gate.ts report <run.json>
  *
@@ -169,6 +169,9 @@ async function runSet(argv: string[]): Promise<void> {
   }
   const exe = arg(argv, '--exe', join(inkvecDir, 'target', 'release', 'inkvec')) as string
   const args = (arg(argv, '--args', '') as string).split(/\s+/).filter(Boolean)
+  // The geometry chain is a run option, keyed like a setting.
+  const geometry = arg(argv, '--geometry')
+  if (geometry !== undefined) overrides.geometry = geometry
   const engineKey = engine === 'trazor' ? trazorKey(overrides) : inkvecKey(exe, args)
   const cacheDir = resolve(arg(argv, '--cache', join(ROOT, 'eval-artifacts', 'gt-cache')) as string)
   const rowDir = join(cacheDir, 'rows', `v${SCORER_VERSION}`, `${engine}-${engineKey}`, tier)
