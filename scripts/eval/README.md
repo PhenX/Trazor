@@ -283,6 +283,20 @@ with a paired, family-stratified bootstrap interval and a non-inferiority verdic
 (`scripts/eval/gt/stats.ts`), then the icons that moved most. `--only` takes families or
 single items (`--only lucide,simple-icons/cocos`).
 
+### Stage probes — where the geometry goes wrong
+
+`scripts/eval/gt/stages.ts` runs a tracing chain stage by stage on the ground-truth icons and
+measures every stage's geometry against the artist's true edges (an exact distance transform of
+the artist's file rendered at 8-16×, `truth.ts`): the lattice points, the sub-pixel points, the
+fitted curves and the written SVG, each as mean / p95 / max distance in source pixels and the
+share beyond 0.25 px and 1 px. A stage that moves points away from the drawing shows at once.
+Chains register in `CHAINS` (`classic` is the current engine); the header comment documents
+the options.
+
+```bash
+npx tsx scripts/eval/gt/stages.ts --inkvec <inkvec checkout> --tier 128ss --workers 2
+```
+
 To look at what moved, keep both runs' traces (`--keep <dir>`) and build a side-by-side sheet —
 input, artist, base, candidate and both rows' metrics for the items that moved most on one
 metric — as one self-contained HTML page:

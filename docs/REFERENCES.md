@@ -130,6 +130,55 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   transform used to estimate stroke width for centerline output
   (`packages/raster/src/thin.ts`).
 
+## Planar-map geometry core (packages/trace/src/planar, solve, fit)
+
+One geometry chain for every color mode, ported from inkvec (Apache-2.0, see
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)): faces, a planar map whose
+edges two faces share, sub-pixel measurement, a boundary solve, an MDL fit with
+whole-boundary primitives, and crossing repair. Each file names the inkvec files it
+follows.
+
+- **logolabs, “inkvec” — planar map (stage 06).** `crates/inkvec-trace/src/planar.rs`,
+  `planar/{cracks,runs}.rs`, `inkvec-cli/src/rings.rs`, `emit/winding.rs`. Faces as
+  4-connected components (`planar/faces.ts`, after Wu, Otoo & Suzuki, “Optimizing
+  two-pass connected-component labeling algorithms”, _Pattern Analysis and
+  Applications_ 12, 2009); the crack network between them walked into edges stored once,
+  with junction nodes and split saddle corners (`planar/map.ts`; the cell-complex view of
+  V. Kovalevsky, “Finite topology as applied to image analysis”, _CVGIP_ 46, 1989); each
+  face's rings and their nesting read off the map's topology (`planar/rings.ts`, the
+  border hierarchy of S. Suzuki & K. Abe, “Topological structural analysis of digitized
+  binary images by border following”, _CVGIP_ 30, 1985), wound by depth so `nonzero`
+  paints what `evenodd` paints (W3C SVG 1.1 §11.3); and the rings of a union of faces, a
+  stacked layer (`planar/regions.ts`).
+- **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
+  optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
+  search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The
+  boundary solve's optimizer (`solve/lbfgs.ts`, `solve/linesearch.ts`, after inkvec's
+  `boundary_opt/{lbfgs,linesearch}.rs`): L-BFGS with three pairs along the projected path
+  of R. H. Byrd, P. Lu, J. Nocedal & C. Zhu, “A limited memory algorithm for bound
+  constrained optimization”, _SIAM J. Sci. Comput._ 16(5), 1995, each point held to a disc
+  about its start, stopped on the projected gradient or the whole problem's relative
+  decrease; the nonsmooth case as in A. S. Lewis & M. L. Overton, “Nonsmooth optimization
+  via quasi-Newton methods”, _Mathematical Programming_ 141, 2013.
+- **J. R. Shewchuk, “Adaptive precision floating-point arithmetic and fast robust
+  geometric predicates”, _Discrete & Computational Geometry_ 18, 1997.** The exact
+  `orient2d` behind crossing detection (`fit/crossings.ts`, after inkvec's
+  `inkvec-core/src/predicates.rs` and repair stage 12): fitted edges flattened, a grid
+  broad phase, and exact segment tests, so a ring whose independent edge fits cross is
+  found and repaired.
+- **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
+  `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
+  circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
+  Taubin (_IEEE PAMI_ 13(11), 1991) and N. Chernov (_Circular and Linear Regression_, CRC,
+  2010) refined to the orthogonal distance (S. J. Ahn, W. Rauh & H.-J. Warnecke, _Pattern
+  Recognition_ 34, 2001); ellipses from the direct conic fit of R. Halíř & J. Flusser
+  (WSCG 1998) likewise refined; rounded rectangles on the exact Minkowski distance;
+  Levenberg–Marquardt (K. Levenberg 1944, D. Marquardt 1963); the minimum-area bounding
+  rectangle by rotating calipers over A. M. Andrew's monotone-chain hull (_Information
+  Processing Letters_ 9, 1979; H. Freeman & R. Shapira, _CACM_ 18(7), 1975; G. Toussaint,
+  MELECON 1983). A primitive replaces a boundary's curves only when it costs less under
+  the shared description length.
+
 ## Shape fitting (packages/svg)
 
 - **I. Kåsa, “A circle fitting procedure and its error analysis”, _IEEE Trans.
@@ -287,6 +336,10 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 
 ## Evaluation metrics (scripts/eval)
 
+- **P. F. Felzenszwalb & D. P. Huttenlocher, “Distance transforms of sampled
+  functions”, _Theory of Computing_ 8, 2012.** The exact Euclidean distance transform of
+  the artist's edges rendered at 8-16x, which the stage probes read every geometry stage
+  against (`scripts/eval/gt/truth.ts`, `stages.ts`).
 - **W. Xue, L. Zhang, X. Mou & A. C. Bovik, “Gradient Magnitude Similarity
   Deviation: A Highly Efficient Perceptual Image Quality Index”, _IEEE Trans.
   Image Processing_ 23(2), 2014.** <https://doi.org/10.1109/TIP.2013.2293423>

@@ -725,6 +725,49 @@ export interface FaceShape {
 export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]): FaceShape[]
 ```
 
+## @trazor/trace — planar-map core
+
+The geometry chain every color mode will share (`packages/trace/src/planar`, `solve`, `fit`):
+faces → planar map → sub-pixel → junctions → boundary solve → fit → repair → rings. Its data
+model is `planar/types.ts`. Coordinates are y down with lattice corners on integers; colors are
+premultiplied encoded sRGB in [0, 1]. Exported so far:
+
+```ts
+export const OUTSIDE: -1 // the virtual face beyond the image frame
+export const CLEAR: -1 // the label of a transparent face
+// A face is one 4-connected component of one label (transparency included, as CLEAR).
+export interface Faces { width; height; ids: Int32Array; count; label: Int32Array; area: Uint32Array }
+// A boundary between exactly two faces, stored once: interleaved points, per-point sigma (px) and
+// fixed (1 on the frame and at an open edge's ends, which move only with their node), the faces on
+// its left/right (screen view, stored direction), its start/end nodes (-1 for a closed loop).
+export interface PlanarEdge { points; sigma; fixed: Uint8Array; left; right; start; end; closed }
+// A lattice corner where three or more faces meet; `ends` = 2·edge (start) / 2·edge+1 (end),
+// counter-clockwise on screen.
+export interface PlanarNode { x; y; ends: number[] }
+export interface PlanarMap { width; height; faces: Faces; edges: PlanarEdge[]; nodes: PlanarNode[] }
+// A face's paint: premultiplied r, g, b and alpha; `at` evaluates a gradient at a point.
+export interface FaceFill { r; g; b; a; at?: (x, y, out: Float64Array) => void }
+// The fit's objective 0.5·χ² + λ·params, λ = ln(max(e, extent / precision)).
+export interface FitConfig { tau; lambda }
+export function fitConfig(extent: number, precision?: number, tau?: number): FitConfig
+// One edge's description: absolute L/C/A segments from (x0, y0), its params and χ².
+export interface FittedEdge { x0; y0; segments: PathCommand[]; closed; params; chi2; primitive? }
+export type EdgePrimitive = circle | ellipse | rect (with corner radius and rotation, radians)
+// A closed walk over edges with the face on its left on every ring (outer anticlockwise on
+// screen, holes clockwise); a face lists its outer ring first.
+export interface FaceRing { edges: number[]; reversed: boolean[]; outer: boolean }
+export function syncNodes(map: PlanarMap): void // open edges' end points from their nodes
+export function splitFaces(labels: LabelMap): Faces
+export function buildPlanarMap(faces: Faces): PlanarMap
+export function faceRings(map: PlanarMap): FaceRing[][] // per face
+// parent: smallest containing face (-1 for a root); ringDepth: 2·depth outer, 2·depth+1 hole.
+export function faceNesting(map: PlanarMap, rings: FaceRing[][]): FaceNesting
+export function faceRingPolygon(map: PlanarMap, ring: FaceRing): Float64Array
+// The rings of the union of the faces with inRegion[face] = 1, the union on their left.
+export function regionRings(map: PlanarMap, inRegion: Uint8Array): FaceRing[]
+export function innerFaces(map: PlanarMap, ring: FaceRing): number[]
+```
+
 ## @trazor/svg
 
 ```ts

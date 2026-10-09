@@ -44,3 +44,20 @@ export {
 export type { SignedField, LayerFieldSource } from './refine'
 export { reverseCommands } from './paths'
 export type { FlatPoints } from './paths'
+export { OUTSIDE, CLEAR, fitConfig, syncNodes } from './planar/types'
+export type {
+  EdgePrimitive,
+  FaceFill,
+  FaceRing,
+  Faces,
+  FitConfig,
+  FittedEdge,
+  PlanarEdge,
+  PlanarMap,
+  PlanarNode,
+} from './planar/types'
+export { splitFaces } from './planar/faces'
+export { buildPlanarMap } from './planar/map'
+export { faceRings, faceNesting, ringPolygon as faceRingPolygon } from './planar/rings'
+export type { FaceNesting } from './planar/rings'
+export { regionRings, innerFaces } from './planar/regions'
