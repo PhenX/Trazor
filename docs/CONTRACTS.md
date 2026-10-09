@@ -769,6 +769,11 @@ export interface SerializeOptions {
   // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
   // merging consecutive same-paint paths (never larger, same geometry); default false
   optimizePaths?: boolean
+  // when optimizing, write `d` in the compact spelling: no space around command letters, a
+  // repeated letter dropped (never after M/m), fractions without their leading zero (`.5`), no
+  // separator before a fraction that follows a number holding a decimal point (`.5.5`); arc flags
+  // stay set off by spaces. Same geometry; the engine sets it for px documents. Default false.
+  compactPaths?: boolean
   // also emit <circle>/<ellipse> for near-round loops and collapse near-circular
   // Bézier runs to `A` arcs (both sub-pixel); keep off for cutout mode, where a
   // neighbor still traces the Bézier edge; default false
@@ -783,7 +788,7 @@ export interface SerializeOptions {
 }
 // `parts` (optional) supplies already-serialized shapes by shape index — see shapeOut. Any index it
 // does not cover is serialized here, so serializeSvg(doc, opts) and
-// serializeSvg(doc, opts, doc.shapes.map((s) => shapeOut(s, opts.precision, optimize, round)))
+// serializeSvg(doc, opts, doc.shapes.map((s) => shapeOut(s, opts.precision, optimize, round, compact)))
 // are byte-identical.
 export function serializeSvg(
   doc: SvgDocument,
@@ -803,11 +808,17 @@ export function shapeOut(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact?: boolean, // the compact spelling (SerializeOptions.compactPaths); default false
 ): ShapeOut | null
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
 // Shortest `d` for the same geometry as buildPathData: per-command absolute vs
-// relative vs H/V selection, quantized on the output grid (drift-free deltas).
-export function optimizePathData(commands: readonly PathCommand[], precision: number): string
+// relative vs H/V selection, quantized on the output grid (drift-free deltas); `compact` selects the
+// compact spelling (see SerializeOptions.compactPaths).
+export function optimizePathData(
+  commands: readonly PathCommand[],
+  precision: number,
+  compact?: boolean,
+): string
 // Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
 // Collapse every run of ≥2 consecutive cubics that lie on one circle or ellipse

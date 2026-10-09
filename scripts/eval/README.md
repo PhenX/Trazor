@@ -280,4 +280,14 @@ signature), `selfRes` (render vs input, no truth needed). Rows are cached per en
 identity (Trazor: the hash of every engine source file + settings; inkvec: the executable's
 hash + flags), so an A/B costs one fresh run. `ab` reports each axis's family-macro change
 with a paired, family-stratified bootstrap interval and a non-inferiority verdict
-(`scripts/eval/gt/stats.ts`), then the icons that moved most.
+(`scripts/eval/gt/stats.ts`), then the icons that moved most. `--only` takes families or
+single items (`--only lucide,simple-icons/cocos`).
+
+To look at what moved, keep both runs' traces (`--keep <dir>`) and build a side-by-side sheet —
+input, artist, base, candidate and both rows' metrics for the items that moved most on one
+metric — as one self-contained HTML page:
+
+```bash
+npx tsx scripts/eval/gt/compare.ts --base runs/base.json --cand runs/cand.json \
+  --base-svgs runs/base-svg --cand-svgs runs/cand-svg --inkvec <inkvec checkout> --metric de00 --n 8
+```

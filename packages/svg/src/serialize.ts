@@ -108,6 +108,13 @@ export interface SerializeOptions {
    */
   optimizePaths?: boolean
   /**
+   * When optimizing, write path data in the compact spelling (no space around
+   * command letters, repeated letters and fractions' leading zeros dropped —
+   * see `optimizePathData`). Same geometry; for consumers with a full SVG path
+   * parser. Default false.
+   */
+  compactPaths?: boolean
+  /**
    * When optimizing, also emit `<circle>`/`<ellipse>` for near-circular loops
    * (a sub-pixel change). Leave off for cutout mode, where a neighbor still
    * traces the Bézier boundary and must match exactly. Default false.
@@ -275,6 +282,7 @@ export function shapeOut(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact = false,
 ): ShapeOut | null {
   if (shape.commands.length === 0) return null
   if (shape.fill === undefined && shape.stroke === undefined) return null
@@ -287,7 +295,7 @@ export function shapeOut(
     // circle/ellipse detection); off for cutout so a neighbor's Bézier boundary
     // still matches exactly and the classical path stays byte-identical.
     const arced = roundPrimitives ? fitArcs(cleaned, precision) : cleaned
-    const d = assertAttrSafe(optimizePathData(arced, precision), 'path data')
+    const d = assertAttrSafe(optimizePathData(arced, precision, compact), 'path data')
     if (d === '') return null
     return { kind: 'path', d, paint: paintAttrs(shape, precision, true) }
   }
@@ -310,6 +318,7 @@ export function serializeSvg(
   const precision = clampPrecision(opts.precision)
   const optimize = opts.optimizePaths === true
   const roundPrimitives = opts.roundPrimitives === true
+  const compact = optimize && opts.compactPaths === true
   const w = formatNumber(doc.width, precision)
   const h = formatNumber(doc.height, precision)
 
@@ -359,6 +368,7 @@ export function serializeSvg(
         precision,
         optimize,
         roundPrimitives,
+        compact,
         parts,
       )
       if (body.length === 0) continue
@@ -372,7 +382,15 @@ export function serializeSvg(
     }
   } else {
     const all = doc.shapes.map((_, i) => i)
-    for (const child of foldShapes(doc.shapes, all, precision, optimize, roundPrimitives, parts)) {
+    for (const child of foldShapes(
+      doc.shapes,
+      all,
+      precision,
+      optimize,
+      roundPrimitives,
+      compact,
+      parts,
+    )) {
       children.push(child)
     }
   }
@@ -407,6 +425,7 @@ function foldShapes(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact: boolean,
   parts?: readonly (ShapeOut | null)[],
 ): string[] {
   const out: string[] = []
@@ -421,7 +440,7 @@ function foldShapes(
     const so =
       parts !== undefined && index < parts.length
         ? parts[index]
-        : shapeOut(shapes[index], precision, optimize, roundPrimitives)
+        : shapeOut(shapes[index], precision, optimize, roundPrimitives, compact)
     if (so === null) continue
     if (so.kind === 'element') {
       flush()
@@ -430,7 +449,7 @@ function foldShapes(
       flush()
       out.push(`<path d="${so.d}"${so.paint}/>`)
     } else if (pending !== null && pending.paint === so.paint) {
-      pending.d += ` ${so.d}`
+      pending.d += compact ? so.d : ` ${so.d}`
     } else {
       flush()
       pending = { d: so.d, paint: so.paint }

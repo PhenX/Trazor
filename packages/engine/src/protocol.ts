@@ -96,6 +96,8 @@ export interface HelperSerializeOptions {
   precision: number
   optimize: boolean
   roundPrimitives: boolean
+  /** Compact path spelling (`SerializeOptions.compactPaths`). */
+  compact: boolean
   /** Source pixels per working pixel: a supersampled run's shapes are scaled by it first. */
   scale: number
 }

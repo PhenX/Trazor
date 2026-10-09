@@ -263,7 +263,15 @@ export function installHelperHandler(scope: WorkerScope): void {
     const placed = out.scale === 1 ? shapes : shapes.map((c) => scalePathCommands(c, out.scale))
     for (const meta of variants) {
       for (const commands of placed) {
-        svg.push(shapeOut({ ...meta, commands }, out.precision, out.optimize, out.roundPrimitives))
+        svg.push(
+          shapeOut(
+            { ...meta, commands },
+            out.precision,
+            out.optimize,
+            out.roundPrimitives,
+            out.compact,
+          ),
+        )
       }
     }
     return { shapes, svg }

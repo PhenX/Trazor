@@ -301,3 +301,145 @@ describe('optimizePathData', () => {
     }
   })
 })
+
+/**
+ * Decode path data into absolute commands, as an SVG reader does (SVG 1.1
+ * §8.3.9): a command letter may be omitted to repeat the previous one (a line
+ * after a moveto), a number ends where the next sign, letter or second decimal
+ * point starts, and an arc flag is a single digit. Arcs keep their operands.
+ */
+function decodePath(d: string): number[][] {
+  const out: number[][] = []
+  let i = 0
+  const skip = (): void => {
+    while (i < d.length && (d[i] === ' ' || d[i] === ',')) i++
+  }
+  const number = (): number => {
+    skip()
+    const start = i
+    if (d[i] === '-' || d[i] === '+') i++
+    let dot = false
+    while (i < d.length && (/[0-9]/.test(d[i]) || (d[i] === '.' && !dot))) {
+      if (d[i] === '.') dot = true
+      i++
+    }
+    return Number(d.slice(start, i))
+  }
+  const flag = (): number => {
+    skip()
+    return Number(d[i++])
+  }
+  let cmd = ''
+  let x = 0
+  let y = 0
+  let sx = 0
+  let sy = 0
+  for (;;) {
+    skip()
+    if (i >= d.length) break
+    if (/[a-zA-Z]/.test(d[i])) cmd = d[i++]
+    else if (cmd === 'M') cmd = 'L'
+    else if (cmd === 'm') cmd = 'l'
+    const rel = cmd === cmd.toLowerCase()
+    const ox = rel ? x : 0
+    const oy = rel ? y : 0
+    switch (cmd.toUpperCase()) {
+      case 'M':
+        x = ox + number()
+        y = oy + number()
+        sx = x
+        sy = y
+        out.push([0, x, y])
+        break
+      case 'L':
+        x = ox + number()
+        y = oy + number()
+        out.push([1, x, y])
+        break
+      case 'H':
+        x = ox + number()
+        out.push([1, x, y])
+        break
+      case 'V':
+        y = oy + number()
+        out.push([1, x, y])
+        break
+      case 'Q': {
+        const a = [ox + number(), oy + number(), ox + number(), oy + number()]
+        x = a[2]
+        y = a[3]
+        out.push([2, ...a])
+        break
+      }
+      case 'C': {
+        const a = [ox + number(), oy + number(), ox + number(), oy + number()]
+        a.push(ox + number(), oy + number())
+        x = a[4]
+        y = a[5]
+        out.push([3, ...a])
+        break
+      }
+      case 'A': {
+        const a = [number(), number(), number(), flag(), flag(), ox + number(), oy + number()]
+        x = a[5]
+        y = a[6]
+        out.push([4, ...a])
+        break
+      }
+      case 'Z':
+        x = sx
+        y = sy
+        out.push([5])
+        break
+      default:
+        throw new Error(`bad path data at ${i}: ${d.slice(i, i + 10)}`)
+    }
+  }
+  return out
+}
+
+describe('optimizePathData compact spelling', () => {
+  it('decodes to the same geometry as the plain spelling, and is never longer', () => {
+    const rnd = mulberry32(8080)
+    let saved = 0
+    let total = 0
+    for (let i = 0; i < 300; i++) {
+      const cmds = randomCommands(rnd, 40)
+      for (let p = 0; p <= 4; p++) {
+        const plain = optimizePathData(cmds, p)
+        const compact = optimizePathData(cmds, p, true)
+        const a = decodePath(plain)
+        const b = decodePath(compact)
+        expect(b.length).toBe(a.length)
+        for (let k = 0; k < a.length; k++) {
+          expect(b[k].length).toBe(a[k].length)
+          for (let j = 0; j < a[k].length; j++) expect(b[k][j]).toBeCloseTo(a[k][j], p + 3)
+        }
+        expect(compact.length).toBeLessThanOrEqual(plain.length)
+        saved += plain.length - compact.length
+        total += plain.length
+      }
+    }
+    // The spelling pays: at least a tenth of the plain path data.
+    expect(saved / total).toBeGreaterThan(0.1)
+  })
+
+  it('drops letters, spaces and leading zeros the grammar does not need', () => {
+    const cmds: PathCommand[] = [
+      { type: 'M', x: 0.5, y: 0.5 },
+      { type: 'L', x: 10.25, y: 0.75 },
+      { type: 'L', x: 20.5, y: 3.25 },
+      { type: 'Z' },
+    ]
+    expect(optimizePathData(cmds, 2, true)).toBe('M.5.5l9.75.25L20.5 3.25Z')
+    const lines: PathCommand[] = [
+      { type: 'M', x: 0, y: 0 },
+      { type: 'L', x: 10, y: 10 },
+      { type: 'L', x: 20, y: 20 },
+      { type: 'Z' },
+      { type: 'M', x: -0.5, y: 3 },
+      { type: 'A', rx: 2, ry: 2, rotation: 0, largeArc: false, sweep: true, x: -0.25, y: 7 },
+    ]
+    expect(optimizePathData(lines, 2, true)).toBe('M0 0L10 10 20 20ZM-.5 3A2 2 0 0 1-.25 7')
+  })
+})
