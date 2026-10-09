@@ -1,4 +1,5 @@
 import type { LabelMap, PathCommand } from '@trazor/core'
+import type { FittedEdge } from '@trazor/trace'
 import { describe, expect, it } from 'vitest'
 import {
   cutoutRegions,
@@ -142,5 +143,64 @@ describe('the planar chain against its image', () => {
     expect(fits.reduce((n, f) => n + f.segments.length, 0)).toBeLessThan(12)
     expect(err.subpixel).toBeLessThan(err.lattice / 2)
     expect(err.solve).toBeLessThan(0.05)
+  })
+
+  it('keeps a curved hole in a stacked sheet', () => {
+    // A black ring on white whose two circles are each fitted as two arcs: no
+    // circle is a polygon of its own segment ends.
+    const labels = labelsOf([
+      '1111111111111',
+      '1111000001111',
+      '1110000000111',
+      '1100011100011',
+      '1000111110001',
+      '1000111110001',
+      '1000111110001',
+      '1100011100011',
+      '1110000000111',
+      '1111000001111',
+      '1111111111111',
+    ])
+    const geo = planarGeometry(labels)
+    const fits = geo.map.edges.map((e): FittedEdge => {
+      if (!e.closed || e.left < 0 || e.right < 0) return polylineFit(e)
+      const p = e.points
+      const n = p.length / 2
+      let cx = 0
+      let cy = 0
+      let a = 0
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n
+        cx += p[2 * i] / n
+        cy += p[2 * i + 1] / n
+        a += p[2 * i] * p[2 * j + 1] - p[2 * j] * p[2 * i + 1]
+      }
+      let r = 0
+      for (let i = 0; i < n; i++) r += Math.hypot(p[2 * i] - cx, p[2 * i + 1] - cy) / n
+      const arc = (x: number): PathCommand => ({
+        type: 'A',
+        rx: r,
+        ry: r,
+        rotation: 0,
+        largeArc: false,
+        sweep: a > 0,
+        x,
+        y: cy,
+      })
+      return {
+        x0: cx + r,
+        y0: cy,
+        segments: [arc(cx - r), arc(cx + r)],
+        closed: true,
+        params: 3,
+        chi2: 0,
+      }
+    })
+    const paintLabel = new Int32Array(geo.map.faces.count)
+    for (let p = 0; p < labels.data.length; p++) paintLabel[geo.map.faces.ids[p]] = labels.data[p]
+    const ring = stackedLayers(geo, fits, paintLabel, [1, 0], [])[1]
+    expect(ring.label).toBe(0)
+    expect(ring.shapes.length).toBe(1)
+    expect(ring.shapes[0].filter((c) => c.type === 'M').length).toBe(2)
   })
 })

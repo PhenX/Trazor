@@ -11,6 +11,7 @@ import { hexToRgb } from '@trazor/core'
 import {
   buildPlanarMap,
   faceNesting,
+  faceRingPolygon,
   faceRings,
   fitConfig,
   fitPolyline,
@@ -313,28 +314,16 @@ export function tracePlanar(input: PlanarTraceInput): {
   return { geo, fits }
 }
 
-/** Twice the signed area a ring's fitted outline encloses, from its segment end points. */
-function ringArea(commands: readonly PathCommand[]): number {
+/**
+ * Twice the signed area of a flat polygon (interleaved points): negative for an
+ * outer ring, anticlockwise on screen in y-down.
+ */
+function polygonArea2(poly: ArrayLike<number>): number {
   let a = 0
-  let sx = 0
-  let sy = 0
-  let px = 0
-  let py = 0
-  for (const c of commands) {
-    if (c.type === 'M') {
-      sx = px = c.x
-      sy = py = c.y
-    } else if (c.type === 'Z') {
-      a += px * sy - sx * py
-      px = sx
-      py = sy
-    } else {
-      a += px * c.y - c.x * py
-      px = c.x
-      py = c.y
-    }
+  for (let i = 0, j = poly.length - 2; i < poly.length; j = i, i += 2) {
+    a += poly[j] * poly[i + 1] - poly[i] * poly[j + 1]
   }
-  return a / 2
+  return a
 }
 
 /**
@@ -391,9 +380,8 @@ export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): F
     let area = 0
     for (const ring of geo.rings[f]) {
       if (!ring.outer && !holeOntoClear(geo, ring)) continue
-      const ringCmds = ringCommands(ring, fits)
-      if (ring.outer) area = Math.abs(ringArea(ringCmds))
-      for (const c of ringCmds) commands.push(c)
+      if (ring.outer) area = Math.abs(polygonArea2(faceRingPolygon(geo.map, ring))) / 2
+      for (const c of ringCommands(ring, fits)) commands.push(c)
     }
     out.push({ label, commands, area, parent: -1 })
   }
@@ -407,7 +395,7 @@ export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): F
 }
 
 /** Whether (x, y) lies inside a flat polygon, by the even-odd crossing test. */
-function insidePolygon(x: number, y: number, poly: readonly number[]): boolean {
+function insidePolygon(x: number, y: number, poly: ArrayLike<number>): boolean {
   let odd = false
   for (let i = 0, j = poly.length - 2; i < poly.length; j = i, i += 2) {
     const yi = poly[i + 1]
@@ -421,28 +409,28 @@ function insidePolygon(x: number, y: number, poly: readonly number[]): boolean {
  * Group a union's rings into shapes: each outer ring (anticlockwise on screen,
  * a negative signed area) with the holes inside it — the smallest outer ring
  * holding a hole's first point — so a lone round ring is a shape of its own a
- * serializer can recognize as a primitive.
+ * serializer can recognize as a primitive. Orientation and containment are read
+ * off each ring's dense polygon over the map's points (`poly`), which the fit
+ * follows; a ring fitted as two arcs has no polygon of its own end points.
  */
-function groupRings(rings: readonly PathCommand[][]): PathCommand[][] {
-  const areas = rings.map(ringArea)
+function groupRings(
+  rings: readonly { commands: PathCommand[]; poly: Float64Array }[],
+): PathCommand[][] {
+  const areas = rings.map((r) => polygonArea2(r.poly))
   const outers: number[] = []
   for (let i = 0; i < rings.length; i++) if (areas[i] < 0) outers.push(i)
   const groups = new Map<number, PathCommand[]>()
-  for (const o of outers) groups.set(o, [...rings[o]])
-  const polys = rings.map((r) => {
-    const pts: number[] = []
-    for (const c of r) if (c.type !== 'Z') pts.push(c.x, c.y)
-    return pts
-  })
+  for (const o of outers) groups.set(o, [...rings[o].commands])
   for (let h = 0; h < rings.length; h++) {
     if (areas[h] < 0) continue
-    const [x, y] = polys[h]
+    const x = rings[h].poly[0]
+    const y = rings[h].poly[1]
     let best = -1
     for (const o of outers) {
-      if (!insidePolygon(x, y, polys[o])) continue
+      if (!insidePolygon(x, y, rings[o].poly)) continue
       if (best < 0 || -areas[o] < -areas[best]) best = o
     }
-    if (best >= 0) for (const c of rings[h]) groups.get(best)?.push(c)
+    if (best >= 0) for (const c of rings[h].commands) groups.get(best)?.push(c)
   }
   return outers.map((o) => groups.get(o) as PathCommand[])
 }
@@ -660,17 +648,21 @@ export function stackedLayers(
       }
     }
     const own = order[k]
-    const rings = regionRings(map, inRegion).map((r) =>
-      setBack
+    const rings = regionRings(map, inRegion).map((r) => ({
+      commands: setBack
         ? layerRingCommands(map, r, fits, (f) => paintLabel[f] !== own, setBack)
         : ringCommands(r, fits),
-    )
+      poly: faceRingPolygon(map, r),
+    }))
     out.push({ label: own, shapes: groupRings(rings) })
   }
   for (const island of islands) {
     inRegion.fill(0)
     for (const f of island.faces) inRegion[f] = 1
-    const rings = regionRings(map, inRegion).map((r) => ringCommands(r, fits))
+    const rings = regionRings(map, inRegion).map((r) => ({
+      commands: ringCommands(r, fits),
+      poly: faceRingPolygon(map, r),
+    }))
     out.push({ label: island.label, shapes: groupRings(rings) })
   }
   return out
