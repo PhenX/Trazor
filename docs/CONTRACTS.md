@@ -825,6 +825,10 @@ export function fitEdge(map: PlanarMap, edgeIndex: number, cfg: FitConfig, opts?
 export function fitEdges(map: PlanarMap, cfg: FitConfig, opts?: { lambdaScales?: readonly number[] }): FittedEdge[]
 // An open run (interleaved points, per-point σ) fitted with both ends pinned, no primitive.
 export function fitRun(points: Float64Array, sigma: Float64Array, cfg: FitConfig): FittedEdge
+// Ring crossings between independent edge fits repaired by refitting only the guilty edges
+// (pinned at the crossing or span-capped, by cost), up to 10 rounds; an untouched edge keeps its
+// fit object. rings: faceRings(map); same cfg as fitEdges. Neither map nor fits is modified.
+export function repairCrossings(map: PlanarMap, rings: readonly FaceRing[][], fits: readonly FittedEdge[], cfg: FitConfig): { fits: FittedEdge[]; report: RepairReport }
 ```
 
 ## @trazor/svg
@@ -1193,7 +1197,7 @@ export function vectorize(
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
     // Called with the planar map after each geometry stage of the planar chain (`lattice`,
-    // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) — a probe for the
+    // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a probe for the
     // stage probes (scripts/eval/gt/stages.ts --chain planar). The map is live; copy what you keep.
     onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
   },

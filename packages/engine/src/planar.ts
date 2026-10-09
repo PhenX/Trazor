@@ -17,6 +17,7 @@ import {
   fitEdges,
   fitRun,
   refineJunctions,
+  repairCrossings,
   refineSubpixel,
   regionRings,
   solveBoundaries,
@@ -300,7 +301,8 @@ export function contentFitConfig(width: number, height: number, scale: number): 
  * every boundary point measured to sub-pixel against its two faces' paint,
  * every junction placed where its edges meet, then the whole boundary solved
  * at once against the observed image — all in the forward model's space —
- * and each edge described once, as curves or a whole primitive. Each stage is reported to `onStage`.
+ * and each edge described once, as curves or a whole primitive, the edges of
+ * a ring whose fits cross refitted until none does. Each stage is reported to `onStage`.
  */
 export function tracePlanar(input: PlanarTraceInput): {
   geo: PlanarGeometry
@@ -320,8 +322,11 @@ export function tracePlanar(input: PlanarTraceInput): {
   // From here on σ is in content units (source pixels), as the fit's prices are.
   const s = input.scale ?? 1
   if (s !== 1) for (const e of map.edges) e.sigma = e.sigma.map((v) => v * s)
-  const fits = fitEdges(map, contentFitConfig(map.width, map.height, s))
-  input.onStage?.('fit', map, fits)
+  const cfg = contentFitConfig(map.width, map.height, s)
+  const fitted = fitEdges(map, cfg)
+  input.onStage?.('fit', map, fitted)
+  const { fits } = repairCrossings(map, geo.rings, fitted, cfg)
+  input.onStage?.('repair', map, fits)
   return { geo, fits }
 }
 
