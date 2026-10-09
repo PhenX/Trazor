@@ -136,6 +136,20 @@ The planar chain's raster front end, ported from inkvec (Apache-2.0): how many i
 holds and which pixels each one owns, decided by the same description length the geometry
 uses. Each file names the inkvec files it follows.
 
+- **The palette** (`ink/palette.ts`, `ink/mdl.ts`, `ink/distinct.ts`, `ink/snap.ts`, after
+  inkvec's `inkvec-trace/src/color.rs` and `color/{mdl,distinct,represent,snap}.rs`, identical to
+  an inkvec build on 1,582 corpus rasters and photographs up to 6000×4000: same inks, colours
+  within one single-precision ulp, same labels): how many inks an image holds decided by minimum
+  description length (Rissanen 1978) — frequency modes over a coarse OKLab grid (B. Ottosson, “A
+  perceptual color space for image processing”, 2020) walked in order, each kept when folding it
+  into its nearest ink would cost more residual than minting it costs, `½·claim·(d/σ)² >
+λ·3`, with the BIC price; below a CIEDE2000 floor (G. Sharma, W. Wu & E. N. Dalal, “The
+  CIEDE2000 color-difference formula”, _Color Res. Appl._ 30(1), 2005) never; a candidate on
+  the chord of two accepted inks that does not straddle them is coverage (Yang et al. 2011); a
+  rare candidate kept only when its pixels are colours no mixture of their neighbours' inks
+  explains (Aksoy et al. 2017, above); an overshoot rim rejected for want of interior (after J.
+  Yang, N. Vining, S. Kheradmand, N. Carr, L. Sigal & A. Sheffer, “Subpixel deblurring of
+  anti-aliased raster clip-art”, _CGF_ 42(2), 2023).
 - **Regions** (`ink/regions.ts`, `ink/components.ts`, `ink/native-regions.ts`,
   `ink/regularize.ts`, after inkvec's `inkvec-trace/src/{regions,regularize,native}.rs` and
   `regions/components.rs`, matching an inkvec build's label maps exactly on 37 corpus images):
