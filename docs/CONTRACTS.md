@@ -63,6 +63,16 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — pixel noise
+
+```ts
+// noise.ts — the per-channel noise σ (encoded sRGB units) of one gray channel in [0, 1]: the 10th
+// percentile of the absolute 4-neighbor Laplacian over the half-normal quantile and the kernel
+// gain, floored at NOISE_FLOOR (half an 8-bit step); 1/255 under 3×3 or for a short buffer.
+export const NOISE_FLOOR: number
+export function estimateNoise(gray: ArrayLike<number>, w: number, h: number): number
+```
+
 ## @trazor/core — supersampling
 
 ```ts
