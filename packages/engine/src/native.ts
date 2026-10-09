@@ -802,12 +802,16 @@ export async function vectorize(
   // happens seam-safely per shared chain instead (the `refineChain` passed to
   // the tracer). Only stacked, which overdraws with independent layers, uses them.
   const roundPrimitives = settings.optimizeSvg && settings.layering === 'stacked'
+  // The compact path spelling for screen output; a millimetre document (cutter,
+  // laser, plotter) keeps every number set off for its importers' parsers.
+  const compactPaths = settings.optimizeSvg && settings.unit === 'px'
   // Exactly the per-shape settings the serializer would apply, so a helper's
   // output drops into the document unchanged.
   const shapeSerialize: HelperSerializeOptions = {
     precision: settings.precision,
     optimize: settings.optimizeSvg,
     roundPrimitives,
+    compact: compactPaths,
     scale: 1 / scale,
   }
   // Helper payloads are keyed by the same identities the StageCache uses, so a
@@ -896,6 +900,7 @@ export async function vectorize(
     {
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
+      compactPaths,
       roundPrimitives,
       // One <g> per cut layer (color layers only). Cutout is a color partition,
       // so group by color; stacked paints in layer order and a color can recur
