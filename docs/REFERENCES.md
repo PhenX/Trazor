@@ -202,6 +202,25 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   by the quintic's roots in [0, 1] (C. Yuksel, “High-performance polynomial root finding for
   graphics”, _Proc. ACM CGIT_ 5(3), 2022; kurbo's nearest-point code); circular arcs from an
   O(1) Kåsa fit per span; the end tangents of a run from a symmetric window.
+- **The multimodel dynamic program** (`fit/candidates.ts`, `fit/scan.ts`, `fit/limits.ts`,
+  `fit/multimodel.ts`, after inkvec's `inkvec-fit/src/{multimodel,candidates,decimate}.rs`
+  and `multimodel/{scan,limits}.rs`, cross-checked against an inkvec build on 19 inputs to
+  10⁻⁹): one exact dynamic program over every segmentation of a boundary and every
+  assignment of `{line, G1 cubic, circular arc, elliptical arc}` under `½χ² + λ·params` plus a
+  turn charged at every vertex (the segmentation DP of R. Bellman, “On the approximation of
+  curves by line segments using dynamic programming”, _CACM_ 4(6), 1961, priced by minimum
+  description length after J. Rissanen, “Modeling by shortest data description”,
+  _Automatica_ 14, 1978); the elliptical arc from Taubin's conic scored by P. D. Sampson's
+  distance (“Fitting conic sections to ‘very scattered’ data”, _CGIP_ 18, 1982); candidates
+  bounded and abandoned early (T. L. Morin & R. E. Marsten, “Branch-and-bound strategies for
+  dynamic programming”, _Oper. Res._ 24(4), 1976; R. Killick, P. Fearnhead & I. A. Eckley,
+  “Optimal detection of changepoints with a linear computational cost”, _JASA_ 107, 2012; T.
+  Rakthanmanon et al., KDD 2012 §4.1.3); forced vertices and span caps as admissibility
+  limits, after M. de Berg, M. van Kreveld & S. Schirra, “Topologically correct subdivision
+  simplification using the bandwidth criterion”, _CaGIS_ 25(4), 1998, and A. Saalfeld,
+  “Topologically consistent line simplification with the Douglas-Peucker algorithm”,
+  _CaGIS_ 26(1), 1999; line–line corners refined to their lines' intersection (Selinger 2003
+  §2.3.3); a long boundary decimated keeping its corners.
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
