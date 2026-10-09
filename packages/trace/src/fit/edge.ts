@@ -100,7 +100,7 @@ export interface FitEdgeOptions {
  * edge's own array when they are there already (or it has no nodes),
  * otherwise a copy.
  */
-function pointsAtNodes(map: PlanarMap, e: PlanarEdge): Float64Array {
+export function pointsAtNodes(map: PlanarMap, e: PlanarEdge): Float64Array {
   const p = e.points
   const m = p.length
   const s = map.nodes[e.start]

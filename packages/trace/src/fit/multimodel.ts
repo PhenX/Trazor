@@ -194,7 +194,10 @@ export function fitPolyline(
 }
 
 /** The edge record of a fit of `poly`, its ends pinned exactly (see {@link fitPolyline}). */
-function fittedEdgeOf(poly: Polyline, fit: MultimodelFit): FittedEdge {
+export function fittedEdgeOf(
+  poly: Polyline,
+  fit: Pick<MultimodelFit, 'path' | 'vertices'>,
+): FittedEdge {
   const n = polylineSize(poly)
   const p = poly.points
   const segments = fit.path.segments.slice()
