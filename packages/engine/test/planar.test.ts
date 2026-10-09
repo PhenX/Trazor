@@ -139,7 +139,7 @@ describe('the planar chain against its image', () => {
         err[stage] = sum / n
       },
     })
-    expect(stages).toEqual(['lattice', 'subpixel', 'junctions', 'solve', 'fit'])
+    expect(stages).toEqual(['lattice', 'subpixel', 'junctions', 'solve', 'fit', 'repair'])
     // A circle is a few curves and the frame four lines, not their lattice staircase.
     expect(fits.reduce((n, f) => n + f.segments.length, 0)).toBeLessThan(12)
     expect(err.subpixel).toBeLessThan(err.lattice / 2)
