@@ -14,7 +14,8 @@ import {
   faceRingPolygon,
   faceRings,
   fitConfig,
-  fitPolyline,
+  fitEdges,
+  fitRun,
   refineJunctions,
   refineSubpixel,
   regionRings,
@@ -234,18 +235,13 @@ const SET_BACK_SIGMA = 0.5
 
 /**
  * The fit of a stacked layer's set-back run (interleaved points, walk order):
- * the multimodel program with every point held to half a source pixel, its
- * ends pinned, as segments after the first point.
+ * the multimodel program and its post-fit passes with every point held to half
+ * a source pixel, its ends pinned, as segments after the first point.
  */
 export function setBackFit(width: number, height: number, scale: number): SetBack['fit'] {
   const cfg = contentFitConfig(width, height, scale)
   return (points) =>
-    fitPolyline(
-      points,
-      new Float64Array(points.length / 2).fill(SET_BACK_SIGMA * scale),
-      false,
-      cfg,
-    ).segments
+    fitRun(points, new Float64Array(points.length / 2).fill(SET_BACK_SIGMA * scale), cfg).segments
 }
 
 /** The planar map of a label map with its rings and nesting, ready for the geometry stages. */
@@ -300,7 +296,7 @@ export function contentFitConfig(width: number, height: number, scale: number): 
  * every boundary point measured to sub-pixel against its two faces' paint,
  * every junction placed where its edges meet, then the whole boundary solved
  * at once against the observed image — all in the forward model's space —
- * and each edge fitted once. Each stage is reported to `onStage`.
+ * and each edge described once, as curves or a whole primitive. Each stage is reported to `onStage`.
  */
 export function tracePlanar(input: PlanarTraceInput): {
   geo: PlanarGeometry
@@ -317,11 +313,10 @@ export function tracePlanar(input: PlanarTraceInput): {
   input.onStage?.('junctions', map)
   solveBoundaries(map, image, fills)
   input.onStage?.('solve', map)
-  const cfg = contentFitConfig(map.width, map.height, input.scale ?? 1)
+  // From here on σ is in content units (source pixels), as the fit's prices are.
   const s = input.scale ?? 1
-  const fits = map.edges.map((e) =>
-    fitPolyline(e.points, s === 1 ? e.sigma : e.sigma.map((v) => v * s), e.closed, cfg),
-  )
+  if (s !== 1) for (const e of map.edges) e.sigma = e.sigma.map((v) => v * s)
+  const fits = fitEdges(map, contentFitConfig(map.width, map.height, s))
   input.onStage?.('fit', map, fits)
   return { geo, fits }
 }
