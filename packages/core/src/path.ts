@@ -67,6 +67,41 @@ export function scalePathCommands(commands: readonly PathCommand[], s: number): 
   })
 }
 
+/**
+ * The same path scaled by `s` about the origin, then moved by `(dx, dy)`: a
+ * point `p` becomes `s·p + (dx, dy)`; arc radii scale, rotation and flags stay.
+ */
+export function placePathCommands(
+  commands: readonly PathCommand[],
+  s: number,
+  dx: number,
+  dy: number,
+): PathCommand[] {
+  return commands.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M':
+      case 'L':
+        return { type: c.type, x: c.x * s + dx, y: c.y * s + dy }
+      case 'Q':
+        return { type: 'Q', x1: c.x1 * s + dx, y1: c.y1 * s + dy, x: c.x * s + dx, y: c.y * s + dy }
+      case 'C':
+        return {
+          type: 'C',
+          x1: c.x1 * s + dx,
+          y1: c.y1 * s + dy,
+          x2: c.x2 * s + dx,
+          y2: c.y2 * s + dy,
+          x: c.x * s + dx,
+          y: c.y * s + dy,
+        }
+      case 'A':
+        return { ...c, rx: c.rx * s, ry: c.ry * s, x: c.x * s + dx, y: c.y * s + dy }
+      case 'Z':
+        return c
+    }
+  })
+}
+
 /** Number of anchor points (M/L/Q/C/A count one each; Z counts zero). */
 export function countPathNodes(commands: readonly PathCommand[]): number {
   let nodes = 0

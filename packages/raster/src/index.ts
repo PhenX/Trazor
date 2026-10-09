@@ -5,6 +5,7 @@
  * morphology and skeletonization.
  */
 export { resizeGray, resizeToFit, upscaleImage } from './resize'
+export { BORDER_PAD, padImage, touchesBorder } from './border'
 export { bilateralFilter, gaussianBlur, medianFilter } from './filters'
 export {
   alphaCoverageField,

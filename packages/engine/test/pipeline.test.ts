@@ -283,6 +283,33 @@ describe('native engine pipeline', () => {
     expect(result.svg).toBe(plain.svg)
   })
 
+  it('traces transparent art touching the border on a margin, then moves it back', async () => {
+    // A block reaching the left side of its transparent canvas, with a soft
+    // right edge: on the source canvas its outline runs along x = 0 and back
+    // along the soft edge, between x = 20 and 21.
+    const img = createRaster(40, 40)
+    for (let y = 10; y < 30; y++) {
+      for (let x = 0; x < 21; x++) setPixel(img, x, y, 200, 30, 30, x === 20 ? 64 : 255)
+    }
+    const result = await vectorize(img, settings({ mode: 'color', paletteSize: 2 }), undefined, {
+      withDocument: true,
+    })
+    expect(result.width).toBe(40)
+    expect(result.height).toBe(40)
+    let minX = Infinity
+    let maxX = -Infinity
+    for (const shape of result.document?.shapes ?? []) {
+      for (const c of shape.commands) {
+        if (c.type === 'Z') continue
+        minX = Math.min(minX, c.x)
+        maxX = Math.max(maxX, c.x)
+      }
+    }
+    expect(minX).toBeCloseTo(0, 1)
+    expect(maxX).toBeGreaterThanOrEqual(20)
+    expect(maxX).toBeLessThanOrEqual(21)
+  })
+
   it('excludes transparent pixels under background auto', async () => {
     const img = createRaster(40, 40)
     for (let y = 10; y < 30; y++) {

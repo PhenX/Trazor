@@ -100,6 +100,8 @@ export interface HelperSerializeOptions {
   compact: boolean
   /** Source pixels per working pixel: a supersampled run's shapes are scaled by it first. */
   scale: number
+  /** Then moved by this on both axes (source px): back from a padded canvas. */
+  offset: number
 }
 
 /** An `SvgShape` without its geometry: the paint the coordinator assigns a unit. */

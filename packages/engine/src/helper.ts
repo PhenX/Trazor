@@ -1,5 +1,5 @@
 import type { BinaryMask, GrayImage, PathCommand, RasterImage } from '@trazor/core'
-import { scalePathCommands } from '@trazor/core'
+import { placePathCommands } from '@trazor/core'
 import { alphaCoverageField } from '@trazor/raster'
 import {
   decomposeMask,
@@ -260,7 +260,10 @@ export function installHelperHandler(scope: WorkerScope): void {
     const variants = paint?.under ? [paint.under, paint.own] : [paint?.own ?? {}]
     const svg: (ShapeOut | null)[] = []
     // A supersampled run's geometry is serialized at the source size.
-    const placed = out.scale === 1 ? shapes : shapes.map((c) => scalePathCommands(c, out.scale))
+    const placed =
+      out.scale === 1 && out.offset === 0
+        ? shapes
+        : shapes.map((c) => placePathCommands(c, out.scale, out.offset, out.offset))
     for (const meta of variants) {
       for (const commands of placed) {
         svg.push(
