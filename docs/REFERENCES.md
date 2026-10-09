@@ -136,6 +136,20 @@ The planar chain's raster front end, ported from inkvec (Apache-2.0): how many i
 holds and which pixels each one owns, decided by the same description length the geometry
 uses. Each file names the inkvec files it follows.
 
+- **Intake** (`intake/coverage.ts`, `intake/softness.ts`, `intake/soft.ts`, after inkvec's
+  `inkvec-trace/src/{coverage,softness}.rs`, `coverage/{oversample,resample}.rs` and
+  `inkvec-cli/src/soft_intake.rs`, identical to an inkvec build on 1,004 images): the edge width
+  from first- and second-difference votes (after P. Marziliano, F. Dufaux, S. Winkler & T.
+  Ebrahimi, “A no-reference perceptual blur metric”, ICIP 2002); a ringing score for compression
+  damage; whether the pixels can be thrown away and put back (the resampling evidence of A. C.
+  Popescu & H. Farid, “Exposing digital forgeries by detecting traces of resampling”, _IEEE TSP_
+  53(2), 2005) by an exact premultiplied box filter (T. Porter & T. Duff, “Compositing digital
+  images”, SIGGRAPH 1984); ramp, core and spacing evidence over a chamfer distance (G.
+  Borgefors, “Distance transformations in digital images”, _CVGIP_ 34, 1986); a soft intake —
+  wide edges, ringing or a lossy container — loosens the palette's guards and lets the noise
+  rise to the residual against the labels, and an upscaled raster is reduced by the factor its
+  edges imply (the degradation model of K. Zhang, J. Liang, L. Van Gool & R. Timofte, “Designing
+  a practical degradation model for deep blind image super-resolution”, ICCV 2021).
 - **The palette** (`ink/palette.ts`, `ink/mdl.ts`, `ink/distinct.ts`, `ink/snap.ts`, after
   inkvec's `inkvec-trace/src/color.rs` and `color/{mdl,distinct,represent,snap}.rs`, identical to
   an inkvec build on 1,582 corpus rasters and photographs up to 6000×4000: same inks, colours
