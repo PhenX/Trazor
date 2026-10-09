@@ -221,6 +221,16 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   while large regions merge only when near-identical. The `mergeSizeBias` option
   of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
   close-but-distinct dominant colors apart instead of averaging them into one.
+- **Yağız Aksoy, Tunç Ozan Aydın, Aljoša Smolić & Marc Pollefeys, “Unmixing-Based
+  Soft Color Segmentation for Image Manipulation”, _ACM TOG_ 36(2), 2017, §5.** A
+  color model grows only from pixels the current colors cannot explain as a
+  mixture. The region merge's rare-ink veto (`packages/raster/src/represent.ts`,
+  after inkvec's `color/represent.rs`, Apache-2.0): a small region whose pixels no
+  two- or three-color mixture of the regions around them explains — the local
+  edge model of Yang et al., “Antialiasing Recovery”, _ACM TOG_ 30(3), 2011 — is
+  an ink of its own, and the size term does not fold it into a visibly different
+  neighbor; resampling overshoot of those colors (15 % past a chord's end, or an
+  ink scaled by up to 1.15) is no evidence.
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared

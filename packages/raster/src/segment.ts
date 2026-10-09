@@ -42,10 +42,11 @@
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
  * result mirrors {@link QuantizeResult} so the engine consumes it identically.
  */
-import { createLabelMap, oklabToRgb, rgbToHex } from '@trazor/core'
+import { ciede2000, createLabelMap, oklabToRgb, rgbToHex, rgbToLab } from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 import { dissolveBlendBands, returnSeamPixels } from './mixture'
+import { representedRegions } from './represent'
 
 export interface SegmentOptions {
   /**
@@ -122,6 +123,18 @@ const PRISTINE_SHARE = 0.85
  * (two greens of a mosaic), not one fill the noise split.
  */
 const PRISTINE_FLOOR = 0.005
+
+/**
+ * Scale of the merge's size term: a region's bound is `SRM_SCALE / sqrt(|R|)`
+ * (Nock & Nielsen 2004), times the size bias and the supersampling factor.
+ */
+const SRM_SCALE = 0.5
+
+/**
+ * CIEDE2000 below which two regions are the same ink whatever their evidence
+ * (inkvec's `SAME_INK_DE00`, the floor the quantizer's `autoK` also uses).
+ */
+const SAME_INK_DE00 = 1.5
 
 /**
  * A region's palette color is the mean of its *flat interior* pixels — its core —
@@ -443,6 +456,46 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     }
   }
 
+  // ---- 3b. Rare inks: the small regions no mixture of their neighbors explains ----
+  // Only a region small enough for the merge's size term to fold it into a
+  // visibly different neighbor is a candidate: its size term passes the floor.
+  const represented = new Uint8Array(regionCount)
+  // Each represented region's ink as CIELAB: the mean color of its voting pixels.
+  const evidenceLab = new Float64Array(regionCount * 3)
+  if (sizeBias > 0) {
+    const cap = ((sizeBias * SRM_SCALE * scale) / floor) ** 2
+    const candidate = new Uint8Array(regionCount)
+    let any = false
+    for (let r = 0; r < regionCount; r++) {
+      if (size[r] >= Math.max(1, minArea) && size[r] <= cap) {
+        candidate[r] = 1
+        any = true
+      }
+    }
+    if (any) {
+      const regionRgb = new Float64Array(regionCount * 3)
+      for (let r = 0; r < regionCount; r++) {
+        const [rr, gg, bb] = oklabToRgb(mL[r], mA[r], mB[r])
+        regionRgb[r * 3] = rr
+        regionRgb[r * 3 + 1] = gg
+        regionRgb[r * 3 + 2] = bb
+      }
+      const rep = representedRegions(image.data, region, w, h, regionRgb, candidate, scale)
+      represented.set(rep.represented)
+      for (let r = 0; r < regionCount; r++) {
+        if (represented[r] === 0) continue
+        const [L, A, B] = rgbToLab(
+          rep.evidence[r * 3],
+          rep.evidence[r * 3 + 1],
+          rep.evidence[r * 3 + 2],
+        )
+        evidenceLab[r * 3] = L
+        evidenceLab[r * 3 + 1] = A
+        evidenceLab[r * 3 + 2] = B
+      }
+    }
+  }
+
   // ---- 4. Region-adjacency-graph merge ----
   const parent = mergeRegions(
     region,
@@ -460,6 +513,8 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     coreA,
     coreB,
     coreN,
+    represented,
+    evidenceLab,
     mergeThreshold,
     sizeBias,
     floor,
@@ -993,6 +1048,8 @@ function mergeRegions(
   coreA: Float64Array,
   coreB: Float64Array,
   coreN: Int32Array,
+  represented: Uint8Array,
+  evidenceLab: Float64Array,
   mergeThreshold: number,
   sizeBias: number,
   floor: number,
@@ -1034,7 +1091,6 @@ function mergeRegions(
   // regions (near-identical to merge) and rises for small ones (a sliver folds
   // freely). Root sizes, so it tracks each round.
   // Areas count source pixels: a supersampled region is `scale²` times its size.
-  const SRM_SCALE = 0.5
   const mergeLimit = (a: number, b: number): number =>
     sizeBias <= 0
       ? mergeThreshold
@@ -1063,6 +1119,42 @@ function mergeRegions(
     }
     size[keep] = nn
     parent[drop] = keep
+    if (represented[keep] === 0 && represented[drop] === 1) {
+      represented[keep] = 1
+      evidenceLab[keep * 3] = evidenceLab[drop * 3]
+      evidenceLab[keep * 3 + 1] = evidenceLab[drop * 3 + 1]
+      evidenceLab[keep * 3 + 2] = evidenceLab[drop * 3 + 2]
+    }
+  }
+  // CIEDE2000 between a represented region's ink and the color another region
+  // is rendered with.
+  const inkDe00 = (ink: number, other: number): number => {
+    const [r, g, b] = oklabToRgb(mL[other], mA[other], mB[other])
+    const [L, A, B] = rgbToLab(r, g, b)
+    return ciede2000(
+      evidenceLab[ink * 3],
+      evidenceLab[ink * 3 + 1],
+      evidenceLab[ink * 3 + 2],
+      L,
+      A,
+      B,
+    )
+  }
+  // A rare ink stays its own region against a neighbor whose color is visibly
+  // not that ink, when only the size term would fold it: the smaller of the two
+  // is represented, both clear the speck floor, they are no near-duplicates, and
+  // the ink its votes are for differs from the neighbor's color by the same-ink
+  // floor (a strand of hair the rim blends darken still folds into the hair).
+  const keepsApart = (a: number, b: number, d: number): boolean => {
+    const small = size[a] <= size[b] ? a : b
+    const other = small === a ? b : a
+    return (
+      represented[small] === 1 &&
+      size[a] >= minArea &&
+      size[b] >= minArea &&
+      d >= floor &&
+      inkDe00(small, other) >= SAME_INK_DE00
+    )
   }
 
   // Directed adjacency edges (unique unordered root pairs collected per round).
@@ -1119,6 +1211,7 @@ function mergeRegions(
       const rb = find(b)
       if (ra === rb) continue
       if (d < mergeLimit(ra, rb) || size[ra] < minArea || size[rb] < minArea) {
+        if (keepsApart(ra, rb, d)) continue
         union(ra, rb)
         activeRegions--
         merged = true
@@ -1128,7 +1221,8 @@ function mergeRegions(
   }
 
   // Global near-duplicate consolidation: fold together regions whose mean colors
-  // are within the consolidation distance even when they do not touch — two
+  // are within the consolidation distance even when they do not touch, and a
+  // rare ink into the region of the same ink — two
   // separate black outlines become one palette color. Greedy by descending size,
   // so the largest region of a color is the representative. Perceptual-distance
   // gated, so it can never merge genuinely different colors (a blue strap into a
@@ -1143,7 +1237,12 @@ function mergeRegions(
   for (const r of roots) {
     let repFor = -1
     for (const rep of reps) {
-      if (meanDelta(r, rep) < consolidateDist) {
+      // A rare ink's fragment cut off from the rest of its ink (a strand of
+      // hair between two outlines) joins it: its votes are for that ink.
+      if (
+        meanDelta(r, rep) < consolidateDist ||
+        (represented[r] === 1 && inkDe00(r, rep) < SAME_INK_DE00)
+      ) {
         repFor = rep
         break
       }

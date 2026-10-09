@@ -372,7 +372,15 @@ export function fitRegionGradients(
   added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
   so a budget spends its damage on the smallest, closest regions first. With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
-  close-but-distinct colors stay apart while small regions still fold.
+  close-but-distinct colors stay apart while small regions still fold — unless the
+  smaller is a rare ink: a region the size term alone could fold whose own pixels
+  (within 0.05 sRGB of its color) no mixture of the regions around them explains
+  (≥ max(8, 8/16384 of the image) source pixels with a residual over 0.025 sRGB to the
+  nearest two- or three-color mixture of the 4 most frequent regions within two pixels,
+  and not their resampling overshoot) stays apart from a neighbor whose color is
+  ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017),
+  and joins a non-adjacent region of that same ink. A pupil or a star a few pixels
+  across keeps its color.
 - After the merge, a seam a third region captured goes back to the two regions
   it separates (`returnSeamPixels`), and a thin band of blend colors grown along
   a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
