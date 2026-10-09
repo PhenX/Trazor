@@ -130,6 +130,28 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   transform used to estimate stroke width for centerline output
   (`packages/raster/src/thin.ts`).
 
+## Ink front end (packages/raster/src/ink, fill, intake)
+
+The planar chain's raster front end, ported from inkvec (Apache-2.0): how many inks an image
+holds and which pixels each one owns, decided by the same description length the geometry
+uses. Each file names the inkvec files it follows.
+
+- **Regions** (`ink/regions.ts`, `ink/components.ts`, `ink/native-regions.ts`,
+  `ink/regularize.ts`, after inkvec's `inkvec-trace/src/{regions,regularize,native}.rs` and
+  `regions/components.rs`, matching an inkvec build's label maps exactly on 37 corpus images):
+  4-connected components by row runs and union-find (K. Wu, E. Otoo & K. Suzuki, “Optimizing
+  two-pass connected-component labeling algorithms”, _Pattern Analysis and Applications_
+  12(2), 2009); speckles folded into their commonest neighbour; thin slivers that are blends
+  of the two or three inks around them split back to their dominant ink, and single blend
+  pixels moved to the ink their nearest convex mixture favours (the two-colour edge model of
+  L. Yang, P. V. Sander, J. Lawrence & H. Hoppe, “Antialiasing Recovery”, _ACM TOG_ 30(3),
+  2011, widened to three; over premultiplied RGBA with a clear backdrop on transparent
+  images); the smallest components merged past the face-id cap (region-adjacency merging of
+  K. Haris, S. N. Efstratiadis, N. Maglaveras & A. K. Katsaggelos, “Hybrid image segmentation
+  using watersheds and fast region merging”, _IEEE TIP_ 7(12), 1998); the noise read off the
+  residual against the labels, and the research label regularization by iterated conditional
+  modes (J. Besag, “On the statistical analysis of dirty pictures”, _JRSS B_ 48(3), 1986).
+
 ## Planar-map geometry core (packages/trace/src/planar, solve, fit)
 
 One geometry chain for every color mode, ported from inkvec (Apache-2.0, see
