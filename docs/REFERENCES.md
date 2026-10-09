@@ -243,6 +243,13 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   eigenvalue of the weighted scatter, Pearson 1901; branch and bound as in Morin & Marsten
   1976); open edges ending exactly on their nodes, the post-fit passes run where inkvec runs
   them.
+- **Crossing repair** (`fit/repair.ts`, after inkvec's `inkvec-cli/src/rings.rs`
+  (`repair_ring_crossings`, `pin_crossings`, `segment_ranges`) and `pipeline.rs` `repair_fits`):
+  the edges of a ring whose independent fits cross refitted under admissibility limits — a
+  vertex pinned where the curves cross, or the span cap halved, whichever the description
+  length prefers — for a bounded number of rounds, then restored to the least constrained fit
+  that crosses nothing (the topology-preserving simplification of de Berg, van Kreveld &
+  Schirra 1998 and Saalfeld 1999, decided by the same cost).
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
