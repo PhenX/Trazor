@@ -6,6 +6,7 @@ import {
   planarGeometry,
   polylineFit,
   stackedLayers,
+  tracePlanar,
 } from '../src/planar'
 
 function labelsOf(rows: string[]): LabelMap {
@@ -86,5 +87,59 @@ describe('planar layerings over shared fitted edges', () => {
     expect(area(0)).toBeCloseTo(labels.data.length - 1, 9)
     expect(area(1)).toBeCloseTo(pixels(1) + pixels(2) + pixels(3), 9)
     expect(area(3)).toBeCloseTo(pixels(3), 9)
+  })
+})
+
+describe('the planar chain against its image', () => {
+  /** A disk of radius `r` at (cx, cy), black on white, anti-aliased by 8×8 box sampling. */
+  function diskImage(w: number, h: number, cx: number, cy: number, r: number) {
+    const data = new Uint8ClampedArray(w * h * 4)
+    const labels = new Int32Array(w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let inside = 0
+        for (let j = 0; j < 8; j++)
+          for (let i = 0; i < 8; i++)
+            if (Math.hypot(x + (i + 0.5) / 8 - cx, y + (j + 0.5) / 8 - cy) < r) inside++
+        const v = Math.round(255 * (1 - inside / 64))
+        const p = (y * w + x) * 4
+        data[p] = data[p + 1] = data[p + 2] = v
+        data[p + 3] = 255
+        labels[y * w + x] = inside >= 32 ? 0 : 1
+      }
+    }
+    return {
+      image: { width: w, height: h, data },
+      labels: { width: w, height: h, data: labels, count: 2 },
+    }
+  }
+
+  it('runs every stage in order and lands the boundary on the drawn circle', () => {
+    const { image, labels } = diskImage(32, 32, 15.3, 16.1, 9.4)
+    const stages: string[] = []
+    const err: Record<string, number> = {}
+    const { fits } = tracePlanar({
+      labels,
+      image,
+      alpha: null,
+      paints: [{ hex: '#000000' }, { hex: '#ffffff' }],
+      onStage: (stage, map) => {
+        stages.push(stage)
+        let sum = 0
+        let n = 0
+        for (const e of map.edges) {
+          if (e.left < 0 || e.right < 0) continue
+          for (let i = 0; i < e.points.length; i += 2) {
+            sum += Math.abs(Math.hypot(e.points[i] - 15.3, e.points[i + 1] - 16.1) - 9.4)
+            n++
+          }
+        }
+        err[stage] = sum / n
+      },
+    })
+    expect(stages).toEqual(['lattice', 'subpixel', 'junctions', 'solve', 'fit'])
+    expect(fits.length).toBeGreaterThan(0)
+    expect(err.subpixel).toBeLessThan(err.lattice / 2)
+    expect(err.solve).toBeLessThan(0.05)
   })
 })

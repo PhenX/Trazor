@@ -8,7 +8,16 @@
  */
 import type { GradientPaint, LabelMap, PathCommand, RasterImage } from '@trazor/core'
 import { hexToRgb } from '@trazor/core'
-import { buildPlanarMap, faceNesting, faceRings, regionRings, splitFaces } from '@trazor/trace'
+import {
+  buildPlanarMap,
+  faceNesting,
+  faceRings,
+  refineJunctions,
+  refineSubpixel,
+  regionRings,
+  solveBoundaries,
+  splitFaces,
+} from '@trazor/trace'
 import type {
   FaceFill,
   FaceNesting,
@@ -17,15 +26,9 @@ import type {
   FittedEdge,
   PlanarEdge,
   PlanarMap,
+  PremultipliedImage,
   RegionShape,
 } from '@trazor/trace'
-
-/** An image in the core's forward-model space: premultiplied encoded sRGB RGBA in [0, 1]. */
-export interface PremultipliedImage {
-  width: number
-  height: number
-  data: Float32Array
-}
 
 /**
  * The observed image in the forward model's space, from the working image
@@ -257,18 +260,29 @@ export interface PlanarTraceInput {
 }
 
 /**
- * The planar chain's geometry: the label map's faces and the edges they share,
- * each edge fitted once. Stages measure the observed image against the faces'
- * paint in the forward model's space.
+ * The planar chain's geometry: the label map's faces and the edges they share;
+ * every boundary point measured to sub-pixel against its two faces' paint,
+ * every junction placed where its edges meet, then the whole boundary solved
+ * at once against the observed image — all in the forward model's space —
+ * and each edge fitted once. Each stage is reported to `onStage`.
  */
 export function tracePlanar(input: PlanarTraceInput): {
   geo: PlanarGeometry
   fits: FittedEdge[]
 } {
   const geo = planarGeometry(input.labels)
-  input.onStage?.('lattice', geo.map)
-  const fits = geo.map.edges.map(polylineFit)
-  input.onStage?.('fit', geo.map, fits)
+  const { map } = geo
+  input.onStage?.('lattice', map)
+  const image = premultipliedImage(input.image, input.alpha)
+  const fills = faceFills(map.faces.label, input.paints)
+  refineSubpixel(map, image, fills)
+  input.onStage?.('subpixel', map)
+  refineJunctions(map)
+  input.onStage?.('junctions', map)
+  solveBoundaries(map, image, fills)
+  input.onStage?.('solve', map)
+  const fits = map.edges.map(polylineFit)
+  input.onStage?.('fit', map, fits)
   return { geo, fits }
 }
 

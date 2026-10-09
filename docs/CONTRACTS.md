@@ -795,6 +795,12 @@ export function imageNoise(image: PremultipliedImage): number // per-channel σ,
 // Each node to where its edges' end tangents meet (or a taper vanishes), within 1.5 px and the
 // image; every incident edge end takes that one position and σ.
 export function refineJunctions(map: PlanarMap): void
+// Every point and node moved at once (≤ 1 px, frame points along the frame) so the map's exact
+// box coverage of fills matches image, by L-BFGS over independent parts; folds it made are
+// backed off. On 'solved' points and nodes are overwritten (sigmas kept); otherwise untouched.
+export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep? }
+export interface SolveReport { outcome: 'solved' | 'degenerate' | 'over-budget' | 'no-residual' | 'no-gain'; before; after; iters; moved; scale; parts; evals }
+export function solveBoundaries(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SolveReport
 ```
 
 ## @trazor/svg
@@ -1162,8 +1168,8 @@ export function vectorize(
     withDocument?: boolean
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
-    // Called with the planar map after each geometry stage of the planar chain (`lattice`, then each
-    // stage that moves points) and with the fitted edges after the fit (`fit`) — a probe for the
+    // Called with the planar map after each geometry stage of the planar chain (`lattice`,
+    // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) — a probe for the
     // stage probes (scripts/eval/gt/stages.ts --chain planar). The map is live; copy what you keep.
     onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
   },
