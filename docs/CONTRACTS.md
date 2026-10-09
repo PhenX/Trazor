@@ -805,6 +805,9 @@ export function solveBoundaries(map, image: PremultipliedImage, fills: readonly 
 // segments, an open run ending exactly at its last point, a closed one back at (x0, y0); forced
 // point indices are vertices, maxSpan caps a segment's points, postFit runs the post-fit passes.
 export function fitPolyline(points: Float64Array, sigma: Float64Array, closed: boolean, cfg: FitConfig, opts?: FitPolylineOptions): FittedEdge
+// The post-fit passes on one fitted edge (free-cubic merge, corner sharpening; research snaps
+// on request): the same object back when nothing changes; an open edge's ends never move.
+export function postFitPasses(edge: FittedEdge, points, sigma, cfg: FitConfig, opts?: PostFitOptions): FittedEdge
 ```
 
 ## @trazor/svg

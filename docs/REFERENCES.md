@@ -221,6 +221,20 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   “Topologically consistent line simplification with the Douglas-Peucker algorithm”,
   _CaGIS_ 26(1), 1999; line–line corners refined to their lines' intersection (Selinger 2003
   §2.3.3); a long boundary decimated keeping its corners.
+- **Post-fit passes** (`fit/merge.ts`, `fit/snap.ts`, after inkvec's
+  `inkvec-fit/src/merge{.rs,/residual.rs,/grid.rs,/snap.rs}` and `post_fit_passes`,
+  cross-checked against an inkvec build on 160 fits): a short run of segments replaced by
+  one cubic with free end tangents when that is cheaper under the same description length,
+  found by a coarse grid and a compass search with candidates abandoned early on lower
+  bounds (C.-D. Bei & R. M. Gray, “An improved minimum distortion encoding algorithm for
+  vector quantization”, _IEEE Trans. Commun._ 33(10), 1985; the reordered-sum margin of N. J.
+  Higham, “The accuracy of floating point summation”, _SIAM J. Sci. Comput._ 14(4), 1993,
+  eq. 2.6), a rejected run not retried until its vertices change (local invalidation, M.
+  Garland & P. S. Heckbert, “Surface simplification using quadric error metrics”, SIGGRAPH
+  1997); a chamfer the rasterizer rounded sharpened back into the corner of its two lines;
+  and the research snaps (axis lines, `S`-reflected smooth joins on the output grid), off by
+  default. Distances use the correctly rounded `hypot` of F. Borges, “An improved algorithm
+  for hypot(a,b)”, arXiv:1904.09481, 2019.
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
