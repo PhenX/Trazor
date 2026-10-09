@@ -230,13 +230,17 @@ export function polylineFit(edge: PlanarEdge): FittedEdge {
   return { x0: p[0], y0: p[1], segments, closed: edge.closed, params: 2 * segments.length, chi2: 0 }
 }
 
-/** Positional uncertainty of a set-back point, in source pixels: it is hidden, so loose. */
-const SET_BACK_SIGMA = 0.5
+/**
+ * Positional uncertainty of a set-back point, in source pixels: loose, since it
+ * is hidden, but the fit keeps within `τ·σ` (τ = 2) of it — half a source
+ * pixel, so a run set back one pixel stays beneath the sheet over it.
+ */
+const SET_BACK_SIGMA = 0.25
 
 /**
  * The fit of a stacked layer's set-back run (interleaved points, walk order):
- * the multimodel program and its post-fit passes with every point held to half
- * a source pixel, its ends pinned, as segments after the first point.
+ * the multimodel program and its post-fit passes with every point held to
+ * {@link SET_BACK_SIGMA}, its ends pinned, as segments after the first point.
  */
 export function setBackFit(width: number, height: number, scale: number): SetBack['fit'] {
   const cfg = contentFitConfig(width, height, scale)
