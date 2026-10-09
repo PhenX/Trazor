@@ -614,6 +614,9 @@ export namespace ink {
   function bicLambda(n: number): number // ½·ln n, the price of one parameter
   function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
   function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
+  // A fade (opacity and color profiles on one geometry) as one gradient whose stops carry opacities;
+  // null for a flat opacity.
+  function fadeToPaint(alpha: FillModel, color: FillModel, tolerance?): GradientPaint | null
   function toHex(c: Rgb): string
   // Transparency carried natively (an ink is a color and an opacity; the clear ground is an ink).
   // rgb is over white, alpha per pixel in [0,1]; Palette.alpha holds each ink's opacity.
@@ -1325,11 +1328,13 @@ export function vectorize(
     withDocument?: boolean
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
-    // The planar chain's front end for opaque color images: 'classic' (default) or 'ink', inkvec's MDL
+    // The planar chain's front end for color images: 'classic' (default) or 'ink', inkvec's MDL
     // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`), then each
     // region's fill from its own pixels (with `settings.gradients` a gradient where one pays, and
     // a ramp's bands merged), the carve and the flat-fill snap, each label one paint (a flat color
-    // or a gradient); in development.
+    // or a gradient). A transparent image runs it over two grounds: the clear ink is transparent,
+    // a wash paints its straight color at a fill opacity, a fade is a gradient whose stops carry
+    // opacities; the stacked sheets beneath a translucent face end at its edge. In development.
     frontEnd?: 'classic' | 'ink'
     // Called with the planar map after each geometry stage of the planar chain (`lattice`,
     // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a probe for the

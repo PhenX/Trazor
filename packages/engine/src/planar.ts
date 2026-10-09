@@ -476,13 +476,23 @@ export function cutoutRegions(geo: PlanarGeometry, fits: readonly FittedEdge[]):
   return [...byLabel.values()].toSorted((a, b) => a.label - b.label)
 }
 
-/** Whether a hole ring borders a transparent face (a cut the face must keep). */
-function holeOntoClear(geo: PlanarGeometry, ring: FaceRing): boolean {
+/**
+ * Whether a hole ring borders a transparent face, or one painted alone (a
+ * translucent paint, which must composite over what lies beneath it in the
+ * source, not over its parent): a cut the face must keep.
+ */
+function holeOntoClear(
+  geo: PlanarGeometry,
+  ring: FaceRing,
+  alone?: (label: number) => boolean,
+): boolean {
   const { edges, faces } = geo.map
   for (let k = 0; k < ring.edges.length; k++) {
     const e = edges[ring.edges[k]]
     const across = ring.reversed[k] ? e.left : e.right
-    if (across >= 0 && faces.label[across] < 0) return true
+    if (across < 0) continue
+    const l = faces.label[across]
+    if (l < 0 || (alone !== undefined && alone(l))) return true
   }
   return false
 }
@@ -494,12 +504,17 @@ export interface PlanarFace extends FaceShape {
 
 /**
  * The nested faces: one per painted face, its outer ring plus the holes it
- * keeps onto transparency (a hole a labeled face fills is repainted by that
- * face, drawn after it), each recording its nearest painted ancestor. A face
+ * keeps onto transparency and onto faces painted `alone` (a hole an opaque
+ * labeled face fills is repainted by that face, drawn after it), each
+ * recording its nearest painted ancestor. A face
  * drawing its outer ring alone, one closed edge the fit described as a
  * primitive, draws that primitive.
  */
-export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): PlanarFace[] {
+export function nestedFaces(
+  geo: PlanarGeometry,
+  fits: readonly FittedEdge[],
+  alone?: (label: number) => boolean,
+): PlanarFace[] {
   const { faces } = geo.map
   const index = new Int32Array(faces.count).fill(-1)
   const out: PlanarFace[] = []
@@ -511,7 +526,7 @@ export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): P
     const kept: FaceRing[] = []
     let area = 0
     for (const ring of geo.rings[f]) {
-      if (!ring.outer && !holeOntoClear(geo, ring)) continue
+      if (!ring.outer && !holeOntoClear(geo, ring, alone)) continue
       if (ring.outer) area = Math.abs(polygonArea2(faceRingPolygon(geo.map, ring))) / 2
       for (const c of ringCommands(ring, fits)) commands.push(c)
       kept.push(ring)
@@ -779,7 +794,9 @@ function layerRingCommands(
  * the sheets over it and no edge can crack. Its outline is walked over the
  * shared fitted edges ({@link regionRings}). `paintLabel` is each face's label
  * as the base layers paint it (an island lifted onto its own top layer takes
- * its surround's label); `islands` are the faces painted on top, by layer.
+ * its surround's label); `islands` are the faces painted on top, by layer. A
+ * label `alone` names (a translucent paint) is never reached by another layer:
+ * the sheets beneath end at its edge, so it composites over what lies there.
  */
 export function stackedLayers(
   geo: PlanarGeometry,
@@ -788,6 +805,7 @@ export function stackedLayers(
   order: readonly number[],
   islands: readonly { label: number; faces: number[] }[],
   setBack?: SetBack,
+  alone?: (label: number) => boolean,
 ): { label: number; shapes: { commands: PathCommand[]; primitive: Primitive | null }[] }[] {
   const { map } = geo
   const { faces, edges } = map
@@ -797,6 +815,12 @@ export function stackedLayers(
     const l = paintLabel[f]
     return l >= 0 && l < position.length ? position[l] : -1
   }
+  // A face painted alone (translucent) is reached by its own layer only: a sheet
+  // beneath it would show through.
+  const lone = new Uint8Array(faces.count)
+  if (alone)
+    for (let f = 0; f < faces.count; f++)
+      if (paintLabel[f] >= 0 && alone(paintLabel[f])) lone[f] = 1
   // Face adjacency over the shared edges.
   const adjStart = new Int32Array(faces.count + 1)
   for (const e of edges) {
@@ -832,7 +856,7 @@ export function stackedLayers(
       const f = stack.pop() as number
       for (let a = adjStart[f]; a < adjStart[f + 1]; a++) {
         const g = adj[a]
-        if (inRegion[g] === 0 && posOf(g) >= k) {
+        if (inRegion[g] === 0 && posOf(g) >= k && (lone[g] === 0 || posOf(g) === k)) {
           inRegion[g] = 1
           stack.push(g)
         }

@@ -4,7 +4,7 @@ import type { GradientPaint } from '@trazor/core'
 import { colorAt } from '../../src/fill/model'
 import type { FillModel, LinearFill, Rgb, Stop } from '../../src/fill/model'
 import { imperceptible } from '../../src/fill/score'
-import { fadeToSvg, fillToPaint, fillToSvg, toHex } from '../../src/fill/svg'
+import { fadeToPaint, fadeToSvg, fillToPaint, fillToSvg, toHex } from '../../src/fill/svg'
 
 const ramp = (interp: 'srgb' | 'linearRgb'): LinearFill => ({
   kind: 'linear',
@@ -136,6 +136,46 @@ describe('fills as gradient paint', () => {
       const got = paintAt(g, t)
       for (let k = 0; k < 3; k++) expect(Math.abs(got[k] - want[k])).toBeLessThan(2 / 255)
     }
+  })
+})
+
+describe('fades as gradient paint', () => {
+  it('carries the opacity profile on every stop of the color profile', () => {
+    const alpha: FillModel = {
+      ...ramp('srgb'),
+      c0: [0.9, 0.9, 0.9],
+      c1: [0.1, 0.1, 0.1],
+      mids: [{ offset: 0.5, color: [0.7, 0.7, 0.7] }],
+    }
+    const color: FillModel = {
+      ...ramp('srgb'),
+      c0: [1, 0, 0],
+      c1: [0, 0, 1],
+      mids: [{ offset: 0.5, color: [0, 1, 0] }],
+    }
+    const g = fadeToPaint(alpha, color)!
+    expect(g).toMatchObject({ kind: 'linear', x1: 1.5, x2: 40.5 })
+    expect(g.stops).toEqual([
+      { offset: 0, color: '#ff0000', opacity: 0.9 },
+      { offset: 0.5, color: '#00ff00', opacity: 0.7 },
+      { offset: 1, color: '#0000ff', opacity: 0.1 },
+    ])
+  })
+
+  it('keeps the opacity stops of a fade in one color, and has no paint for a flat opacity', () => {
+    const alpha: FillModel = {
+      ...ramp('srgb'),
+      c0: [1, 1, 1],
+      c1: [0, 0, 0],
+      mids: [{ offset: 0.25, color: [0.5, 0.5, 0.5] }],
+    }
+    const g = fadeToPaint(alpha, { kind: 'flat', color: [0, 0.5, 1] })!
+    expect(g.stops.map((st) => [st.offset, st.color, st.opacity ?? 1])).toEqual([
+      [0, '#0080ff', 1],
+      [0.25, '#0080ff', 0.5],
+      [1, '#0080ff', 0],
+    ])
+    expect(fadeToPaint({ kind: 'flat', color: [0.5, 0.5, 0.5] }, alpha)).toBeNull()
   })
 })
 
