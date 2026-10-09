@@ -302,10 +302,10 @@ export function select(candidates: readonly FillFit[]): FillFit {
 /**
  * Every candidate for the region of `pixels` (membership `member`), flat first.
  * Three tiers of samples, taken in order until one is non-empty: strictly
- * interior pixels that pass `evidence` (every model is tried); any pixel that
- * passes `evidence`; any pixel (both flat only). No pixels gives a black flat
- * fill at the cost of its parameters. `evidence` null lets every pixel testify.
- * Models are in Trazor's pixel frame.
+ * interior pixels that pass `evidence` (every model is tried, gradients only
+ * when `gradients`); any pixel that passes `evidence`; any pixel (both flat
+ * only). No pixels gives a black flat fill at the cost of its parameters.
+ * `evidence` null lets every pixel testify. Models are in Trazor's pixel frame.
  */
 export function fitPixels(
   rgb: Float32Array,
@@ -316,12 +316,13 @@ export function fitPixels(
   evidence: PixelTest | null,
   sigma: number,
   lambda: number,
+  gradients = true,
 ): FillFit[] {
   if (pixels.length === 0) return [flatOnly([0, 0, 0], lambda)]
   let fits: FillFit[]
   const interior = collectSamples(rgb, w, h, pixels, member, evidence, true)
   if (interior.n > 0) {
-    fits = fitSamples(interior, w, true, sigma, lambda)
+    fits = fitSamples(interior, w, gradients, sigma, lambda)
   } else {
     const anyEvidence = collectSamples(rgb, w, h, pixels, member, evidence, false)
     fits =
@@ -400,7 +401,7 @@ export function fitFill(
  * strided), and when it saw fewer than all, chi² is scaled back up by the
  * subsampling factor (and the cost with it) so costs stay comparable across
  * region sizes. `member` is the union's membership, `evidence` which pixels
- * testify (null: all).
+ * testify (null: all); without `gradients` the fill is flat.
  */
 export function fitUnion(
   rgb: Float32Array,
@@ -412,10 +413,11 @@ export function fitUnion(
   evidence: PixelTest | null,
   sigma: number,
   lambda: number,
+  gradients = true,
 ): FillFit {
   const total = a.length + b.length
   const seen = stridedUnion(a, b)
-  const fit = select(fitPixels(rgb, w, h, seen, member, evidence, sigma, lambda))
+  const fit = select(fitPixels(rgb, w, h, seen, member, evidence, sigma, lambda, gradients))
   if (seen.length >= total) return fit
   const k = total / seen.length
   const paramsTerm = fit.cost - 0.5 * fit.chi2
