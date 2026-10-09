@@ -290,8 +290,15 @@ function gradientElement(g: SvgGradient, precision: number): string {
       ` x1="${n(g.x1)}" y1="${n(g.y1)}" x2="${n(g.x2)}" y2="${n(g.y2)}">${stops}</linearGradient>`
     )
   }
+  // An ellipse is the circle of radius r squashed by 1/aspect across its major
+  // axis and turned by angle, about the center.
+  const transform =
+    g.aspect !== undefined && g.aspect !== 1
+      ? ` gradientTransform="translate(${n(g.cx)} ${n(g.cy)}) rotate(${formatNumber(((g.angle ?? 0) * 180) / Math.PI, 2)})` +
+        ` scale(1 ${formatNumber(1 / g.aspect, 4)}) translate(${n(-g.cx)} ${n(-g.cy)})"`
+      : ''
   return (
-    `<radialGradient id="${id}" gradientUnits="userSpaceOnUse"` +
+    `<radialGradient id="${id}" gradientUnits="userSpaceOnUse"${transform}` +
     ` cx="${n(g.cx)}" cy="${n(g.cy)}" r="${n(g.r)}">${stops}</radialGradient>`
   )
 }

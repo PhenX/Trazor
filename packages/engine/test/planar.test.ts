@@ -3,6 +3,7 @@ import type { FittedEdge } from '@trazor/trace'
 import { describe, expect, it } from 'vitest'
 import {
   cutoutRegions,
+  gradientAt,
   nestedFaces,
   planarGeometry,
   polylineFit,
@@ -215,5 +216,31 @@ describe('the planar chain against its image', () => {
     const segs = setBackFit(64, 64, 1)(pts)
     expect(segs.length).toBe(1)
     expect(segs[0]).toMatchObject({ type: 'L', x: pts[2 * n - 2], y: pts[2 * n - 1] })
+  })
+})
+
+describe('gradient paint in the forward model', () => {
+  it('reads an elliptical radial gradient in its own frame', () => {
+    const g = {
+      kind: 'radial' as const,
+      cx: 10,
+      cy: 6,
+      r: 8,
+      aspect: 2,
+      angle: Math.PI / 2,
+      stops: [
+        { offset: 0, color: '#000000' },
+        { offset: 1, color: '#ffffff' },
+      ],
+    }
+    const out = new Float64Array(4)
+    // Half way along the major axis (down, at angle π/2) and half way across it.
+    gradientAt(g, 10, 10, out)
+    expect(out[0]).toBeCloseTo(0.5, 9)
+    gradientAt(g, 12, 6, out)
+    expect(out[0]).toBeCloseTo(0.5, 9)
+    // Past the ellipse the last stop pads.
+    gradientAt(g, 15, 6, out)
+    expect(out[0]).toBe(1)
   })
 })

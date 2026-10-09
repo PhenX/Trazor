@@ -140,6 +140,11 @@ export interface RadialGradientPaint {
   cx: number
   cy: number
   r: number
+  // Elliptical: the last stop at semi-axis r along `angle` (radians, +x towards +y) and r / aspect
+  // across it; serialized as gradientTransform="translate(c) rotate(angle) scale(1 1/aspect)
+  // translate(−c)". Absent (or 1) ⇒ a circle.
+  aspect?: number
+  angle?: number
   stops: GradientStop[]
 }
 export type GradientPaint = LinearGradientPaint | RadialGradientPaint

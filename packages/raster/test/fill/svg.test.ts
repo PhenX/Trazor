@@ -80,21 +80,21 @@ describe('fills as SVG', () => {
 })
 
 describe('fills as gradient paint', () => {
-  it('has no paint for a flat fill or an ellipse', () => {
+  it('has no paint for a flat fill and keeps an ellipse’s aspect and angle', () => {
     expect(fillToPaint({ kind: 'flat', color: [0, 0, 0] })).toBeNull()
     expect(
       fillToPaint({
         kind: 'radial',
-        c: [0, 0],
-        r: 1,
+        c: [2, 3],
+        r: 5,
         c0: [0, 0, 0],
         c1: [1, 1, 1],
         interp: 'srgb',
         aspect: 1.5,
-        angle: 0,
+        angle: 0.4,
         mids: [],
       }),
-    ).toBeNull()
+    ).toMatchObject({ kind: 'radial', cx: 2, cy: 3, r: 5, aspect: 1.5, angle: 0.4 })
   })
 
   it('passes an sRGB profile through stop for stop', () => {

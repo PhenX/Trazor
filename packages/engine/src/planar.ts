@@ -72,7 +72,8 @@ function rgb01(hex: string): [number, number, number] {
 /**
  * A gradient's color and opacity at a point, interpolated between its stops in
  * encoded sRGB (the SVG default, `color-interpolation: sRGB`) and padded past
- * its ends; written premultiplied into `out[0..3]`.
+ * its ends (an elliptical radial read in its own frame); written premultiplied
+ * into `out[0..3]`.
  */
 export function gradientAt(g: GradientPaint, x: number, y: number, out: Float64Array): void {
   let t: number
@@ -81,8 +82,17 @@ export function gradientAt(g: GradientPaint, x: number, y: number, out: Float64A
     const dy = g.y2 - g.y1
     const len2 = dx * dx + dy * dy
     t = len2 > 0 ? ((x - g.x1) * dx + (y - g.y1) * dy) / len2 : 0
+  } else if (g.r <= 0) {
+    t = 0
+  } else if (g.aspect === undefined || g.aspect === 1) {
+    t = Math.hypot(x - g.cx, y - g.cy) / g.r
   } else {
-    t = g.r > 0 ? Math.hypot(x - g.cx, y - g.cy) / g.r : 0
+    // The ellipse's frame: along `angle`, and across it stretched by the aspect.
+    const c = Math.cos(g.angle ?? 0)
+    const s = Math.sin(g.angle ?? 0)
+    const dx = x - g.cx
+    const dy = y - g.cy
+    t = Math.hypot(dx * c + dy * s, (dy * c - dx * s) * g.aspect) / g.r
   }
   const stops = g.stops
   let a = stops[0]

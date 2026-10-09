@@ -89,6 +89,31 @@ describe('serializeSvg — gradients', () => {
     expect(folded.match(/<path /g)).toHaveLength(1)
   })
 
+  it('writes an elliptical radial gradient as a circle squashed and turned about its center', () => {
+    const doc = gradientDoc()
+    doc.defs = [
+      {
+        id: 'g0',
+        kind: 'radial',
+        cx: 10,
+        cy: 5,
+        r: 8,
+        aspect: 2,
+        angle: Math.PI / 6,
+        stops: [
+          { offset: 0, color: '#1a1a1a' },
+          { offset: 1, color: '#dcdcdc' },
+        ],
+      },
+    ]
+    expect(serializeSvg(doc, { precision: 2 })).toContain(
+      '<radialGradient id="g0" gradientUnits="userSpaceOnUse" gradientTransform="translate(10 5)' +
+        ' rotate(30) scale(1 0.5) translate(-10 -5)" cx="10" cy="5" r="8">',
+    )
+    doc.defs = [{ ...doc.defs[0], kind: 'radial', cx: 10, cy: 5, r: 8, aspect: 1 }]
+    expect(serializeSvg(doc, { precision: 2 })).not.toContain('gradientTransform')
+  })
+
   it('omits <defs> entirely when there are no gradients (byte-identical path)', () => {
     const doc = gradientDoc()
     doc.defs = undefined
