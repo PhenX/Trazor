@@ -99,13 +99,13 @@ describe('the ink front end over two grounds', () => {
 
   it('keeps the clear ground transparent and paints a wash at its own opacity', () => {
     // A solid red square and a half-transparent blue one on a clear canvas.
-    const { image, alpha } = transparent(48, 24, (x, y) => {
+    const { image: canvas, alpha } = transparent(48, 24, (x, y) => {
       if (y < 4 || y >= 20) return [0, 0, 0, 0]
       if (x >= 4 && x < 20) return [220, 30, 30, 255]
       if (x >= 28 && x < 44) return [30, 60, 200, 128]
       return [0, 0, 0, 0]
     })
-    const front = nativeInkFrontEnd(image, alpha, 1, false, false)
+    const front = nativeInkFrontEnd(canvas, alpha, 1, false, false)
     const at = (x: number, y: number): number => front.labels.data[y * 48 + x]
     expect(at(1, 1)).toBe(-1)
     const red = at(10, 12)
@@ -123,15 +123,15 @@ describe('the ink front end over two grounds', () => {
   it('fits a glow as one fade whose stops carry opacities', () => {
     // One color whose opacity ramps from 0.1 to 0.85 across the canvas: the palette
     // bands it, the fades stage makes it one gradient with an opacity at each stop.
-    const { image, alpha } = transparent(48, 16, (x) => [
+    const { image: canvas, alpha } = transparent(48, 16, (x) => [
       200,
       80,
       30,
       Math.round(255 * (0.1 + (0.75 * x) / 47)),
     ])
-    const banded = nativeInkFrontEnd(image, alpha, 1, false, false)
+    const banded = nativeInkFrontEnd(canvas, alpha, 1, false, false)
     expect(banded.labels.count).toBeGreaterThan(1)
-    const front = nativeInkFrontEnd(image, alpha, 1, false, true)
+    const front = nativeInkFrontEnd(canvas, alpha, 1, false, true)
     expect(front.labels.count).toBe(1)
     const fade = front.gradients?.[0]
     expect(fade?.kind).toBe('linear')
