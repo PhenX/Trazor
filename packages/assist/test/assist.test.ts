@@ -101,7 +101,13 @@ function grayPhoto() {
  *  two-tone), crisp strokes: line art a grayscale-photo rule must not catch. */
 function inkDrawing() {
   const img = createRaster(200, 200)
-  fillRaster(img, 245, 245, 245)
+  // Scanned paper: never perfectly flat.
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 200; x++) {
+      const g = 243 + ((x * 13 + y * 7 + ((x * y) % 5)) % 5)
+      setPixel(img, x, y, g, g, g)
+    }
+  }
   for (let y = 40; y < 160; y++) {
     for (let x = 20; x < 180; x++) {
       const hatch = (x + y) % 6 < 2
@@ -498,6 +504,49 @@ describe('recommendSettings', () => {
     expect(rec.patch.background).toBe('transparent')
     expect(rec.patch.alphaThreshold).toBe(128)
     expect(rec.rationaleKeys.some((k) => k.code === 'alphaEdge')).toBe(true)
+  })
+
+  it('keeps a clean gray icon in its own flat inks, not grayscale tonal layers', () => {
+    // A gray printer icon: an outlined body and two paper sheets in flat grays
+    // with anti-aliased rims, on a transparent ground and flattened onto white.
+    const icon = (opaque: boolean) => {
+      const img = createRaster(128, 128)
+      if (opaque) fillRaster(img, 255, 255, 255)
+      else fillRaster(img, 0, 0, 0, 0)
+      for (let y = 0; y < 128; y++) {
+        for (let x = 0; x < 128; x++) {
+          const box = (x0: number, y0: number, x1: number, y1: number) =>
+            Math.max(
+              0,
+              Math.min(1, Math.min(x + 0.5 - x0, x1 - x - 0.5, y + 0.5 - y0, y1 - y - 0.5) + 0.5),
+            )
+          const outer = Math.max(
+            box(14.3, 50.6, 113.7, 96.2),
+            box(34.4, 18.3, 93.6, 51),
+            box(34.4, 80.2, 93.6, 112.7),
+          )
+          if (outer <= 0) continue
+          const inner = Math.max(
+            box(17.3, 53.6, 110.7, 93.2),
+            box(37.4, 21.3, 90.6, 48),
+            box(37.4, 83.2, 90.6, 109.7),
+          )
+          const g = 70 * (1 - inner) + (y > 80 ? 235 : 160) * inner
+          if (opaque) {
+            const v = Math.round(g * outer + 255 * (1 - outer))
+            setPixel(img, x, y, v, v, v)
+          } else {
+            const v = Math.round(g)
+            setPixel(img, x, y, v, v, v, Math.round(outer * 255))
+          }
+        }
+      }
+      return img
+    }
+    for (const opaque of [false, true]) {
+      const rec = recommendSettings(analyzeImage(icon(opaque)))
+      expect(rec.patch.mode, `opaque ${opaque}`).not.toBe('grayscale')
+    }
   })
 
   it('traces a shaded achromatic line drawing (not two-tone) as grayscale, not over-inked B&W', () => {

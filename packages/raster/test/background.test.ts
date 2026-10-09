@@ -74,6 +74,33 @@ describe('flattenImage', () => {
     expect([...(opaque?.data ?? [])]).toEqual([0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0])
   })
 
+  it('transparent: cuts a straight anti-aliased rim at the threshold, though its level runs along it', () => {
+    // An opaque square whose straight rim reads alpha 100 all along each side:
+    // rim pixels share a level along the side but ramp from clear to solid
+    // across it, so they are no translucent plateau — and the solid square
+    // keeps its tight cut everywhere.
+    const img = rasterOf(10, 10, (x, y) => {
+      const inX = x >= 2 && x <= 7
+      const inY = y >= 2 && y <= 7
+      const rimX = x === 1 || x === 8
+      const rimY = y === 1 || y === 8
+      const a = inX && inY ? 255 : (rimX && inY) || (rimY && inX) ? 100 : 0
+      return [30, 30, 30, a]
+    })
+    const { opaque } = flattenImage(img, {
+      background: 'transparent',
+      backgroundColor: '#ffffff',
+      alphaThreshold: 128,
+    })
+    const data = opaque?.data ?? new Uint8Array(0)
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 10; x++) {
+        const solid = x >= 2 && x <= 7 && y >= 2 && y <= 7
+        expect(data[y * 10 + x], `${x},${y}`).toBe(solid ? 1 : 0)
+      }
+    }
+  })
+
   it('transparent: drops an anti-aliased rim ramp below the cut (no flat neighbor)', () => {
     // A coverage ramp climbing from clear to solid: no two neighbors share a
     // level, so nothing below the cut is a translucent plateau.

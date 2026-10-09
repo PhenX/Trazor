@@ -5,7 +5,7 @@
  *   npx tsx scripts/eval/gt/gate.ts run (--inkvec <inkvec checkout> [--set screen] [--tier 128ss]
  *        | --images <dir of PNGs, judged against themselves>)
  *        [--engine trazor|inkvec] [--exe <inkvec binary>] [--args "<inkvec flags>"]
- *        [--s key=value ...] [--workers N] [--only <family>] [--keep <dir>] [--out run.json]
+ *        [--s key=value ...] [--workers N] [--only <family|family/stem,…>] [--keep <dir>] [--out run.json]
  *   npx tsx scripts/eval/gt/gate.ts ab <base.json> <cand.json>
  *   npx tsx scripts/eval/gt/gate.ts report <run.json>
  *
@@ -156,7 +156,10 @@ async function runSet(argv: string[]): Promise<void> {
   const only = arg(argv, '--only')
   let items: GtItem[] = corpus.sets[setName]
   if (!items) throw new Error(`unknown set ${setName}: ${Object.keys(corpus.sets).join(', ')}`)
-  if (only) items = items.filter((it) => only.split(',').includes(it.corpus))
+  if (only) {
+    const picks = only.split(',')
+    items = items.filter((it) => picks.includes(it.corpus) || picks.includes(itemKey(it)))
+  }
   const overrides: Record<string, unknown> = {}
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--s') {

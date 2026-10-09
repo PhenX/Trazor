@@ -263,6 +263,26 @@ describe('native engine pipeline', () => {
     }
   })
 
+  it('keeps a gray at its own value in grayscale mode', async () => {
+    const img = createRaster(40, 40)
+    fillRaster(img, 255, 255, 255)
+    for (let y = 8; y < 32; y++) for (let x = 8; x < 32; x++) setPixel(img, x, y, 128, 128, 128)
+    const result = await vectorize(img, settings({ mode: 'grayscale', paletteSize: 4 }))
+    const grays = result.palette.map((hex) => Number.parseInt(hex.slice(1, 3), 16))
+    expect(grays.some((v) => Math.abs(v - 128) <= 1)).toBe(true)
+  })
+
+  it('lowers supersampling that would pass the pixel budget, and says so', async () => {
+    const img = createRaster(2100, 2100)
+    fillRaster(img, 255, 255, 255)
+    for (let y = 900; y < 1200; y++) for (let x = 900; x < 1200; x++) setPixel(img, x, y, 0, 0, 0)
+    const result = await vectorize(img, settings({ mode: 'bw', maxDimension: 0, supersample: 2 }))
+    const w = result.warnings.find((x) => x.code === 'supersample-limited')
+    expect(w?.params).toEqual({ requested: 2, applied: 1, side: 4096 })
+    const plain = await vectorize(img, settings({ mode: 'bw', maxDimension: 0, supersample: 1 }))
+    expect(result.svg).toBe(plain.svg)
+  })
+
   it('excludes transparent pixels under background auto', async () => {
     const img = createRaster(40, 40)
     for (let y = 10; y < 30; y++) {
@@ -839,6 +859,19 @@ describe('stage cache (E3)', () => {
     const cachedGray = await run(img, { mode: 'grayscale', paletteSize: 6 }, cache)
     const freshGray = await run(img, { mode: 'grayscale', paletteSize: 6 })
     expect(cachedGray.svg).toBe(freshGray.svg)
+  })
+
+  it('keeps a supersampled bw image apart from the color one (byte-identical to fresh)', async () => {
+    // Color enlarges bounded, a threshold unbounded: the working images differ.
+    const img = scene()
+    const cache: StageCache = {}
+    await run(img, { mode: 'color', paletteSize: 6, supersample: 2 }, cache)
+    const cachedBw = await run(img, { mode: 'bw', supersample: 2 }, cache)
+    const freshBw = await run(img, { mode: 'bw', supersample: 2 })
+    expect(cachedBw.svg).toBe(freshBw.svg)
+    const cachedColor = await run(img, { mode: 'color', paletteSize: 6, supersample: 2 }, cache)
+    const freshColor = await run(img, { mode: 'color', paletteSize: 6, supersample: 2 })
+    expect(cachedColor.svg).toBe(freshColor.svg)
   })
 
   it('keeps several palettes warm so alternating them hits the cache (byte-identical)', async () => {

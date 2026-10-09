@@ -15,6 +15,7 @@ export type WarningCode =
   | 'centerline-input'
   | 'gradient-spot-color'
   | 'mode-note'
+  | 'supersample-limited'
 
 export interface VectorizeWarning {
   code: WarningCode

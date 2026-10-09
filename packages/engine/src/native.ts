@@ -2,6 +2,7 @@ import {
   CancelledError,
   deltaEOkSq,
   hexToRgb,
+  linearToSrgb,
   mmPerPx,
   normalizeSettings,
   nowMs,
@@ -576,7 +577,34 @@ function scaleGradient<T extends GradientPaint>(g: T, s: number): T {
     : { ...g, cx: g.cx * s, cy: g.cy * s, r: g.r * s }
 }
 
-/** Settings that change the preprocessed working image. */
+/**
+ * Side of the square whose pixel count bounds a supersampled working image: the
+ * enlargement stops where it would pass that many pixels, so a large source is
+ * not enlarged at all.
+ */
+const SUPERSAMPLE_BUDGET_SIDE = 4096
+
+/**
+ * The supersampling factor a run applies: the requested one, lowered until the
+ * working image (the source fitted to `maxDimension`, enlarged by the factor)
+ * stays within {@link SUPERSAMPLE_BUDGET_SIDE}².
+ */
+function supersampleFactor(source: RasterImage, s: VectorizeSettings): number {
+  const long = Math.max(source.width, source.height)
+  const fit = s.maxDimension > 0 && long > s.maxDimension ? s.maxDimension / long : 1
+  const pixels =
+    Math.max(1, Math.round(source.width * fit)) * Math.max(1, Math.round(source.height * fit))
+  let factor = s.supersample
+  while (factor > 1 && pixels * factor * factor > SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE)
+    factor--
+  return factor
+}
+
+/**
+ * Settings that change the preprocessed working image. A supersampled image
+ * is enlarged bounded for color and grayscale and unbounded for a threshold
+ * (bw, centerline), so the two differ once the factor passes 1.
+ */
 function preKeyOf(s: VectorizeSettings): string {
   return [
     s.maxDimension,
@@ -586,7 +614,7 @@ function preKeyOf(s: VectorizeSettings): string {
     s.background,
     s.backgroundColor,
     s.alphaThreshold,
-    s.mode === 'grayscale' ? 'g' : 'c',
+    s.mode === 'grayscale' ? 'g' : s.supersample > 1 && s.mode !== 'color' ? 'i' : 'c',
   ].join('|')
 }
 
@@ -655,14 +683,24 @@ export async function vectorize(
   ctx?: EngineContext,
   opts?: VectorizeRunOptions,
 ): Promise<VectorizeResult> {
-  const requested = normalizeSettings(settingsIn)
+  const normalized = normalizeSettings(settingsIn)
   // A supersampled run works on an image `scale` times the working size, so
   // its pixel-size settings are read on that grid; the SVG keeps the size.
-  const scale = requested.supersample
+  const scale = supersampleFactor(source, normalized)
+  const requested =
+    scale === normalized.supersample ? normalized : { ...normalized, supersample: scale }
   const settings = scale === 1 ? requested : forWorkingGrid(requested, scale)
   const started = nowMs()
   const run = new Run(ctx)
   const warnings: VectorizeWarning[] = []
+  if (scale < normalized.supersample) {
+    warnings.push({
+      code: 'supersample-limited',
+      severity: 'info',
+      message: `Supersampled ${scale}× instead of ${normalized.supersample}×: the enlarged image would pass ${SUPERSAMPLE_BUDGET_SIDE}² pixels.`,
+      params: { requested: normalized.supersample, applied: scale, side: SUPERSAMPLE_BUDGET_SIDE },
+    })
+  }
 
   const cache = opts?.cache
   const imageId = opts?.imageId
@@ -2527,11 +2565,16 @@ function ringShapeUnits(
   return units
 }
 
+/**
+ * Replace each pixel by the gray of its Oklab lightness: a gray's Oklab L is
+ * the cube root of its linear luminance, so the gray is `linearToSrgb(L³)` in
+ * encoded sRGB, and a gray pixel keeps its own value.
+ */
 function desaturateInPlace(image: RasterImage): void {
   const { data } = image
   for (let i = 0; i < data.length; i += 4) {
     const L = rgbToOklab(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255)[0]
-    const v = Math.round(L * 255)
+    const v = Math.round(255 * linearToSrgb(Math.min(1, Math.max(0, L * L * L))))
     data[i] = v
     data[i + 1] = v
     data[i + 2] = v
