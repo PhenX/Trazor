@@ -73,6 +73,32 @@ describe('planar ratchet: disks stay circles', () => {
   }
 })
 
+describe('planar ratchet: a disk is a circle in every layering', () => {
+  for (const layering of ['stacked', 'cutout', 'nested'] as const) {
+    it(layering, async () => {
+      const [cx, cy, r] = [15.3, 16.2, 6.5]
+      const gray = render(32, 32, (x, y) => Math.hypot(x - cx, y - cy) < r)
+      // The same coverage in blue on white.
+      const data = new Uint8ClampedArray(gray.data)
+      for (let p = 0; p < data.length; p += 4) data[p] = data[p + 1] = 255 - (255 - data[p]) / 2
+      const res = await vectorize(
+        { width: 32, height: 32, data },
+        normalizeSettings({ mode: 'color', layering, paletteSize: 2, precision: 2 }),
+        undefined,
+        { geometry: 'planar' },
+      )
+      const circles = [...res.svg.matchAll(/<circle ([^>]*)\/>/g)].map((m) =>
+        Object.fromEntries(
+          [...m[1].matchAll(/([a-z]+)="([-\d.]+)"/g)].map((a) => [a[1], Number(a[2])]),
+        ),
+      )
+      expect(circles.length).toBe(1)
+      expect(Math.abs(circles[0].r - r)).toBeLessThan(0.1)
+      expect(Math.hypot(circles[0].cx - cx, circles[0].cy - cy)).toBeLessThan(0.05)
+    })
+  }
+})
+
 describe('planar ratchet: rounded rectangles keep their corners', () => {
   for (const r of [3, 5, 8]) {
     it(`corner radius ${r}`, async () => {

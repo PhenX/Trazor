@@ -437,25 +437,37 @@ function polygonArea2(poly: ArrayLike<number>): number {
   return a
 }
 
+/** A cutout region, with the primitive it draws when it is one face of one whole-primitive ring. */
+export interface PlanarRegion extends RegionShape {
+  primitive: Primitive | null
+}
+
 /**
  * The cutout partition: one compound path per label, every ring of every face
  * of that label (outer rings and holes, wound as walked), drawn over the
  * shared fitted edges, so two labels meet on the same curve. Transparent faces
- * paint nothing.
+ * paint nothing. A label that is a single face bounded by one closed edge the
+ * fit described as a primitive draws that primitive; its neighbour's hole
+ * runs over the same edge.
  */
-export function cutoutRegions(geo: PlanarGeometry, fits: readonly FittedEdge[]): RegionShape[] {
+export function cutoutRegions(geo: PlanarGeometry, fits: readonly FittedEdge[]): PlanarRegion[] {
   const { faces } = geo.map
-  const byLabel = new Map<number, RegionShape>()
+  const byLabel = new Map<number, PlanarRegion>()
+  const faceCount = new Map<number, number>()
   for (let f = 0; f < faces.count; f++) {
     const label = faces.label[f]
     if (label < 0) continue
     let region = byLabel.get(label)
     if (region === undefined) {
-      region = { label, commands: [], area: 0, holeCount: 0 }
+      region = { label, commands: [], area: 0, holeCount: 0, primitive: null }
       byLabel.set(label, region)
     }
+    const rings = geo.rings[f]
+    const n = (faceCount.get(label) ?? 0) + 1
+    faceCount.set(label, n)
+    region.primitive = n === 1 && rings.length === 1 ? ringPrimitive(rings[0], fits) : null
     region.area += faces.area[f]
-    for (const ring of geo.rings[f]) {
+    for (const ring of rings) {
       for (const c of ringCommands(ring, fits)) region.commands.push(c)
       if (!ring.outer) region.holeCount++
     }
@@ -474,27 +486,37 @@ function holeOntoClear(geo: PlanarGeometry, ring: FaceRing): boolean {
   return false
 }
 
+/** A nested face, with the primitive it draws when its only ring is one whole-primitive edge. */
+export interface PlanarFace extends FaceShape {
+  primitive: Primitive | null
+}
+
 /**
  * The nested faces: one per painted face, its outer ring plus the holes it
  * keeps onto transparency (a hole a labeled face fills is repainted by that
- * face, drawn after it), each recording its nearest painted ancestor.
+ * face, drawn after it), each recording its nearest painted ancestor. A face
+ * drawing its outer ring alone, one closed edge the fit described as a
+ * primitive, draws that primitive.
  */
-export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): FaceShape[] {
+export function nestedFaces(geo: PlanarGeometry, fits: readonly FittedEdge[]): PlanarFace[] {
   const { faces } = geo.map
   const index = new Int32Array(faces.count).fill(-1)
-  const out: FaceShape[] = []
+  const out: PlanarFace[] = []
   for (let f = 0; f < faces.count; f++) {
     const label = faces.label[f]
     if (label < 0) continue
     index[f] = out.length
     const commands: PathCommand[] = []
+    const kept: FaceRing[] = []
     let area = 0
     for (const ring of geo.rings[f]) {
       if (!ring.outer && !holeOntoClear(geo, ring)) continue
       if (ring.outer) area = Math.abs(polygonArea2(faceRingPolygon(geo.map, ring))) / 2
       for (const c of ringCommands(ring, fits)) commands.push(c)
+      kept.push(ring)
     }
-    out.push({ label, commands, area, parent: -1 })
+    const primitive = kept.length === 1 ? ringPrimitive(kept[0], fits) : null
+    out.push({ label, commands, area, parent: -1, primitive })
   }
   for (let f = 0; f < faces.count; f++) {
     if (index[f] < 0) continue
