@@ -1430,6 +1430,7 @@ async function colorPipeline(
             opacity: opacityOf(l),
             ink: inkOf(l),
           })),
+          scale: settings.supersample,
           onStage: planarRun.onStage,
         })
       : undefined
@@ -2516,6 +2517,7 @@ async function inkPipeline(
       image,
       alpha,
       paints: interiorMeans(image, data, 2).map((hex) => ({ hex })),
+      scale: settings.supersample,
       onStage: planarRun.onStage,
     })
     const { faces } = geo.map
