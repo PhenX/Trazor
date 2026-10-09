@@ -572,6 +572,49 @@ export namespace ink {
     w,
     h,
   ): { faces: Int32Array; faceLabel: Int32Array; count: number }
+  // The intake: pixels over white and the evidence (edge width, ringing, `soft`) read off them.
+  function intakePixels(image: RasterImage): IntakePixels
+  function intakeEvidence(rgb, w, h, lossy: boolean): IntakeEvidence
+  // Fills (packages/raster/src/fill). The band merge rewrites `labels` in place (a gradient region,
+  // or a flat region with an interior of its own, gets a fresh label past the palette) and returns
+  // one fill per label and the palette entry each came from; the carve cuts swallowed features out
+  // as further labels (pushing onto `fills`/`ink`, refitting their parents) and returns how many.
+  function mergeGradientBands(
+    labels: Int32Array,
+    rgb,
+    w,
+    h,
+    inkRgb,
+    sigmaNoise,
+    lambda,
+    // gradients: false fits every region flat on its own evidence and merges nothing.
+    options?: {
+      regionRecovery?: boolean
+      sameClass?: (a, b) => boolean
+      budget?: MergeBudget
+      gradients?: boolean
+    },
+  ): BandMerge // { fills: FillFit[]; ink: number[]; budget }
+  function carveResidualFeatures(
+    labels,
+    rgb,
+    w,
+    h,
+    inkRgb,
+    fills: FillFit[],
+    ink: number[],
+    sigmaNoise,
+    lambda,
+    minSize,
+    detailSigma?: number | null,
+    gradients?: boolean, // false: parents refitted flat
+  ): number
+  // Flat faces of one ink within sight (CIEDE2000 0.5) of its best-evidenced face take its color.
+  function snapFlatFills(faces, w, h, fills: FillFit[], faceInk, palette: Palette, skip?): number
+  function bicLambda(n: number): number // ½·ln n, the price of one parameter
+  function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
+  function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
+  function toHex(c: Rgb): string
 }
 ```
 
@@ -1250,7 +1293,10 @@ export function vectorize(
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
     // The planar chain's front end for opaque color images: 'classic' (default) or 'ink', inkvec's MDL
-    // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`); in development.
+    // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`), then each
+    // region's fill from its own pixels (with `settings.gradients` a gradient where one pays, and
+    // a ramp's bands merged), the carve and the flat-fill snap, each label one paint (a flat color
+    // or a gradient); in development.
     frontEnd?: 'classic' | 'ink'
     // Called with the planar map after each geometry stage of the planar chain (`lattice`,
     // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a probe for the
