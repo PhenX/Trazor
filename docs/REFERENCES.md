@@ -166,6 +166,17 @@ follows.
   `inkvec-core/src/predicates.rs` and repair stage 12): fitted edges flattened, a grid
   broad phase, and exact segment tests, so a ring whose independent edge fits cross is
   found and repaired.
+- **The fit's core** (`fit/cost.ts`, `roots.ts`, `curves.ts`, `cubicfit.ts`, `circle.ts`,
+  `objective.ts`, `tangents.ts`, after inkvec's `inkvec-fit/src/{lib,cost,curves,candidates,
+  tangents}.rs`, cross-checked against an inkvec build): the description length
+  `0.5·χ² + λ·params` with σ-weighted χ² and the O(1) total-least-squares line residual from
+  prefix sums (K. Pearson, “On lines and planes of closest fit”, _Phil. Mag._ 2, 1901); the
+  line-only optimal polygon of P. Selinger, “Potrace” (2003) §2.2 under that cost; G1 cubics
+  whose arms match a span's area and moment, the quartic of R. Levien, “Fitting cubic Bézier
+  curves” (2021, raphlinus.github.io), refined by Newton on the arms; the distance to a cubic
+  by the quintic's roots in [0, 1] (C. Yuksel, “High-performance polynomial root finding for
+  graphics”, _Proc. ACM CGIT_ 5(3), 2022; kurbo's nearest-point code); circular arcs from an
+  O(1) Kåsa fit per span; the end tangents of a run from a symmetric window.
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
