@@ -256,6 +256,54 @@ describe('detectPrimitive — rotated ellipse (gated)', () => {
     const rotRect = rotatePath(rectPath(0, 0, 40, 20), 20, 10, 25)
     expect(detectPrimitive(rotRect, 2, true)?.kind).not.toBe('ellipse')
   })
+
+  it('keeps a thin pointed lens a path, not a sliver ellipse', () => {
+    // Two circular arcs 40 px long and 3 px across meeting at sharp tips: the
+    // radial distance in the unit-circle frame shrinks by ry/rx near the tips
+    // and would pass it; the distance to the conic does not.
+    const lens = (half: number, bulge: number): PathCommand[] => {
+      const r = (half * half + bulge * bulge) / (2 * bulge)
+      const sweep = 2 * Math.asin(half / r)
+      const out: PathCommand[] = [{ type: 'M', x: -half, y: 0 }]
+      for (const side of [1, -1]) {
+        const cy = side * (r - bulge)
+        const a0 = side > 0 ? -Math.PI / 2 - sweep / 2 : Math.PI / 2 - sweep / 2
+        const parts = 2
+        const d = sweep / parts
+        const k = (4 / 3) * Math.tan(d / 4)
+        for (let i = 0; i < parts; i++) {
+          const ta = a0 + i * d
+          const tb = a0 + (i + 1) * d
+          const pa = { x: r * Math.cos(ta), y: cy + r * Math.sin(ta) }
+          const pb = { x: r * Math.cos(tb), y: cy + r * Math.sin(tb) }
+          out.push({
+            type: 'C',
+            x1: pa.x - k * r * Math.sin(ta),
+            y1: pa.y + k * r * Math.cos(ta),
+            x2: pb.x + k * r * Math.sin(tb),
+            y2: pb.y - k * r * Math.cos(tb),
+            x: pb.x,
+            y: pb.y,
+          })
+        }
+      }
+      out.push({ type: 'Z' })
+      return out
+    }
+    for (const [half, bulge] of [
+      [20, 1.5],
+      [10, 1],
+      [6, 2],
+    ])
+      expect(detectPrimitive(lens(half, bulge), 2, true)).toBeNull()
+  })
+
+  it('keeps a small tilt when dropping it would move the outline', () => {
+    // 0.3° on a 60 × 20 ellipse moves its outline by 40·sin(0.3°) ≈ 0.21 px.
+    const p = detectPrimitive(rotatePath(ellipsePath(80, 60, 60, 20), 80, 60, 0.3), 2, true)
+    expect(p?.kind).toBe('ellipse')
+    expect((p as Extract<Primitive, { kind: 'ellipse' }>).angle).toBeDefined()
+  })
 })
 
 /** Closed all-line path of a regular polygon (n vertices) at radius r, rotated `rot` deg. */

@@ -9,7 +9,7 @@ import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
 import { fitArcs } from './arc'
-import { detectPrimitive } from './primitive'
+import { detectPrimitive, negligibleTilt } from './primitive'
 import type { Primitive } from './primitive'
 
 export interface SvgShape {
@@ -190,7 +190,7 @@ function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): 
       return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
     case 'ellipse': {
       const transform =
-        prim.angle !== undefined && Math.abs(prim.angle) > 0.05
+        prim.angle !== undefined && !negligibleTilt(prim.rx, prim.ry, prim.angle)
           ? ` transform="rotate(${n(prim.angle)} ${n(prim.cx)} ${n(prim.cy)})"`
           : ''
       return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${transform}${paint}/>`

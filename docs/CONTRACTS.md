@@ -73,7 +73,9 @@ export function parseSettingsImport(input: string): ImportedSettings
 // ×s) and every size rule read on that grid, and scales the geometry back by 1/s, so the SVG keeps
 // the working size (a cutout trap, `gapFill`, is sized there too). Made for anti-aliased art under
 // region growing and for bw: global quantization sees an enlarged rim as more pixels and may keep
-// it as a ring of its own. At 1 the output is byte-identical to a run without the field.
+// it as a ring of its own. At 1 the output is byte-identical to a run without the field. The engine
+// lowers the factor until the enlarged working image stays within 4096² pixels (a large source is not
+// enlarged) and then reports an info warning `supersample-limited` (params requested, applied, side).
 supersample: number
 // path.ts — the same path scaled by `s` about the origin: coordinates and arc radii multiplied,
 // an arc's rotation and flags kept.
@@ -160,10 +162,13 @@ export interface FlattenResult {
 }
 // background 'auto': behaves as 'transparent' if any pixel alpha < 250, else fully opaque.
 // 'custom': composite over settings.backgroundColor, opaque = null.
-// transparent/auto `opaque`: 1 where alpha >= alphaThreshold OR the pixel is flat-translucent — partly
-// transparent (TRANSLUCENT_MIN_ALPHA..TRANSLUCENT_MAX_ALPHA) with a 4-neighbor within TRANSLUCENT_FLAT_DELTA
-// of its alpha. A see-through region (shadow, glass, steam) is a partial-alpha plateau, so it survives a
-// half-coverage cut at any thickness; an anti-aliased opaque rim climbs too steeply to match and stays cut.
+// transparent/auto `opaque`: 1 where alpha >= alphaThreshold, OR — when flat-translucent pixels cover at
+// least 5 % of the image — where the pixel itself is flat-translucent: partly transparent
+// (TRANSLUCENT_MIN_ALPHA..TRANSLUCENT_MAX_ALPHA) with a 4-neighbor within TRANSLUCENT_FLAT_DELTA of its alpha
+// on one axis while the other axis does not ramp through it (one neighbor that much above, the other that
+// much below). A see-through region (shadow, glass, steam) is a partial-alpha plateau or wisp, so it
+// survives a half-coverage cut at any thickness; an anti-aliased opaque rim ramps from clear to solid
+// across the edge, so even a straight rim whose level runs along it stays cut.
 // `scale` (default 1) is the working pixels per source pixel of an enlarged image: the neighbor compared
 // is that many pixels away, so an enlarged rim still climbs too steeply to match.
 export function flattenImage(

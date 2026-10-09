@@ -170,6 +170,31 @@ describe('fitArcs', () => {
     ).toBeLessThan(0.6)
   })
 
+  it('validates a near-half-turn arc from its start point as written', () => {
+    // An off-grid start rounds by up to half a grid unit; near half a turn the
+    // endpoint form moves the center far for that, so the arc is judged from
+    // the rounded start a renderer draws it from.
+    let worst = 0
+    let arcs = 0
+    for (let k = 0; k < 40; k++) {
+      const cx = 50.37 + 0.113 * k
+      const cy = 40.81 - 0.071 * k
+      const r = 3.3 + 0.37 * k
+      const sweep = ((170 + (k % 5) * 5) * Math.PI) / 180
+      const a0 = 0.31 * k
+      const { start, cubics } = arcCubics(cx, cy, r, a0, a0 + sweep, 2)
+      if (start.type !== 'M') throw new Error('expected M')
+      for (const c of fitArcs([start, ...cubics], 1)) {
+        if (c.type !== 'A') continue
+        arcs++
+        const s0 = { x: Number(start.x.toFixed(1)), y: Number(start.y.toFixed(1)) }
+        worst = Math.max(worst, maxCircleError(s0, c, cx, cy, r))
+      }
+    }
+    expect(arcs).toBeGreaterThan(10)
+    expect(worst).toBeLessThan(0.2)
+  })
+
   it('collapses a three-cubic 270° arc with the large-arc flag set', () => {
     const { start, cubics } = arcCubics(0, 0, 30, 0, 1.5 * Math.PI, 3)
     const out = fitArcs([start, ...cubics], 3)

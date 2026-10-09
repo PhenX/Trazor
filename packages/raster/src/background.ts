@@ -85,23 +85,20 @@ export function flattenImage(
   const alpha = new Uint8Array(n)
   const threshold = settings.alphaThreshold
   for (let i = 0, p = 3; i < n; i++, p += 4) alpha[i] = data[p]
-  // The cut level that decides which pixels produce a shape. The half-coverage
-  // cut (`alphaThreshold` 128) is the true outline of an anti-aliased opaque
-  // edge. An image carrying broad see-through content (a shadow, glass, steam)
-  // instead lowers its cut to `TRANSLUCENT_MIN_ALPHA`, so that whole soft field
-  // is kept and emitted as translucent faces rather than half of it dropping at
-  // the opaque cut; its opaque shapes are still pulled to their true outline by
-  // the coverage field at the tracer. The image counts as see-through only when
-  // flat-translucent pixels — a partial-alpha plateau, not a steep rim — cover at
-  // least `TRANSLUCENT_AREA_GATE` of it, so an opaque icon whose soft edges match
-  // a stray rim pixel keeps its tight cut.
+  // Which pixels produce a shape. The half-coverage cut (`alphaThreshold` 128)
+  // is the true outline of an anti-aliased opaque edge. An image carrying broad
+  // see-through content (a shadow, glass, steam) also keeps every
+  // flat-translucent pixel — a partial-alpha plateau or wisp, not a rim — below
+  // the cut, so that soft field is emitted as translucent faces rather than
+  // half of it dropping at the opaque cut, while every other pixel keeps the
+  // tight cut. The image counts as see-through only when flat-translucent
+  // pixels cover at least `TRANSLUCENT_AREA_GATE` of it.
+  const md = markFlatTranslucent(alpha, width, height, Math.max(1, Math.round(scale)))
   let marked = 0
-  {
-    const md = markFlatTranslucent(alpha, width, height, Math.max(1, Math.round(scale)))
-    for (let i = 0; i < n; i++) marked += md[i]
-  }
-  const cut = marked >= n * TRANSLUCENT_AREA_GATE ? TRANSLUCENT_MIN_ALPHA : threshold
-  for (let i = 0; i < n; i++) opaque.data[i] = alpha[i] >= cut ? 1 : 0
+  for (let i = 0; i < n; i++) marked += md[i]
+  const keepFlat = marked >= n * TRANSLUCENT_AREA_GATE
+  for (let i = 0; i < n; i++)
+    opaque.data[i] = alpha[i] >= threshold || (keepFlat && md[i] === 1) ? 1 : 0
   return { image: flat, opaque, alpha }
 }
 
@@ -127,13 +124,16 @@ const TRANSLUCENT_AREA_GATE = 0.05
 
 /**
  * Mark each flat-translucent pixel (1): partly transparent
- * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`) with at least one
- * in-bounds 4-neighbor `step` pixels away (a source pixel of an enlarged image)
- * also partly transparent and within `TRANSLUCENT_FLAT_DELTA` of its own alpha. That is the plateau of a see-through region (a shadow, glass,
- * steam) — captured at any thickness, down to a one-pixel wisp, since the match
- * can run along the region. An anti-aliased rim of an opaque shape has no such
- * neighbor (its coverage climbs steeply from clear to solid), so it is never
- * marked and stays cut at the threshold. Fixed scan order: deterministic.
+ * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`), with an in-bounds
+ * 4-neighbor `step` pixels away (a source pixel of an enlarged image) also
+ * partly transparent and within `TRANSLUCENT_FLAT_DELTA` of its own alpha on
+ * one axis, while the other axis does not ramp through it — one neighbor more
+ * than `TRANSLUCENT_FLAT_DELTA` above and the other as far below. That is the
+ * plateau of a see-through region (a shadow, glass, steam), down to a one-pixel
+ * wisp, whose level runs along it with clear or equal pixels across it. An
+ * anti-aliased rim of an opaque shape is a ramp from clear to solid across the
+ * edge, so even a straight rim, whose pixels share one level along its length,
+ * is never marked. Fixed scan order: deterministic.
  */
 function markFlatTranslucent(
   alpha: Uint8Array,
@@ -146,20 +146,26 @@ function markFlatTranslucent(
     b >= TRANSLUCENT_MIN_ALPHA &&
     b < TRANSLUCENT_MAX_ALPHA &&
     Math.abs(a - b) <= TRANSLUCENT_FLAT_DELTA
+  const ramps = (a: number, p: number, q: number): boolean =>
+    (p >= a + TRANSLUCENT_FLAT_DELTA && q <= a - TRANSLUCENT_FLAT_DELTA) ||
+    (q >= a + TRANSLUCENT_FLAT_DELTA && p <= a - TRANSLUCENT_FLAT_DELTA)
+  const vstep = step * width
   for (let y = 0; y < height; y++) {
     const row = y * width
     for (let x = 0; x < width; x++) {
       const i = row + x
       const a = alpha[i]
       if (a < TRANSLUCENT_MIN_ALPHA || a >= TRANSLUCENT_MAX_ALPHA) continue
-      if (
-        (x >= step && flatWith(a, alpha[i - step])) ||
-        (x < width - step && flatWith(a, alpha[i + step])) ||
-        (y >= step && flatWith(a, alpha[i - step * width])) ||
-        (y < height - step && flatWith(a, alpha[i + step * width]))
-      ) {
-        out[i] = 1
-      }
+      const hasL = x >= step
+      const hasR = x < width - step
+      const hasU = y >= step
+      const hasD = y < height - step
+      const flatH = (hasL && flatWith(a, alpha[i - step])) || (hasR && flatWith(a, alpha[i + step]))
+      const flatV =
+        (hasU && flatWith(a, alpha[i - vstep])) || (hasD && flatWith(a, alpha[i + vstep]))
+      const rampH = hasL && hasR && ramps(a, alpha[i - step], alpha[i + step])
+      const rampV = hasU && hasD && ramps(a, alpha[i - vstep], alpha[i + vstep])
+      if ((flatH && !rampV) || (flatV && !rampH)) out[i] = 1
     }
   }
   return out

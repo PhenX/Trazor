@@ -51,7 +51,7 @@ function angleDiff(a: number, b: number): number {
  * the sharp ends of a thin ellipse, as the radial distance in the unit-circle
  * frame does — where a sliver ellipse would otherwise pass for a gentle curve.
  */
-function conicDistance(
+export function conicDistance(
   dx: number,
   dy: number,
   rx: number,
@@ -243,6 +243,8 @@ function collapseToArc(
   const rot = grid((conic.angle * 180) / Math.PI)
   const ex = grid(end.x)
   const ey = grid(end.y)
+  // The arc is drawn from the start point as written, on the same grid.
+  const s0 = { x: grid(start.x), y: grid(start.y) }
   if (grid(conic.rx) <= 0 || grid(conic.ry) <= 0) return NOT_ARC
 
   // Of the ≤2 arcs on the fitted conic that share these endpoints, keep the one
@@ -269,7 +271,7 @@ function collapseToArc(
           x: ex,
           y: ey,
         }
-        const c = arcToCenter(start.x, start.y, arc)
+        const c = arcToCenter(s0.x, s0.y, arc)
         if (c === null) continue
         candidates.push({ arc, miss: Math.hypot(c.cx - cx, c.cy - cy), step })
       }
@@ -278,7 +280,7 @@ function collapseToArc(
   // Nearest center first — to a thousandth of a pixel, then the radius nearest
   // the fitted one — and the first that sweeps through the samples is written.
   for (const { arc } of candidates.toSorted(byCenterMiss)) {
-    if (arcFitsSamples(start, arc, samples, tol)) return arc
+    if (arcFitsSamples(s0, arc, samples, tol)) return arc
   }
   return NO_EMIT
 }

@@ -12,6 +12,7 @@
  */
 
 import type { PathCommand } from '@trazor/core'
+import { conicDistance } from './arc'
 import { fitCircle, fitEllipse } from './fit'
 import { clampPrecision } from './pathdata'
 
@@ -129,6 +130,18 @@ const RRECT_TOL_PX = 0.2
  */
 const POLYGON_TOL_PX = 0.3
 
+/** Spacing in pixels of the samples a round primitive is checked against. */
+const ROUND_SAMPLE_STEP = 1
+
+/**
+ * True when an ellipse's tilt (degrees) moves its outline by no more than a
+ * quarter of {@link ROUND_TOL_PX}, so dropping it leaves the shape where it was:
+ * rotating an ellipse by θ moves its outline by up to `(rmax − rmin)·|sin θ|`.
+ */
+export function negligibleTilt(rx: number, ry: number, deg: number): boolean {
+  return Math.abs(rx - ry) * Math.abs(Math.sin((deg * Math.PI) / 180)) <= 0.25 * ROUND_TOL_PX
+}
+
 /**
  * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
  * all-cubic loop of at least three segments. Parameters come from least-squares
@@ -138,11 +151,17 @@ const POLYGON_TOL_PX = 0.3
  * non-round shape is rejected.
  */
 function detectRound(start: Pt, ops: readonly CurveOp[], precision: number): Primitive | null {
-  // Dense boundary samples: each anchor plus three interior points per cubic.
+  // Dense boundary samples, about a pixel apart along each cubic (four per
+  // cubic at least), so the shape is held to the curve along its whole length.
   const samples: Pt[] = [start]
   let prev = start
   for (const op of ops) {
-    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    const hull =
+      Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+      Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+      Math.hypot(op.x - op.x2, op.y - op.y2)
+    const parts = Math.max(4, Math.ceil(hull / ROUND_SAMPLE_STEP))
+    for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, op, k / parts))
     samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
@@ -161,20 +180,14 @@ function detectRound(start: Pt, ops: readonly CurveOp[], precision: number): Pri
   // Ellipse: the direct conic fit recovers a rotation too.
   const e = fitEllipse(samples)
   if (e && e.rx > 0 && e.ry > 0) {
-    const tol = ROUND_TOL_PX
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
-    const onEllipse = samples.every((p) => {
-      const dx = p.x - e.cx
-      const dy = p.y - e.cy
-      const nx = (dx * co + dy * si) / e.rx
-      const ny = (-dx * si + dy * co) / e.ry
-      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
-    })
+    const onEllipse = samples.every(
+      (p) => conicDistance(p.x - e.cx, p.y - e.cy, e.rx, e.ry, co, si) <= ROUND_TOL_PX,
+    )
     if (onEllipse) {
-      // A sub-half-degree tilt is noise — emit an axis-aligned ellipse (no transform).
       const deg = (e.angle * 180) / Math.PI
-      const angle = Math.abs(deg) < 0.5 ? undefined : deg
+      const angle = negligibleTilt(e.rx, e.ry, deg) ? undefined : deg
       return round(
         {
           kind: 'ellipse',

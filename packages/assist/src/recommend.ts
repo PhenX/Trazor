@@ -214,12 +214,16 @@ function isBilevelInk(a: ImageAnalysis): boolean {
  * carries (faint pencil, engraved hatching, a JPEG'd rule). A bw threshold
  * collapses that mid-gray into solid ink — thickening every stroke and flooding
  * hatched areas black — so this is traced as grayscale tonal layers, which keep
- * each stroke at its true darkness.
+ * each stroke at its true darkness. Clean flat art (a gray icon whose mid-gray
+ * is its anti-aliased rim) and art on a transparent ground are not scans: they
+ * keep their own flat inks.
  */
 function isTonalLineArt(a: ImageAnalysis): boolean {
   return (
     isAchromatic(a) &&
     !isBilevelInk(a) &&
+    !isCleanFlatArt(a) &&
+    !a.hasAlpha &&
     a.meanLightness > 0.7 &&
     a.edgeDensity > 0.1 &&
     a.distinctColors <= 4096

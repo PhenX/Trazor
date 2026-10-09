@@ -97,7 +97,12 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   let prev = start
   for (const op of ops) {
     if (op.type !== 'C') return null
-    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    const hull =
+      Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+      Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+      Math.hypot(op.x - op.x2, op.y - op.y2)
+    const parts = Math.max(4, Math.ceil(hull))
+    for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, op, k / parts))
     samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
@@ -119,15 +124,19 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
     const onEllipse = samples.every((p) => {
+      // Sampson distance to the conic.
       const dx = p.x - e.cx
       const dy = p.y - e.cy
-      const nx = (dx * co + dy * si) / e.rx
-      const ny = (-dx * si + dy * co) / e.ry
-      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
+      const x = dx * co + dy * si
+      const y = -dx * si + dy * co
+      const f = (x * x) / (e.rx * e.rx) + (y * y) / (e.ry * e.ry) - 1
+      const g = 2 * Math.hypot(x / (e.rx * e.rx), y / (e.ry * e.ry))
+      return (g > 0 ? Math.abs(f) / g : Infinity) <= tol
     })
     if (onEllipse) {
       const deg = (e.angle * 180) / Math.PI
-      const angle = Math.abs(deg) < 0.5 ? undefined : deg
+      const tiltMove = Math.abs(e.rx - e.ry) * Math.abs(Math.sin(e.angle))
+      const angle = tiltMove <= 0.25 * ROUND_TOL_PX ? undefined : deg
       return round(
         {
           kind: 'ellipse',

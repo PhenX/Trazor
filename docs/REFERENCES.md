@@ -158,7 +158,9 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   this distance (`packages/svg/src/arc.ts` `conicDistance`): the radial distance
   in the unit-circle frame shrinks by `ry/rx` near the sharp ends of a thin
   ellipse, where half of one two pixels thick passed for a gently bowed run.
-  The whole-ring ellipse of the run fitter is refined by Levenberg–Marquardt on
+  The serializer's `<ellipse>` detection holds a closed loop to the same
+  distance, sampled about a pixel apart (`packages/svg/src/primitive.ts`
+  `detectRound`), so a thin pointed lens stays a path. The whole-ring ellipse of the run fitter is refined by Levenberg–Marquardt on
   the same distance (`packages/trace/src/potrace/runfit.ts` `fitEllipseFree`).
 - **David Eberly, “Distance from a Point to an Ellipse, an Ellipsoid, or a
   Hyperellipsoid”, Geometric Tools, 2011.** The nearest point on an ellipse by
