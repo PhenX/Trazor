@@ -24,7 +24,37 @@ writing:
   `packages/trace/src/potrace/runfit.ts`, `packages/trace/src/refine.ts`,
   `packages/trace/src/coverage.ts`;
 - the rare-ink evidence of the region merge: `packages/raster/src/represent.ts`;
+- the ink front end: `packages/raster/src/ink/*`, `packages/raster/src/fill/*` and
+  `packages/raster/src/intake/*`;
 - the ground-truth evaluation tools' SVG registration: `scripts/eval/gt/truth.ts`.
 
 `docs/REFERENCES.md` lists, per algorithm, the inkvec stage it follows and the published work
 behind it.
+
+## Test fixtures
+
+`packages/raster/test/ink/palette-fixtures.ts` embeds, compressed, one 128 px raster rendering
+from each of these icon sets (with the expected output of inkvec's palette on it), used only to
+test the palette port against inkvec:
+
+- `noto-emoji/emoji_u0030` — Noto Emoji, Copyright Google LLC, Apache License 2.0
+  (<https://github.com/googlefonts/noto-emoji>).
+- `material-icons/10k` — Material Icons, Copyright Google LLC, Apache License 2.0
+  (<https://github.com/google/material-design-icons>).
+- `simple-icons/alchemy` — Simple Icons, CC0 1.0 (<https://github.com/simple-icons/simple-icons>);
+  the brand it depicts may be a trademark of its owner.
+- `lucide/banknote-arrow-up` — Lucide, ISC License: Copyright (c) for portions of Lucide are held
+  by Cole Bemis 2013-2022 as part of Feather (MIT); all other copyright (c) for Lucide are held by
+  Lucide Contributors 2022 (<https://github.com/lucide-icons/lucide>).
+- `fluent-emoji/Inbox_tray` — Fluent Emoji, Copyright (c) Microsoft Corporation, MIT License
+  (<https://github.com/microsoft/fluentui-emoji>).
+- three of inkvec's synthetic benchmark images, Apache License 2.0 (above).
+
+The ISC and MIT licenses permit use, copying, modification and distribution provided the
+copyright notice above and the permission notice are included: “Permission to use, copy, modify,
+and/or distribute this software for any purpose with or without fee is hereby granted, provided
+that the above copyright notice and this permission notice appear in all copies.” (ISC) and
+“Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files … The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.” (MIT); both are provided “as is”,
+without warranty of any kind.
