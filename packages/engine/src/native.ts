@@ -127,7 +127,7 @@ import {
   tracePlanar,
 } from './planar'
 import type { PlanarFace, PlanarRegion } from './planar'
-import { inkFrontEnd, intakeIsSoft, softNoise } from './ink'
+import { inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -136,6 +136,8 @@ interface FacePaint {
   fill: string
   unfoldable?: boolean
   colors: readonly string[]
+  /** A translucent paint's fill opacity (its `fill` then the straight color). */
+  opacity?: number
 }
 
 /** A face paint as the per-shape metadata a helper serializes with. */
@@ -1090,8 +1092,10 @@ async function colorPipeline(
   // that shapes them are unchanged. An edge hint feeds the merge, so caching is
   // disabled while one is present (correctness over speed).
   const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
-  // The ink front end serves opaque color images on the planar chain.
-  const useInk = planarRun?.frontEnd === 'ink' && alpha === null && settings.mode === 'color'
+  // The ink front end serves color images on the planar chain: an opaque one
+  // over white, a transparent one over two grounds (an ink is a color and an
+  // opacity).
+  const useInk = planarRun?.frontEnd === 'ink' && settings.mode === 'color'
   const palKey = canCachePal ? `${palKeyOf(settings)}${useInk ? '|ink' : ''}` : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
   // tracer's speck filter; null when no hint (and always null when caching).
@@ -1132,18 +1136,28 @@ async function colorPipeline(
     await run.tick()
   } else if (useInk) {
     if (canCachePal) cacheStats(cache!).palMisses++
-    const front = inkFrontEnd(
-      image,
-      settings.supersample,
-      planarRun?.soft ?? false,
-      settings.gradients,
-    )
+    const soft = planarRun?.soft ?? false
+    const front =
+      alpha !== null
+        ? nativeInkFrontEnd(image, alpha, settings.supersample, soft, settings.gradients)
+        : inkFrontEnd(image, settings.supersample, soft, settings.gradients)
     ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients } = front)
+    fillOpacity = front.fillOpacity
+    inkHex = front.inkHex
     await run.tick()
     run.stage('segment')
     await run.tick()
     if (canCachePal && palKey !== undefined) {
-      paletteEntry = { labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients }
+      paletteEntry = {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        sigmaNoise,
+        gradients,
+        fillOpacity,
+        inkHex,
+      }
       palettePut(cache!, palKey, paletteEntry)
     }
   } else if (settings.segmentation === 'regions' && settings.palette === null) {
@@ -1418,6 +1432,19 @@ async function colorPipeline(
     }
     return [own]
   }
+  // A translucent paint in the planar chain's stacked sheets: a label with a
+  // fill opacity, or a gradient whose stops fade. No sheet beneath reaches under
+  // it, so it paints its straight color at its opacity (a fade carries its
+  // opacities on its stops) and composites over what lies there.
+  const translucentPaint = (label: number): boolean =>
+    opacityOf(label) !== undefined ||
+    (gradients?.[label]?.stops.some((st) => (st.opacity ?? 1) < 1) ?? false)
+  const planarFacePaints = (label: number): FacePaint[] => {
+    const opacity = opacityOf(label)
+    const ink = inkOf(label)
+    if (opacity !== undefined && ink !== undefined) return [{ fill: ink, colors: [ink], opacity }]
+    return stackedFacePaints(label)
+  }
 
   if (run.tracing) {
     run.emitStep(() => {
@@ -1542,13 +1569,14 @@ async function colorPipeline(
     if (settings.layering === 'nested') {
       emitNestedFaces(
         planar && planarFits
-          ? nestedFaces(planar, planarFits)
+          ? nestedFaces(planar, planarFits, translucentPaint)
           : assembleFaces(network as ChainNetwork, fits as ChainFit[]),
         fillFor,
         paletteColorsFor,
         underOf,
         usedPalette,
         shapes,
+        planar && planarFits ? planarFacePaints : undefined,
       )
     } else {
       const regions =
@@ -1682,6 +1710,7 @@ async function colorPipeline(
      * serialized them, carries the underlay copy of every shape followed by the
      * layer's own copies, in that order.
      */
+    const planarStack = planar !== undefined && planarFits !== undefined
     const paintShapes = async (
       label: number,
       layerShapes: readonly PathCommand[][],
@@ -1690,7 +1719,7 @@ async function colorPipeline(
     ): Promise<void> => {
       const layerId = done
       let at = 0
-      for (const p of stackedFacePaints(label)) {
+      for (const p of planarStack ? planarFacePaints(label) : stackedFacePaints(label)) {
         if (layerShapes.length > 0) addColors(usedPalette, p.colors)
         for (let k = 0; k < layerShapes.length; k++) {
           const primitive = primitives?.[k] ?? null
@@ -1699,6 +1728,7 @@ async function colorPipeline(
             fill: p.fill,
             fillRule: 'evenodd',
             layerId,
+            ...(p.opacity !== undefined ? { fillOpacity: p.opacity } : {}),
             ...(p.unfoldable ? { unfoldable: true } : {}),
             ...(primitive !== null ? { primitive } : {}),
           })
@@ -1741,14 +1771,22 @@ async function colorPipeline(
       })
       // A hidden edge sits a source pixel beneath the sheet over it.
       const ss = settings.supersample
-      const layers = stackedLayers(planar, planarFits, paintLabel, plan.order, islands, {
-        faceIds: faces.ids,
-        width: faces.width,
-        height: faces.height,
-        distance: ss,
-        ramp: 3 * ss,
-        fit: setBackFit(faces.width, faces.height, ss),
-      })
+      const layers = stackedLayers(
+        planar,
+        planarFits,
+        paintLabel,
+        plan.order,
+        islands,
+        {
+          faceIds: faces.ids,
+          width: faces.width,
+          height: faces.height,
+          distance: ss,
+          ramp: 3 * ss,
+          fit: setBackFit(faces.width, faces.height, ss),
+        },
+        translucentPaint,
+      )
       startLayers(layers.length)
       for (const layer of layers) {
         // oxlint-disable-next-line no-await-in-loop
@@ -2403,6 +2441,7 @@ function emitNestedFaces(
   underOf: (label: number) => number,
   usedPalette: string[],
   shapes: SvgShape[],
+  translucent?: (label: number) => FacePaint[],
 ): void {
   const children: number[][] = faces.map(() => [])
   const roots: number[] = []
@@ -2419,8 +2458,14 @@ function emitNestedFaces(
   // A face merges with its same-color siblings only when its paint is a flat hex
   // and it carries no underlay (a gradient's `url(#…)` fill and an underlay each
   // stay their own element, exactly as inkvec keeps them out of the merge).
+  const opacityOfFace = (i: number): FacePaint | undefined => {
+    const p = translucent?.(faces[i].label)
+    return p !== undefined && p.length === 1 && p[0].opacity !== undefined ? p[0] : undefined
+  }
   const mergeable = (i: number): boolean =>
-    underOf(faces[i].label) < 0 && fillFor[faces[i].label].startsWith('#')
+    underOf(faces[i].label) < 0 &&
+    fillFor[faces[i].label].startsWith('#') &&
+    opacityOfFace(i) === undefined
 
   const emitLevel = (members: readonly number[]): void => {
     const done = new Uint8Array(members.length)
@@ -2434,12 +2479,15 @@ function emitNestedFaces(
         // Non-merged: an underlay's base paint first (same geometry), then the
         // face's own paint, each its own element.
         const primitive = primitiveOf(faces[i])
+        const wash = opacityOfFace(i)
         for (const paintLabel of under >= 0 ? [under, label] : [label]) {
-          addColors(usedPalette, paletteColorsFor[paintLabel])
+          const own = paintLabel === label && wash !== undefined
+          addColors(usedPalette, own ? wash.colors : paletteColorsFor[paintLabel])
           shapes.push({
             commands: faces[i].commands,
-            fill: fillFor[paintLabel],
+            fill: own ? wash.fill : fillFor[paintLabel],
             fillRule: 'evenodd',
+            ...(own ? { fillOpacity: wash.opacity } : {}),
             ...(primitive ? { primitive } : {}),
             ...(paintLabel === under ? { unfoldable: true } : {}),
           })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RasterImage } from '@trazor/core'
-import { inkFrontEnd, intakeIsSoft, softNoise } from '../src/ink'
+import { inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from '../src/ink'
 import { gradientAt } from '../src/planar'
 
 /** An opaque image of `w × h` pixels, each colored by `color(x, y)`. */
@@ -75,6 +75,69 @@ describe('the ink front end', () => {
     const frame = front.labels.data[0]
     expect(front.gradients?.[frame]).toBeNull()
     expect(front.paletteHex[frame]).toBe('#fafafa')
+  })
+})
+
+describe('the ink front end over two grounds', () => {
+  /** A transparent canvas: each pixel's straight color and alpha, composited over white, plus the alpha bytes. */
+  function transparent(
+    w: number,
+    h: number,
+    paint: (x: number, y: number) => [number, number, number, number],
+  ): { image: RasterImage; alpha: Uint8Array } {
+    const data = new Uint8ClampedArray(w * h * 4)
+    const alpha = new Uint8Array(w * h)
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const [r, g, b, a] = paint(x, y)
+        const over = (c: number): number => Math.round(c * (a / 255) + 255 * (1 - a / 255))
+        data.set([over(r), over(g), over(b), 255], 4 * (y * w + x))
+        alpha[y * w + x] = a
+      }
+    return { image: { width: w, height: h, data }, alpha }
+  }
+
+  it('keeps the clear ground transparent and paints a wash at its own opacity', () => {
+    // A solid red square and a half-transparent blue one on a clear canvas.
+    const { image, alpha } = transparent(48, 24, (x, y) => {
+      if (y < 4 || y >= 20) return [0, 0, 0, 0]
+      if (x >= 4 && x < 20) return [220, 30, 30, 255]
+      if (x >= 28 && x < 44) return [30, 60, 200, 128]
+      return [0, 0, 0, 0]
+    })
+    const front = nativeInkFrontEnd(image, alpha, 1, false, false)
+    const at = (x: number, y: number): number => front.labels.data[y * 48 + x]
+    expect(at(1, 1)).toBe(-1)
+    const red = at(10, 12)
+    const blue = at(36, 12)
+    expect(red).toBeGreaterThanOrEqual(0)
+    expect(front.paletteHex[red]).toBe('#dc1e1e')
+    expect(front.fillOpacity?.[red]).toBeUndefined()
+    expect(front.fillOpacity?.[blue]).toBeCloseTo(128 / 255, 2)
+    // The straight color, not the color over white.
+    const ink = front.inkHex?.[blue] ?? ''
+    const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(ink.slice(i, i + 2), 16))
+    expect(Math.max(Math.abs(r - 30), Math.abs(g - 60), Math.abs(b - 200))).toBeLessThanOrEqual(1)
+  })
+
+  it('fits a glow as one fade whose stops carry opacities', () => {
+    // One color whose opacity ramps from 0.1 to 0.85 across the canvas: the palette
+    // bands it, the fades stage makes it one gradient with an opacity at each stop.
+    const { image, alpha } = transparent(48, 16, (x) => [
+      200,
+      80,
+      30,
+      Math.round(255 * (0.1 + (0.75 * x) / 47)),
+    ])
+    const banded = nativeInkFrontEnd(image, alpha, 1, false, false)
+    expect(banded.labels.count).toBeGreaterThan(1)
+    const front = nativeInkFrontEnd(image, alpha, 1, false, true)
+    expect(front.labels.count).toBe(1)
+    const fade = front.gradients?.[0]
+    expect(fade?.kind).toBe('linear')
+    const opacities = fade?.stops.map((st) => st.opacity ?? 1) ?? []
+    expect(Math.min(...opacities)).toBeLessThan(0.2)
+    expect(Math.max(...opacities)).toBeGreaterThan(0.8)
   })
 })
 

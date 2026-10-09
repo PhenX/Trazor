@@ -156,6 +156,51 @@ export function fillToPaint(model: FillModel, tolerance = PAINT_TOLERANCE): Grad
   return model.aspect === 1 ? radial : { ...radial, aspect: model.aspect, angle: model.angle }
 }
 
+/**
+ * A fade as Trazor's {@link GradientPaint}: the color profile `color` drawn as
+ * {@link fillToPaint} draws it (on the geometry of `alpha`, whose stop offsets
+ * it shares), each stop carrying the opacity profile `alpha` at its offset —
+ * the opacity stops interpolated linearly, as SVG interpolates `stop-opacity`.
+ * Null when the opacity is flat (a plain color at one opacity, which the caller
+ * writes with a fill opacity).
+ */
+export function fadeToPaint(
+  alpha: FillModel,
+  color: FillModel,
+  tolerance = PAINT_TOLERANCE,
+): GradientPaint | null {
+  if (!isGradient(alpha)) return null
+  const shaped: FillModel =
+    color.kind === 'flat'
+      ? {
+          ...alpha,
+          interp: 'srgb',
+          c0: color.color,
+          c1: color.color,
+          mids: alpha.mids.map((m) => ({ offset: m.offset, color: color.color })),
+        }
+      : color
+  const paint = fillToPaint(shaped, tolerance)
+  if (paint === null) return null
+  const offsets = [0, ...alpha.mids.map((m) => m.offset), 1]
+  const values = stopColors(alpha).map((c) => Math.min(Math.max(c[0], 0), 1))
+  const opacityAt = (t: number): number => {
+    for (let k = 1; k < offsets.length; k++) {
+      if (t <= offsets[k] || k === offsets.length - 1) {
+        const span = offsets[k] - offsets[k - 1]
+        const u = span > 0 ? Math.min(Math.max((t - offsets[k - 1]) / span, 0), 1) : 1
+        return values[k - 1] + (values[k] - values[k - 1]) * u
+      }
+    }
+    return values[0]
+  }
+  const stops = paint.stops.map((st) => {
+    const a = Math.round(opacityAt(st.offset) * 1000) / 1000
+    return a < 1 ? { ...st, opacity: a } : st
+  })
+  return { ...paint, stops }
+}
+
 /** The profile's sRGB color at gradient coordinate `t`. */
 function profileAt(ev: FillEval, t: number): Rgb {
   const out: [number, number, number] = [0, 0, 0]
