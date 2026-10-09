@@ -12,6 +12,8 @@ import {
   buildPlanarMap,
   faceNesting,
   faceRings,
+  fitConfig,
+  fitPolyline,
   refineJunctions,
   refineSubpixel,
   regionRings,
@@ -23,6 +25,7 @@ import type {
   FaceNesting,
   FaceRing,
   FaceShape,
+  FitConfig,
   FittedEdge,
   PlanarEdge,
   PlanarMap,
@@ -255,8 +258,28 @@ export interface PlanarTraceInput {
   alpha: Uint8Array | null
   /** Each label's paint, by label. */
   paints: readonly LabelPaint[]
+  /**
+   * Working pixels per source pixel (the supersample factor): the fit prices
+   * a boundary in source pixels, as content units.
+   */
+  scale?: number
   /** Called with the map after each stage, and with the fits after the fit. */
   onStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+}
+
+/** The fit's output precision, in source pixels (inkvec's default). */
+const FIT_PRECISION = 0.1
+
+/**
+ * The fit's objective for a map traced `scale` working pixels per source
+ * pixel, in content units (inkvec `units.rs`): a coordinate is priced at the
+ * source's own resolution, `ln(extent / (scale·precision))` nats, and `λ`
+ * grows by `scale` with the boundary points per unit of content; the caller
+ * scales every σ by `scale` too. The identity at `scale` 1.
+ */
+export function contentFitConfig(width: number, height: number, scale: number): FitConfig {
+  const cfg = fitConfig(Math.max(width, height), FIT_PRECISION * scale)
+  return { tau: cfg.tau, lambda: cfg.lambda * scale }
 }
 
 /**
@@ -281,7 +304,11 @@ export function tracePlanar(input: PlanarTraceInput): {
   input.onStage?.('junctions', map)
   solveBoundaries(map, image, fills)
   input.onStage?.('solve', map)
-  const fits = map.edges.map(polylineFit)
+  const cfg = contentFitConfig(map.width, map.height, input.scale ?? 1)
+  const s = input.scale ?? 1
+  const fits = map.edges.map((e) =>
+    fitPolyline(e.points, s === 1 ? e.sigma : e.sigma.map((v) => v * s), e.closed, cfg),
+  )
   input.onStage?.('fit', map, fits)
   return { geo, fits }
 }
