@@ -9,10 +9,14 @@
  * cautious of its edges and an edge at scale 0 is exactly where it started,
  * ends included. While some pair of segments crosses that did not cross at the
  * start, the scale of every edge with a segment in such a pair is halved, from
- * ½ down to 1/16 and then to 0. Every round lowers at least one scale, and a
- * pair whose two edges are both at 0 is the start's own, so the loop ends with
- * no new crossing after at most six rounds per edge; the solve is never
- * discarded. Crossings already there at the start may stay. Inspired by
+ * ½ down to 1/16 and then to 0. A face ring whose signed area changed sign
+ * counts as well, and every edge of it is halved: the two sides of a sliver
+ * pulled through each other leave a simple ring of the opposite winding,
+ * which crosses nothing (inkvec's guard counts crossings only). Every round
+ * lowers at least one scale, and a pair whose two edges are both at 0 is the
+ * start's own, as is a ring whose edges are, so the loop ends with no new
+ * crossing and no ring turned inside out after at most six rounds per edge;
+ * the solve is never discarded. Crossings already there at the start may stay. Inspired by
  * J. Smith, S. Schaefer 2015, "Bijective parameterization with free
  * boundaries", ACM TOG 34(4), and M. Li et al. 2020, "Incremental potential
  * contact", ACM TOG 39(4), which never let two boundary elements pass through
@@ -41,7 +45,8 @@
  * `inkvec-trace/src/boundary_opt.rs` (`segments_cross`, `fold_guard_local`).
  */
 import { orient2d } from '../fit/crossings'
-import type { PlanarMap } from '../planar/types'
+import { faceRings } from '../planar/rings'
+import type { FaceRing, PlanarMap } from '../planar/types'
 import type { Unknowns } from './band'
 
 /**
@@ -362,6 +367,34 @@ function candidates(segs: Segments, range: Float64Array): Int32Array {
   return Int32Array.from(out)
 }
 
+/**
+ * Twice the signed area a face ring encloses with its points at `pos`
+ * (unknown positions, interleaved), walked as the ring walks its edges. An
+ * open edge's last point is the next edge's first (one node unknown), so the
+ * walk closes on itself; a closed edge closes back to its own first point.
+ */
+function ringArea(
+  map: PlanarMap,
+  ring: FaceRing,
+  of: readonly Int32Array[],
+  pos: Float64Array,
+): number {
+  let a = 0
+  for (let t = 0; t < ring.edges.length; t++) {
+    const k = ring.edges[t]
+    const ids = of[k]
+    const m = ids.length
+    const rev = ring.reversed[t]
+    const steps = map.edges[k].closed ? m : m - 1
+    for (let i = 0; i < steps; i++) {
+      const p = ids[rev ? m - 1 - i : i]
+      const q = ids[rev ? (2 * m - 2 - i) % m : (i + 1) % m]
+      a += pos[2 * p] * pos[2 * q + 1] - pos[2 * q] * pos[2 * p + 1]
+    }
+  }
+  return a
+}
+
 /** The fold guard's result: the positions it keeps and the share of the displacement kept. */
 export interface FoldGuardResult {
   /** Every unknown's position, interleaved `x, y`. */
@@ -390,13 +423,21 @@ export function foldGuard(map: PlanarMap, u: Unknowns, solved: Float64Array): Fo
   const hit = new Uint8Array(ne)
   const sigma = new Float64Array(n)
   const cur = solved.slice()
+  const rings = faceRings(map).flat()
+  const area0 = rings.map((r) => ringArea(map, r, u.of, start))
   let rounds = 0
   for (;;) {
     const bad = folds.newCrossings(start, cur)
-    if (bad.length === 0) break
-    rounds++
     hit.fill(0)
     for (let k = 0; k < bad.length; k++) hit[segEdge[bad[k]]] = 1
+    let flipped = false
+    for (let i = 0; i < rings.length; i++) {
+      if (area0[i] === 0 || area0[i] * ringArea(map, rings[i], u.of, cur) > 0) continue
+      flipped = true
+      for (const k of rings[i].edges) hit[k] = 1
+    }
+    if (bad.length === 0 && !flipped) break
+    rounds++
     for (let k = 0; k < ne; k++) if (hit[k]) scale[k] = scale[k] > 1 / 16 ? scale[k] * 0.5 : 0
     // σ_v = the smallest scale of the edges v belongs to.
     sigma.fill(1)
