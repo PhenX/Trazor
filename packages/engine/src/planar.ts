@@ -243,6 +243,35 @@ export function planarGeometry(labels: LabelMap): PlanarGeometry {
   return { map, rings, nesting: faceNesting(map, rings) }
 }
 
+/** What the planar chain traces: a label map, the image it came from and each label's paint. */
+export interface PlanarTraceInput {
+  labels: LabelMap
+  /** The working image, composited over white. */
+  image: RasterImage
+  /** Its source alpha, or null when opaque. */
+  alpha: Uint8Array | null
+  /** Each label's paint, by label. */
+  paints: readonly LabelPaint[]
+  /** Called with the map after each stage, and with the fits after the fit. */
+  onStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+}
+
+/**
+ * The planar chain's geometry: the label map's faces and the edges they share,
+ * each edge fitted once. Stages measure the observed image against the faces'
+ * paint in the forward model's space.
+ */
+export function tracePlanar(input: PlanarTraceInput): {
+  geo: PlanarGeometry
+  fits: FittedEdge[]
+} {
+  const geo = planarGeometry(input.labels)
+  input.onStage?.('lattice', geo.map)
+  const fits = geo.map.edges.map(polylineFit)
+  input.onStage?.('fit', geo.map, fits)
+  return { geo, fits }
+}
+
 /** Twice the signed area a ring's fitted outline encloses, from its segment end points. */
 function ringArea(commands: readonly PathCommand[]): number {
   let a = 0
