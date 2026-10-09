@@ -119,7 +119,7 @@ import { sheetSetback } from './setback'
 import {
   cutoutRegions,
   nestedFaces,
-  polylineSegments,
+  setBackFit,
   ringCommands as planarRingCommands,
   stackedLayers,
   tracePlanar,
@@ -1683,7 +1683,7 @@ async function colorPipeline(
         height: faces.height,
         distance: ss,
         ramp: 3 * ss,
-        fit: polylineSegments,
+        fit: setBackFit(faces.width, faces.height, ss),
       })
       startLayers(layers.length)
       for (const layer of layers) {

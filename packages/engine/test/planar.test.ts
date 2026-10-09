@@ -6,6 +6,7 @@ import {
   nestedFaces,
   planarGeometry,
   polylineFit,
+  setBackFit,
   stackedLayers,
   tracePlanar,
 } from '../src/planar'
@@ -202,5 +203,17 @@ describe('the planar chain against its image', () => {
     expect(ring.label).toBe(0)
     expect(ring.shapes.length).toBe(1)
     expect(ring.shapes[0].filter((c) => c.type === 'M').length).toBe(2)
+  })
+
+  it('fits a set-back run as curves, not one line per point', () => {
+    const n = 40
+    const pts = new Float64Array(2 * n)
+    for (let i = 0; i < n; i++) {
+      pts[2 * i] = 3 + i * 0.5
+      pts[2 * i + 1] = 7 + 0.02 * Math.sin(i)
+    }
+    const segs = setBackFit(64, 64, 1)(pts)
+    expect(segs.length).toBe(1)
+    expect(segs[0]).toMatchObject({ type: 'L', x: pts[2 * n - 2], y: pts[2 * n - 1] })
   })
 })
