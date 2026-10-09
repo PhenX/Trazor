@@ -23,6 +23,7 @@ import {
   regionRings,
   solveBoundaries,
   splitFaces,
+  OUTSIDE,
 } from '@trazor/trace'
 import type { Primitive } from '@trazor/svg'
 import type {
@@ -609,9 +610,12 @@ function faceAt(sb: SetBack, x: number, y: number): number {
 
 /**
  * One hidden edge's points in walk order, each moved along the walk's left
- * normal — into the sheet over it — by the set-back where the sheet's face holds
- * the pixels half a pixel and one and a half pixels in, easing from nothing over
- * the ramp at an end that meets a visible edge.
+ * normal — into the sheet over it — by the set-back. A point may go the full
+ * distance where the sheet's face holds the pixels half a pixel and one and a
+ * half pixels in; elsewhere the sheet is too thin and the point stays. The
+ * set-back eases between them: no farther from a point that stays than its arc
+ * length to it (a thin spot dips the run at 45° instead of notching it), and
+ * growing from nothing over the ramp at an end that meets a visible edge.
  */
 function setBackPoints(
   edge: PlanarEdge,
@@ -633,29 +637,65 @@ function setBackPoints(
     along[i] =
       along[i - 1] + Math.hypot(pts[i * 2] - pts[i * 2 - 2], pts[i * 2 + 1] - pts[i * 2 - 1])
   }
-  const total = along[n - 1]
-  const out = new Float64Array(n * 2)
+  // The perimeter of a closed edge: the walk back from the last point to the first.
+  const period = edge.closed
+    ? along[n - 1] + Math.hypot(pts[0] - pts[n * 2 - 2], pts[1] - pts[n * 2 - 1])
+    : 0
+  // Each point's inward normal, and whether the sheet over it is deep enough there.
+  const nrm = new Float64Array(n * 2)
+  const stays = new Uint8Array(n)
   for (let i = 0; i < n; i++) {
     const a = edge.closed ? (i + n - 1) % n : Math.max(0, i - 1)
     const b = edge.closed ? (i + 1) % n : Math.min(n - 1, i + 1)
     const tx = pts[b * 2] - pts[a * 2]
     const ty = pts[b * 2 + 1] - pts[a * 2 + 1]
     const len = Math.hypot(tx, ty)
-    const x = pts[i * 2]
-    const y = pts[i * 2 + 1]
-    out[i * 2] = x
-    out[i * 2 + 1] = y
-    if (len === 0) continue
+    if (len === 0) {
+      stays[i] = 1
+      continue
+    }
     // The walk keeps its union on the left: (ty, −tx) points into it on screen.
     const nx = ty / len
     const ny = -tx / len
-    if (faceAt(sb, x + 0.5 * nx, y + 0.5 * ny) !== inner) continue
-    if (faceAt(sb, x + 1.5 * nx, y + 1.5 * ny) !== inner) continue
-    let d = sb.distance
-    if (!edge.closed && easeStart) d *= Math.min(1, along[i] / sb.ramp)
-    if (!edge.closed && easeEnd) d *= Math.min(1, (total - along[i]) / sb.ramp)
-    out[i * 2] = x + d * nx
-    out[i * 2 + 1] = y + d * ny
+    nrm[i * 2] = nx
+    nrm[i * 2 + 1] = ny
+    const x = pts[i * 2]
+    const y = pts[i * 2 + 1]
+    if (
+      faceAt(sb, x + 0.5 * nx, y + 0.5 * ny) !== inner ||
+      faceAt(sb, x + 1.5 * nx, y + 1.5 * ny) !== inner
+    )
+      stays[i] = 1
+  }
+  // Arc length to the nearest point that stays (`gap`, eased over one set-back
+  // distance: a thin spot dips the run at 45°) and to an end meeting a visible
+  // edge (`end`, eased over the ramp): forward and backward sweeps, twice round a
+  // closed edge so the gap wraps.
+  const gap = new Float64Array(n).fill(Infinity)
+  const laps = edge.closed ? 2 : 1
+  let last = -Infinity
+  for (let t = 0; t < laps * n; t++) {
+    const i = t % n
+    const s = along[i] + Math.floor(t / n) * period
+    if (stays[i]) last = s
+    gap[i] = Math.min(gap[i], s - last)
+  }
+  let next = Infinity
+  for (let t = laps * n - 1; t >= 0; t--) {
+    const i = t % n
+    const s = along[i] + Math.floor(t / n) * period
+    if (stays[i]) next = s
+    gap[i] = Math.min(gap[i], next - s)
+  }
+  const total = along[n - 1]
+  const out = new Float64Array(n * 2)
+  for (let i = 0; i < n; i++) {
+    let end = Infinity
+    if (!edge.closed && easeStart) end = along[i]
+    if (!edge.closed && easeEnd) end = Math.min(end, total - along[i])
+    const d = sb.distance * Math.min(1, gap[i] / Math.max(sb.distance, 1e-9), end / sb.ramp)
+    out[i * 2] = pts[i * 2] + d * nrm[i * 2]
+    out[i * 2 + 1] = pts[i * 2 + 1] + d * nrm[i * 2 + 1]
   }
   return out
 }
@@ -663,7 +703,9 @@ function setBackPoints(
 /**
  * A layer ring as a closed subpath: visible steps draw the shared fitted edge,
  * hidden ones (`hidden(inner face)`) their set-back points fitted on their own,
- * each step joined to the last by a line where the set-back left a gap.
+ * each step joined to the last by a line where the set-back left a gap. An edge
+ * on the canvas frame is never hidden: nothing lies beyond it to show through,
+ * so every sheet that reaches the frame ends on it.
  */
 function layerRingCommands(
   map: PlanarMap,
@@ -676,7 +718,11 @@ function layerRingCommands(
   const inner = ring.edges.map((e, t) =>
     ring.reversed[t] ? map.edges[e].right : map.edges[e].left,
   )
-  const isHidden = inner.map((f) => f >= 0 && hidden(f))
+  const isHidden = inner.map((f, t) => {
+    const e = map.edges[ring.edges[t]]
+    const across = ring.reversed[t] ? e.left : e.right
+    return f >= 0 && across !== OUTSIDE && hidden(f)
+  })
   const out: PathCommand[] = []
   let px = Number.NaN
   let py = Number.NaN
