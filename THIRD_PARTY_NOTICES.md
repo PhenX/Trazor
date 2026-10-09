@@ -50,6 +50,14 @@ test the palette port against inkvec:
   (<https://github.com/microsoft/fluentui-emoji>).
 - three of inkvec's synthetic benchmark images, Apache License 2.0 (above).
 
+`packages/raster/test/ink/native-fixtures.ts` embeds, compressed, five 128 px raster renderings
+with transparency (with the expected output of inkvec's transparent-image front end on them), used
+only to test the port against inkvec:
+
+- `lucide/app-window-mac`, `lucide/arrow-left-to-line` — Lucide, ISC License (above).
+- `noto-emoji/emoji_u23f8`, `emoji_u1f56f`, `emoji_u1f469_200d_1f9bd` — Noto Emoji, Copyright
+  Google LLC, Apache License 2.0 (<https://github.com/googlefonts/noto-emoji>).
+
 `packages/raster/test/fill/bands-fixtures.ts` embeds, compressed, 128 px raster renderings
 (whole or cropped) with the expected output of inkvec's band merge and carve on them, used only
 to test the port against inkvec:

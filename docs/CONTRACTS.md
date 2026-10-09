@@ -615,6 +615,39 @@ export namespace ink {
   function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
   function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
   function toHex(c: Rgb): string
+  // Transparency carried natively (an ink is a color and an opacity; the clear ground is an ink).
+  // rgb is over white, alpha per pixel in [0,1]; Palette.alpha holds each ink's opacity.
+  function needsNativeAlpha(alpha: Float32Array | null, n: number): boolean // some pixel below OPAQUE
+  function nativeFrontEnd(
+    rgb,
+    alpha: Float32Array,
+    w,
+    h,
+    intake: { sigmaNoise: number; soft: boolean },
+    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends? },
+  ): NativeFrontEnd // { palette, labels, sigmaNoise, lambda, sameClass, absorbed, moved }
+  function extractPaletteNative(rgb, alpha, w, h, merge?, maxColors?, ev?, ids?): Palette
+  function labelImageNative(rgb, alpha, palette: Palette, ids?): Int32Array
+  function sameOpacity(palette: Palette): (a: number, b: number) => boolean // the merge's veto
+  // After the carve: a minted feature named by the clear ink whose pixels are mostly paint is renamed
+  // to the nearest visible ink (labelInk edited in place, `from` = label count before the carve).
+  function nameCarvedPaint(labels, rgb, alpha, palette, labelInk: number[], from: number): void
+  // Fades: per label a color and an opacity profile (null: none); relabels each accepted fade and
+  // rewrites its fill as seen over white.
+  function mergeFades(
+    labels,
+    fills,
+    labelInk,
+    rgb,
+    alpha,
+    w,
+    h,
+    palette,
+    sigma,
+    lambda,
+  ): (Fade | null)[]
+  function faceOpacity(fade: Fade | null, palette: Palette, ink: number): number
+  function fadeOverWhite(fade: Fade): FillModel
 }
 ```
 

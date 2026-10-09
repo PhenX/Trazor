@@ -1,9 +1,11 @@
 /**
  * The ink front end, ported from inkvec: the intake measurements, the MDL
  * palette and its labels, the region passes, the residual noise, and each
- * region's fill (the band merge, the carve, the flat-fill snap) — what the
- * planar chain traces in place of the classic segmentation. Exported as one
- * namespace (`ink`) so its names stay clear of the classic front end's.
+ * region's fill (the band merge, the carve, the flat-fill snap); for a
+ * transparent raster, the same over two grounds (an ink is a color and an
+ * opacity) with its fades — what the planar chain traces in place of the
+ * classic segmentation. Exported as one namespace (`ink`) so its names stay
+ * clear of the classic front end's.
  */
 export {
   DEFAULT_MAX_COLORS,
@@ -38,3 +40,8 @@ export { bicLambda } from '../fill/select'
 export { representative } from '../fill/model'
 export type { FillFit, FillModel } from '../fill/model'
 export { fillToPaint, toHex } from '../fill/svg'
+export { CLEAR_INK_ALPHA, nameCarvedPaint, needsNativeAlpha, OPAQUE, sameOpacity } from './native'
+export { extractPaletteNative, labelImageNative, nativeFrontEnd } from './native-palette'
+export type { NativeFrontEnd, NativeFrontEndOptions, NativeIntake } from './native-palette'
+export { faceOpacity, fadeOverWhite, mergeFades, rimAlpha } from './fade'
+export type { Fade } from './fade'
