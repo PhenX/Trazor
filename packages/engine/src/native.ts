@@ -126,6 +126,7 @@ import {
   stackedLayers,
   tracePlanar,
 } from './planar'
+import type { PlanarFace, PlanarRegion } from './planar'
 import { inkFrontEnd } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
@@ -1566,10 +1567,12 @@ async function colorPipeline(
             usedPalette,
             opacity !== undefined && ink !== undefined ? [ink] : paletteColorsFor[label],
           )
+          const primitive = 'primitive' in region ? (region as PlanarRegion).primitive : null
           shapes.push({
             commands: region.commands,
             fill,
             fillRule: 'evenodd',
+            ...(primitive ? { primitive } : {}),
             ...(opacity !== undefined ? { fillOpacity: opacity } : {}),
             ...(label === under ? { unfoldable: true } : {}),
             ...(trapPx > 0
@@ -2379,6 +2382,9 @@ function emitNestedFaces(
   usedPalette: string[],
   shapes: SvgShape[],
 ): void {
+  // The planar chain's faces carry the primitive a whole-primitive ring draws.
+  const primitiveOf = (face: FaceShape): Primitive | null =>
+    'primitive' in face ? (face as PlanarFace).primitive : null
   const children: number[][] = faces.map(() => [])
   const roots: number[] = []
   for (let i = 0; i < faces.length; i++) {
@@ -2408,12 +2414,14 @@ function emitNestedFaces(
       if (!mergeable(i)) {
         // Non-merged: an underlay's base paint first (same geometry), then the
         // face's own paint, each its own element.
+        const primitive = primitiveOf(faces[i])
         for (const paintLabel of under >= 0 ? [under, label] : [label]) {
           addColors(usedPalette, paletteColorsFor[paintLabel])
           shapes.push({
             commands: faces[i].commands,
             fill: fillFor[paintLabel],
             fillRule: 'evenodd',
+            ...(primitive ? { primitive } : {}),
             ...(paintLabel === under ? { unfoldable: true } : {}),
           })
         }
@@ -2433,7 +2441,13 @@ function emitNestedFaces(
       const commands: PathCommand[] = []
       for (const j of group) commands.push(...faces[j].commands)
       addColors(usedPalette, paletteColorsFor[label])
-      shapes.push({ commands, fill: fillFor[label], fillRule: 'evenodd' })
+      const primitive = group.length === 1 ? primitiveOf(faces[i]) : null
+      shapes.push({
+        commands,
+        fill: fillFor[label],
+        fillRule: 'evenodd',
+        ...(primitive ? { primitive } : {}),
+      })
       for (const j of group) emitLevel(children[j])
     }
   }
