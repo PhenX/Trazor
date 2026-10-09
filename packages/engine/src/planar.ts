@@ -229,11 +229,23 @@ export function polylineFit(edge: PlanarEdge): FittedEdge {
   return { x0: p[0], y0: p[1], segments, closed: edge.closed, params: 2 * segments.length, chi2: 0 }
 }
 
-/** Line segments through interleaved points after the first. */
-export function polylineSegments(points: Float64Array): PathCommand[] {
-  const out: PathCommand[] = []
-  for (let i = 2; i < points.length; i += 2) out.push({ type: 'L', x: points[i], y: points[i + 1] })
-  return out
+/** Positional uncertainty of a set-back point, in source pixels: it is hidden, so loose. */
+const SET_BACK_SIGMA = 0.5
+
+/**
+ * The fit of a stacked layer's set-back run (interleaved points, walk order):
+ * the multimodel program with every point held to half a source pixel, its
+ * ends pinned, as segments after the first point.
+ */
+export function setBackFit(width: number, height: number, scale: number): SetBack['fit'] {
+  const cfg = contentFitConfig(width, height, scale)
+  return (points) =>
+    fitPolyline(
+      points,
+      new Float64Array(points.length / 2).fill(SET_BACK_SIGMA * scale),
+      false,
+      cfg,
+    ).segments
 }
 
 /** The planar map of a label map with its rings and nesting, ready for the geometry stages. */
