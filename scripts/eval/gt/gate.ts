@@ -292,8 +292,8 @@ async function suite(argv: string[]): Promise<void> {
   }
 }
 
-/** One axis verdict as a short cell: `+` better, `=` non-inferior, `−` worse. */
-const MARK = { better: '+', 'non-inferior': '=', worse: '−' } as const
+/** One axis verdict as a short mark after its change: `✓` better, `=` non-inferior, `✗` worse. */
+const MARK = { better: '✓', 'non-inferior': '=', worse: '✗' } as const
 
 function ab(argv: string[]): void {
   const [bp, cp] = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'))
@@ -306,11 +306,11 @@ function ab(argv: string[]): void {
       process.stdout.write(`\n== ${f.slice(0, -5)}\n`)
       const res = abPair(join(bp, f), join(cp, f), argv)
       lines.push(
-        `${f.slice(0, -5).padEnd(12)}${res.map((r) => `${r.axis} ${MARK[r.verdict]}${(r.delta * 100).toFixed(1)}%`).join('  ')}`,
+        `${f.slice(0, -5).padEnd(12)}${res.map((r) => `${r.axis} ${(r.delta * 100).toFixed(1)}%${MARK[r.verdict]}`).join('  ')}`,
       )
     }
     process.stdout.write(
-      `\nsuite (+ better, = non-inferior, − worse; Δ of the macro mean):\n${lines.join('\n')}\n`,
+      `\nsuite (Δ of the macro mean; ✓ better, = non-inferior, ✗ worse):\n${lines.join('\n')}\n`,
     )
     return
   }
