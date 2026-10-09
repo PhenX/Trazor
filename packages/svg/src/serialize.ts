@@ -15,6 +15,12 @@ import type { Primitive } from './primitive'
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
   commands: PathCommand[]
+  /**
+   * The exact whole-shape primitive the commands draw (one closed loop, no
+   * holes), when the tracer knows it: written as its element when optimizing,
+   * whatever `roundPrimitives` says, since nothing is approximated.
+   */
+  primitive?: Primitive
   /** `'#rrggbb'` or `'none'`. Undefined ⇒ `fill="none"` when stroked, else the shape is skipped. */
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
@@ -288,6 +294,9 @@ export function shapeOut(
   if (shape.fill === undefined && shape.stroke === undefined) return null
 
   if (optimize) {
+    if (shape.primitive !== undefined && shape.stroke === undefined) {
+      return { kind: 'element', svg: primitiveElement(shape.primitive, shape, precision) }
+    }
     const cleaned = cleanCommands(shape.commands, precision)
     const prim = detectPrimitive(cleaned, precision, roundPrimitives)
     if (prim !== null) return { kind: 'element', svg: primitiveElement(prim, shape, precision) }
