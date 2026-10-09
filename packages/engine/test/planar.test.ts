@@ -206,6 +206,39 @@ describe('the planar chain against its image', () => {
     expect(ring.shapes[0].commands.filter((c) => c.type === 'M').length).toBe(2)
   })
 
+  it('ends every sheet that reaches the canvas frame on the frame', () => {
+    // Two cells side by side: the base sheet spans the canvas, beneath the right cell.
+    // Its frame edges next to that cell are no hidden edge to set back: nothing lies
+    // beyond the frame, so the base outline keeps to it all the way round.
+    const labels = labelsOf(['00001111', '00001111', '00001111', '00001111', '00001111'])
+    const geo = planarGeometry(labels)
+    const fits = geo.map.edges.map(polylineFit)
+    const paintLabel = new Int32Array(geo.map.faces.count)
+    for (let p = 0; p < labels.data.length; p++) paintLabel[geo.map.faces.ids[p]] = labels.data[p]
+    const setBack = {
+      faceIds: geo.map.faces.ids,
+      width: 8,
+      height: 5,
+      distance: 1,
+      ramp: 2,
+      fit: (pts: Float64Array): PathCommand[] => {
+        const out: PathCommand[] = []
+        for (let i = 2; i < pts.length; i += 2) out.push({ type: 'L', x: pts[i], y: pts[i + 1] })
+        return out
+      },
+    }
+    const base = stackedLayers(geo, fits, paintLabel, [0, 1], [], setBack)[0]
+    expect(base.label).toBe(0)
+    for (const sh of base.shapes) {
+      for (const c of sh.commands) {
+        if (c.type === 'Z') continue
+        const onFrame = c.x === 0 || c.x === 8 || c.y === 0 || c.y === 5
+        expect(onFrame).toBe(true)
+      }
+    }
+    expect(paintedArea(base.shapes[0].commands)).toBeCloseTo(40, 9)
+  })
+
   it('fits a set-back run as curves, not one line per point', () => {
     const n = 40
     const pts = new Float64Array(2 * n)
