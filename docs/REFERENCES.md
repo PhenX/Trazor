@@ -200,6 +200,18 @@ uses. Each file names the inkvec files it follows.
   Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
   recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,
   _CGF_ 44(2), 2025.
+- **Band merge and carve** (`fill/bands.ts`, `fill/recovery.ts`, `fill/carve.ts`, after inkvec's
+  `inkvec-trace/src/gradient/{bands,regions}.rs` and `carve.rs`, identical label maps and work
+  spent to an inkvec build on 98 corpus images, 105 carved features identical): the palette's
+  bands of one ramp merged back into one gradient region by greedy agglomeration of 4-connected
+  components, the pair that saves the most description length first, under a deterministic
+  work cap (the region-adjacency merging of Haris et al. 1998, above); a seam between two
+  regions read as smooth when most of its pixel pairs step under 3 CIE76 units and as an edge
+  when most step over 6 OKLab units, so an edge is never merged across and two flat regions
+  are unioned only across a smooth seam whose inks are one ramp step apart (CIEDE2000 under
+  15, Sharma, Wu & Dalal 2005, above) — the region recovery of Chakraborty et al. 2025 §3.2;
+  then a feature a merged fill swallowed (a stroke inside a ramp, its pixels far from the fill
+  and near another ink) carved back out as its own region and the parent refitted.
 
 ## Planar-map geometry core (packages/trace/src/planar, solve, fit)
 

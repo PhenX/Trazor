@@ -50,6 +50,18 @@ test the palette port against inkvec:
   (<https://github.com/microsoft/fluentui-emoji>).
 - three of inkvec's synthetic benchmark images, Apache License 2.0 (above).
 
+`packages/raster/test/fill/bands-fixtures.ts` embeds, compressed, 128 px raster renderings
+(whole or cropped) with the expected output of inkvec's band merge and carve on them, used only
+to test the port against inkvec:
+
+- five Noto Emoji images (`u1f36a`, `u1f351`, `u1f469_1f3fb_200d_2708`,
+  `u1f468_1f3ff_200d_2764_200d_1f468_1f3fb`, `u1f3c4_1f3fd_200d_2642`) — Noto Emoji, Copyright
+  Google LLC, Apache License 2.0 (<https://github.com/googlefonts/noto-emoji>).
+- `twemoji/1f1f3-1f1e8` — Twemoji, Copyright 2020 Twitter, Inc and other contributors, graphics
+  licensed under CC-BY 4.0 (<https://creativecommons.org/licenses/by/4.0/>,
+  <https://github.com/twitter/twemoji>); cropped and rasterized.
+- three of inkvec's synthetic benchmark images, Apache License 2.0 (above).
+
 The ISC and MIT licenses permit use, copying, modification and distribution provided the
 copyright notice above and the permission notice are included: “Permission to use, copy, modify,
 and/or distribute this software for any purpose with or without fee is hereby granted, provided
