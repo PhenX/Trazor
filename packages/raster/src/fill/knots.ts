@@ -132,6 +132,13 @@ export class BinnedProfile {
   /** `prefix[j·10 + k]` sums moment `k` of the bins below `j`, `j = 0 ..= OFFSET_STEPS + 1`. */
   private readonly prefix: Float64Array
   private readonly mean: [number, number, number]
+  /** The scan's work space: the normal equations (row-major, `MAX_NODES` wide), their right-hand sides, an eliminated copy of each, the solution and the nodes. */
+  private readonly sysA = new Float64Array(MAX_NODES * MAX_NODES)
+  private readonly sysB = new Float64Array(MAX_NODES * 3)
+  private readonly elimA = new Float64Array(MAX_NODES * MAX_NODES)
+  private readonly elimB = new Float64Array(MAX_NODES * 3)
+  private readonly sol = new Float64Array(MAX_NODES * 3)
+  private readonly nodeBuf: number[] = [0, 0, 0, 0]
 
   /** Bin samples `(t_i, c_i)` (colors three per sample) with weights `w_i`; `t` in `[0, 1]`. */
   constructor(t: Float64Array, c: Float64Array, w: Float64Array) {
@@ -183,38 +190,95 @@ export class BinnedProfile {
    */
   solve(nodes: readonly number[]): { sse: number; x: number[][] } | null {
     const m = nodes.length
-    const a = zeroMat()
-    const b = zeroRhs()
+    const sse = this.fit(nodes, m)
+    if (!Number.isFinite(sse)) return null
+    const x: number[][] = []
+    for (let i = 0; i < m; i++) {
+      x.push([
+        this.sol[3 * i] + this.mean[0],
+        this.sol[3 * i + 1] + this.mean[1],
+        this.sol[3 * i + 2] + this.mean[2],
+      ])
+    }
+    return { sse, x }
+  }
+
+  /**
+   * {@link solve}'s residual for the first `m` of `nodes`, its solution (centered)
+   * left in `sol`; NaN when singular. Allocates nothing: the scan calls it for
+   * every grid position. The arithmetic is {@link solveSmall}'s, step for step.
+   */
+  private fit(nodes: ArrayLike<number>, m: number): number {
+    const a = this.sysA
+    const b = this.sysB
     const pre = this.prefix
-    const s = new Float64Array(MOMENTS)
+    const W = MAX_NODES
+    a.fill(0)
+    b.fill(0)
     for (let i = 0; i < m - 1; i++) {
       const lo = nodes[i] * MOMENTS
       const hi = nodes[i + 1] * MOMENTS
-      for (let k = 0; k < MOMENTS; k++) s[k] = pre[hi + k] - pre[lo + k]
+      const s0 = pre[hi] - pre[lo]
+      const s1 = pre[hi + 1] - pre[lo + 1]
+      const s2 = pre[hi + 2] - pre[lo + 2]
       const ta = tau(nodes[i])
       const tb = tau(nodes[i + 1])
       const l = tb - ta
       const l2 = l * l
-      a[i][i] += (tb * tb * s[0] - 2 * tb * s[1] + s[2]) / l2
-      const off = ((ta + tb) * s[1] - ta * tb * s[0] - s[2]) / l2
-      a[i][i + 1] += off
-      a[i + 1][i] += off
-      a[i + 1][i + 1] += (ta * ta * s[0] - 2 * ta * s[1] + s[2]) / l2
+      a[i * W + i] += (tb * tb * s0 - 2 * tb * s1 + s2) / l2
+      const off = ((ta + tb) * s1 - ta * tb * s0 - s2) / l2
+      a[i * W + i + 1] += off
+      a[(i + 1) * W + i] += off
+      a[(i + 1) * W + i + 1] += (ta * ta * s0 - 2 * ta * s1 + s2) / l2
       for (let k = 0; k < 3; k++) {
-        b[i][k] += (tb * s[3 + k] - s[6 + k]) / l
-        b[i + 1][k] += (s[6 + k] - ta * s[3 + k]) / l
+        const y0 = pre[hi + 3 + k] - pre[lo + 3 + k]
+        const y1 = pre[hi + 6 + k] - pre[lo + 6 + k]
+        b[i * 3 + k] += (tb * y0 - y1) / l
+        b[(i + 1) * 3 + k] += (y1 - ta * y0) / l
       }
     }
-    for (let i = 0; i < m; i++) a[i][i] += 1e-9
-    const x = solveSmall(a, b, m)
-    if (x === null) return null
+    for (let i = 0; i < m; i++) a[i * W + i] += 1e-9
+    // Gaussian elimination with partial pivoting (the last of equal pivots) on copies.
+    const ea = this.elimA
+    const eb = this.elimB
+    ea.set(a)
+    eb.set(b)
+    for (let i = 0; i < m; i++) {
+      let piv = i
+      for (let r = i + 1; r < m; r++)
+        if (totalGe(Math.abs(ea[r * W + i]), Math.abs(ea[piv * W + i]))) piv = r
+      if (Math.abs(ea[piv * W + i]) < 1e-12) return NaN
+      if (piv !== i) {
+        for (let c = 0; c < W; c++) {
+          const t = ea[i * W + c]
+          ea[i * W + c] = ea[piv * W + c]
+          ea[piv * W + c] = t
+        }
+        for (let k = 0; k < 3; k++) {
+          const t = eb[i * 3 + k]
+          eb[i * 3 + k] = eb[piv * 3 + k]
+          eb[piv * 3 + k] = t
+        }
+      }
+      for (let r = i + 1; r < m; r++) {
+        const f = ea[r * W + i] / ea[i * W + i]
+        if (f === 0) continue
+        for (let c = i; c < m; c++) ea[r * W + c] -= f * ea[i * W + c]
+        for (let k = 0; k < 3; k++) eb[r * 3 + k] -= f * eb[i * 3 + k]
+      }
+    }
+    const x = this.sol
+    for (let i = m - 1; i >= 0; i--) {
+      for (let k = 0; k < 3; k++) {
+        let s = eb[i * 3 + k]
+        for (let c = i + 1; c < m; c++) s -= ea[i * W + c] * x[c * 3 + k]
+        x[i * 3 + k] = s / ea[i * W + i]
+      }
+    }
     let explained = 0
     for (let i = 0; i < m; i++)
-      explained += x[i][0] * b[i][0] + x[i][1] * b[i][1] + x[i][2] * b[i][2]
-    const sse = pre[(OFFSET_STEPS + 1) * MOMENTS + 9] - explained
-    if (!Number.isFinite(sse)) return null
-    const colors = x.map((v) => [v[0] + this.mean[0], v[1] + this.mean[1], v[2] + this.mean[2]])
-    return { sse, x: colors }
+      explained += x[3 * i] * b[3 * i] + x[3 * i + 1] * b[3 * i + 1] + x[3 * i + 2] * b[3 * i + 2]
+    return pre[(OFFSET_STEPS + 1) * MOMENTS + 9] - explained
   }
 
   /**
@@ -223,19 +287,37 @@ export class BinnedProfile {
    * on a tie. Null when every candidate is singular or none remains.
    */
   scan(fixed: readonly number[], lo: number, hi: number): KnotFit | null {
-    let best: KnotFit | null = null
+    const inner = fixed.toSorted((p, q) => p - q)
+    const nodes = this.nodeBuf
+    const m = inner.length + 3
+    let bestJ = -1
     let bestSse = 0
     for (let j = lo; j <= hi; j++) {
-      if (fixed.includes(j)) continue
-      const nodes = [0, ...fixed, j, OFFSET_STEPS + 1].toSorted((p, q) => p - q)
-      const fit = this.solve(nodes)
-      if (fit === null) continue
-      if (best === null || fit.sse < bestSse) {
-        best = { j, nodes, x: fit.x }
-        bestSse = fit.sse
+      if (inner.includes(j)) continue
+      // [0, ...fixed, j, end], sorted.
+      let k = 0
+      nodes[k++] = 0
+      let placed = false
+      for (const f of inner) {
+        if (!placed && j < f) {
+          nodes[k++] = j
+          placed = true
+        }
+        nodes[k++] = f
+      }
+      if (!placed) nodes[k++] = j
+      nodes[k++] = OFFSET_STEPS + 1
+      const sse = this.fit(nodes, m)
+      if (!Number.isFinite(sse)) continue
+      if (bestJ < 0 || sse < bestSse) {
+        bestJ = j
+        bestSse = sse
       }
     }
-    return best
+    if (bestJ < 0) return null
+    const best = [0, ...inner, bestJ, OFFSET_STEPS + 1].toSorted((p, q) => p - q)
+    const fit = this.solve(best)
+    return fit === null ? null : { j: bestJ, nodes: best, x: fit.x }
   }
 }
 
