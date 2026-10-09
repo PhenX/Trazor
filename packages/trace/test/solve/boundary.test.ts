@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { faceRings, polygonArea, ringPolygon } from '../../src/planar/rings'
 import { OUTSIDE } from '../../src/planar/types'
 import type { FaceFill, PlanarMap, PremultipliedImage } from '../../src/planar/types'
 import { BandProblem, buildUnknowns, pinFrame } from '../../src/solve/band'
@@ -520,6 +521,32 @@ describe('the fold guard in a solve', () => {
     expect(
       new FoldCounter(start, u0, u0.start, u1.start).newCrossings(u0.start, u1.start).length,
     ).toBe(0)
+  })
+})
+
+describe('the fold guard against a ring turned inside out', () => {
+  it('keeps a sliver the image erases on its own side', () => {
+    // The whole sliver reads lighter than the ground, so the solve pulls its
+    // two sides through each other into a simple ring of the opposite
+    // winding, which crosses nothing; the guard backs it off.
+    const w = 16
+    const h = 10
+    const map = mapOfLabels(labelsFrom(w, h, (x, y) => (y === 5 && x >= 3 && x <= 12 ? 1 : 0)))
+    const data = new Float32Array(4 * w * h)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const v = y === 5 && x >= 3 && x <= 12 ? 0.8 : 0.5
+        data.set([v, v, v, 1], 4 * (y * w + x))
+      }
+    }
+    const image: PremultipliedImage = { width: w, height: h, data }
+    const fills = fillsByFace(map.faces, [flat(0.5, 0.5, 0.5), BLACK])
+    const area = (m: PlanarMap): number[] =>
+      faceRings(m).flatMap((rs) => rs.map((r) => polygonArea(ringPolygon(m, r))))
+    const before = area(map)
+    solveBoundaries(map, image, fills)
+    const after = area(map)
+    for (let i = 0; i < before.length; i++) expect(Math.sign(after[i])).toBe(Math.sign(before[i]))
   })
 })
 
