@@ -448,6 +448,26 @@ describe('serialize with arcs', () => {
     expect(d).toMatch(/[Aa]\s*50\s+50/)
   })
 
+  it('writes a primitive the shape carries as its element, roundPrimitives off', () => {
+    const svg = serializeSvg(
+      {
+        width: 140,
+        height: 100,
+        unit: 'px',
+        shapes: [
+          {
+            commands: halfDisc(),
+            fill: '#000',
+            primitive: { kind: 'circle', cx: 70, cy: 50, r: 30.004 },
+          },
+        ],
+      },
+      { precision: 2, optimizePaths: true, roundPrimitives: false },
+    )
+    expect(svg).toContain('<circle cx="70" cy="50" r="30" fill="#000"/>')
+    expect(svg).not.toContain('<path')
+  })
+
   it('stays byte-identical (no arc) when roundPrimitives is off', () => {
     const off = serializeSvg(doc(halfDisc()), {
       precision: 2,

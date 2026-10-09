@@ -836,6 +836,10 @@ export function repairCrossings(map: PlanarMap, rings: readonly FaceRing[][], fi
 ```ts
 export interface SvgShape {
   commands: PathCommand[] // may contain several M…Z subpaths
+  // The exact whole-shape primitive the commands draw (one closed loop, no holes), when the
+  // tracer knows it: written as <circle>/<ellipse>/<rect> when optimizing, even with
+  // roundPrimitives off (nothing is approximated).
+  primitive?: Primitive
   fill?: string // '#rrggbb' | 'none' | 'url(#id)' (a doc.defs gradient)
   fillRule?: 'nonzero' | 'evenodd'
   fillOpacity?: number // [0,1]; emitted as fill-opacity when < 1 (a translucent face's ink at its alpha)
