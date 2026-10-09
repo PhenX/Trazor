@@ -150,6 +150,18 @@ follows.
   binary images by border following”, _CVGIP_ 30, 1985), wound by depth so `nonzero`
   paints what `evenodd` paints (W3C SVG 1.1 §11.3); and the rings of a union of faces, a
   stacked layer (`planar/regions.ts`).
+- **Sub-pixel measurement and junctions** (`planar/subpixel.ts`, `planar/junctions.ts`,
+  after inkvec's `inkvec-trace/src/{planar,coverage,contour,gradient,taper}.rs` and
+  `planar/junctions.rs`, cross-checked against an inkvec build to 10⁻⁶ px): each boundary
+  point slid along its normal to the ½ level of its two faces' coverage, unmixed by
+  least-squares projection over premultiplied RGBA, a clean step read off by inverting the
+  exact half-plane coverage of a pixel; its σ from the noise over the contrast and the
+  coverage gradient, inflated where the contour bends unlike an arc. The noise is the low
+  quantile of the absolute Laplacian (J. Immerkær, “Fast noise variance estimation”, _CVIU_
+  64(2), 1996), found by selection (C. A. R. Hoare, “Algorithm 65: Find”, _CACM_ 4(7), 1961).
+  Each junction goes to the weighted least-squares meeting point of its edges' end tangents
+  (lines, or quadratics where an end bends) and, where they meet tangentially, to where a
+  taper vanishes: a Kåsa circle (1976) held tangent to the through boundary.
 - **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
   optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
   search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The
