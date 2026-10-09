@@ -545,6 +545,16 @@ describe('band merge', () => {
     expect(gradientCount(m.labels, m.fills)).toBe(0)
   })
 
+  it('without gradients fits every region flat on its own and merges nothing', () => {
+    const w = 40
+    const h = 20
+    const m = merged(bandedRamp(w, h, 2), w, h, 0.5 / 255, { gradients: false })
+    expect(m.budget.spent).toBe(0)
+    expect(m.fills.every((f) => !isGradient(f.model))).toBe(true)
+    // Every band is still its own region, with its own fill.
+    expect(distinct(m.labels).length).toBe(distinct(bandedRamp(w, h, 2).labels).length)
+  })
+
   it('returns fills for a flat image', () => {
     const labels = new Int32Array(16)
     const m = mergeGradientBands(labels, new Float32Array(48), 4, 4, [0, 0, 0], 1 / 255, 1)

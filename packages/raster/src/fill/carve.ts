@@ -71,7 +71,8 @@ const fr = Math.fround
  * `inkRgb` the palette (three encoded sRGB values per ink), `sigmaNoise` the
  * per-channel sRGB noise, `lambda` the price of one editable number, `minSize` the
  * least cluster (raised to 4), and `detailSigma`, when not null, the noise for a
- * pixel whose 7 × 7 neighborhood is all its own label.
+ * pixel whose 7 × 7 neighborhood is all its own label. Without `gradients` a
+ * parent is refitted flat.
  */
 export function carveResidualFeatures(
   labels: Int32Array,
@@ -85,6 +86,7 @@ export function carveResidualFeatures(
   lambda: number,
   minSize: number,
   detailSigma: number | null = null,
+  gradients = true,
 ): number {
   const n = w * h
   if (fills.length === 0 || n === 0) return 0
@@ -105,7 +107,7 @@ export function carveResidualFeatures(
     parents,
   )
   if (minted === 0) return 0
-  refitParents(labels, rgb, w, h, palette, fills, parents, sigmaNoise, lambda)
+  refitParents(labels, rgb, w, h, palette, fills, parents, sigmaNoise, lambda, gradients)
   return minted
 }
 
@@ -320,8 +322,8 @@ function mintFeatures(
 
 /**
  * Stage 3: refit every parent without the pixels that were never its own, by full
- * model selection over its remaining pixels, with the evidence recomputed on the
- * new labels.
+ * model selection over its remaining pixels (flat only without `gradients`), with
+ * the evidence recomputed on the new labels.
  */
 function refitParents(
   labels: Int32Array,
@@ -333,6 +335,7 @@ function refitParents(
   parents: readonly number[],
   sigmaNoise: number,
   lambda: number,
+  gradients: boolean,
 ): void {
   const pure = fillEvidence(rgb, w, h, labels, inksOf(palette, fills), sigmaNoise)
   for (const l of parents) {
@@ -346,6 +349,7 @@ function refitParents(
         (p) => pure[p] === 1,
         sigmaNoise,
         lambda,
+        gradients,
       ),
     )
   }

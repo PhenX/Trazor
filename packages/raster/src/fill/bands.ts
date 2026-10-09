@@ -172,6 +172,13 @@ export interface MergeOptions {
   sameClass?: ((a: number, b: number) => boolean) | null
   /** The work cap; by default `new MergeBudget(w, h)`. Left as the loop leaves it. */
   budget?: MergeBudget
+  /**
+   * Whether a region may take a gradient (default on). Without, every component
+   * is fitted flat on its own evidence and nothing merges (no union can be a
+   * gradient); the write-back still gives each region with an interior of its
+   * own its own color.
+   */
+  gradients?: boolean
 }
 
 /** What {@link mergeGradientBands} returns. */
@@ -208,6 +215,7 @@ export function mergeGradientBands(
 ): BandMerge {
   const innerBlends = options.regionRecovery ?? true
   const sameClass = options.sameClass ?? null
+  const gradients = options.gradients ?? true
   const budget = options.budget ?? new MergeBudget(w, h)
   const nInk = Math.floor(inkRgb.length / 3)
   let nPal = nInk
@@ -235,7 +243,7 @@ export function mergeGradientBands(
 
   // 2. Per-component fits; 3. the greedy agglomeration; 4. the write-back.
   const merge = new Agglomeration(
-    { rgb, w, h, sigmaNoise, lambda, pure, partner },
+    { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients },
     comp,
     members,
     compLabel,
@@ -246,7 +254,7 @@ export function mergeGradientBands(
     innerBlends,
     budget,
   )
-  merge.run()
+  if (gradients) merge.run()
   const { fills, inks } = merge.writeBack(labels, nInk, nPal)
   return { fills, ink: inks, budget }
 }
@@ -362,6 +370,8 @@ interface UnionFitter {
   readonly pure: Uint8Array
   /** Per pixel, three slots: the pixels whose inks it is a blend towards ({@link blendPartners}). */
   readonly partner: Uint32Array
+  /** Whether a fill may be a gradient. */
+  readonly gradients: boolean
 }
 
 /** One cached union fit of the pair `a < b`. */
@@ -437,11 +447,11 @@ class Agglomeration {
    * in the union testifies too.
    */
   private fit(pa: Int32Array, pb: Int32Array, a: number, b: number, inner: boolean): FillFit {
-    const { rgb, w, h, sigmaNoise, lambda, pure, partner } = this.fitter
+    const { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients } = this.fitter
     const group = this.group
     const member: PixelTest = (p) => group[p] === a || group[p] === b
     const evidence: PixelTest = (p) => pure[p] === 1 || (inner && allInside(partner, p, member))
-    return fitUnion(rgb, w, h, pa, pb, member, evidence, sigmaNoise, lambda)
+    return fitUnion(rgb, w, h, pa, pb, member, evidence, sigmaNoise, lambda, gradients)
   }
 
   private key(a: number, b: number): number {
