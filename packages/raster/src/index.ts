@@ -45,3 +45,4 @@ export {
 export type { EnclosedComponent, MergeOptions } from './regions'
 export { despeckleMaskGuided } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'
+export * as ink from './ink/index'

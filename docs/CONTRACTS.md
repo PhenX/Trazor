@@ -526,6 +526,50 @@ bimodal histogram lands between the modes; `zhangSuenThin` reduces a 5px-thick
 line to a connected 1px path; `mergeSmallRegions` removes single-pixel speckles;
 `resizeToFit` halves cleanly and preserves mean color within 1/255.
 
+### The ink front end (`ink` namespace)
+
+```ts
+// inkvec's front end, ported (packages/raster/src/ink): the MDL palette and its labels, the region
+// passes and the residual noise. rgb: Float32Array, 3 per pixel, encoded sRGB over white.
+export namespace ink {
+  function extractPaletteMdl(
+    rgb,
+    w,
+    h,
+    mergeDistance?,
+    maxColors?,
+    ev?: PaletteEvidence,
+    ids?,
+  ): Palette
+  function labelImage(rgb, palette: Palette, ids?): Int32Array // nearest ink per pixel
+  function paletteEvidence(sigmaNoise: number, pixels: number, soft: boolean): PaletteEvidence
+  function isSoftIntake(
+    edgeWidth: number,
+    ringing: number,
+    lossy: boolean,
+    w: number,
+    h: number,
+  ): boolean
+  function despeckle(labels: Int32Array, w, h, minSize): void
+  function absorbBlendSlivers(
+    labels,
+    rgb,
+    alpha: Float32Array | null,
+    w,
+    h,
+    inkRgb: Float64Array,
+    sigma,
+  ): number
+  function reassignBlendPixels(labels, rgb, alpha, w, h, inkRgb, sigma): number
+  function residualSigma(rgb, labels, w, h, inkRgb): number // the noise against the labels
+  function splitComponents(
+    labels,
+    w,
+    h,
+  ): { faces: Int32Array; faceLabel: Int32Array; count: number }
+}
+```
+
 ## @trazor/trace (for reference — implemented by the main agent)
 
 Labels/masks in, `PathCommand[]` out: the tracer never reads pixel colors and never emits SVG text. The complete export
@@ -1200,6 +1244,9 @@ export function vectorize(
     withDocument?: boolean
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
+    // The planar chain's front end for opaque color images: 'classic' (default) or 'ink', inkvec's MDL
+    // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`); in development.
+    frontEnd?: 'classic' | 'ink'
     // Called with the planar map after each geometry stage of the planar chain (`lattice`,
     // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a probe for the
     // stage probes (scripts/eval/gt/stages.ts --chain planar). The map is live; copy what you keep.
