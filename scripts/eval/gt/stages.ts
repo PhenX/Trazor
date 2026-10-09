@@ -64,6 +64,7 @@ import { alphaCoverageField } from '@trazor/raster'
 import { extractGeometry, fitArcs } from '@trazor/svg'
 import {
   extractChains,
+  OUTSIDE,
   fitChains,
   negatedField,
   optimalPolyline,
@@ -653,8 +654,9 @@ const classic: ProbeChain = async (image, settings) => {
 /**
  * The planar-map chain (`vectorize(…, { geometry: 'planar' })`), read through
  * its stage hook: every edge's points after each stage that moves them, and the
- * fitted edges sampled every {@link SAMPLE_STEP}. Every planar edge separates
- * two faces, so every point is meant to lie on a true edge, painted or not. A
+ * fitted edges sampled every {@link SAMPLE_STEP}. Every planar edge but the
+ * image frame separates two faces, so every point is meant to lie on a true
+ * edge, painted or not. A
  * centerline image takes the classic chain.
  */
 const planar: ProbeChain = async (image, settings) => {
@@ -671,16 +673,20 @@ const planar: ProbeChain = async (image, settings) => {
       const toSource = 1 / s.supersample
       const pad = (map.width * toSource - image.width) / 2
       const pts = new OwnedPoints()
+      // The image frame (an edge against OUTSIDE) is no edge of the drawing.
+      const drawn = map.edges.map((e) => e.left !== OUTSIDE && e.right !== OUTSIDE)
       if (fits) {
-        for (const f of fits) {
+        fits.forEach((f, k) => {
+          if (!drawn[k]) return
           const cmds: PathCommand[] = [{ type: 'M', x: f.x0, y: f.y0 }, ...f.segments]
           samplePath(cmds, toSource, SAMPLE_STEP, (x, y) => pts.add(x, y, -1))
-        }
+        })
       } else {
-        for (const e of map.edges) {
+        map.edges.forEach((e, k) => {
+          if (!drawn[k]) return
           for (let i = 0; i < e.points.length; i += 2)
             pts.add(e.points[i] * toSource, e.points[i + 1] * toSource, -1)
-        }
+        })
       }
       pts.shift(-pad)
       snaps.push({ name: stage, pts })
