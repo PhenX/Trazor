@@ -8,7 +8,7 @@ import {
   nowMs,
   rgbToHex,
   rgbToOklab,
-  scalePathCommands,
+  placePathCommands,
 } from '@trazor/core'
 import type {
   BinaryMask,
@@ -79,6 +79,9 @@ import {
   TRANSLUCENT_MAX_ALPHA,
   TRANSLUCENT_MIN_ALPHA,
   zhangSuenThin,
+  BORDER_PAD,
+  padImage,
+  touchesBorder,
 } from '@trazor/raster'
 import type { EnclosedComponent } from '@trazor/raster'
 import {
@@ -593,11 +596,11 @@ function forWorkingGrid(s: VectorizeSettings, scale: number): VectorizeSettings 
   }
 }
 
-/** A gradient paint in user space scaled by `s` about the origin. */
-function scaleGradient<T extends GradientPaint>(g: T, s: number): T {
+/** A gradient paint in user space scaled by `s` about the origin, then moved by `d` on both axes. */
+function placeGradient<T extends GradientPaint>(g: T, s: number, d: number): T {
   return g.kind === 'linear'
-    ? { ...g, x1: g.x1 * s, y1: g.y1 * s, x2: g.x2 * s, y2: g.y2 * s }
-    : { ...g, cx: g.cx * s, cy: g.cy * s, r: g.r * s }
+    ? { ...g, x1: g.x1 * s + d, y1: g.y1 * s + d, x2: g.x2 * s + d, y2: g.y2 * s + d }
+    : { ...g, cx: g.cx * s + d, cy: g.cy * s + d, r: g.r * s }
 }
 
 /**
@@ -733,7 +736,19 @@ export async function vectorize(
 
   // ---- preprocess (reused across runs when the image + preprocess key match) ----
   run.stage('preprocess')
-  const preKey = preKeyOf(settings)
+  // In the planar chain, transparent art reaching the canvas edge is traced on
+  // a canvas a margin larger (`pad` working px), so its outline closes round
+  // it and the hard edge the canvas cuts is measured as an edge; the geometry
+  // moves back by the margin afterwards.
+  const pad =
+    opts?.geometry === 'planar' &&
+    settings.background !== 'custom' &&
+    !settings.omitBackground &&
+    ctx?.edgeHint === undefined &&
+    touchesBorder(source)
+      ? BORDER_PAD
+      : 0
+  const preKey = `${preKeyOf(settings)}|${pad}`
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
@@ -745,6 +760,7 @@ export async function vectorize(
     run.progress(1)
   } else {
     let img = resizeToFit(source, settings.maxDimension)
+    if (pad > 0) img = padImage(img, pad)
     run.progress(0.3)
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
@@ -775,8 +791,8 @@ export async function vectorize(
   }
   const { width, height } = image
   // The SVG's size: the working image before any supersampling enlarged it.
-  const outWidth = width / scale
-  const outHeight = height / scale
+  const outWidth = width / scale - 2 * pad
+  const outHeight = height / scale - 2 * pad
   await run.tick()
 
   if (run.tracing) {
@@ -836,6 +852,7 @@ export async function vectorize(
     roundPrimitives,
     compact: compactPaths,
     scale: 1 / scale,
+    offset: -pad,
   }
   // Helper payloads are keyed by the same identities the StageCache uses, so a
   // warm run finds its rings and polygons in the helper that owns those units.
@@ -875,18 +892,19 @@ export async function vectorize(
     )
   }
 
-  if (scale > 1) {
-    // Back to the working size: the geometry was traced `scale` times larger.
+  if (scale > 1 || pad > 0) {
+    // Back to the source canvas: the geometry was traced `scale` times larger,
+    // on a canvas `pad` px larger on every side.
     const s = 1 / scale
     for (let i = 0; i < shapes.length; i++) {
       const shape = shapes[i]
       shapes[i] = {
         ...shape,
-        commands: scalePathCommands(shape.commands, s),
+        commands: placePathCommands(shape.commands, s, -pad, -pad),
         ...(shape.strokeWidth !== undefined ? { strokeWidth: shape.strokeWidth * s } : {}),
       }
     }
-    for (let i = 0; i < defs.length; i++) defs[i] = scaleGradient(defs[i], s)
+    for (let i = 0; i < defs.length; i++) defs[i] = placeGradient(defs[i], s, -pad)
   }
 
   if (run.tracing) {
@@ -1467,7 +1485,8 @@ async function colorPipeline(
       // same on press at any trace resolution; a px-unit trap is already viewBox px.
       // A supersampled run traces `supersample` working pixels per viewBox pixel.
       const ss = settings.supersample
-      const trapScale = mmPerPx(image.width / ss, settings.widthMm)
+      // The output canvas: the working image less any border margin.
+      const trapScale = mmPerPx(image.width / ss + 2 * helperCtx.serialize.offset, settings.widthMm)
       const trapPx =
         settings.gapFill <= 0
           ? 0

@@ -168,7 +168,7 @@ follows.
   found and repaired.
 - **The fit's core** (`fit/cost.ts`, `roots.ts`, `curves.ts`, `cubicfit.ts`, `circle.ts`,
   `objective.ts`, `tangents.ts`, after inkvec's `inkvec-fit/src/{lib,cost,curves,candidates,
-  tangents}.rs`, cross-checked against an inkvec build): the description length
+tangents}.rs`, cross-checked against an inkvec build): the description length
   `0.5·χ² + λ·params` with σ-weighted χ² and the O(1) total-least-squares line residual from
   prefix sums (K. Pearson, “On lines and planes of closest fit”, _Phil. Mag._ 2, 1901); the
   line-only optimal polygon of P. Selinger, “Potrace” (2003) §2.2 under that cost; G1 cubics
@@ -180,8 +180,7 @@ follows.
 - **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
   `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
   circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
-  Taubin (_IEEE PAMI_ 13(11), 1991) and N. Chernov (_Circular and Linear Regression_, CRC,
-  2010) refined to the orthogonal distance (S. J. Ahn, W. Rauh & H.-J. Warnecke, _Pattern
+  Taubin (_IEEE PAMI_ 13(11), 1991) and N. Chernov (_Circular and Linear Regression_, CRC, 2010) refined to the orthogonal distance (S. J. Ahn, W. Rauh & H.-J. Warnecke, _Pattern
   Recognition_ 34, 2001); ellipses from the direct conic fit of R. Halíř & J. Flusser
   (WSCG 1998) likewise refined; rounded rectangles on the exact Minkowski distance;
   Levenberg–Marquardt (K. Levenberg 1944, D. Marquardt 1963); the minimum-area bounding
@@ -281,6 +280,11 @@ follows.
   while large regions merge only when near-identical. The `mergeSizeBias` option
   of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
   close-but-distinct dominant colors apart instead of averaging them into one.
+- **logolabs, “inkvec” — border pad (Apache-2.0).** `crates/inkvec-cli/src/border.rs`: a
+  transparent raster whose art reaches its outermost ring of pixels is traced on a canvas
+  2 px larger, its new pixels transparent, and the geometry moved back by the margin
+  (`packages/raster/src/border.ts`, applied by the planar chain in `packages/engine/src/native.ts`), so the art
+  ends on a closed outline and its edges are refined where the frame used to cut them.
 - **Yağız Aksoy, Tunç Ozan Aydın, Aljoša Smolić & Marc Pollefeys, “Unmixing-Based
   Soft Color Segmentation for Image Manipulation”, _ACM TOG_ 36(2), 2017, §5.** A
   color model grows only from pixels the current colors cannot explain as a

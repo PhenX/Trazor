@@ -80,6 +80,13 @@ supersample: number
 // path.ts — the same path scaled by `s` about the origin: coordinates and arc radii multiplied,
 // an arc's rotation and flags kept.
 export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[]
+// The same path scaled by `s` about the origin, then moved by (dx, dy); arc radii scale.
+export function placePathCommands(
+  commands: readonly PathCommand[],
+  s: number,
+  dx: number,
+  dy: number,
+): PathCommand[]
 ```
 
 ## @trazor/core — color (CIEDE2000)
@@ -140,6 +147,15 @@ export function resizeToFit(image: RasterImage, maxDimension: number): RasterIma
 // the two samples it lies between, so a hard edge rings no new color (the engine bounds color and
 // grayscale runs; bw and centerline threshold the plain cubic). Returns the input object at factor ≤ 1.
 export function upscaleImage(image: RasterImage, factor: number, bounded?: boolean): RasterImage
+// border.ts — art touching the canvas edge (after inkvec's border.rs). touchesBorder: some pixel is not
+// fully opaque and some pixel of the outermost ring has alpha > 0. padImage: the image embedded at
+// (pad, pad) in a canvas `pad` px larger on every side, the new pixels fully transparent. The planar
+// chain traces such art on a BORDER_PAD (2 px) margin — unless the background is custom,
+// omitBackground is set or an edge hint is given — and moves the geometry back by the margin, so the
+// output keeps the source canvas and the hard edge the canvas cuts is measured as an edge.
+export const BORDER_PAD: number // 2
+export function touchesBorder(image: RasterImage): boolean
+export function padImage(image: RasterImage, pad: number): RasterImage
 // Bilinear single-channel resize (e.g. an edge hint → the working resolution).
 export function resizeGray(image: GrayImage, width: number, height: number): GrayImage
 

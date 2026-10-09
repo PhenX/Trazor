@@ -303,6 +303,14 @@ class OwnedPoints {
     this.at.push(ax, ay)
     this.owner.push(owner)
   }
+  /** Move every point by `d` on both axes (back from a padded working canvas). */
+  shift(d: number): void {
+    if (d === 0) return
+    for (let i = 0; i < this.xy.length; i++) {
+      this.xy[i] += d
+      this.at[i] += d
+    }
+  }
 }
 
 /** A filled outline in paint order, tagged with its owner. */
@@ -570,7 +578,10 @@ const classic: ProbeChain = async (image, settings) => {
   const doc = res.document
   if (!work || !doc) throw new Error('the engine kept no working image or document')
   // Working px (rings, chains) and SVG units (shapes) to source px.
-  const workToSource = image.width / work.width
+  // A transparent image touching its border is traced with a margin on every
+  // side (working px = source px · supersample, plus the margin).
+  const pad = (work.width / s.supersample - image.width) / 2
+  const workToSource = 1 / s.supersample
   const svgToSource = image.width / res.width
   const lattice = new OwnedPoints()
   const refined = new OwnedPoints()
@@ -607,11 +618,15 @@ const classic: ProbeChain = async (image, settings) => {
       }
       paint = paintMap(painted, res.width, res.height, image.width, image.height)
     } else {
-      const factor = work.width / res.width
+      const factor = s.supersample
       const alpha = cache.alpha ?? null
       addChains(entry, work, alpha, s, factor, workToSource, lattice, refined, fitted)
     }
   }
+
+  lattice.shift(-pad)
+  refined.shift(-pad)
+  if (s.mode !== 'bw' && s.layering !== 'stacked') fitted.shift(-pad)
 
   // The written file: each filled element in document (paint) order.
   const geometry = extractGeometry(res.svg)
@@ -653,7 +668,8 @@ const planar: ProbeChain = async (image, settings) => {
     withDocument: true,
     geometry: 'planar',
     onPlanarStage: (stage, map, fits) => {
-      const toSource = image.width / map.width
+      const toSource = 1 / s.supersample
+      const pad = (map.width * toSource - image.width) / 2
       const pts = new OwnedPoints()
       if (fits) {
         for (const f of fits) {
@@ -666,6 +682,7 @@ const planar: ProbeChain = async (image, settings) => {
             pts.add(e.points[i] * toSource, e.points[i + 1] * toSource, -1)
         }
       }
+      pts.shift(-pad)
       snaps.push({ name: stage, pts })
     },
   })
