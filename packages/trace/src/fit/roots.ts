@@ -567,3 +567,62 @@ export function solve3(m: ArrayLike<number>, r: ArrayLike<number>, out: Float64A
   out[2] = det3(m[0], m[1], r[0], m[3], m[4], r[1], m[6], m[7], r[2]) / d
   return true
 }
+
+/** Scale applied to arguments outside the range where {@link hypotKernel} is exact enough. */
+const HYPOT_SCALE = 2 ** -600
+/** Above this the squares could overflow: arguments are scaled down. */
+const HYPOT_LARGE = 2 ** 511
+/** Below this the squares could underflow: arguments are scaled up. */
+const HYPOT_TINY = 2 ** -511
+/** A smaller argument below this fraction of the larger cannot change the sum. */
+const HYPOT_EPS = 2 ** -54
+
+/**
+ * `√(ax² + ay²)` for `ax ≥ ay ≥ 0` whose squares neither overflow nor underflow:
+ * the rounded square root corrected by one Newton step whose residual is
+ * computed from exact products (Borges 2019, "An improved algorithm for
+ * hypot(a,b)", arXiv:1904.09481, the corrected algorithm without a fused
+ * multiply-add).
+ */
+function hypotKernel(ax: number, ay: number): number {
+  let h = Math.sqrt(ax * ax + ay * ay)
+  let t1: number
+  let t2: number
+  if (h <= 2 * ay) {
+    const delta = h - ay
+    t1 = ax * (2 * delta - ax)
+    t2 = (delta - 2 * (ax - ay)) * delta
+  } else {
+    const delta = h - ax
+    t1 = 2 * delta * (ax - 2 * ay)
+    t2 = (4 * delta - ay) * ay + delta * delta
+  }
+  h -= (t1 + t2) / (2 * h)
+  return h
+}
+
+/**
+ * Rust's `f64::hypot` on glibc, bit for bit: `√(x² + y²)` without undue overflow
+ * or underflow, by {@link hypotKernel} with the arguments scaled out of the
+ * extreme ranges. Infinite when either argument is infinite, NaN for another NaN.
+ */
+export function hypot(x: number, y: number): number {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    if (Math.abs(x) === Infinity || Math.abs(y) === Infinity) return Infinity
+    return x + y
+  }
+  const fx = Math.abs(x)
+  const fy = Math.abs(y)
+  const ax = fx < fy ? fy : fx
+  const ay = fx < fy ? fx : fy
+  if (ax > HYPOT_LARGE) {
+    if (ay <= ax * HYPOT_EPS) return ax + ay
+    return hypotKernel(ax * HYPOT_SCALE, ay * HYPOT_SCALE) / HYPOT_SCALE
+  }
+  if (ay < HYPOT_TINY) {
+    if (ax >= ay / HYPOT_EPS) return ax + ay
+    return hypotKernel(ax / HYPOT_SCALE, ay / HYPOT_SCALE) * HYPOT_SCALE
+  }
+  if (ay <= ax * HYPOT_EPS) return ax + ay
+  return hypotKernel(ax, ay)
+}
