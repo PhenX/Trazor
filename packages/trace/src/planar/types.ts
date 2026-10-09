@@ -89,6 +89,16 @@ export interface PlanarMap {
 }
 
 /**
+ * An image in the core's color space: premultiplied encoded sRGB RGBA in
+ * `[0, 1]`, four values per pixel (`r·a, g·a, b·a, a`), row-major.
+ */
+export interface PremultipliedImage {
+  readonly width: number
+  readonly height: number
+  readonly data: Float32Array
+}
+
+/**
  * A face's paint as the core models it: premultiplied encoded sRGB in `[0, 1]`
  * and coverage alpha. `at`, when present, is a smooth fill (a gradient) read at
  * a point in pixel coordinates into `out[0..3]` (premultiplied r, g, b, a); the

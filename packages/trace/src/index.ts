@@ -55,9 +55,13 @@ export type {
   PlanarEdge,
   PlanarMap,
   PlanarNode,
+  PremultipliedImage,
 } from './planar/types'
 export { splitFaces } from './planar/faces'
 export { buildPlanarMap } from './planar/map'
 export { faceRings, faceNesting, ringPolygon as faceRingPolygon } from './planar/rings'
 export type { FaceNesting } from './planar/rings'
 export { regionRings, innerFaces } from './planar/regions'
+export { measureSubpixel, applySubpixel, refineSubpixel, imageNoise } from './planar/subpixel'
+export type { SubpixelMeasurement, SubpixelOptions } from './planar/subpixel'
+export { refineJunctions } from './planar/junctions'

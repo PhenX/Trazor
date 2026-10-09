@@ -761,6 +761,8 @@ export interface PlanarEdge { points; sigma; fixed: Uint8Array; left; right; sta
 // counter-clockwise on screen.
 export interface PlanarNode { x; y; ends: number[] }
 export interface PlanarMap { width; height; faces: Faces; edges: PlanarEdge[]; nodes: PlanarNode[] }
+// The core's image: premultiplied encoded sRGB RGBA in [0, 1], four floats per pixel.
+export interface PremultipliedImage { width; height; data: Float32Array }
 // A face's paint: premultiplied r, g, b and alpha; `at` evaluates a gradient at a point.
 export interface FaceFill { r; g; b; a; at?: (x, y, out: Float64Array) => void }
 // The fit's objective 0.5·χ² + λ·params, λ = ln(max(e, extent / precision)).
@@ -782,6 +784,17 @@ export function faceRingPolygon(map: PlanarMap, ring: FaceRing): Float64Array
 // The rings of the union of the faces with inRegion[face] = 1, the union on their left.
 export function regionRings(map: PlanarMap, inRegion: Uint8Array): FaceRing[]
 export function innerFaces(map: PlanarMap, ring: FaceRing): number[]
+// Sub-pixel: each non-fixed point moved ≤ 1 px along its normal to the ½ level of its two faces'
+// coverage (unmixed over premultiplied RGBA against fills[face]), with its σ; an edge against
+// OUTSIDE or a face without a fill is left as is. sigmaNoise defaults to imageNoise(image).
+export interface SubpixelOptions { sigmaNoise?; simplifyFaint? }
+export function measureSubpixel(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SubpixelMeasurement
+export function applySubpixel(map: PlanarMap, measured: SubpixelMeasurement): void
+export function refineSubpixel(map, image, fills, opts?): void // measure, then apply
+export function imageNoise(image: PremultipliedImage): number // per-channel σ, encoded sRGB units
+// Each node to where its edges' end tangents meet (or a taper vanishes), within 1.5 px and the
+// image; every incident edge end takes that one position and σ.
+export function refineJunctions(map: PlanarMap): void
 ```
 
 ## @trazor/svg
