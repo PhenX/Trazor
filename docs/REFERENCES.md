@@ -152,6 +152,27 @@ uses. Each file names the inkvec files it follows.
   residual against the labels, and the research label regularization by iterated conditional
   modes (J. Besag, “On the statistical analysis of dirty pictures”, _JRSS B_ 48(3), 1986).
 
+- **Fill models** (`fill/*.ts`, after inkvec's `inkvec-trace/src/gradient.rs` and
+  `gradient/{fit,fit/profile,stops,stops/knots,score,eval,evidence,svg,budget}.rs`, matching an
+  inkvec build on 648 corpus candidates to 10⁻⁶): each region's fill chosen among flat, linear
+  and radial (circular or elliptical) in linear light and in sRGB, with up to two interior
+  stops, by `½·χ² + λ·params` with the BIC price `λ = ½·ln n` (G. Schwarz, “Estimating the
+  dimension of a model”, _Ann. Statist._ 6(2), 1978) and a half-LSB dead zone in the residual;
+  only strictly interior, unblended pixels testify. The radial centre by variable projection
+  (G. H. Golub & V. Pereyra, “The differentiation of pseudo-inverses and nonlinear least
+  squares problems whose variables separate”, _SIAM J. Numer. Anal._ 10(2), 1973; L. Kaufman,
+  “A variable projection method for solving separable nonlinear least squares problems”,
+  _BIT_ 15, 1975) under Levenberg–Marquardt; interior stops by an exact binned knot scan
+  (D. J. Hudson, “Fitting segmented curves whose join points have to be estimated”, _JASA_
+  61, 1966; J. Bai & P. Perron, “Computation and analysis of multiple structural change
+  models”, _J. Appl. Econometrics_ 18, 2003) refined by majorize–minimize (D. R. Hunter &
+  K. Lange, “A tutorial on MM algorithms”, _Am. Stat._ 58(1), 2004) and Huber-weighted
+  iteratively reweighted least squares (P. J. Huber, _Ann. Math. Statist._ 35(1), 1964; P. W.
+  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977); gradient meshes as in G. Lecot & B.
+  Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
+  recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,
+  _CGF_ 44(2), 2025.
+
 ## Planar-map geometry core (packages/trace/src/planar, solve, fit)
 
 One geometry chain for every color mode, ported from inkvec (Apache-2.0, see
