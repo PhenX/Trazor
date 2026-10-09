@@ -801,6 +801,10 @@ export function refineJunctions(map: PlanarMap): void
 export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep? }
 export interface SolveReport { outcome: 'solved' | 'degenerate' | 'over-budget' | 'no-residual' | 'no-gain'; before; after; iters; moved; scale; parts; evals }
 export function solveBoundaries(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SolveReport
+// One boundary (interleaved points, per-point σ, px) fitted by the multimodel DP: absolute L/C/A
+// segments, an open run ending exactly at its last point, a closed one back at (x0, y0); forced
+// point indices are vertices, maxSpan caps a segment's points, postFit runs the post-fit passes.
+export function fitPolyline(points: Float64Array, sigma: Float64Array, closed: boolean, cfg: FitConfig, opts?: FitPolylineOptions): FittedEdge
 ```
 
 ## @trazor/svg
