@@ -2364,6 +2364,11 @@ async function fitChainsInHelpers(
   return { network, fits }
 }
 
+/** The primitive a planar chain's face draws when its ring is one whole-primitive edge. */
+function primitiveOf(face: FaceShape): Primitive | null {
+  return 'primitive' in face ? (face as PlanarFace).primitive : null
+}
+
 /**
  * Nested layering emission (inkvec `emit_color`, `crates/inkvec-cli/src/emit.rs`):
  * paint each planar face once as its outer ring, in containment order (a parent
@@ -2382,9 +2387,6 @@ function emitNestedFaces(
   usedPalette: string[],
   shapes: SvgShape[],
 ): void {
-  // The planar chain's faces carry the primitive a whole-primitive ring draws.
-  const primitiveOf = (face: FaceShape): Primitive | null =>
-    'primitive' in face ? (face as PlanarFace).primitive : null
   const children: number[][] = faces.map(() => [])
   const roots: number[] = []
   for (let i = 0; i < faces.length; i++) {

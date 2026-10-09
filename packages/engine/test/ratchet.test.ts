@@ -75,7 +75,7 @@ describe('planar ratchet: disks stay circles', () => {
 
 describe('planar ratchet: a disk is a circle in every layering', () => {
   for (const layering of ['stacked', 'cutout', 'nested'] as const) {
-    it(layering, async () => {
+    it(`${layering}`, async () => {
       const [cx, cy, r] = [15.3, 16.2, 6.5]
       const gray = render(32, 32, (x, y) => Math.hypot(x - cx, y - cy) < r)
       // The same coverage in blue on white.
