@@ -10,6 +10,7 @@ import type { GradientPaint, LabelMap, PathCommand, RasterImage } from '@trazor/
 import { hexToRgb } from '@trazor/core'
 import {
   buildPlanarMap,
+  innerFaces,
   faceNesting,
   faceRingPolygon,
   faceRings,
@@ -23,7 +24,9 @@ import {
   solveBoundaries,
   splitFaces,
 } from '@trazor/trace'
+import type { Primitive } from '@trazor/svg'
 import type {
+  EdgePrimitive,
   FaceFill,
   FaceNesting,
   FaceRing,
@@ -232,6 +235,78 @@ export function polylineFit(edge: PlanarEdge): FittedEdge {
 }
 
 /**
+ * A fitted whole-edge primitive as the element the serializer writes: a circle;
+ * an ellipse (its rotation in degrees, absent when zero); a rectangle, with its
+ * corner radius when rounded, only when its sides lie on the axes (a quarter
+ * turn swaps them) — the serializer's `<rect>` has no rotation, so a tilted one
+ * stays a path (null).
+ */
+export function svgPrimitive(p: EdgePrimitive): Primitive | null {
+  switch (p.kind) {
+    case 'circle':
+      return { kind: 'circle', cx: p.cx, cy: p.cy, r: p.r }
+    case 'ellipse': {
+      const angle = (p.rotation * 180) / Math.PI
+      return {
+        kind: 'ellipse',
+        cx: p.cx,
+        cy: p.cy,
+        rx: p.rx,
+        ry: p.ry,
+        ...(angle !== 0 ? { angle } : {}),
+      }
+    }
+    case 'rect': {
+      const quarters = p.rotation / (Math.PI / 2)
+      const k = Math.round(quarters)
+      if (Math.abs(quarters - k) > 1e-9) return null
+      const [w, h] = k % 2 === 0 ? [p.w, p.h] : [p.h, p.w]
+      const box = { x: p.cx - w / 2, y: p.cy - h / 2, width: w, height: h }
+      return p.r > 0 ? { kind: 'rrect', ...box, r: p.r } : { kind: 'rect', ...box }
+    }
+  }
+}
+
+/** A primitive scaled by `s` about the origin, then moved by `d` on both axes (as `placePathCommands`). */
+export function placePrimitive(p: Primitive, s: number, d: number): Primitive {
+  switch (p.kind) {
+    case 'circle':
+      return { kind: 'circle', cx: p.cx * s + d, cy: p.cy * s + d, r: p.r * s }
+    case 'ellipse':
+      return { ...p, cx: p.cx * s + d, cy: p.cy * s + d, rx: p.rx * s, ry: p.ry * s }
+    case 'rect':
+      return {
+        kind: 'rect',
+        x: p.x * s + d,
+        y: p.y * s + d,
+        width: p.width * s,
+        height: p.height * s,
+      }
+    case 'rrect':
+      return {
+        ...p,
+        x: p.x * s + d,
+        y: p.y * s + d,
+        width: p.width * s,
+        height: p.height * s,
+        r: p.r * s,
+      }
+    case 'polygon':
+      return { kind: 'polygon', points: p.points.map((q) => ({ x: q.x * s + d, y: q.y * s + d })) }
+  }
+}
+
+/**
+ * The exact primitive a face ring draws: its one closed edge's, when the fit
+ * described that edge as a whole primitive.
+ */
+export function ringPrimitive(ring: FaceRing, fits: readonly FittedEdge[]): Primitive | null {
+  if (ring.edges.length !== 1) return null
+  const prim = fits[ring.edges[0]].primitive
+  return prim === undefined ? null : svgPrimitive(prim)
+}
+
+/**
  * Positional uncertainty of a set-back point, in source pixels: loose, since it
  * is hidden, but the fit keeps within `τ·σ` (τ = 2) of it — half a source
  * pixel, so a run set back one pixel stays beneath the sheet over it.
@@ -430,13 +505,17 @@ function insidePolygon(x: number, y: number, poly: ArrayLike<number>): boolean {
  * follows; a ring fitted as two arcs has no polygon of its own end points.
  */
 function groupRings(
-  rings: readonly { commands: PathCommand[]; poly: Float64Array }[],
-): PathCommand[][] {
+  rings: readonly { commands: PathCommand[]; poly: Float64Array; primitive: Primitive | null }[],
+): { commands: PathCommand[]; primitive: Primitive | null }[] {
   const areas = rings.map((r) => polygonArea2(r.poly))
   const outers: number[] = []
   for (let i = 0; i < rings.length; i++) if (areas[i] < 0) outers.push(i)
   const groups = new Map<number, PathCommand[]>()
-  for (const o of outers) groups.set(o, [...rings[o].commands])
+  const holes = new Map<number, number>()
+  for (const o of outers) {
+    groups.set(o, [...rings[o].commands])
+    holes.set(o, 0)
+  }
   for (let h = 0; h < rings.length; h++) {
     if (areas[h] < 0) continue
     const x = rings[h].poly[0]
@@ -446,9 +525,14 @@ function groupRings(
       if (!insidePolygon(x, y, rings[o].poly)) continue
       if (best < 0 || -areas[o] < -areas[best]) best = o
     }
-    if (best >= 0) for (const c of rings[h].commands) groups.get(best)?.push(c)
+    if (best < 0) continue
+    for (const c of rings[h].commands) groups.get(best)?.push(c)
+    holes.set(best, (holes.get(best) ?? 0) + 1)
   }
-  return outers.map((o) => groups.get(o) as PathCommand[])
+  return outers.map((o) => ({
+    commands: groups.get(o) as PathCommand[],
+    primitive: holes.get(o) === 0 ? rings[o].primitive : null,
+  }))
 }
 
 /**
@@ -616,7 +700,7 @@ export function stackedLayers(
   order: readonly number[],
   islands: readonly { label: number; faces: number[] }[],
   setBack?: SetBack,
-): { label: number; shapes: PathCommand[][] }[] {
+): { label: number; shapes: { commands: PathCommand[]; primitive: Primitive | null }[] }[] {
   const { map } = geo
   const { faces, edges } = map
   const position = new Int32Array(Math.max(1, ...order.map((l) => l + 1))).fill(-1)
@@ -642,7 +726,10 @@ export function stackedLayers(
       adj[fill[e.right]++] = e.left
     }
   }
-  const out: { label: number; shapes: PathCommand[][] }[] = []
+  const out: {
+    label: number
+    shapes: { commands: PathCommand[]; primitive: Primitive | null }[]
+  }[] = []
   const inRegion = new Uint8Array(faces.count)
   const stack: number[] = []
   for (let k = 0; k < order.length; k++) {
@@ -669,6 +756,9 @@ export function stackedLayers(
         ? layerRingCommands(map, r, fits, (f) => paintLabel[f] !== own, setBack)
         : ringCommands(r, fits),
       poly: faceRingPolygon(map, r),
+      // A ring set back beneath a sheet above no longer draws its fit.
+      primitive:
+        setBack && paintLabel[innerFaces(map, r)[0]] !== own ? null : ringPrimitive(r, fits),
     }))
     out.push({ label: own, shapes: groupRings(rings) })
   }
@@ -678,6 +768,7 @@ export function stackedLayers(
     const rings = regionRings(map, inRegion).map((r) => ({
       commands: ringCommands(r, fits),
       poly: faceRingPolygon(map, r),
+      primitive: ringPrimitive(r, fits),
     }))
     out.push({ label: island.label, shapes: groupRings(rings) })
   }

@@ -84,7 +84,7 @@ describe('planar layerings over shared fitted edges', () => {
     for (let p = 0; p < labels.data.length; p++) paintLabel[geo.map.faces.ids[p]] = labels.data[p]
     const layers = stackedLayers(geo, fits, paintLabel, [0, 1, 2, 3], [])
     const area = (k: number): number =>
-      layers[k].shapes.reduce((s, cmds) => s + paintedArea(cmds), 0)
+      layers[k].shapes.reduce((s, sh) => s + paintedArea(sh.commands), 0)
     // The base covers every opaque pixel; each layer above covers itself and what it reaches.
     expect(area(0)).toBeCloseTo(labels.data.length - 1, 9)
     expect(area(1)).toBeCloseTo(pixels(1) + pixels(2) + pixels(3), 9)
@@ -202,7 +202,7 @@ describe('the planar chain against its image', () => {
     const ring = stackedLayers(geo, fits, paintLabel, [1, 0], [])[1]
     expect(ring.label).toBe(0)
     expect(ring.shapes.length).toBe(1)
-    expect(ring.shapes[0].filter((c) => c.type === 'M').length).toBe(2)
+    expect(ring.shapes[0].commands.filter((c) => c.type === 'M').length).toBe(2)
   })
 
   it('fits a set-back run as curves, not one line per point', () => {
