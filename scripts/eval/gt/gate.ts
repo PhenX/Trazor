@@ -6,21 +6,27 @@
  *        | --images <dir of PNGs, judged against themselves>)
  *        [--engine trazor|inkvec] [--exe <inkvec binary>] [--args "<inkvec flags>"]
  *        [--s key=value ...] [--geometry classic|planar] [--workers N] [--only <family|family/stem,…>] [--keep <dir>] [--out run.json]
- *   npx tsx scripts/eval/gt/gate.ts ab <base.json> <cand.json>
+ *   npx tsx scripts/eval/gt/gate.ts suite --out <dir> [--inkvec <inkvec checkout>] [--tiers 128ss,512ss,128ssop]
+ *        [--images <dir> ...] [run flags]
+ *   npx tsx scripts/eval/gt/gate.ts ab <base.json|dir> <cand.json|dir> [--top N]
  *   npx tsx scripts/eval/gt/gate.ts report <run.json>
  *
  * `run` traces in worker threads and caches each scored row on disk, keyed by
  * what decides it: for Trazor the hash of every engine source file plus the
  * settings overrides; for inkvec the executable's hash plus its flags; and the
  * tier and item. A rerun of an unchanged engine is free, and an A/B costs one
- * fresh run. `ab` pairs two runs item by item (see stats.ts) and prints each
- * axis's relative change, its bootstrap interval and verdict, then the items
- * that moved most. Corpus and sets: corpus.ts; metrics: score.ts.
+ * fresh run. `suite` runs every tier of the corpus (`--tiers`, the three by
+ * default) and every `--images` folder with the same flags, one run file each
+ * in `--out` (`<tier>.json`, `<folder name>.json`). `ab` pairs two runs item by
+ * item (see stats.ts) and prints each axis's relative change, its bootstrap
+ * interval and verdict, then the items that moved most; given two suite
+ * directories it pairs the runs by file name and ends with one verdict line
+ * per run. Corpus and sets: corpus.ts; metrics: score.ts.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import type { GtItem } from './corpus'
@@ -141,7 +147,7 @@ function summarize(run: Run): string {
   return lines.join('\n')
 }
 
-async function runSet(argv: string[]): Promise<void> {
+async function runSet(argv: string[]): Promise<Run> {
   const inkvecDir = arg(argv, '--inkvec') ?? process.env.INKVEC_DIR ?? ''
   const imageDir = arg(argv, '--images')
   if (!inkvecDir && !imageDir)
@@ -253,10 +259,65 @@ async function runSet(argv: string[]): Promise<void> {
     writeFileSync(out, JSON.stringify(run, null, 1))
   }
   process.stdout.write(`${summarize(run)}\n`)
+  return run
 }
 
+/** The tiers a suite runs when `--tiers` is not given. */
+const SUITE_TIERS = ['128ss', '512ss', '128ssop']
+
+/** Flags `suite` sets itself per run, with the value each takes. */
+const SUITE_FLAGS = new Set(['--tiers', '--images', '--out', '--tier'])
+
+async function suite(argv: string[]): Promise<void> {
+  const outDir = arg(argv, '--out')
+  if (!outDir) throw new Error('suite needs --out <dir>')
+  mkdirSync(outDir, { recursive: true })
+  const shared: string[] = []
+  const folders: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--images') folders.push(argv[i + 1])
+    if (SUITE_FLAGS.has(argv[i])) i++
+    else shared.push(argv[i])
+  }
+  const runs: [string, string[]][] = []
+  if (shared.includes('--inkvec') || process.env.INKVEC_DIR) {
+    const tiers = (arg(argv, '--tiers') ?? SUITE_TIERS.join(',')).split(',').filter(Boolean)
+    for (const t of tiers) runs.push([t, ['--tier', t]])
+  }
+  for (const f of folders) runs.push([basename(resolve(f)), ['--images', f]])
+  if (runs.length === 0) throw new Error('suite needs --inkvec <checkout> or --images <dir>')
+  for (const [name, flags] of runs) {
+    process.stdout.write(`\n== ${name}\n`)
+    await runSet([...shared, ...flags, '--out', join(outDir, `${name}.json`)])
+  }
+}
+
+/** One axis verdict as a short cell: `+` better, `=` non-inferior, `−` worse. */
+const MARK = { better: '+', 'non-inferior': '=', worse: '−' } as const
+
 function ab(argv: string[]): void {
-  const [bp, cp] = argv.filter((a) => !a.startsWith('--'))
+  const [bp, cp] = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'))
+  if (statSync(bp).isDirectory()) {
+    const names = readdirSync(bp)
+      .filter((f) => f.endsWith('.json') && existsSync(join(cp, f)))
+      .toSorted()
+    const lines: string[] = []
+    for (const f of names) {
+      process.stdout.write(`\n== ${f.slice(0, -5)}\n`)
+      const res = abPair(join(bp, f), join(cp, f), argv)
+      lines.push(
+        `${f.slice(0, -5).padEnd(12)}${res.map((r) => `${r.axis} ${MARK[r.verdict]}${(r.delta * 100).toFixed(1)}%`).join('  ')}`,
+      )
+    }
+    process.stdout.write(
+      `\nsuite (+ better, = non-inferior, − worse; Δ of the macro mean):\n${lines.join('\n')}\n`,
+    )
+    return
+  }
+  abPair(bp, cp, argv)
+}
+
+function abPair(bp: string, cp: string, argv: string[]): ReturnType<typeof compareRuns> {
   const base = JSON.parse(readFileSync(bp, 'utf8')) as Run
   const cand = JSON.parse(readFileSync(cp, 'utf8')) as Run
   const res = compareRuns(base.rows as unknown as MetricRow[], cand.rows as unknown as MetricRow[])
@@ -298,16 +359,18 @@ function ab(argv: string[]): void {
       .join('\n')}\n`,
   )
   void AXES
+  return res
 }
 
 const [cmd, ...rest] = process.argv.slice(2)
 if (cmd === 'run') await runSet(rest)
+else if (cmd === 'suite') await suite(rest)
 else if (cmd === 'ab') ab(rest)
 else if (cmd === 'report')
   process.stdout.write(`${summarize(JSON.parse(readFileSync(rest[0], 'utf8')) as Run)}\n`)
 else {
   process.stderr.write(
-    'usage: gate.ts run|ab|report …  (see the header of scripts/eval/gt/gate.ts)\n',
+    'usage: gate.ts run|suite|ab|report …  (see the header of scripts/eval/gt/gate.ts)\n',
   )
   process.exit(2)
 }

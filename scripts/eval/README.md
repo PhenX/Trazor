@@ -268,6 +268,9 @@ npm run eval:gt -- run --inkvec <inkvec checkout> --tier 128ss --out runs/base.j
 npm run eval:gt -- run --inkvec <inkvec checkout> --tier 128ss --engine inkvec --out runs/inkvec.json
 npm run eval:gt -- run --images <folder of PNGs> --out runs/mine.json   # no artist file: judged vs itself
 npm run eval:gt -- ab runs/base.json runs/cand.json
+# every tier plus the cartoon folder, one run file each; ab pairs two suites by file name
+npm run eval:gt -- suite --inkvec <inkvec checkout> --images <cartoons> --out runs/base
+npm run eval:gt -- ab runs/base runs/cand
 ```
 
 Per icon (`scripts/eval/gt/score.ts`): `de00` (mean CIEDE2000 against the artist at 1024 px,
@@ -281,7 +284,9 @@ identity (Trazor: the hash of every engine source file + settings; inkvec: the e
 hash + flags), so an A/B costs one fresh run. `ab` reports each axis's family-macro change
 with a paired, family-stratified bootstrap interval and a non-inferiority verdict
 (`scripts/eval/gt/stats.ts`), then the icons that moved most. `--only` takes families or
-single items (`--only lucide,simple-icons/cocos`).
+single items (`--only lucide,simple-icons/cocos`). `suite` runs the `128ss`, `512ss` and
+`128ssop` tiers (or `--tiers`) and each `--images` folder with the same flags; `ab` on two suite
+directories prints every pair and closes with one verdict line per tier.
 
 ### Stage probes — where the geometry goes wrong
 
@@ -290,8 +295,9 @@ measures every stage's geometry against the artist's true edges (an exact distan
 the artist's file rendered at 8-16×, `truth.ts`): the lattice points, the sub-pixel points, the
 fitted curves and the written SVG, each as mean / p95 / max distance in source pixels and the
 share beyond 0.25 px and 1 px. A stage that moves points away from the drawing shows at once.
-Chains register in `CHAINS` (`classic` is the current engine); the header comment documents
-the options.
+Chains register in `CHAINS` (`classic` is the current engine; `planar` reports every stage the
+planar chain's `onPlanarStage` hook passes, by its name); the header comment documents the
+options.
 
 ```bash
 npx tsx scripts/eval/gt/stages.ts --inkvec <inkvec checkout> --tier 128ss --workers 2
