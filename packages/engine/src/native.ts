@@ -113,7 +113,14 @@ import type {
   HelperUnitPaint,
 } from './protocol'
 import { sheetSetback } from './setback'
-import { cutoutRegions, nestedFaces, planarGeometry, polylineFit, stackedLayers } from './planar'
+import {
+  cutoutRegions,
+  nestedFaces,
+  planarGeometry,
+  polylineFit,
+  polylineSegments,
+  stackedLayers,
+} from './planar'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -1632,7 +1639,16 @@ async function colorPipeline(
         for (const p of isl.pixels) own.add(faces.ids[p])
         return { label: isl.label, faces: [...own].toSorted((a, b) => a - b) }
       })
-      const layers = stackedLayers(planar, planarFits, paintLabel, plan.order, islands)
+      // A hidden edge sits a source pixel beneath the sheet over it.
+      const ss = settings.supersample
+      const layers = stackedLayers(planar, planarFits, paintLabel, plan.order, islands, {
+        faceIds: faces.ids,
+        width: faces.width,
+        height: faces.height,
+        distance: ss,
+        ramp: 3 * ss,
+        fit: polylineSegments,
+      })
       startLayers(layers.length)
       for (const layer of layers) {
         // oxlint-disable-next-line no-await-in-loop

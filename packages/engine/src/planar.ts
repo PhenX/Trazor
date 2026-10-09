@@ -222,6 +222,13 @@ export function polylineFit(edge: PlanarEdge): FittedEdge {
   return { x0: p[0], y0: p[1], segments, closed: edge.closed, params: 2 * segments.length, chi2: 0 }
 }
 
+/** Line segments through interleaved points after the first. */
+export function polylineSegments(points: Float64Array): PathCommand[] {
+  const out: PathCommand[] = []
+  for (let i = 2; i < points.length; i += 2) out.push({ type: 'L', x: points[i], y: points[i + 1] })
+  return out
+}
+
 /** The planar map of a label map with its rings and nesting, ready for the geometry stages. */
 export interface PlanarGeometry {
   map: PlanarMap
@@ -371,6 +378,155 @@ function groupRings(rings: readonly PathCommand[][]): PathCommand[][] {
 }
 
 /**
+ * How a stacked layer's hidden edges are set back beneath the sheets above
+ * them. Where a sheet painted above a layer reaches the layer's outline, the
+ * two draw the same edge, and composited as independent coverages (Porter &
+ * Duff 1984) the lower sheet's paint shows in the upper sheet's anti-aliased
+ * rim. The lower sheet's edge there is hidden, so it moves `distance` px inward,
+ * beneath the upper sheet, wherever that sheet is at least two pixels deep, and
+ * eases back onto the shared edge over `ramp` px where it meets a visible edge.
+ */
+export interface SetBack {
+  /** The face of each pixel (the planar map's `faces.ids`). */
+  faceIds: Int32Array
+  width: number
+  height: number
+  /** How far a hidden edge sits beneath the sheet over it (px). */
+  distance: number
+  /** Arc length over which a set-back grows from nothing at a visible neighbour (px). */
+  ramp: number
+  /** Fits the set-back points (walk order) into segments from the first point. */
+  fit: (points: Float64Array) => PathCommand[]
+}
+
+/** The face of the pixel holding (x, y), or -1 outside the image. */
+function faceAt(sb: SetBack, x: number, y: number): number {
+  const i = Math.floor(x)
+  const j = Math.floor(y)
+  if (i < 0 || j < 0 || i >= sb.width || j >= sb.height) return -1
+  return sb.faceIds[j * sb.width + i]
+}
+
+/**
+ * One hidden edge's points in walk order, each moved along the walk's left
+ * normal — into the sheet over it — by the set-back where the sheet's face holds
+ * the pixels half a pixel and one and a half pixels in, easing from nothing over
+ * the ramp at an end that meets a visible edge.
+ */
+function setBackPoints(
+  edge: PlanarEdge,
+  reversed: boolean,
+  inner: number,
+  easeStart: boolean,
+  easeEnd: boolean,
+  sb: SetBack,
+): Float64Array {
+  const n = edge.points.length >> 1
+  const pts = new Float64Array(n * 2)
+  for (let i = 0; i < n; i++) {
+    const k = reversed ? n - 1 - i : i
+    pts[i * 2] = edge.points[k * 2]
+    pts[i * 2 + 1] = edge.points[k * 2 + 1]
+  }
+  const along = new Float64Array(n)
+  for (let i = 1; i < n; i++) {
+    along[i] =
+      along[i - 1] + Math.hypot(pts[i * 2] - pts[i * 2 - 2], pts[i * 2 + 1] - pts[i * 2 - 1])
+  }
+  const total = along[n - 1]
+  const out = new Float64Array(n * 2)
+  for (let i = 0; i < n; i++) {
+    const a = edge.closed ? (i + n - 1) % n : Math.max(0, i - 1)
+    const b = edge.closed ? (i + 1) % n : Math.min(n - 1, i + 1)
+    const tx = pts[b * 2] - pts[a * 2]
+    const ty = pts[b * 2 + 1] - pts[a * 2 + 1]
+    const len = Math.hypot(tx, ty)
+    const x = pts[i * 2]
+    const y = pts[i * 2 + 1]
+    out[i * 2] = x
+    out[i * 2 + 1] = y
+    if (len === 0) continue
+    // The walk keeps its union on the left: (ty, −tx) points into it on screen.
+    const nx = ty / len
+    const ny = -tx / len
+    if (faceAt(sb, x + 0.5 * nx, y + 0.5 * ny) !== inner) continue
+    if (faceAt(sb, x + 1.5 * nx, y + 1.5 * ny) !== inner) continue
+    let d = sb.distance
+    if (!edge.closed && easeStart) d *= Math.min(1, along[i] / sb.ramp)
+    if (!edge.closed && easeEnd) d *= Math.min(1, (total - along[i]) / sb.ramp)
+    out[i * 2] = x + d * nx
+    out[i * 2 + 1] = y + d * ny
+  }
+  return out
+}
+
+/**
+ * A layer ring as a closed subpath: visible steps draw the shared fitted edge,
+ * hidden ones (`hidden(inner face)`) their set-back points fitted on their own,
+ * each step joined to the last by a line where the set-back left a gap.
+ */
+function layerRingCommands(
+  map: PlanarMap,
+  ring: FaceRing,
+  fits: readonly FittedEdge[],
+  hidden: (face: number) => boolean,
+  sb: SetBack,
+): PathCommand[] {
+  const m = ring.edges.length
+  const inner = ring.edges.map((e, t) =>
+    ring.reversed[t] ? map.edges[e].right : map.edges[e].left,
+  )
+  const isHidden = inner.map((f) => f >= 0 && hidden(f))
+  const out: PathCommand[] = []
+  let px = Number.NaN
+  let py = Number.NaN
+  const moveOrLine = (x: number, y: number): void => {
+    if (out.length === 0) out.push({ type: 'M', x, y })
+    else if (x !== px || y !== py) out.push({ type: 'L', x, y })
+    px = x
+    py = y
+  }
+  const take = (segs: readonly PathCommand[]): void => {
+    for (const c of segs) {
+      out.push(c)
+      if (c.type !== 'Z' && c.type !== 'M') {
+        px = c.x
+        py = c.y
+      }
+    }
+  }
+  for (let t = 0; t < m; t++) {
+    const e = ring.edges[t]
+    const rev = ring.reversed[t]
+    const edge = map.edges[e]
+    if (isHidden[t]) {
+      const pts = setBackPoints(
+        edge,
+        rev,
+        inner[t],
+        !isHidden[(t + m - 1) % m],
+        !isHidden[(t + 1) % m],
+        sb,
+      )
+      moveOrLine(pts[0], pts[1])
+      take(sb.fit(pts))
+      continue
+    }
+    const fit = fits[e]
+    if (rev) {
+      const last = fit.segments[fit.segments.length - 1] as { x: number; y: number } | undefined
+      moveOrLine(last?.x ?? fit.x0, last?.y ?? fit.y0)
+      take(reversedSegments(fit))
+    } else {
+      moveOrLine(fit.x0, fit.y0)
+      take(fit.segments)
+    }
+  }
+  out.push({ type: 'Z' })
+  return out
+}
+
+/**
  * The stacked sheets: layer `k` (`order[k]`, base first) is the union of the
  * faces of its own label and the faces painted above it that its own faces
  * reach through faces painted at or above it, so each sheet extends beneath
@@ -385,6 +541,7 @@ export function stackedLayers(
   paintLabel: Int32Array,
   order: readonly number[],
   islands: readonly { label: number; faces: number[] }[],
+  setBack?: SetBack,
 ): { label: number; shapes: PathCommand[][] }[] {
   const { map } = geo
   const { faces, edges } = map
@@ -432,8 +589,13 @@ export function stackedLayers(
         }
       }
     }
-    const rings = regionRings(map, inRegion).map((r) => ringCommands(r, fits))
-    out.push({ label: order[k], shapes: groupRings(rings) })
+    const own = order[k]
+    const rings = regionRings(map, inRegion).map((r) =>
+      setBack
+        ? layerRingCommands(map, r, fits, (f) => paintLabel[f] !== own, setBack)
+        : ringCommands(r, fits),
+    )
+    out.push({ label: own, shapes: groupRings(rings) })
   }
   for (const island of islands) {
     inRegion.fill(0)
