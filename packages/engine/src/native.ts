@@ -9,6 +9,8 @@ import {
   rgbToHex,
   rgbToOklab,
   placePathCommands,
+  SUPERSAMPLE_BUDGET_SIDE,
+  supersampleWithinBudget,
 } from '@trazor/core'
 import type {
   BinaryMask,
@@ -628,27 +630,9 @@ function placeGradient<T extends GradientPaint>(g: T, s: number, d: number): T {
     : { ...g, cx: g.cx * s + d, cy: g.cy * s + d, r: g.r * s }
 }
 
-/**
- * Side of the square whose pixel count bounds a supersampled working image: the
- * enlargement stops where it would pass that many pixels, so a large source is
- * not enlarged at all.
- */
-const SUPERSAMPLE_BUDGET_SIDE = 4096
-
-/**
- * The supersampling factor a run applies: the requested one, lowered until the
- * working image (the source fitted to `maxDimension`, enlarged by the factor)
- * stays within {@link SUPERSAMPLE_BUDGET_SIDE}².
- */
+/** The supersampling factor a run applies, within the working-pixel budget (`supersampleWithinBudget`). */
 function supersampleFactor(source: RasterImage, s: VectorizeSettings): number {
-  const long = Math.max(source.width, source.height)
-  const fit = s.maxDimension > 0 && long > s.maxDimension ? s.maxDimension / long : 1
-  const pixels =
-    Math.max(1, Math.round(source.width * fit)) * Math.max(1, Math.round(source.height * fit))
-  let factor = s.supersample
-  while (factor > 1 && pixels * factor * factor > SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE)
-    factor--
-  return factor
+  return supersampleWithinBudget(source.width, source.height, s.maxDimension, s.supersample)
 }
 
 /**

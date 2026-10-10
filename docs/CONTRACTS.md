@@ -86,7 +86,18 @@ export function estimateNoise(gray: ArrayLike<number>, w: number, h: number): nu
 // it as a ring of its own. At 1 the output is byte-identical to a run without the field. The engine
 // lowers the factor until the enlarged working image stays within 4096² pixels (a large source is not
 // enlarged) and then reports an info warning `supersample-limited` (params requested, applied, side).
+// The recommender asks 2× for cartoon-style art (region growing) when the whole enlargement fits.
 supersample: number
+// The working-pixel budget, shared by the engine and the recommender: the side of the square
+// whose pixel count bounds a supersampled working image, and the factor a `width × height` source
+// fitted to `maxDimension` (0: not fitted) is traced at for a requested one.
+export const SUPERSAMPLE_BUDGET_SIDE = 4096
+export function supersampleWithinBudget(
+  width: number,
+  height: number,
+  maxDimension: number,
+  requested: number,
+): number
 // path.ts — the same path scaled by `s` about the origin: coordinates and arc radii multiplied,
 // an arc's rotation and flags kept.
 export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[]

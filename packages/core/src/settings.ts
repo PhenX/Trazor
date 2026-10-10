@@ -242,6 +242,34 @@ export interface VectorizeSettings {
   detectIslands: boolean
 }
 
+/**
+ * Side of the square whose pixel count bounds a supersampled working image: the
+ * enlargement stops where it would pass that many pixels, so a large source is
+ * not enlarged at all. The engine applies it; the recommender asks for no more.
+ */
+export const SUPERSAMPLE_BUDGET_SIDE = 4096
+
+/**
+ * The supersampling factor a trace of a `width × height` source applies: the
+ * requested one, lowered until the working image (the source fitted to
+ * `maxDimension`, enlarged by the factor) stays within
+ * {@link SUPERSAMPLE_BUDGET_SIDE}².
+ */
+export function supersampleWithinBudget(
+  width: number,
+  height: number,
+  maxDimension: number,
+  requested: number,
+): number {
+  const long = Math.max(width, height)
+  const fit = maxDimension > 0 && long > maxDimension ? maxDimension / long : 1
+  const pixels = Math.max(1, Math.round(width * fit)) * Math.max(1, Math.round(height * fit))
+  let factor = requested
+  while (factor > 1 && pixels * factor * factor > SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE)
+    factor--
+  return factor
+}
+
 export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   mode: 'color',
 

@@ -6,6 +6,8 @@ import {
   parseSettingsImport,
   serializeSettings,
   SETTINGS_EXPORT_VERSION,
+  SUPERSAMPLE_BUDGET_SIDE,
+  supersampleWithinBudget,
 } from '@trazor/core'
 
 describe('settings export', () => {
@@ -110,5 +112,20 @@ describe('settings import', () => {
 
   it('rejects an object with no recognizable settings', () => {
     expect(() => parseSettingsImport('{"hello":"world"}')).toThrow(/recognizable/)
+  })
+})
+
+describe('the supersampling budget', () => {
+  it('keeps the requested factor while the enlarged working image fits the budget', () => {
+    expect(supersampleWithinBudget(800, 600, 0, 2)).toBe(2)
+    expect(supersampleWithinBudget(2048, 2048, 0, 2)).toBe(2)
+  })
+
+  it('lowers the factor until it fits, after fitting the source to its maximum dimension', () => {
+    // 3000² enlarged twice passes 4096²; fitted to 1600 px first, it fits.
+    expect(supersampleWithinBudget(3000, 3000, 0, 2)).toBe(1)
+    expect(supersampleWithinBudget(3000, 3000, 1600, 2)).toBe(2)
+    expect(supersampleWithinBudget(1500, 1500, 0, 4)).toBe(2)
+    expect(SUPERSAMPLE_BUDGET_SIDE).toBe(4096)
   })
 })

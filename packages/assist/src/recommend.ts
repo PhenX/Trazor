@@ -1,5 +1,13 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
-import { DEFAULT_SETTINGS, clamp, clampInt, getProfile, hexToRgb, srgbToLinear } from '@trazor/core'
+import {
+  DEFAULT_SETTINGS,
+  clamp,
+  clampInt,
+  getProfile,
+  hexToRgb,
+  srgbToLinear,
+  supersampleWithinBudget,
+} from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -441,6 +449,13 @@ export function recommendSettings(
   }
 
   traceSize(a, patch, r)
+  if (cartoon && patch.segmentation === 'regions') {
+    const maxDimension =
+      patch.maxDimension ??
+      getProfile(profileId).patch.maxDimension ??
+      DEFAULT_SETTINGS.maxDimension
+    cartoonSupersample(a, maxDimension, patch, r)
+  }
 
   if (a.edgeDensity > 0.2 && (patch.mode === 'bw' || patch.mode === 'centerline')) {
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 8)
@@ -448,6 +463,40 @@ export function recommendSettings(
   }
 
   return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+}
+
+/** The enlargement a cartoon is traced at. */
+const CARTOON_SUPERSAMPLE = 2
+
+/**
+ * Widest edge, in pixels (box-filter equivalent), a cartoon is enlarged for: a
+ * native render's edges measure about 1, an upscale's or a blur's 1.6 and more
+ * (the intake's `MIN_WIDTH`, below which a raster is not soft).
+ */
+const CRISP_EDGE_WIDTH = 1.6
+
+/**
+ * A cartoon traced on an enlarged copy: its outlines, claws, glints and whiskers
+ * are a pixel or two wide, and at the image's own size every pixel takes one
+ * color, cutting their anti-aliased shape to the pixel staircase. Asked only for
+ * crisp edges — a blurred or upscaled poster spreads every edge over several
+ * pixels already, and enlarging it adds wobble, not detail — and only when the
+ * whole enlargement fits the engine's working-pixel budget, so a large poster is
+ * traced at its size rather than half-enlarged with a warning.
+ */
+function cartoonSupersample(
+  a: ImageAnalysis,
+  maxDimension: number,
+  patch: Partial<VectorizeSettings>,
+  r: Rationale,
+): void {
+  if (a.edgeWidth >= CRISP_EDGE_WIDTH) return
+  if (supersampleWithinBudget(a.width, a.height, maxDimension, CARTOON_SUPERSAMPLE) < 2) return
+  patch.supersample = CARTOON_SUPERSAMPLE
+  r.add(
+    'cartoonSupersample',
+    'Cartoon outlines and small details a pixel or two wide — traced on a 2× enlarged copy so they keep their shape.',
+  )
 }
 
 /** The trace size for the source: native up to NATIVE_MAX_SIDE, capped past 4 MP. */
