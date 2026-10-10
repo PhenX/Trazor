@@ -485,6 +485,8 @@ describe('recommendSettings', () => {
     expect(rec.patch.threshold).toBeGreaterThanOrEqual(150)
     expect(rec.patch.threshold).toBeLessThanOrEqual(155)
     expect(rec.patch.fillColor).toBe('#000000')
+    // Its edges are measured finer than a tenth of a pixel: two decimals keep them.
+    expect(rec.patch.precision).toBe(2)
     // Anti-aliased transparency: the cut sits at half coverage.
     expect(rec.patch.alphaThreshold).toBe(128)
     // Ink that is not black is painted as measured.

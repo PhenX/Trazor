@@ -62,6 +62,9 @@ const NATIVE_MAX_SIDE = 2048
  */
 const FLAT_INK_SMOOTHING = 0.25
 
+/** Decimals clean two-tone art is written with: its edges are measured finer than a tenth. */
+const FLAT_INK_PRECISION = 2
+
 /**
  * Share of pixels identical to their right and down neighbors above which flat
  * art is noise-free: a vector render whose fills are exact, not a compressed or
@@ -292,8 +295,14 @@ export function recommendSettings(
     // bw-sketch profile's high smoothing is for scans, where it rounds the
     // staircase off a noisy edge. Here it rounds real corners and bows straight
     // edges, so drop it — the corners the shape actually has are preserved.
+    // A clean edge is measured to a few hundredths of a pixel, which a tenth
+    // of a pixel would round away.
     patch.smoothing = FLAT_INK_SMOOTHING
-    r.add('flatInkCorners', 'Sharp-cornered art — low smoothing so corners stay sharp.')
+    patch.precision = FLAT_INK_PRECISION
+    r.add(
+      'flatInkCorners',
+      'Sharp-cornered art — low smoothing so corners stay sharp, coordinates to a hundredth of a pixel.',
+    )
   }
 
   if (profileId === 'pixel-art') {
