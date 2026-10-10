@@ -1,5 +1,6 @@
 import type { RasterImage } from '@trazor/core'
 import { clamp, rgbToHex, rgbToOklab } from '@trazor/core'
+import { ink as rasterInk } from '@trazor/raster'
 
 export interface ImageAnalysis {
   width: number
@@ -86,6 +87,14 @@ export interface ImageAnalysis {
   inkHex: string
   /** Mean color of the lighter of the two dominant tones: its paper or ground. */
   paperHex: string
+  /**
+   * Box-filter-equivalent width, in pixels, of the image's plateau-to-plateau
+   * edges composited over white (the intake's ramp evidence): about 1 for a
+   * native render, about 2 for a 2× bilinear upscale or a σ = 1 blur. An edge
+   * wider than a native one carries no sub-pixel detail a finer grid could
+   * recover.
+   */
+  edgeWidth: number
 }
 
 /** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
@@ -337,7 +346,34 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     minorTonesArea,
     inkHex: ink.hex,
     paperHex: paper.hex,
+    edgeWidth: edgeWidthOf(image),
   }
+}
+
+/** Side of the central crop the edge width is measured on: edges are local, and a crop keeps them as they are. */
+const EDGE_WIDTH_CROP = 1024
+
+/**
+ * The box-filter-equivalent width of the image's edges (the intake's ramp
+ * evidence, `rampEvidence`), measured on the central `EDGE_WIDTH_CROP`² of a
+ * larger image — a crop, not a reduction, which would sharpen every edge.
+ */
+function edgeWidthOf(image: RasterImage): number {
+  const { width, height, data } = image
+  const cw = Math.min(width, EDGE_WIDTH_CROP)
+  const ch = Math.min(height, EDGE_WIDTH_CROP)
+  let crop = image
+  if (cw < width || ch < height) {
+    const x0 = Math.floor((width - cw) / 2)
+    const y0 = Math.floor((height - ch) / 2)
+    const out = new Uint8ClampedArray(cw * ch * 4)
+    for (let y = 0; y < ch; y++) {
+      const from = ((y0 + y) * width + x0) * 4
+      out.set(data.subarray(from, from + cw * 4), y * cw * 4)
+    }
+    crop = { width: cw, height: ch, data: out }
+  }
+  return rasterInk.rampEvidence(rasterInk.intakePixels(crop).rgb, cw, ch).width
 }
 
 /**

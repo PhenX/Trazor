@@ -614,6 +614,19 @@ describe('recommendSettings', () => {
     expect(rec.patch.blurRadius ?? 0).toBe(0)
   })
 
+  it('traces a cartoon on a 2× enlarged copy when the enlargement fits the budget', () => {
+    const a = analyzeImage(noisyCartoon())
+    const rec = recommendSettings(a)
+    expect(rec.patch.supersample).toBe(2)
+    expect(rec.rationaleKeys.map((k) => k.code)).toContain('cartoonSupersample')
+    // A large poster is fitted to 1600 px first, which leaves room for the enlargement.
+    const poster = recommendSettings({ ...a, width: 1680, height: 2500, pixels: 4_200_000 })
+    expect(poster.patch.maxDimension).toBe(1600)
+    expect(poster.patch.supersample).toBe(2)
+    // Edges spread wider than a native render's carry no detail to recover.
+    expect(recommendSettings({ ...a, edgeWidth: 2.1 }).patch.supersample).toBeUndefined()
+  })
+
   it('does not route a gradient-on-flat-background to region growing (single-color collapse)', () => {
     const a = analyzeImage(gradientOnFlat())
     // The flat white margin clears the flat-art density threshold on its own...
@@ -671,6 +684,7 @@ describe('recommendSettings — region-growing gates', () => {
     minorTonesArea: 0,
     inkHex: '#000000',
     paperHex: '#ffffff',
+    edgeWidth: 1,
     ...over,
   })
 

@@ -31,6 +31,8 @@ export {
 export { findComponents } from './components'
 export { residualSigma } from './regularize'
 export { intakeEvidence, intakePixels } from '../intake/coverage'
+export { rampEvidence } from '../intake/softness'
+export type { RampEvidence } from '../intake/softness'
 export type { IntakeEvidence, IntakePixels } from '../intake/coverage'
 export { snapFlatFills } from './snap'
 export { mergeGradientBands } from '../fill/bands'
