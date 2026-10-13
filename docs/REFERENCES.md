@@ -449,8 +449,10 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   (`ciede2000`, `rgbToLab` in `packages/core/src/color.ts`), verified against
   the paper's published test pairs. Used as the perceptually even “same ink”
   floor (ΔE₀₀ 1.5) in autoK's near-duplicate merge
-  (`packages/raster/src/quantize.ts`), where Oklab distance is too strict near
-  black and too loose in saturated hues.
+  (`packages/raster/src/quantize.ts`) and the region merge's consolidation
+  (`packages/raster/src/segment.ts`), where Oklab distance is too strict near
+  black and too loose in saturated hues, and as the visible-fold bound (ΔE₀₀ 10) at
+  which the region merge's `maxRegions` cap stops under `keepVisibleColors`.
 - **Stuart P. Lloyd, “Least squares quantization in PCM”, _IEEE Trans.
   Information Theory_ 28(2), 1982.** The assign/update iterations the k-means
   refinement runs after seeding (`packages/raster/src/quantize.ts`).
@@ -513,10 +515,12 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared
-  error merges first. The hard `maxRegions` cap of the region-growing merge
+  error merges first. The `maxRegions` cap of the region-growing merge
   (`packages/raster/src/segment.ts`) folds regions by |A|·|B|/(|A|+|B|)·ΔE²
   until the color budget is met, so the budget's damage lands on the smallest,
-  closest regions.
+  closest regions; under `keepVisibleColors` it stops at the first fold that
+  would join two non-speck regions ≥ 10 ΔE₀₀ apart, once the count is within
+  twice the budget.
 - **Azriel Rosenfeld, “Digital Straight Line Segments”, _IEEE Transactions on
   Computers_ C-23(12), 1974.** The digitization of a straight line is an
   8-connected arc: at a slope under 45° it steps to the next row across a

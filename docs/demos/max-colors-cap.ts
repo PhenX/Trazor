@@ -1,8 +1,9 @@
 /**
- * Visual demo: the palette budget is a hard cap under region growing. A cartoon
- * panel — outlined flat fills with anti-aliased edges, two shading tones and a
- * few small accents — is grown into regions at three `paletteSize` budgets,
- * with `autoPaletteSize` on. The region merge finds the fills; the budget then
+ * Visual demo: a fixed palette budget is a hard cap under region growing. A
+ * cartoon panel — outlined flat fills with anti-aliased edges, two shading
+ * tones and a few small accents — is grown into regions at three `paletteSize`
+ * budgets, with `autoPaletteSize` off (under it, on stacked layers, the cap
+ * stops before a fold that would repaint a visibly distinct fill). The region merge finds the fills; the budget then
  * folds the pairs whose union adds the least total squared color error (Ward):
  * a small accent recolors first (little area, little error), two large fills of
  * one hue fold next, and distinct large hues merge last. The swatches under
@@ -93,7 +94,7 @@ function card(label: string, res: VectorizeResult): string {
 async function main(): Promise<void> {
   const image = panel()
   const rec = recommendSettings(analyzeImage(image))
-  const base = normalizeSettings({ ...rec.patch, segmentation: 'regions', autoPaletteSize: true })
+  const base = normalizeSettings({ ...rec.patch, segmentation: 'regions', autoPaletteSize: false })
   const cards: string[] = []
   for (const paletteSize of [24, 8, 4]) {
     const res = await vectorize(image, normalizeSettings({ paletteSize }, base))
@@ -127,7 +128,7 @@ async function main(): Promise<void> {
 </style>
 <div class="wrap">
   <h1>Max colors under region growing</h1>
-  <p class="sub">The recommender routes this cartoon panel to region growing (auto pick: <b>${rec.patch.segmentation}</b>). The region merge finds its fills; <b>Max colors</b> then caps them, with Auto reduce on. Each cut folds the pair whose union adds the least total squared color error: a small accent recolors first (little area, little error), a fill and its shading tone fold next, and distinct large hues merge last — and the count never exceeds the budget.</p>
+  <p class="sub">The recommender routes this cartoon panel to region growing (auto pick: <b>${rec.patch.segmentation}</b>). The region merge finds its fills; <b>Max colors</b> then caps them, with Auto reduce off. Each cut folds the pair whose union adds the least total squared color error: a small accent recolors first (little area, little error), a fill and its shading tone fold next, and distinct large hues merge last — and the count never exceeds the budget.</p>
   <div class="row">${cards.join('\n')}</div>
 </div>`
   const outPath = new URL('./max-colors-cap.html', import.meta.url).pathname

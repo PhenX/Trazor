@@ -351,7 +351,8 @@ export interface SegmentOptions {
   mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
-  maxRegions?: number // hard cap: fold pairs by least added squared color error (Ward) until met; 0 = none
+  maxRegions?: number // cap: fold pairs by least added squared color error (Ward) until met; 0 = none
+  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions (≤ 64) remain; the count may stay above maxRegions. Off = hard cap (default)
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
   scale?: number // working pixels per source pixel (supersampling, default 1): gradient read a source pixel apart; sizes/widths in source pixels
 }
@@ -429,9 +430,15 @@ export function fitRegionGradients(
   its parts' inks — then consolidates non-adjacent
   near-duplicates globally (means within the merge's near-duplicate floor in Oklab,
   or rendered colors under 1.5 ΔE00 — Oklab spreads the darkest values, so a
-  dithered black and a flat one are one color); `maxRegions` is a hard cap — pairs fold by least
+  dithered black and a flat one are one color); `maxRegions` caps the count — pairs fold by least
   added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
-  so a budget spends its damage on the smallest, closest regions first. With
+  so a budget spends its damage on the smallest, closest regions first; with
+  `keepVisibleColors` the cap stops at the first fold that would join a pair
+  ≥ 10 ΔE00 apart, neither a speck (< 16 source pixels), once the count is
+  within twice the budget (and 64), and the count stays above it — its folds a
+  prefix of the hard cap's (the engine sets it from `autoPaletteSize` on stacked
+  layers not grouped by color; grouped, cutout and nested output keep the hard
+  cap). With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
   close-but-distinct colors stay apart while small regions still fold — unless the
   smaller is a rare ink: a region the size term alone could fold whose own pixels

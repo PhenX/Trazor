@@ -248,6 +248,79 @@ describe('segmentRegions — region growing', () => {
     }
   })
 
+  it('keeps visibly different fills past a cap that stops before a visible fold, up to twice it', () => {
+    // The same six vivid fields: folding any two would paint one of them a color
+    // it is not, so the cap stops before its first fold and the budget is unmet
+    // — within twice the cap, past which it folds as a hard cap does.
+    const cols: Rgba[] = [
+      [220, 30, 30, 255],
+      [30, 180, 60, 255],
+      [40, 60, 220, 255],
+      [235, 220, 60, 255],
+      [200, 60, 200, 255],
+      [40, 200, 210, 255],
+    ]
+    const img = rasterOf(90, 60, (x, y) => cols[((x / 30) | 0) + 3 * ((y / 30) | 0)])
+    for (const cap of [5, 3]) {
+      expect(segmentRegions(img, { maxRegions: cap, keepVisibleColors: true }).labels.count).toBe(6)
+    }
+    for (const cap of [2, 1]) {
+      expect(segmentRegions(img, { maxRegions: cap, keepVisibleColors: true }).labels.count).toBe(
+        2 * cap,
+      )
+    }
+  })
+
+  it('still folds shades no eye tells apart, and specks of any color, to meet the budget', () => {
+    // Six flat greys a few ΔE00 apart, each large enough for size-aware merging
+    // to keep: the budget folds neighboring shades until it is met.
+    const greys = rasterOf(360, 60, (x) => okPixel(0.5 + 0.03 * ((x / 60) | 0), 0, 0))
+    const opts = { mergeSizeBias: 0.8, keepVisibleColors: true }
+    expect(segmentRegions(greys, opts).labels.count).toBe(6)
+    for (const cap of [5, 3, 2]) {
+      expect(segmentRegions(greys, { ...opts, maxRegions: cap }).labels.count).toBe(cap)
+    }
+    // Two vivid fields and two 3×3 dots of other vivid colors: the dots are
+    // specks, so the budget folds them together whatever their colors.
+    const dots = rasterOf(80, 40, (x, y) => {
+      if (x >= 10 && x < 13 && y >= 10 && y < 13) return [40, 60, 220, 255]
+      if (x >= 60 && x < 63 && y >= 25 && y < 28) return [235, 220, 60, 255]
+      return x < 40 ? [220, 30, 30, 255] : [30, 180, 60, 255]
+    })
+    const speckOpts = { ...opts, minRegionArea: 4 }
+    expect(segmentRegions(dots, speckOpts).labels.count).toBe(4)
+    expect(segmentRegions(dots, { ...speckOpts, maxRegions: 3 }).labels.count).toBe(3)
+    // A speck is measured in source pixels: on a 2× working copy the dots are
+    // still specks.
+    const twice = upscaleImage(dots, 2)
+    const scaled = { ...speckOpts, minRegionArea: 16, scale: 2 }
+    expect(segmentRegions(twice, scaled).labels.count).toBe(4)
+    expect(segmentRegions(twice, { ...scaled, maxRegions: 3 }).labels.count).toBe(3)
+  })
+
+  it('stops at the first fold that would show, folding nothing the hard cap would not', () => {
+    // Two large greys a few ΔE00 apart and a 5×5 red block: the hard cap folds
+    // the cheap red block first and repaints it grey; stopping there keeps all
+    // three, rather than going on to fold the greys the hard cap never touched.
+    const img = rasterOf(120, 60, (x, y) => {
+      if (x >= 20 && x < 25 && y >= 20 && y < 25) return okPixel(0.6, 0.2, 0.1)
+      return okPixel(x < 60 ? 0.5 : 0.54, 0, 0)
+    })
+    const opts = { mergeSizeBias: 0.8, minRegionArea: 4 }
+    expect(segmentRegions(img, opts).labels.count).toBe(3)
+    const hard = segmentRegions(img, { ...opts, maxRegions: 2 })
+    expect(hard.labels.count).toBe(2)
+    const greys = [hard.labels.data[10 * 120 + 10], hard.labels.data[10 * 120 + 100]]
+    expect(greys[0]).not.toBe(greys[1])
+    expect(greys).toContain(hard.labels.data[22 * 120 + 22])
+    const kept = segmentRegions(img, { ...opts, maxRegions: 2, keepVisibleColors: true })
+    expect(kept.labels.count).toBe(3)
+    // A cap of one leaves no room for the block past twice the cap: it folds,
+    // then the greys, as under the hard cap.
+    const one = segmentRegions(img, { ...opts, maxRegions: 1, keepVisibleColors: true })
+    expect(one.labels.count).toBe(1)
+  })
+
   it('leaves the result untouched when the cap is not reached', () => {
     const img = rasterOf(40, 40, (x, y) => {
       if (y < 20 && x < 20) return [220, 30, 30, 255]

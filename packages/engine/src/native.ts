@@ -1149,13 +1149,20 @@ async function colorPipeline(
     // Region growing (marker-controlled watershed): no global palette, so an
     // anti-aliased edge is split between its two neighbors instead of inventing
     // a third rim color. The merge thresholds decide the color count, and
-    // `paletteSize` is its hard upper bound — never an exact count, so
-    // `autoPaletteSize` changes nothing here.
+    // `paletteSize` bounds it — never an exact count. It is a hard bound with
+    // `autoPaletteSize` off, and wherever a color is a part to produce or a set
+    // to edit as one: layers grouped by color (a screen or a vinyl sheet each)
+    // and cutout or nested faces. On stacked layers under `autoPaletteSize` it
+    // is the engine's own budget, spent until the next fold would repaint a
+    // visibly distinct feature, which keeps its color past it (at most twice
+    // the budget).
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
       maxRegions: settings.paletteSize,
+      keepVisibleColors:
+        settings.autoPaletteSize && settings.layering === 'stacked' && !settings.groupByColor,
       mask: opaque,
       scale: settings.supersample,
     })

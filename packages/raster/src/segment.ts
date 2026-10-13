@@ -30,7 +30,9 @@
  *   4. A region-adjacency-graph merge folds near-duplicate neighbors and small
  *      regions together (agglomerative, closest pair first) down to the real
  *      colors; `maxRegions` then caps the count, folding the pairs whose union
- *      costs the least total squared color error (Ward 1963) until it is met.
+ *      costs the least total squared color error (Ward 1963) until it is met
+ *      (or, with `keepVisibleColors`, until the cheapest fold left would show,
+ *      within twice the budget).
  *   5. The flood claims each pixel for the cheapest region already touching it,
  *      so a third region that reaches a seam from one end — its color nearer the
  *      blend than either side's — can run along it as a line a pixel wide; a
@@ -75,10 +77,19 @@ export interface SegmentOptions {
   /** Regions smaller than this many pixels are merged into their most similar neighbor. */
   minRegionArea?: number
   /**
-   * Hard cap on the final region count: pairs keep merging, cheapest total
-   * squared color error first (Ward), until at most this many remain. 0 = no cap.
+   * Cap on the final region count: pairs keep merging, cheapest total squared
+   * color error first (Ward), until at most this many remain. 0 = no cap.
    */
   maxRegions?: number
+  /**
+   * Stop the `maxRegions` cap at the first fold an eye would see: when the
+   * cheapest fold left joins two regions at least `CAP_VISIBLE_DE00` apart,
+   * neither of them a speck, the cap stops and the count stays above it — never
+   * above twice `maxRegions` (at most `CAP_VISIBLE_LIMIT`), past which it folds
+   * on as the hard cap does. Its folds are a prefix of the hard cap's own. Off,
+   * the cap is hard.
+   */
+  keepVisibleColors?: boolean
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
   mask?: BinaryMask | null
   /**
@@ -139,10 +150,36 @@ const SRM_SCALE = 0.5
  * CIEDE2000 a rare ink represented only at its own scale (`represent.ts`, level
  * 2) must differ from a neighbor by to stay apart from it: a claw or a pupil
  * differs from the outline or the iris around it at a glance, while the handful
- * of votes a seam's overshoot gathers is for a color a few units from its
- * fill's.
+ * of votes a seam's overshoot or one step of soft shading gathers is for a
+ * color a few units from its fill's (the steps of a shaded emoji differ by 5
+ * to 10).
  */
 const OWN_SCALE_DE00 = 10
+
+/**
+ * CIEDE2000 from which a fold under `keepVisibleColors` repaints a feature: two
+ * flat fills this far apart read as different colors side by side (clock
+ * numerals turned the brown of the hat band, a pink hand the brown of the stick
+ * it holds), where the folds a budget is for trim shades of one color.
+ */
+const CAP_VISIBLE_DE00 = 10
+
+/**
+ * Source pixels under which a region is a speck: a fold that takes a speck
+ * never stops the cap under `keepVisibleColors`, whatever its color.
+ */
+const CAP_SPECK_AREA = 16
+
+/**
+ * How far past its budget `keepVisibleColors` lets the count stay, as a
+ * multiple of `maxRegions`: a budget stays the scale of the result (the color
+ * count still follows it), while a few features that would read as repainted
+ * keep their colors.
+ */
+const CAP_VISIBLE_HEADROOM = 2
+
+/** Most colors `keepVisibleColors` keeps: the largest budget the settings allow. */
+const CAP_VISIBLE_LIMIT = 64
 
 /**
  * CIEDE2000 below which two regions are the same ink whatever their evidence
@@ -264,6 +301,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const sizeBias = Math.min(1, Math.max(0, opts.mergeSizeBias ?? 0))
   const minArea = Math.max(0, opts.minRegionArea ?? DEFAULT_MIN_AREA)
   const maxRegions = Math.max(0, opts.maxRegions ?? 0)
+  const keepVisible = opts.keepVisibleColors === true
   const mask = opts.mask?.data ?? null
 
   const ok = toOklabBuffer(image)
@@ -620,6 +658,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     floor,
     minArea,
     maxRegions,
+    keepVisible,
     scale,
   )
 
@@ -1133,8 +1172,10 @@ function rescueMarkerlessFeatures(
  * by compression still reads white), else the size-weighted mean of its parts'
  * inks; consolidation and the `maxRegions` cap compare those rendered colors,
  * so two regions that would paint the same become one palette entry. The cap
- * is hard: it folds pairs by least added squared color error (Ward) until the
- * count is met, however different the remaining hues are.
+ * folds pairs by least added squared color error (Ward) until the count is
+ * met, however different the remaining hues are — or, under `keepVisible`,
+ * until the cheapest fold left would repaint a feature, within twice the
+ * budget.
  * Returns the parent array (each region's representative root).
  */
 function mergeRegions(
@@ -1164,6 +1205,7 @@ function mergeRegions(
   floor: number,
   minArea: number,
   maxRegions: number,
+  keepVisible: boolean,
   scale: number,
 ): Int32Array {
   const parent = new Int32Array(regionCount)
@@ -1391,13 +1433,19 @@ function mergeRegions(
     }
   }
 
-  // Hard cap: while more than `maxRegions` colors remain, fold the pair of
+  // Cap: while more than `maxRegions` colors remain, fold the pair of
   // representatives whose union adds the least total squared color error
   // (Ward 1963): cost = |A|·|B| / (|A| + |B|) · ΔE², on the rendered colors.
   // A tiny odd-colored speck folds before two large fields of one hue, and two
   // large distinct hues fold last, so a budget spends its damage where it shows
-  // least. Each root tracks its cheapest partner; a merge refreshes the merged
-  // root and every root whose partner it consumed. Ties break on the lower id.
+  // least. Under `keepVisible` the cap stops at the first fold that would
+  // repaint a feature — a pair at least `CAP_VISIBLE_DE00` apart, neither of
+  // them a speck (`CAP_SPECK_AREA`) — once the count is within
+  // `CAP_VISIBLE_HEADROOM` times the cap (and `CAP_VISIBLE_LIMIT`): its folds
+  // are a prefix of the hard cap's own, cut short where they would start to
+  // show, and the count may stay above the cap.
+  // Each root tracks its cheapest partner; a merge refreshes the merged root
+  // and every root whose partner it consumed. Ties break on the lower id.
   if (maxRegions > 0 && activeRegions > maxRegions) {
     const capRoots: number[] = []
     for (let i = 0; i < regionCount; i++) if (find(i) === i && size[i] > 0) capRoots.push(i)
@@ -1405,6 +1453,11 @@ function mergeRegions(
     for (const r of capRoots) active[r] = 1
     const partner = new Int32Array(regionCount).fill(-1)
     const partnerCost = new Float64Array(regionCount).fill(Infinity)
+    const speck = CAP_SPECK_AREA * scale * scale
+    const ceiling = Math.max(
+      maxRegions,
+      Math.min(CAP_VISIBLE_HEADROOM * maxRegions, CAP_VISIBLE_LIMIT),
+    )
     const wardCost = (a: number, b: number): number => {
       const d = meanDelta(a, b)
       return ((size[a] * size[b]) / (size[a] + size[b])) * d * d
@@ -1432,6 +1485,15 @@ function mergeRegions(
       }
       if (a === -1) break
       const b = partner[a]
+      if (
+        keepVisible &&
+        activeRegions <= ceiling &&
+        size[a] >= speck &&
+        size[b] >= speck &&
+        renderedDe00(a, b) >= CAP_VISIBLE_DE00
+      ) {
+        break
+      }
       union(a, b)
       activeRegions--
       const keep = find(a)

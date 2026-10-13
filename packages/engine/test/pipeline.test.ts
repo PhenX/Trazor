@@ -953,15 +953,53 @@ function sixFields(): RasterImage {
   return img
 }
 
-describe('region growing honors the palette budget', () => {
-  it('never paints more colors than paletteSize, with or without autoPaletteSize', async () => {
-    for (const autoPaletteSize of [true, false]) {
+describe('region growing and the palette budget', () => {
+  it('never paints more colors than a fixed paletteSize', async () => {
+    const result = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize: false }),
+    )
+    expect(result.palette.length).toBeLessThanOrEqual(3)
+    expect(result.stats.colorCount).toBeLessThanOrEqual(3)
+  })
+
+  it('keeps visibly distinct fills past an automatic budget rather than repainting them', async () => {
+    // Six vivid fields: meeting a budget of three would paint three of them a
+    // color they are not, and an automatic budget folds only colors no eye
+    // tells apart.
+    const result = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize: true }),
+    )
+    expect(result.palette.length).toBe(6)
+    expect(result.stats.colorCount).toBe(6)
+    // Never past twice the budget: the budget stays the scale of the result.
+    const two = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 2, autoPaletteSize: true }),
+    )
+    expect(two.palette.length).toBe(4)
+  })
+
+  it('keeps the budget hard where each color is a part to produce', async () => {
+    // A screen or a vinyl sheet per color (grouped layers), cutout and nested
+    // faces: the color count is what gets produced, whatever Auto reduce says.
+    for (const over of [
+      { groupByColor: true },
+      { layering: 'cutout' as const },
+      { layering: 'nested' as const },
+    ]) {
       const result = await vectorize(
         sixFields(),
-        settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize }),
+        settings({
+          mode: 'color',
+          segmentation: 'regions',
+          paletteSize: 3,
+          autoPaletteSize: true,
+          ...over,
+        }),
       )
       expect(result.palette.length).toBeLessThanOrEqual(3)
-      expect(result.stats.colorCount).toBeLessThanOrEqual(3)
     }
   })
 

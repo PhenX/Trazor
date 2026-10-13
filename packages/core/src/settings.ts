@@ -89,12 +89,20 @@ export interface VectorizeSettings {
    */
   segmentation: SegmentationMode
   /**
-   * Upper bound on output colors (2-64). `quantize` clusters to exactly this
-   * many unless `autoPaletteSize` merges near-duplicates; `regions` lets the
-   * region merge decide the count and caps it here.
+   * Output color budget (2-64). `quantize` clusters to exactly this many unless
+   * `autoPaletteSize` merges near-duplicates; `regions` lets the region merge
+   * decide the count and caps it here — a hard cap, except that on stacked
+   * layers not grouped by color, under `autoPaletteSize`, the cap stops before
+   * a fold that would repaint a visibly distinct feature, which keeps its color
+   * past it (up to twice the budget). Gradient fills add their stops to the
+   * output palette on top of this.
    */
   paletteSize: number
-  /** Let the engine lower `paletteSize` when the image needs fewer colors. */
+  /**
+   * Let the engine lower `paletteSize` when the image needs fewer colors (and,
+   * under `regions` on stacked layers not grouped by color, keep a visibly
+   * distinct color past it, up to twice the budget).
+   */
   autoPaletteSize: boolean
   /** Clustering space. Oklab is perceptual and almost always better. */
   colorSpace: 'oklab' | 'rgb'

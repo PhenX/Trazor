@@ -376,7 +376,9 @@ export function recommendSettings(
     patch.paletteSize = chosen
     if (rich) patch.autoPaletteSize = true
     if (a.distinctColors >= 65536) {
-      r.add('richColor', `Rich color content — up to ${chosen} palette entries.`, { count: chosen })
+      r.add('richColor', `Rich color content — a budget of ${chosen} palette entries.`, {
+        count: chosen,
+      })
     } else {
       r.add(
         'distinctColors',
@@ -403,7 +405,9 @@ export function recommendSettings(
     // rim color can form — the clean, few-shapes choice for a cartoon. The
     // size-aware region merge folds rim slivers on its own, so the profile's
     // speck floor stands (a flag's stars and a scene's small marks survive),
-    // and the palette budget is a hard cap on the fills that remain.
+    // and the palette budget caps the fills that remain — hard with
+    // `autoPaletteSize` off; under it, on stacked layers, a visibly distinct
+    // feature keeps its color past the cap (up to twice it).
     // Gradient-heavy, sprite-fine or hard-edged art is excluded (`isCartoon`)
     // and stays on quantization, which keeps a gradient's bands and traces a
     // pixel palette exactly.
@@ -411,7 +415,7 @@ export function recommendSettings(
       patch.segmentation = 'regions'
       r.add(
         'cartoonRegions',
-        'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean, within the color budget.',
+        'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean.',
       )
     }
     // Real gradients (a synthetic ramp, a gradient-shaded emoji) posterize into
