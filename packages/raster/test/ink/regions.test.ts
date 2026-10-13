@@ -10,6 +10,7 @@ import {
   relabelRounds,
   splitComponents,
   type Mixture,
+  type SpeckleColors,
 } from '../../src/ink/regions'
 import {
   compositeOverWhite,
@@ -170,6 +171,90 @@ describe('despeckle', () => {
     const speck = Int32Array.of(0, 0, 0, 0, 1, 0, 0, 0, 0)
     despeckle(speck, 3, 3, 1)
     expect(speck[4]).toBe(1)
+  })
+
+  /**
+   * A one-pixel line across white whose pixels alternate between two near-black inks, each
+   * pixel its own component; `channels` 3 (color over white) or 4 (with an opaque alpha).
+   */
+  function brokenLine(channels: number): {
+    labels: Int32Array
+    colors: SpeckleColors
+    w: number
+  } {
+    const w = 9
+    const white = [1, 1, 1]
+    const ink1 = [0.02, 0.01, 0.01]
+    const ink2 = [0, 0.02, 0.04]
+    const labels = new Int32Array(w * 5)
+    const px = new Float32Array(w * 5 * channels)
+    for (let p = 0; p < w * 5; p++) {
+      const onLine = Math.floor(p / w) === 2
+      labels[p] = onLine ? 1 + (p % 2) : 0
+      const c = onLine ? (p % 2 === 0 ? ink1 : ink2) : white
+      px.set(channels === 4 ? [...c, 1] : c, p * channels)
+    }
+    const inks = Float64Array.from(
+      [white, ink1, ink2].flatMap((c) => (channels === 4 ? [...c, 1] : c)),
+    )
+    return { labels, colors: { px, inks, channels }, w }
+  }
+
+  it('erases a line of alternating near-black inks without colors, inkvec’s rule', () => {
+    const { labels, w } = brokenLine(3)
+    despeckle(labels, w, 5, 2)
+    expect(Array.from(labels.subarray(2 * w, 3 * w))).toEqual(new Array(w).fill(0))
+  })
+
+  it('keeps a line of alternating near-black inks dark when it weighs colors', () => {
+    for (const channels of [3, 4]) {
+      const { labels, colors, w } = brokenLine(channels)
+      despeckle(labels, w, 5, 2, colors)
+      const line = Array.from(labels.subarray(2 * w, 3 * w))
+      expect(line.every((l) => l === 1 || l === 2)).toBe(true)
+      // The rest stays white, and the line's speckles joined one another.
+      expect(Array.from(labels.subarray(0, 2 * w))).toEqual(new Array(2 * w).fill(0))
+      expect(new Set(line).size).toBe(1)
+    }
+  })
+
+  it('settles a speckle between inks it matches equally by the contacts that agree in color', () => {
+    // Inks 0 and 1 (gray 0.4 and black) are equally far from the speckle's 0.2; the speckle
+    // (label 2) touches label 0 on three sides and label 1 on one. A contact counts by the
+    // two pixels' own colors: `agreeOn` names the label whose pixels share the speckle's
+    // color, the other label's pixels are white, a contrast that all but cancels them.
+    const run = (agreeOn: 0 | 1): number => {
+      const labels = Int32Array.of(0, 0, 0, 0, 2, 1, 0, 0, 0)
+      const px = new Float32Array(27)
+      for (let p = 0; p < 9; p++)
+        px.fill(labels[p] === 2 || labels[p] === agreeOn ? 0.2 : 1, p * 3, p * 3 + 3)
+      const inks = cols([0.4, 0.4, 0.4], [0, 0, 0], [0.2, 0.2, 0.2])
+      despeckle(labels, 3, 3, 2, { px, inks, channels: 3 })
+      return labels[4]
+    }
+    // Three contacts across white weigh less than the one that agrees.
+    expect(run(1)).toBe(1)
+    // The other way round, label 0 on every count.
+    expect(run(0)).toBe(0)
+  })
+
+  it('keeps a speckle with the ink it is, against more shared edges', () => {
+    // A black pixel touching white on three sides and a gray ink on one goes to the gray.
+    const labels = Int32Array.of(0, 0, 0, 0, 2, 1, 0, 0, 0)
+    const px = new Float32Array(27).fill(1)
+    px.fill(0, 12, 15)
+    px.fill(0.2, 15, 18)
+    const inks = cols([1, 1, 1], [0.2, 0.2, 0.2], [0, 0, 0])
+    despeckle(labels, 3, 3, 2, { px, inks, channels: 3 })
+    expect(labels[4]).toBe(1)
+  })
+
+  it('falls back to the most shared edges when no touching label has a color', () => {
+    const labels = Int32Array.of(5, 5, 5, 5, 2, 4, 5, 5, 5)
+    const px = new Float32Array(27).fill(0.5)
+    const inks = cols([0, 0, 0], [0.5, 0.5, 0.5], [1, 1, 1])
+    despeckle(labels, 3, 3, 2, { px, inks, channels: 3 })
+    expect(labels[4]).toBe(5)
   })
 
   it('equals the flood-fill despeckle on random maps', () => {

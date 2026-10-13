@@ -4,7 +4,8 @@
  *
  * {@link residualSigma} measures the noise against the labels (interior pixels against
  * their own ink, boundary pixels against the segment to a neighboring ink, so the
- * anti-aliasing ramp does not count); {@link residualIncoherence} measures how much of the
+ * anti-aliasing ramp does not count), {@link boundaryResidual} the boundary half alone;
+ * {@link residualIncoherence} measures how much of the
  * residual is incoherent from pixel to pixel (damage rather than a smooth ramp);
  * {@link regularizeLabels} is a deterministic four-neighbor Potts descent for explicitly
  * lossy input, where a strong one-pixel feature can pay for its boundary and survive while a
@@ -68,6 +69,42 @@ export function residualSigma(
   inkRgb: Float64Array,
 ): number {
   if (w < 3 || h < 3) return NOISE_FLOOR
+  const { interior: errors, boundary: edgeErrors } = residualPopulations(rgb, labels, w, h, inkRgb)
+  const interior = errors.length >= MIN_SIGMA_SAMPLES ? median(errors) : NOISE_FLOOR
+  const edge = edgeErrors.length >= MIN_SIGMA_SAMPLES ? median(edgeErrors) : NOISE_FLOOR
+  return Math.min(Math.max(interior, edge, NOISE_FLOOR), RESIDUAL_SIGMA_CAP)
+}
+
+/**
+ * The boundary population of {@link residualSigma} alone: the median, over pixels one in
+ * from the border with a 4-neighbor of another label, of their distance off the
+ * anti-aliasing segment to the best neighboring ink (`sqrt(|residual⊥|² / 2)`, encoded
+ * sRGB), uncapped, and how many pixels it was read on (`level` 0 when none). Against a
+ * clean palette it reads how far an image's edges stray from two-ink blends: a fraction of
+ * a level on a native render, several levels where compression or resampling has damaged
+ * them; the interior population, a few dozen mislabeled pixels of a thin feature on a
+ * clean icon, is left out.
+ */
+export function boundaryResidual(
+  rgb: Float32Array,
+  labels: Int32Array,
+  w: number,
+  h: number,
+  inkRgb: Float64Array,
+): { level: number; samples: number } {
+  if (w < 3 || h < 3) return { level: 0, samples: 0 }
+  const { boundary } = residualPopulations(rgb, labels, w, h, inkRgb)
+  return { level: boundary.length > 0 ? median(boundary) : 0, samples: boundary.length }
+}
+
+/** The interior and boundary residual populations of {@link residualSigma}, in raster order. */
+function residualPopulations(
+  rgb: Float32Array,
+  labels: Int32Array,
+  w: number,
+  h: number,
+  inkRgb: Float64Array,
+): { interior: number[]; boundary: number[] } {
   const errors: number[] = []
   const edgeErrors: number[] = []
   const flat = (0.5 / 255) * (0.5 / 255)
@@ -113,9 +150,7 @@ export function residualSigma(
       if (Number.isFinite(best)) edgeErrors.push(best)
     }
   }
-  const interior = errors.length >= MIN_SIGMA_SAMPLES ? median(errors) : NOISE_FLOOR
-  const edge = edgeErrors.length >= MIN_SIGMA_SAMPLES ? median(edgeErrors) : NOISE_FLOOR
-  return Math.min(Math.max(interior, edge, NOISE_FLOOR), RESIDUAL_SIGMA_CAP)
+  return { interior: errors, boundary: edgeErrors }
 }
 
 /**

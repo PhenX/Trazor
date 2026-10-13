@@ -3,12 +3,13 @@
  * `ink`), in inkvec's order — the pixel noise, the image's inks chosen by
  * description length, each pixel labelled with its nearest ink, the noise
  * raised to the labels' residual on a soft intake, then speckles folded into
- * their commonest neighbour and anti-aliased blend slivers and pixels handed
- * back to the inks they blend. Then each region's fill: with gradients the
- * bands of one ramp merged into one gradient region; the features a fill
- * swallowed carved back out; each region's color its own pixels', and near-equal
- * flat colors of one ink snapped to one. Each label is one paint (a flat color,
- * or a gradient).
+ * the touching ink they match in color and continue (`ink.despeckle` with
+ * colors, where inkvec folds by contact alone) and anti-aliased blend slivers
+ * and pixels handed back to the inks they blend. Then each region's fill: with
+ * gradients the bands of one ramp merged into one gradient region; the
+ * features a fill swallowed carved back out; each region's color its own
+ * pixels', and near-equal flat colors of one ink snapped to one. Each label
+ * is one paint (a flat color, or a gradient).
  *
  * A transparent raster runs the same stages over two grounds
  * (`nativeInkFrontEnd`): an ink is a color and an opacity and the clear ground
@@ -50,6 +51,51 @@ export interface InkFrontEnd {
 export function intakeIsSoft(image: RasterImage): boolean {
   const { rgb } = ink.intakePixels(image)
   return ink.intakeEvidence(rgb, image.width, image.height, false).soft
+}
+
+/**
+ * Median boundary residual against the clean palette (`ink.boundaryResidual`), in encoded
+ * sRGB, at and above which a raster whose edge width and ringing read clean is soft all the
+ * same: 3.5 levels. Native renders read under 3 (the most of 1,651 corpus icons at 128 and
+ * 512 px is 2.8); a recompressed cartoon's outlines read 4.6.
+ */
+export const SOFT_EDGE_RESIDUAL = 3.5 / 255
+
+/** Fewest boundary pixels the edge residual is read on. */
+const MIN_EDGE_SAMPLES = 256
+
+/**
+ * The noise a raster's edges carry when it is enough to make it a soft intake, per channel
+ * in encoded sRGB units (capped at `ink.MEASURED_SIGMA_CAP` levels), else undefined: the
+ * raster as it arrives, over white, labelled with its clean palette, and the median distance
+ * of its boundary pixels off the two-ink blend segments (`ink.boundaryResidual`), read on at
+ * least 256 of them and compared with {@link SOFT_EDGE_RESIDUAL}. Edges damaged by
+ * compression or resampling stray off the blends their inks allow even where the edge width
+ * and the ringing read clean, and the clean palette's guards then keep each variant of an
+ * ink as an ink of its own. Measured against the clean labels: against the soft palette the
+ * same statistic rises to the cap.
+ */
+export function edgeNoise(image: RasterImage): number | undefined {
+  const { width: w, height: h } = image
+  const n = w * h
+  const { rgb } = ink.intakePixels(image)
+  const lum = new Float32Array(n)
+  for (let i = 0; i < n; i++)
+    lum[i] = 0.2126 * rgb[3 * i] + 0.7152 * rgb[3 * i + 1] + 0.0722 * rgb[3 * i + 2]
+  const ids = ink.colorIdsOfRgb(rgb)
+  const pal = ink.extractPaletteMdl(
+    rgb,
+    w,
+    h,
+    ink.DEFAULT_MERGE_DISTANCE,
+    ink.DEFAULT_MAX_COLORS,
+    ink.paletteEvidence(estimateNoise(lum, w, h), n, false),
+    ids,
+  )
+  const labels = ink.labelImage(rgb, pal, ids)
+  const { level, samples } = ink.boundaryResidual(rgb, labels, w, h, pal.inkRgb)
+  if (samples < MIN_EDGE_SAMPLES || level < SOFT_EDGE_RESIDUAL) return undefined
+  return Math.min(level, ink.MEASURED_SIGMA_CAP / 255)
 }
 
 /**
@@ -321,15 +367,18 @@ function paintLabels(
 /**
  * The ink front end of an opaque working image (already over white) traced
  * `scale` working pixels per source pixel; `soft` is the intake's verdict
- * (wide edges, ringing, a lossy container), which loosens the palette's guards
- * and lets the noise rise to the residual against the labels; `gradients` lets
- * a region take a gradient (and the bands of one ramp merge into one).
+ * (wide edges, ringing, a lossy container, or the edge residual), which loosens
+ * the palette's guards and lets the noise rise to the residual against the
+ * labels — or, when the edges decided it (`edgeSigma`, their residual
+ * against the clean labels, {@link edgeNoise}), to that; `gradients` lets a
+ * region take a gradient (and the bands of one ramp merge into one).
  */
 export function inkFrontEnd(
   image: RasterImage,
   scale: number,
   soft: boolean,
   gradients: boolean,
+  edgeSigma?: number,
 ): InkFrontEnd {
   const { width: w, height: h } = image
   const n = w * h
@@ -347,17 +396,20 @@ export function inkFrontEnd(
   )
   const raw = ink.labelImage(rgb, pal, ids)
   if (soft) {
-    const measured = Math.min(
-      ink.residualSigma(rgb, raw, w, h, pal.inkRgb) * ink.MEASURED_SIGMA_SCALE,
-      ink.MEASURED_SIGMA_CAP / 255,
-    )
+    const measured =
+      edgeSigma ??
+      Math.min(
+        ink.residualSigma(rgb, raw, w, h, pal.inkRgb) * ink.MEASURED_SIGMA_SCALE,
+        ink.MEASURED_SIGMA_CAP / 255,
+      )
     sigma = Math.max(sigma, measured)
   }
   const minRegion = MIN_REGION * scale * scale
-  ink.despeckle(raw, w, h, minRegion)
+  const colors = { px: rgb, inks: pal.inkRgb, channels: 3 }
+  ink.despeckle(raw, w, h, minRegion, colors)
   const absorbed = ink.absorbBlendSlivers(raw, rgb, null, w, h, pal.inkRgb, sigma)
   const moved = ink.reassignBlendPixels(raw, rgb, null, w, h, pal.inkRgb, sigma)
-  if (absorbed > 0 || moved > 0) ink.despeckle(raw, w, h, minRegion)
+  if (absorbed > 0 || moved > 0) ink.despeckle(raw, w, h, minRegion, colors)
   if (ink.findComponents(raw, w, h).count > ink.MAX_FACES)
     ink.capComponents(raw, w, h, ink.MAX_FACES)
   const lf = labelFills(raw, rgb, w, h, pal, sigma, minRegion, gradients, null)
@@ -367,7 +419,8 @@ export function inkFrontEnd(
 /**
  * The ink front end of a transparent working image: `image` composited over
  * white and `alpha` its straight alpha (bytes), traced `scale` working pixels
- * per source pixel, over two grounds (inkvec `native.rs`).
+ * per source pixel, over two grounds (inkvec `native.rs`); `soft` and
+ * `edgeSigma` as for {@link inkFrontEnd}.
  */
 export function nativeInkFrontEnd(
   image: RasterImage,
@@ -375,6 +428,7 @@ export function nativeInkFrontEnd(
   scale: number,
   soft: boolean,
   gradients: boolean,
+  edgeSigma?: number,
 ): InkFrontEnd {
   const { width: w, height: h } = image
   const n = w * h
@@ -387,7 +441,7 @@ export function nativeInkFrontEnd(
     a,
     w,
     h,
-    { sigmaNoise: estimateNoise(lum, w, h), soft },
+    { sigmaNoise: estimateNoise(lum, w, h), soft, edgeNoise: edgeSigma },
     { minRegion },
   )
   const raw = fe.labels

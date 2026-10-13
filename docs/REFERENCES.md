@@ -175,7 +175,11 @@ uses. Each file names the inkvec files it follows.
   images”, SIGGRAPH 1984); ramp, core and spacing evidence over a chamfer distance (G.
   Borgefors, “Distance transformations in digital images”, _CVGIP_ 34, 1986); a soft intake —
   wide edges, ringing or a lossy container — loosens the palette's guards and lets the noise
-  rise to the residual against the labels, and an upscaled raster is reduced by the factor its
+  rise to the residual against the labels; for the planar chain's ink front end also edges
+  whose pixels stray off their two-ink blend segments (the median boundary residual against the
+  clean palette's labels at 3.5 levels or more, inkvec's `residual_sigma` boundary population;
+  `packages/engine/src/ink.ts` `edgeNoise`), the noise then taken from that clean measurement;
+  and an upscaled raster is reduced by the factor its
   edges imply (the degradation model of K. Zhang, J. Liang, L. Van Gool & R. Timofte, “Designing
   a practical degradation model for deep blind image super-resolution”, ICCV 2021).
 - **The palette** (`ink/palette.ts`, `ink/mdl.ts`, `ink/distinct.ts`, `ink/snap.ts`, after
@@ -197,7 +201,13 @@ uses. Each file names the inkvec files it follows.
   `regions/components.rs`, matching an inkvec build's label maps exactly on 37 corpus images):
   4-connected components by row runs and union-find (K. Wu, E. Otoo & K. Suzuki, “Optimizing
   two-pass connected-component labeling algorithms”, _Pattern Analysis and Applications_
-  12(2), 2009); speckles folded into their commonest neighbour; thin slivers that are blends
+  12(2), 2009); speckles folded into the touching label of least energy under a
+  contrast-sensitive Potts model — the squared color distance to each ink, less a price per
+  shared edge weighted by the two pixels' color agreement, both on the color range's own
+  scale (one iterated conditional modes step, Besag 1986 below; the region and boundary terms
+  of Y. Boykov & M.-P. Jolly, “Interactive graph cuts for optimal boundary & region
+  segmentation of objects in N-D images”, _ICCV_ 2001; `ink/regions.ts` `despeckle`), where
+  inkvec folds by contact alone; thin slivers that are blends
   of the two or three inks around them split back to their dominant ink, and single blend
   pixels moved to the ink their nearest convex mixture favours (the two-colour edge model of
   L. Yang, P. V. Sander, J. Lawrence & H. Hoppe, “Antialiasing Recovery”, _ACM TOG_ 30(3),

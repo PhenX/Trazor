@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { RasterImage } from '@trazor/core'
-import { inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from '../src/ink'
+import {
+  edgeNoise,
+  inkFrontEnd,
+  intakeIsSoft,
+  nativeInkFrontEnd,
+  SOFT_EDGE_RESIDUAL,
+  softNoise,
+} from '../src/ink'
 import { gradientAt } from '../src/planar'
 
 /** An opaque image of `w × h` pixels, each colored by `color(x, y)`. */
@@ -51,6 +58,26 @@ describe('the ink front end', () => {
       expect(at(10)).toBe('#787878')
       expect(at(45)).toBe('#7c7c7c')
       expect(at(30)).toBe('#000000')
+    }
+  })
+
+  it('keeps a one-pixel outline drawn in two near-black inks dark', () => {
+    // Two blacks a few levels apart, each with an area of its own, alternate along a line
+    // one pixel wide between a white and a pink field: every pixel of the line is a
+    // speckle of its own ink, and folding it into either field would cut the outline.
+    const a = [2, 1, 1]
+    const b = [0, 7, 27]
+    const outline = image(48, 40, (x, y) => {
+      if (y >= 28) return x < 24 ? a : b
+      if (y === 10 && x >= 4 && x < 44) return x % 2 === 0 ? a : b
+      return y < 10 ? [255, 255, 255] : [255, 190, 200]
+    })
+    for (const gradients of [false, true]) {
+      const front = inkFrontEnd(outline, 1, false, gradients)
+      for (let x = 4; x < 44; x++) {
+        const hex = front.paletteHex[front.labels.data[10 * 48 + x]]
+        expect(Number.parseInt(hex.slice(1, 3), 16), `x ${x}`).toBeLessThan(64)
+      }
     }
   })
 
@@ -180,6 +207,44 @@ describe('the soft intake', () => {
   it('reads a crisp render as native and a blurred one as soft', () => {
     expect(intakeIsSoft(disk(0, 0))).toBe(false)
     expect(intakeIsSoft(disk(1, 3))).toBe(true)
+  })
+
+  it('reads a clean render as clean, and edges pushed off their blends as soft', () => {
+    // A crisp dark disk on light; then the pixels within one of its rim pushed `off` levels
+    // off the dark–light segment in a checkerboard (red one way, blue the other), as block
+    // compression leaves a flat-art outline: the edge width and the ringing still read clean.
+    const w = 72
+    const cover = (x: number, y: number): number => {
+      let n = 0
+      for (let j = 0; j < 4; j++)
+        for (let i = 0; i < 4; i++)
+          if (Math.hypot(x + (i + 0.5) / 4 - 36, y + (j + 0.5) / 4 - 36) < 28) n++
+      return n
+    }
+    const scene = (off: number): RasterImage =>
+      image(w, w, (x, y) => {
+        const g = Math.round(230 - (200 * cover(x, y)) / 16)
+        let near = false
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const c = cover(x + dx, y + dy)
+            if (c > 0 && c < 16) near = true
+          }
+        const d = (x + y) % 2 === 0 ? off : -off
+        return near ? [g + d, g, g - d] : [g, g, g]
+      })
+    expect(edgeNoise(scene(0))).toBeUndefined()
+    // Three levels off: a native render's own wobble, not enough.
+    expect(edgeNoise(scene(3))).toBeUndefined()
+    const damaged = scene(6)
+    expect(intakeIsSoft(damaged)).toBe(false)
+    const sigma = edgeNoise(damaged)
+    expect(sigma).toBeDefined()
+    expect((sigma ?? 0) * 255).toBeCloseTo(6, 3)
+    expect(SOFT_EDGE_RESIDUAL * 255).toBeLessThan(6)
+    // The front end then takes that noise as measured, not the residual against the soft labels.
+    const front = inkFrontEnd(damaged, 1, true, false, sigma)
+    expect(front.sigmaNoise).toBeCloseTo(sigma ?? 0, 12)
   })
 
   it('raises the noise of a soft intake to the residual against its labels', () => {

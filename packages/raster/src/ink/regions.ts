@@ -4,8 +4,9 @@
  *
  * In the pipeline, after the palette labels every pixel with its nearest ink:
  *
- * 1. {@link despeckle} folds components smaller than the minimum region into their
- *    commonest neighbor;
+ * 1. {@link despeckle} folds components smaller than the minimum region into the touching
+ *    label they match best in color and continue (or, without colors, their commonest
+ *    neighbor);
  * 2. {@link absorbBlendSlivers} dissolves thin components whose pixels are anti-aliasing
  *    blends of the inks around them;
  * 3. {@link reassignBlendPixels} does the same pixel by pixel along the remaining
@@ -643,25 +644,161 @@ export function reassignBlendPixels(
 }
 
 /**
- * Fold every 4-connected component smaller than `minSize` pixels, whole, into the
- * neighboring label sharing the most pixel edges with it (ties to the lower label), read
- * from the labels as they are at that moment, so a speckle absorbed earlier counts under
- * its new label. Components are found once, before any is absorbed, and visited in raster
- * order. A component with no neighbor (the whole image one label) stays; `minSize <= 1` is
- * a no-op.
+ * The colors a speckle fold weighs ({@link despeckle}): each pixel's color, `channels` values
+ * per pixel (encoded sRGB in `[0, 1]`, and the opacity as a fourth value when there is
+ * one), and each label's ink in the same layout (a label at or past the end of `inks` has
+ * no color).
  */
-export function despeckle(labels: Int32Array, w: number, h: number, minSize: number): void {
+export interface SpeckleColors {
+  px: ArrayLike<number>
+  inks: Float64Array
+  channels: number
+}
+
+/**
+ * `β` of {@link despeckle}: what one shared pixel edge between two pixels of the same color
+ * is worth against the color term, in its units (squared distance in encoded sRGB).
+ */
+export const SPECKLE_CONTACT = 0.5
+
+/**
+ * Fold every 4-connected component smaller than `minSize` pixels, whole, into one of the
+ * labels it touches, read from the labels as they are at that moment, so a speckle absorbed
+ * earlier counts under its new label. Components are found once, before any is absorbed,
+ * and visited in raster order. A component with no neighbor (the whole image one label)
+ * stays; `minSize <= 1` is a no-op.
+ *
+ * Without `colors` the target is the label sharing the most pixel edges with the component
+ * (ties to the lower label), whatever its color. With `colors` the fold is one iterated
+ * conditional modes step of a contrast-sensitive Potts model over the touching labels that
+ * have a color: the component `S` joins the label `l` minimizing
+ *
+ * ```text
+ *     E(l) = Σ_{i∈S} |c_i − μ_l|²  −  β · Σ_{p∈S, q∈l, p~q} exp(−|c_p − c_q|²)
+ * ```
+ *
+ * with `μ_l` the label's ink and `β` {@link SPECKLE_CONTACT}. Both terms read colors on
+ * the scale of the color range itself (a Gaussian with `2σ² = 1` per channel of encoded
+ * sRGB), not of the pixel noise: a speckle keeps the ink it matches by a visible margin over
+ * its other neighbors (a near-black pixel of an outline goes to the near-black ink beside
+ * it, not to the white around it), and between inks it matches about equally (an
+ * anti-aliased blend, a band edge of a ramp) the contact term decides, which counts a shared
+ * edge fully only where the two pixels agree in color, so the speckle settles into the
+ * region it continues. Ties go to the lower label; a component touching only colorless
+ * labels falls back to the most shared edges.
+ *
+ * Method from: J. Besag, "On the statistical analysis of dirty pictures", JRSS B
+ * 48(3):259–302, 1986 (iterated conditional modes); Y. Boykov, M.-P. Jolly, "Interactive
+ * graph cuts for optimal boundary & region segmentation of objects in N-D images", ICCV
+ * 2001 (the region term against each label's color, and the contrast-sensitive boundary
+ * weight).
+ */
+export function despeckle(
+  labels: Int32Array,
+  w: number,
+  h: number,
+  minSize: number,
+  colors: SpeckleColors | null = null,
+): void {
   if (minSize <= 1) return
   const comps = findComponents(labels, w, h)
   const small = componentMembers(comps, (id) => comps.size[id] < minSize)
-  const tally = new ContactTally(labelBound(labels, 0))
+  const bound = labelBound(labels, 0)
+  const tally = new ContactTally(bound)
+  const fold = colors === null ? null : new SpeckleFold(colors, bound)
   for (let id = 0; id < comps.count; id++) {
     const from = small.offset[id]
     const to = small.offset[id + 1]
     if (from === to) continue
-    const best = commonestNeighbor(small.pixels, from, to, id, comps.comp, labels, w, h, tally)
+    const best =
+      fold === null
+        ? commonestNeighbor(small.pixels, from, to, id, comps.comp, labels, w, h, tally)
+        : fold.target(small.pixels, from, to, id, comps.comp, labels, w, h, tally)
     if (best < 0) continue
     for (let k = from; k < to; k++) labels[small.pixels[k]] = best
+  }
+}
+
+/** The color-aware choice of {@link despeckle}: per touching label, its contrast-weighted contacts. */
+class SpeckleFold {
+  private readonly px: ArrayLike<number>
+  private readonly inks: Float64Array
+  private readonly channels: number
+  private readonly inkCount: number
+  /** Contrast-weighted shared edges with each label, summed over the touched labels only. */
+  private readonly weight: Float64Array
+  private readonly mean: Float64Array
+
+  constructor(colors: SpeckleColors, labelCount: number) {
+    this.px = colors.px
+    this.inks = colors.inks
+    this.channels = colors.channels
+    this.inkCount = Math.floor(colors.inks.length / colors.channels)
+    this.weight = new Float64Array(labelCount)
+    this.mean = new Float64Array(colors.channels)
+  }
+
+  /**
+   * The label component `id` (pixels `pixels[from .. to]`) folds into; -1 when it touches
+   * nothing. The color term is ranked as `n·|c̄ − μ_l|²` (`c̄` the component's mean color),
+   * which differs from `Σ|c_i − μ_l|²` by the component's own spread, the same for every `l`.
+   */
+  target(
+    pixels: Int32Array,
+    from: number,
+    to: number,
+    id: number,
+    comp: Int32Array,
+    labels: Int32Array,
+    w: number,
+    h: number,
+    tally: ContactTally,
+  ): number {
+    tallyContacts(pixels, from, to, id, comp, labels, w, h, tally)
+    if (tally.size === 0) return -1
+    const { px, channels: ch, weight, mean } = this
+    for (let k = 0; k < tally.size; k++) weight[tally.touched[k]] = 0
+    mean.fill(0)
+    for (let k = from; k < to; k++) {
+      const p = pixels[k]
+      for (let m = 0; m < ch; m++) mean[m] += px[p * ch + m]
+      const y = (p / w) | 0
+      const x = p - y * w
+      if (x > 0 && comp[p - 1] !== id) this.contact(p, p - 1, labels)
+      if (x + 1 < w && comp[p + 1] !== id) this.contact(p, p + 1, labels)
+      if (y > 0 && comp[p - w] !== id) this.contact(p, p - w, labels)
+      if (y + 1 < h && comp[p + w] !== id) this.contact(p, p + w, labels)
+    }
+    const n = to - from
+    for (let m = 0; m < ch; m++) mean[m] /= n
+    let best = -1
+    let bestCost = Infinity
+    for (let k = 0; k < tally.size; k++) {
+      const l = tally.touched[k]
+      if (l >= this.inkCount) continue
+      let d2 = 0
+      for (let m = 0; m < ch; m++) {
+        const d = mean[m] - this.inks[l * ch + m]
+        d2 += d * d
+      }
+      const cost = n * d2 - SPECKLE_CONTACT * weight[l]
+      if (cost < bestCost || (cost === bestCost && l < best)) {
+        best = l
+        bestCost = cost
+      }
+    }
+    return best >= 0 ? best : tally.commonest()
+  }
+
+  /** Credit the label of pixel `q` with the shared edge `p ~ q`, weighted by their color agreement. */
+  private contact(p: number, q: number, labels: Int32Array): void {
+    const { px, channels: ch } = this
+    let d2 = 0
+    for (let m = 0; m < ch; m++) {
+      const d = px[p * ch + m] - px[q * ch + m]
+      d2 += d * d
+    }
+    this.weight[labels[q]] += Math.exp(-d2)
   }
 }
 

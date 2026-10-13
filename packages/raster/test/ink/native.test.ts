@@ -1027,10 +1027,14 @@ describe('transparent-image parity with inkvec', () => {
       expect(paletteMismatch(pal, labelImageNative(img.rgb, img.alpha, pal), ref.palette)).toEqual(
         [],
       )
-      const fe = nativeFrontEnd(img.rgb, img.alpha, ref.w, ref.h, {
-        sigmaNoise: ref.sigma0,
-        soft: ref.soft,
-      })
+      const fe = nativeFrontEnd(
+        img.rgb,
+        img.alpha,
+        ref.w,
+        ref.h,
+        { sigmaNoise: ref.sigma0, soft: ref.soft },
+        { colorFold: false },
+      )
       // The soft-intake residual is measured in double precision (inkvec: single).
       expect(Math.abs(fe.sigmaNoise - ref.sigma)).toBeLessThan(1e-7 * ref.sigma)
       expect([fe.absorbed, fe.moved]).toEqual([ref.absorbed, ref.moved])

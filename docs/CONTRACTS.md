@@ -594,7 +594,15 @@ export namespace ink {
     w: number,
     h: number,
   ): boolean
-  function despeckle(labels: Int32Array, w, h, minSize): void
+  // Folds components under minSize into a touching label: by most shared edges (inkvec's rule), or with
+  // colors by a contrast-sensitive Potts energy, Σ|c − μ_l|² − 0.5·Σ exp(−|c_p − c_q|²) in encoded sRGB.
+  function despeckle(
+    labels: Int32Array,
+    w,
+    h,
+    minSize,
+    colors?: { px: ArrayLike<number>; inks: Float64Array; channels: number } | null,
+  ): void
   function absorbBlendSlivers(
     labels,
     rgb,
@@ -606,6 +614,8 @@ export namespace ink {
   ): number
   function reassignBlendPixels(labels, rgb, alpha, w, h, inkRgb, sigma): number
   function residualSigma(rgb, labels, w, h, inkRgb): number // the noise against the labels
+  // Its boundary population alone: median distance off the two-ink blend segments, uncapped.
+  function boundaryResidual(rgb, labels, w, h, inkRgb): { level: number; samples: number }
   function splitComponents(
     labels,
     w,
@@ -665,8 +675,9 @@ export namespace ink {
     alpha: Float32Array,
     w,
     h,
-    intake: { sigmaNoise: number; soft: boolean },
-    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends? },
+    // edgeNoise: on an intake its edges made soft, the noise they measured against the clean labels.
+    intake: { sigmaNoise: number; soft: boolean; edgeNoise?: number },
+    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends?; colorFold? },
   ): NativeFrontEnd // { palette, labels, sigmaNoise, lambda, sameClass, absorbed, moved }
   function extractPaletteNative(rgb, alpha, w, h, merge?, maxColors?, ev?, ids?): Palette
   function labelImageNative(rgb, alpha, palette: Palette, ids?): Int32Array

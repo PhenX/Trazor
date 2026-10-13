@@ -1,6 +1,11 @@
 import { NOISE_FLOOR, mulberry32 } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
-import { regularizeLabels, residualIncoherence, residualSigma } from '../../src/ink/regularize'
+import {
+  boundaryResidual,
+  regularizeLabels,
+  residualIncoherence,
+  residualSigma,
+} from '../../src/ink/regularize'
 import {
   compositeOverWhite,
   decodeRle,
@@ -62,6 +67,49 @@ describe('regularizeLabels', () => {
         0.01,
       ),
     ).toBe(0)
+  })
+})
+
+describe('boundaryResidual', () => {
+  /** Two inks side by side, the boundary columns blends pushed `off` per channel off their segment. */
+  function boundary(off: number): { rgb: Float32Array; labels: Int32Array; inks: Float64Array } {
+    const w = 24
+    const inks = Float64Array.of(0.2, 0.3, 0.6, 0.9, 0.8, 0.4)
+    const rgb = new Float32Array(w * w * 3)
+    const labels = new Int32Array(w * w)
+    for (let p = 0; p < w * w; p++) {
+      const x = p % w
+      labels[p] = x < 12 ? 0 : 1
+      const t = x < 11 ? 0 : x === 11 ? 0.3 : x === 12 ? 0.7 : 1
+      // Orthogonal to the segment (0.7, 0.5, −0.2): (0.5, −0.7, 0) normalized, times `off·√2`.
+      const k = x === 11 || x === 12 ? (off * Math.SQRT2) / Math.hypot(0.5, 0.7) : 0
+      const d = [0.5 * k, -0.7 * k, 0]
+      for (let c = 0; c < 3; c++) rgb[p * 3 + c] = inks[c] + t * (inks[3 + c] - inks[c]) + d[c]
+    }
+    return { rgb, labels, inks }
+  }
+
+  it('reads clean blends as no residual, on every boundary pixel one in from the border', () => {
+    const { rgb, labels, inks } = boundary(0)
+    const r = boundaryResidual(rgb, labels, 24, 24, inks)
+    expect(r.samples).toBe(2 * 22)
+    expect(r.level).toBeLessThan(1e-6)
+  })
+
+  it('reads edge pixels pushed off the blend segment by how far, uncapped', () => {
+    for (const off of [3 / 255, 12 / 255]) {
+      const { rgb, labels, inks } = boundary(off)
+      expect(boundaryResidual(rgb, labels, 24, 24, inks).level).toBeCloseTo(off, 5)
+    }
+  })
+
+  it('reads nothing on an image under 3 × 3 or without a boundary', () => {
+    expect(
+      boundaryResidual(gray(0.5, 4), new Int32Array(4), 2, 2, Float64Array.of(0.5, 0.5, 0.5)),
+    ).toEqual({ level: 0, samples: 0 })
+    expect(
+      boundaryResidual(gray(0.5, 25), new Int32Array(25), 5, 5, Float64Array.of(0.5, 0.5, 0.5)),
+    ).toEqual({ level: 0, samples: 0 })
   })
 })
 

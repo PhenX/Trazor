@@ -129,7 +129,7 @@ import {
   tracePlanar,
 } from './planar'
 import type { PlanarFace, PlanarRegion } from './planar'
-import { inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from './ink'
+import { edgeNoise, inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -446,6 +446,8 @@ export interface StageCache {
   alpha?: Uint8Array | null
   /** The intake's soft verdict on the image before supersampling (planar runs). */
   intakeSoft?: boolean
+  /** The noise of the edges that made the intake soft (`edgeNoise`; ink front end). */
+  intakeEdgeNoise?: number
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
   /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
@@ -562,8 +564,10 @@ export interface VectorizeRunOptions {
 interface PlanarRun {
   onStage?: VectorizeRunOptions['onPlanarStage']
   frontEnd: 'classic' | 'ink'
-  /** The intake's soft verdict (`intakeIsSoft`). */
+  /** The intake's soft verdict (`intakeIsSoft`, or for the ink front end its edges' residual). */
   soft: boolean
+  /** The residual of the edges against the clean labels, when it made the intake soft (`edgeNoise`). */
+  edgeNoise?: number
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -757,7 +761,8 @@ export async function vectorize(
     touchesBorder(source)
       ? BORDER_PAD
       : 0
-  const preKey = `${preKeyOf(settings)}|${pad}`
+  // The ink front end reads its edges' residual at the intake as well.
+  const preKey = `${preKeyOf(settings)}|${pad}|${opts?.geometry === 'planar' ? (opts.frontEnd ?? 'classic') : ''}`
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
@@ -765,17 +770,27 @@ export async function vectorize(
   // enlargement widens its edges: the planar chain's noise rises to the labels'
   // residual on a soft intake.
   let intakeSoft = false
+  let intakeEdgeNoise: number | undefined
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
     alpha = cache.alpha ?? null
     intakeSoft = cache.intakeSoft ?? false
+    intakeEdgeNoise = cache.intakeEdgeNoise
     cacheStats(cache).preHits++
     run.progress(1)
   } else {
     let img = resizeToFit(source, settings.maxDimension)
     if (pad > 0) img = padImage(img, pad)
-    if (opts?.geometry === 'planar') intakeSoft = intakeIsSoft(img)
+    if (opts?.geometry === 'planar') {
+      intakeSoft = intakeIsSoft(img)
+      // The ink front end's palette keeps every variant of a damaged edge's inks apart
+      // unless the intake is soft; edges that stray off their blends make it so.
+      if (!intakeSoft && opts.frontEnd === 'ink' && settings.mode === 'color') {
+        intakeEdgeNoise = edgeNoise(img)
+        intakeSoft = intakeEdgeNoise !== undefined
+      }
+    }
     run.progress(0.3)
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
@@ -801,6 +816,7 @@ export async function vectorize(
       cache.opaque = opaque
       cache.alpha = alpha
       cache.intakeSoft = intakeSoft
+      cache.intakeEdgeNoise = intakeEdgeNoise
       cache.palette = new Map()
       cache.ink = undefined
     }
@@ -891,7 +907,12 @@ export async function vectorize(
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
       opts?.geometry === 'planar'
-        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic', soft: intakeSoft }
+        ? {
+            onStage: opts.onPlanarStage,
+            frontEnd: opts.frontEnd ?? 'classic',
+            soft: intakeSoft,
+            edgeNoise: intakeEdgeNoise,
+          }
         : undefined,
     )
   } else {
@@ -908,7 +929,12 @@ export async function vectorize(
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
       opts?.geometry === 'planar'
-        ? { onStage: opts.onPlanarStage, frontEnd: opts.frontEnd ?? 'classic', soft: intakeSoft }
+        ? {
+            onStage: opts.onPlanarStage,
+            frontEnd: opts.frontEnd ?? 'classic',
+            soft: intakeSoft,
+            edgeNoise: intakeEdgeNoise,
+          }
         : undefined,
       alpha,
     )
@@ -1121,10 +1147,11 @@ async function colorPipeline(
   } else if (useInk) {
     if (canCachePal) cacheStats(cache!).palMisses++
     const soft = planarRun?.soft ?? false
+    const edge = planarRun?.edgeNoise
     const front =
       alpha !== null
-        ? nativeInkFrontEnd(image, alpha, settings.supersample, soft, settings.gradients)
-        : inkFrontEnd(image, settings.supersample, soft, settings.gradients)
+        ? nativeInkFrontEnd(image, alpha, settings.supersample, soft, settings.gradients, edge)
+        : inkFrontEnd(image, settings.supersample, soft, settings.gradients, edge)
     ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients } = front)
     fillOpacity = front.fillOpacity
     inkHex = front.inkHex

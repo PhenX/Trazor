@@ -846,8 +846,13 @@ export function labelImageNative(
 export interface NativeIntake {
   /** Per-channel pixel noise in encoded sRGB, `estimateNoise` of the single-precision luma. */
   sigmaNoise: number
-  /** Soft intake (a wide edge, a lossy container or ringing; `isSoftIntake`). */
+  /** Soft intake (a wide edge, a lossy container or ringing; `isSoftIntake`; or its edges' residual). */
   soft: boolean
+  /**
+   * On a soft intake decided by its edges, their residual against the clean labels (encoded
+   * sRGB): the noise rises to it instead of to the residual against the soft labels.
+   */
+  edgeNoise?: number
 }
 
 /** Settings of {@link nativeFrontEnd}. */
@@ -860,6 +865,11 @@ export interface NativeFrontEndOptions {
   minRegion?: number
   /** Run the four-channel blend absorption (default true). */
   absorbBlends?: boolean
+  /**
+   * Fold speckles by color as well as contact (default true; `despeckle` with colors). False
+   * folds each into its commonest neighbor whatever its color, inkvec's rule.
+   */
+  colorFold?: boolean
 }
 
 /** What {@link nativeFrontEnd} hands the band merge and the stages after it. */
@@ -909,21 +919,24 @@ export function nativeFrontEnd(
   let sigmaNoise = intake.sigmaNoise
   if (intake.soft) {
     const cap = MEASURED_SIGMA_CAP / 255
-    const measured = Math.min(
-      residualSigma(rgb, labels, width, height, palette.inkRgb) * MEASURED_SIGMA_SCALE,
-      cap,
-    )
+    const measured =
+      intake.edgeNoise ??
+      Math.min(
+        residualSigma(rgb, labels, width, height, palette.inkRgb) * MEASURED_SIGMA_SCALE,
+        cap,
+      )
     sigmaNoise = Math.max(sigmaNoise, measured)
   }
-  despeckle(labels, width, height, minRegion)
+  const px = rgbaW(rgb, alpha, n)
+  const inks = inkRgbaW(palette.inkRgb, palette.alpha)
+  const colors = (options.colorFold ?? true) ? { px, inks, channels: 4 } : null
+  despeckle(labels, width, height, minRegion, colors)
   let absorbed = 0
   let moved = 0
   if (options.absorbBlends ?? true) {
-    const px = rgbaW(rgb, alpha, n)
-    const inks = inkRgbaW(palette.inkRgb, palette.alpha)
     absorbed = absorbBlendSliversNative(labels, px, width, height, inks, sigmaNoise)
     moved = reassignBlendPixelsNative(labels, px, width, height, inks, sigmaNoise)
-    if (absorbed > 0 || moved > 0) despeckle(labels, width, height, minRegion)
+    if (absorbed > 0 || moved > 0) despeckle(labels, width, height, minRegion, colors)
   }
   return {
     palette,

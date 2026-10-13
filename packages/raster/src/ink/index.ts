@@ -29,7 +29,7 @@ export {
   splitComponents,
 } from './regions'
 export { findComponents } from './components'
-export { residualSigma } from './regularize'
+export { boundaryResidual, residualSigma } from './regularize'
 export { intakeEvidence, intakePixels } from '../intake/coverage'
 export { rampEvidence } from '../intake/softness'
 export type { RampEvidence } from '../intake/softness'
