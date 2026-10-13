@@ -81,10 +81,10 @@ export function estimateNoise(gray: ArrayLike<number>, w: number, h: number): nu
 // walks (see vectorize's opts below). normalizeSettings maps anything else to 'classic'.
 export type GeometryChain = 'classic' | 'planar'
 geometry: GeometryChain
-// VectorizeSettings.frontEnd: the planar chain's front end for opaque color images — 'classic'
+// VectorizeSettings.frontEnd: the planar chain's front end for color images — 'classic'
 // (DEFAULT_SETTINGS, the segmentation every chain shares) or 'ink' (the MDL palette and region
-// passes). Read only with geometry 'planar'; the classic chain ignores it, and a transparent image
-// takes the classic front end. normalizeSettings maps anything else to 'classic'.
+// passes; a transparent image runs them over two grounds). Read only with geometry 'planar' and
+// mode 'color'; the classic chain ignores it. normalizeSettings maps anything else to 'classic'.
 export type FrontEnd = 'classic' | 'ink'
 frontEnd: FrontEnd
 // Both round-trip through the settings export (parseSettingsImport / serializeSettings). The
@@ -1786,8 +1786,9 @@ export function recommendSettings(
 // The geometry chain: color or grayscale art on stacked layers not grouped by color, from an
 // undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
 // geometry 'planar' — a cartoon (segmentation 'regions') whose longest side is at most 512 px with
-// frontEnd 'classic' (reason `planarCartoon`; a larger cartoon stays classic), other art with frontEnd 'ink' and gradients on (reason `planarInk`). bw,
-// centerline, cutout, nested and grouped output keep the classic chain.
+// frontEnd 'classic' (reason `planarCartoon`; a larger cartoon stays classic), other art with frontEnd 'ink' and gradients on (reason `planarInk`). An
+// image traced at more than 600 000 pixels, bw, centerline, cutout, nested and grouped output keep
+// the classic chain.
 export interface PaletteSuggestion {
   id: string
   label: string

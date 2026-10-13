@@ -167,6 +167,16 @@ const GRADIENT_DETECT_CAP = 512
  */
 const PLANAR_CARTOON_MAX_SIDE = 512
 
+/**
+ * Most traced pixels (at the traced size, before supersampling) an image
+ * takes the planar chain with by default. The chain's cost grows faster than
+ * the image: 512 px icons trace in about 5 s against 1 s classic, while a
+ * 1400×980 flat illustration took 243 s against 5 s for a GMSD gain of a
+ * quarter. A larger image keeps the classic chain until the planar chain is
+ * made faster; the Geometry setting still selects it.
+ */
+const PLANAR_MAX_PIXELS = 600_000
+
 /** Whether the image reads as cartoon-style flat art region growing serves best. */
 function isCartoon(a: ImageAnalysis): boolean {
   return (
@@ -608,7 +618,8 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
  * centerline, cutout and nested layering and grouped output). A cartoon takes
  * it only up to `PLANAR_CARTOON_MAX_SIDE`, with the classic front end, whose
  * region growing it is routed to; other art takes the ink front end with
- * gradient fills, which paints a ramp as one gradient.
+ * gradient fills, which paints a ramp as one gradient. An image traced at more
+ * than `PLANAR_MAX_PIXELS` keeps the classic chain, which is far faster there.
  */
 function planarChain(
   a: ImageAnalysis,
@@ -624,6 +635,10 @@ function planarChain(
   if (patch.groupByColor ?? DEFAULT_SETTINGS.groupByColor) return
   if ((patch.denoise ?? DEFAULT_SETTINGS.denoise) !== 'none') return
   if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
+  const maxDimension =
+    patch.maxDimension ?? getProfile(profileId).patch.maxDimension ?? DEFAULT_SETTINGS.maxDimension
+  const fit = Math.min(1, maxDimension / Math.max(a.width, a.height))
+  if (a.width * a.height * fit * fit > PLANAR_MAX_PIXELS) return
   patch.geometry = 'planar'
   if (cartoon) {
     patch.frontEnd = 'classic'

@@ -130,11 +130,10 @@ export interface VectorizeSettings {
    */
   geometry: GeometryChain
   /**
-   * The planar chain's front end for opaque color images: `classic`, the
+   * The planar chain's front end for color images: `classic`, the
    * segmentation every chain shares, or `ink`, the MDL palette and region
-   * passes. Read only with `geometry` `planar` (ignored by the classic chain),
-   * for `color` mode on an opaque image; a transparent image takes the
-   * classic front end.
+   * passes (a transparent image runs them over two grounds). Read only with
+   * `geometry` `planar` (ignored by the classic chain), for `color` mode.
    */
   frontEnd: FrontEnd
   /** Regions smaller than this many pixels are merged into their surroundings. */
