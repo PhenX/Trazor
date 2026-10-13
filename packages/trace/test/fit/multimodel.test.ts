@@ -12,7 +12,9 @@ import type { FitSegment, Vec } from '../../src/fit/curves'
 import { chi2 as sampledChi2, segmentParams } from '../../src/fit/curves'
 import { Limits } from '../../src/fit/limits'
 import {
-  decimateIndices,
+  decimationCells,
+  decimationCorners,
+  DP_MAX_POINTS,
   fitPolyline,
   openAt,
   optimalMultimodel,
@@ -137,9 +139,16 @@ describe('against inkvec', () => {
   const inputs = referenceInputs()
 
   it('finds the same segmentation, models, cost and path on every reference input', () => {
+    const decimated: string[] = []
     for (const [k, input] of inputs.entries()) {
       const want = REFERENCE[k]
       expect(want.name).toBe(input.name)
+      // A free fit long enough to be decimated stands its cells' means in for
+      // inkvec's picked samples (`decimationCells`), so it has no inkvec answer.
+      if (input.mode === 'free' && input.points.length / 2 > DP_MAX_POINTS) {
+        decimated.push(input.name)
+        continue
+      }
       const poly = uniformPolyline(input.points, input.sigma, input.closed)
       const c = cfg(input.lambda)
       const fit =
@@ -176,6 +185,7 @@ describe('against inkvec', () => {
         cost: true,
       })
     }
+    expect(decimated).toEqual(['ring', 'wiggle'])
   })
 
   it('fills the same table on the open reference inputs', () => {
@@ -210,12 +220,16 @@ describe('against inkvec', () => {
     }
   })
 
-  it('decimates as inkvec does: corners move onto the grid, smooth runs keep it', () => {
+  it('finds the corners inkvec decimates onto: tips move onto the grid, smooth runs keep it', () => {
     const c = cfg(7.5)
+    const onGrid = (poly: Polyline, stride: number): number[] =>
+      decimationCorners(poly, stride, c)
+        .map((j, k) => (j >= 0 ? j : k * stride))
+        .toSorted((x, y) => x - y)
     const starPoly = uniformPolyline(noisy(star(), 0.03, 11), 0.05, true)
-    expect(decimateIndices(starPoly, 5, c)).toEqual(REFERENCE_STAR_STRIDE5)
+    expect(onGrid(starPoly, 5)).toEqual(REFERENCE_STAR_STRIDE5)
     const ring = uniformPolyline(noisy(rationalCircle(0, 0, 100, 250), 0.05, 12), 0.05, true)
-    expect(decimateIndices(ring, 2, c)).toEqual(Array.from({ length: 500 }, (_, k) => 2 * k))
+    expect(decimationCorners(ring, 2, c).every((j) => j < 0)).toBe(true)
   })
 })
 
@@ -504,18 +518,47 @@ describe('optimality', () => {
 // --- decimation, caps and forced vertices ------------------------------------------
 
 describe('limits', () => {
-  it('runs a long free fit on the decimated grid', () => {
+  it('runs a long free fit on cell means that carry every point', () => {
+    // Two of every three points sit 0.05 px off the axis, the third on it: one
+    // sample per cell would see only the points on it.
     const pairs = Array.from({ length: 40 }, (_, k): [number, number] => [
       k,
       k % 3 === 0 ? 0 : 0.05,
     ])
     const poly = uniformPolyline(flat(pairs), 0.02, false)
+    const cells = decimationCells(poly, cfg(1.5), 16)
+    expect(cells.points.length / 2).toBeLessThanOrEqual(16)
+    // The ends are kept as measured, each cell stands for its middle point.
+    expect(cells.index[0]).toBe(0)
+    expect(cells.index[cells.index.length - 1]).toBe(39)
+    for (let c = 1; c + 1 < cells.index.length; c++) {
+      expect(cells.index[c]).toBeGreaterThan(cells.index[c - 1])
+      expect(cells.points[2 * c + 1]).toBeGreaterThan(0.01)
+      expect(cells.sigma[c]).toBeLessThan(0.02)
+    }
     const fit = optimalMultimodel(poly, cfg(1.5), { maxPoints: 16 })
-    expect(fit.vertices).toEqual([0, 39])
-    expect(fit.kinds).toEqual(['line'])
-    expect(near(fit.cost, 3, 1e-9)).toBe(true)
-    // On every point the off-axis ones cost.
-    expect(optimalMultimodel(poly, cfg(1.5)).cost).toBeGreaterThan(3.1)
+    expect(fit.vertices[0]).toBe(0)
+    expect(fit.vertices[fit.vertices.length - 1]).toBe(39)
+    // Priced on the means, the off-axis points cost as they do one by one.
+    expect(fit.cost).toBeGreaterThan(3.1)
+  })
+
+  it('reads no more shape into a long noisy run on cell means than on every point', () => {
+    // A straight run whose points scatter within their σ: averaged, the scatter
+    // shrinks as the weight the means carry grows; one raw sample per cell,
+    // weighted as a mean, reads its own noise as shape.
+    for (const start of [5, 6, 7]) {
+      let seed = start
+      const rnd = (): number => {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return seed / 2147483648 - 0.5
+      }
+      const pairs = Array.from({ length: 300 }, (_, k): [number, number] => [0.5 * k, 0.3 * rnd()])
+      const poly = uniformPolyline(flat(pairs), 0.1, false)
+      const full = optimalMultimodel(poly, cfg(7), { maxPoints: 1e9 })
+      const decimated = optimalMultimodel(poly, cfg(7), { maxPoints: 30 })
+      expect(decimated.kinds.length).toBeLessThanOrEqual(full.kinds.length)
+    }
   })
 
   it('never decimates under a span cap', () => {
@@ -534,12 +577,18 @@ describe('limits', () => {
       i <= 801 ? [i, 0] : [801, i - 801],
     )
     const poly = uniformPolyline(flat(pairs), 0.05, false)
-    const kept = decimateIndices(poly, 4, fitConfig(256))
+    const cells = decimationCells(poly, fitConfig(256), 401)
+    const kept = cells.index
     expect(kept[0]).toBe(0)
     expect(kept[kept.length - 1]).toBe(1602)
-    expect(kept.length).toBe(Math.ceil(1603 / 4) + 1)
-    expect(kept).toContain(801)
+    expect(kept.length).toBeLessThanOrEqual(401)
+    // The corner is a point of its own, exactly where it was measured.
+    const at = kept.indexOf(801)
+    expect(at).toBeGreaterThan(0)
+    expect([cells.points[2 * at], cells.points[2 * at + 1]]).toEqual([801, 0])
     for (let k = 1; k < kept.length; k++) expect(kept[k]).toBeGreaterThan(kept[k - 1])
+    const fit = optimalMultimodel(poly, fitConfig(256), { maxPoints: 401 })
+    expect(fit.vertices).toEqual([0, 801, 1602])
   })
 
   /** A wobbly open run and a lobed closed ring, the shapes the crossing repair refits. */

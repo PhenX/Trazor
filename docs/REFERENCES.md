@@ -332,7 +332,12 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   simplification using the bandwidth criterion”, _CaGIS_ 25(4), 1998, and A. Saalfeld,
   “Topologically consistent line simplification with the Douglas-Peucker algorithm”,
   _CaGIS_ 26(1), 1999; line–line corners refined to their lines' intersection (Selinger 2003
-  §2.3.3); a long boundary decimated keeping its corners.
+  §2.3.3); a long boundary decimated to the inverse-variance means of short cells of
+  consecutive points, at each mean's own σ, `(Σ σ⁻²)^−½`, cut at its sharp bends and ends,
+  which stay as measured — the weighted mean of grouped measurements (P. R. Bevington &
+  D. K. Robinson, _Data Reduction and Error Analysis for the Physical Sciences_, 3rd ed.,
+  McGraw-Hill, 2003, ch. 4), against which the program prices a curve as against every point
+  up to a constant (`decimationCells`).
 - **Post-fit passes** (`fit/merge.ts`, `fit/snap.ts`, after inkvec's
   `inkvec-fit/src/merge{.rs,/residual.rs,/grid.rs,/snap.rs}` and `post_fit_passes`,
   cross-checked against an inkvec build on 160 fits): a short run of segments replaced by

@@ -266,8 +266,7 @@ function multimodel(
   // contour is not simple by construction, and a forced vertex is an index of
   // the full contour.
   const maxPoints = Math.max(opts.maxPoints ?? DP_MAX_POINTS, 16)
-  const stride = lim.free ? Math.ceil(n / maxPoints) : 1
-  if (stride > 1) return solveDecimated(poly, cfg, lim, opts, stride)
+  if (lim.free && n > maxPoints) return solveDecimated(poly, cfg, lim, opts, maxPoints)
 
   const { cx, cy, shifted } = centered(poly)
   let fit: MultimodelFit
@@ -290,54 +289,137 @@ function multimodel(
 }
 
 /**
- * Fit a long boundary on a decimated copy and map the chosen vertices back to
- * indices of the full polyline. One point per cell of `stride` points is kept
- * ({@link decimateIndices}, which keeps significant bends), with σ divided by
- * `√stride` so each kept point carries the weight of the run it stands for and
- * χ² keeps its meaning against λ.
+ * Fit a long boundary on a decimated copy ({@link decimationCells}) and map
+ * the chosen vertices back to indices of the full polyline: a vertex at a cell
+ * stands for the cell's middle point.
  */
 function solveDecimated(
   poly: Polyline,
   cfg: FitConfig,
   lim: Limits,
   opts: MultimodelOptions,
-  stride: number,
+  maxPoints: number,
 ): MultimodelFit {
-  const keep = decimateIndices(poly, stride, cfg)
-  const w = Math.sqrt(stride)
-  const points = new Float64Array(2 * keep.length)
-  const sigma = new Float64Array(keep.length)
-  keep.forEach((i, k) => {
-    points[2 * k] = poly.points[2 * i]
-    points[2 * k + 1] = poly.points[2 * i + 1]
-    sigma[k] = poly.sigma[i] / w
-  })
-  const fit = multimodel({ points, sigma, closed: poly.closed }, cfg, lim, opts)
-  fit.vertices = fit.vertices.map((v) => keep[v])
+  const cells = decimationCells(poly, cfg, maxPoints)
+  const decimated = { points: cells.points, sigma: cells.sigma, closed: poly.closed }
+  const fit = multimodel(decimated, cfg, lim, opts)
+  fit.vertices = fit.vertices.map((v) => cells.index[v])
   return fit
 }
 
+/** A long polyline's stand-in: one point per cell, its σ, and the source index each stands for. */
+export interface DecimatedPolyline {
+  points: Float64Array
+  sigma: Float64Array
+  /** Per point, the source index it stands for: a kept point's own, a cell's middle one. */
+  index: number[]
+}
+
 /**
- * A bounded sampling grid that keeps sharp corners: every `stride`-th index,
- * plus the last point of an open polyline, each grid sample (but an open
- * polyline's two ends) free to move within its own cell — the indices halfway to
- * its grid neighbors `prev` and `next`, wrapping on a closed polyline — onto a
- * sharp bend the coarse polygon would cut. A candidate `j` is eligible only where
- * the polyline turns there by at least the full-corner angle (`g1BreakRadians`)
- * between `p_j − p_prev` and `p_next − p_j`, so smooth arcs and noisy straight
- * runs keep their uniform samples; the eligible candidate farthest from the
- * chord `p_prev → p_next` in units of its own σ,
- * `r_j = ((p_j − p_prev) × (p_next − p_prev))² / (|p_next − p_prev|²·σ_j²)`,
- * replaces the sample if `r_j > τ²`. Neighbors are the original grid positions,
- * so moves do not interact and the count never changes. Ascending.
+ * At most `maxPoints` points standing for a long polyline. Its anchors — the
+ * sharp bends {@link decimationCorners} picks, and an open polyline's two
+ * ends — are kept as measured; every run of points between two anchors is cut
+ * into `⌈length / stride⌉` cells of consecutive points, as even as they come,
+ * and each cell is replaced by the inverse-variance mean of its points,
+ * `p̄ = Σ wₖpₖ / Σ wₖ` with `wₖ = σₖ⁻²`, at that mean's own σ, `(Σ wₖ)^−½`.
+ * Across a cell the boundary is nearly straight, and for any curve
+ * `Σ wₖ dₖ² = d̄²·Σ wₖ + Σ wₖ (dₖ − d̄)²`, `dₖ` the points' signed distances
+ * to it and `d̄` their weighted mean: the second term is the cell's own scatter,
+ * which no curve changes, so the program prices a curve against the means as
+ * against every point, up to a constant — the reduction of grouped data in
+ * weighted least squares. One raw sample per cell, weighted as if it were such
+ * a mean, would hand its own noise to the program as signal. The stride starts
+ * at `⌈n / maxPoints⌉` and grows until the anchors and cells fit. Points stay
+ * in walk order; a closed polyline's cells start at index 0.
  */
-export function decimateIndices(poly: Polyline, stride: number, cfg: FitConfig): number[] {
+export function decimationCells(
+  poly: Polyline,
+  cfg: FitConfig,
+  maxPoints: number,
+): DecimatedPolyline {
+  const n = polylineSize(poly)
+  const p = poly.points
+  const sig = poly.sigma
+  let stride = Math.max(Math.ceil(n / maxPoints), 1)
+  const lo: number[] = []
+  const hi: number[] = []
+  for (;;) {
+    const anchor = new Uint8Array(n)
+    for (const c of decimationCorners(poly, stride, cfg)) if (c >= 0) anchor[c] = 1
+    if (!poly.closed) {
+      anchor[0] = 1
+      anchor[n - 1] = 1
+    }
+    lo.length = 0
+    hi.length = 0
+    let start = 0
+    const cutRun = (end: number): void => {
+      const length = end - start
+      if (length <= 0) return
+      const cells = Math.ceil(length / stride)
+      for (let q = 0; q < cells; q++) {
+        lo.push(start + Math.floor((q * length) / cells))
+        hi.push(start + Math.floor(((q + 1) * length) / cells))
+      }
+    }
+    for (let k = 0; k < n; k++) {
+      if (anchor[k] === 0) continue
+      cutRun(k)
+      lo.push(k)
+      hi.push(k + 1)
+      start = k + 1
+    }
+    cutRun(n)
+    if (lo.length <= maxPoints || stride >= n) break
+    stride++
+  }
+  const m = lo.length
+  const points = new Float64Array(2 * m)
+  const sigma = new Float64Array(m)
+  const index: number[] = []
+  for (let c = 0; c < m; c++) {
+    let w = 0
+    let sx = 0
+    let sy = 0
+    for (let k = lo[c]; k < hi[c]; k++) {
+      const s = fmax(sig[k], 1e-6)
+      const wk = 1 / (s * s)
+      w += wk
+      sx += wk * p[2 * k]
+      sy += wk * p[2 * k + 1]
+    }
+    // A cell of one point is that point exactly.
+    const one = hi[c] - lo[c] === 1
+    points[2 * c] = one ? p[2 * lo[c]] : sx / w
+    points[2 * c + 1] = one ? p[2 * lo[c] + 1] : sy / w
+    sigma[c] = one ? sig[lo[c]] : 1 / Math.sqrt(w)
+    index.push((lo[c] + hi[c] - 1) >> 1)
+  }
+  return { points, sigma, index }
+}
+
+/**
+ * The sharp bends of a polyline on a grid of every `stride`-th index, one
+ * entry per grid sample: the index of the bend its cell holds, or −1. Each
+ * grid sample but an open polyline's two ends owns a cell — the indices
+ * halfway to its grid neighbors `prev` and `next`, wrapping on a closed
+ * polyline. A candidate `j` is eligible only where the polyline turns there by
+ * at least the full-corner angle (`g1BreakRadians`) between `p_j − p_prev` and
+ * `p_next − p_j`, so smooth arcs and noisy straight runs have none; the eligible
+ * candidate farthest from the chord `p_prev → p_next` in units of its own σ,
+ * `r_j = ((p_j − p_prev) × (p_next − p_prev))² / (|p_next − p_prev|²·σ_j²)`,
+ * is the bend if `r_j > τ²`. Neighbors are the original grid positions, so the
+ * cells do not interact. The grid is every `stride`-th index plus an open
+ * polyline's last point; with the bends put in place of their grid samples it
+ * is the decimation of inkvec's `decimate::indices`.
+ */
+export function decimationCorners(poly: Polyline, stride: number, cfg: FitConfig): number[] {
   const n = polylineSize(poly)
   const p = poly.points
   const grid: number[] = []
   for (let k = 0; k < n; k += stride) grid.push(k)
   if (!poly.closed && grid[grid.length - 1] !== n - 1) grid.push(n - 1)
-  const keep = grid.slice()
+  const corners = grid.map(() => -1)
   const g = grid.length
   const index = (v: number) => ((v % n) + n) % n
   const corner = g1BreakRadians()
@@ -372,11 +454,11 @@ export function decimateIndices(poly: Polyline, stride: number, cfg: FitConfig):
       const residual = (cross * cross) / (length2 * fmax(poly.sigma[j] * poly.sigma[j], 1e-12))
       if (residual > best) {
         best = residual
-        keep[k] = j
+        corners[k] = j
       }
     }
   }
-  return keep.toSorted((x, y) => x - y)
+  return corners
 }
 
 /** The polyline moved so its bounding-box center is the origin, and that center (px). */
