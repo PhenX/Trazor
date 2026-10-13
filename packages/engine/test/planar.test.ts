@@ -3,11 +3,14 @@ import type { FittedEdge } from '@trazor/trace'
 import { describe, expect, it } from 'vitest'
 import {
   cutoutRegions,
+  fittedPoints,
   gradientAt,
+  keepsTo,
   nestedFaces,
   planarGeometry,
   polylineFit,
   setBackFit,
+  setBackPoints,
   stackedLayers,
   tracePlanar,
 } from '../src/planar'
@@ -237,6 +240,344 @@ describe('the planar chain against its image', () => {
       }
     }
     expect(paintedArea(base.shapes[0].commands)).toBeCloseTo(40, 9)
+  })
+
+  it('sets a noisy edge back along its smoothed normal, keeping its points in order', () => {
+    // A measured edge along y = 8, points half a pixel apart wobbling ±0.3 px,
+    // the sheet over it (face 0) above: the set-back follows the edge's line,
+    // not each wobble.
+    const n = 80
+    const points = new Float64Array(2 * n)
+    let seed = 7
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      points[2 * i] = 2 + 0.5 * i
+      points[2 * i + 1] = 8 + (seed / 2147483648 - 0.5) * 0.6
+    }
+    const w = 48
+    const h = 16
+    const faceIds = new Int32Array(w * h)
+    for (let p = 0; p < w * h; p++) faceIds[p] = Math.floor(p / w) < 8 ? 0 : 1
+    const edge = {
+      points,
+      sigma: new Float64Array(n).fill(0.1),
+      fixed: new Uint8Array(n),
+      left: 0,
+      right: 1,
+      start: 0,
+      end: 1,
+      closed: false,
+    }
+    const sb = { faceIds, width: w, height: h, distance: 1, ramp: 3, fit: () => [] }
+    const out = setBackPoints(edge, 0, false, false, sb)
+    for (let i = 1; i < n; i++) expect(out[2 * i]).toBeGreaterThan(out[2 * i - 2])
+    for (let i = 0; i < n; i++) {
+      // One pixel into the sheet, within the edge's own wobble of its line.
+      expect(Math.abs(out[2 * i + 1] - (points[2 * i + 1] - 1))).toBeLessThan(0.05)
+    }
+  })
+
+  it('keeps a set-back off a sheet thinner than the distance it moves', () => {
+    // On a 2× grid the set-back is 2 px; the sheet over the edge at y = 8 is a
+    // band two pixels deep (rows 6 and 7), so a point moved its full distance
+    // would land on the band's far edge, and stays where it was.
+    const n = 30
+    const points = new Float64Array(2 * n)
+    for (let i = 0; i < n; i++) {
+      points[2 * i] = 4 + i
+      points[2 * i + 1] = 8
+    }
+    const w = 40
+    const h = 16
+    const faceIds = new Int32Array(w * h)
+    for (let p = 0; p < w * h; p++) {
+      const y = Math.floor(p / w)
+      faceIds[p] = y >= 6 && y < 8 ? 0 : y >= 8 ? 1 : 2
+    }
+    const edge = {
+      points,
+      sigma: new Float64Array(n).fill(0.1),
+      fixed: new Uint8Array(n),
+      left: 0,
+      right: 1,
+      start: 0,
+      end: 1,
+      closed: false,
+    }
+    const sb = { faceIds, width: w, height: h, distance: 2, ramp: 6, fit: () => [] }
+    const out = setBackPoints(edge, 0, false, false, sb)
+    for (let i = 0; i < n; i++) expect(out[2 * i + 1]).toBe(8)
+    // Three rows deep, the sheet holds the set-back point and half a pixel past it.
+    for (let p = 0; p < w * h; p++) if (Math.floor(p / w) === 5) faceIds[p] = 0
+    const deep = setBackPoints(edge, 0, false, false, sb)
+    for (let i = 0; i < n; i++) expect(deep[2 * i + 1]).toBeCloseTo(6, 9)
+  })
+
+  it('sets back an edge fitted a little across its lattice boundary', () => {
+    // The labels change between rows 7 and 8, but the fitted edge runs at
+    // y = 8.7, on the lower face's pixels: on a 2× grid it still moves its two
+    // pixels up beneath the sheet (face 0), which holds the set-back point.
+    const n = 20
+    const points = new Float64Array(2 * n)
+    for (let i = 0; i < n; i++) {
+      points[2 * i] = 4 + i
+      points[2 * i + 1] = 8.7
+    }
+    const w = 32
+    const h = 16
+    const faceIds = new Int32Array(w * h)
+    for (let p = 0; p < w * h; p++) faceIds[p] = Math.floor(p / w) < 8 ? 0 : 1
+    const sb = { faceIds, width: w, height: h, distance: 2, ramp: 6, fit: () => [] }
+    const out = setBackPoints({ points, closed: false }, 0, false, false, sb)
+    for (let i = 0; i < n; i++) expect(out[2 * i + 1]).toBeCloseTo(6.7, 9)
+  })
+
+  it('draws the shared fit beneath a sheet too thin to set back under', () => {
+    // A black field (1) under a one-pixel grey strip (2) beside white (0): the
+    // black sheet's outline runs beneath the strip, too thin to hold a pixel's
+    // set-back, so it draws the strip's own fitted edge (a curve here), not a
+    // refit of the edge's measured points.
+    const labels = labelsOf(Array.from({ length: 10 }, () => '1111200000'))
+    const geo = planarGeometry(labels)
+    const ids = geo.map.faces.ids
+    const grey = ids[4]
+    const white = ids[5]
+    const fits = geo.map.edges.map((e): FittedEdge => {
+      const shared =
+        (e.left === grey && e.right === white) || (e.left === white && e.right === grey)
+      if (!shared) return polylineFit(e)
+      const p = e.points
+      const n = p.length / 2
+      const [x0, y0, x3, y3] = [p[0], p[1], p[2 * n - 2], p[2 * n - 1]]
+      return {
+        x0,
+        y0,
+        segments: [
+          {
+            type: 'C',
+            x1: 5.3,
+            y1: y0 + (y3 - y0) / 3,
+            x2: 5.3,
+            y2: y0 + (2 * (y3 - y0)) / 3,
+            x: x3,
+            y: y3,
+          },
+        ],
+        closed: false,
+        params: 6,
+        chi2: 0,
+      }
+    })
+    const paintLabel = new Int32Array(geo.map.faces.count)
+    for (let p = 0; p < labels.data.length; p++) paintLabel[ids[p]] = labels.data[p]
+    const setBack = {
+      faceIds: ids,
+      width: 10,
+      height: 10,
+      distance: 1,
+      ramp: 2,
+      fit: (pts: Float64Array): PathCommand[] => {
+        const out: PathCommand[] = []
+        for (let i = 2; i < pts.length; i += 2) out.push({ type: 'L', x: pts[i], y: pts[i + 1] })
+        return out
+      },
+    }
+    const black = stackedLayers(geo, fits, paintLabel, [0, 1, 2], [], setBack)[1]
+    expect(black.label).toBe(1)
+    const curves = black.shapes.flatMap((sh) => sh.commands).filter((c) => c.type === 'C')
+    expect(curves).toHaveLength(1)
+    expect(curves[0]).toMatchObject({ x1: 5.3, x2: 5.3 })
+  })
+
+  it("keeps the shared fit's corner where only part of a hidden edge moves", () => {
+    // The grey strip (2) over the black field (1) is one pixel wide down to row
+    // 7 and four below it, and the shared edge with white is fitted as two
+    // lines meeting at (5.4, 5). Only the deep stretch moves; the thin one is
+    // drawn as the shared fit draws it, so the corner stays even under a fit
+    // that would cut it (one line per moved run).
+    const rows = Array.from({ length: 10 }, (_, y) => (y < 7 ? '1111200000' : '1222200000'))
+    const labels = labelsOf(rows)
+    const geo = planarGeometry(labels)
+    const ids = geo.map.faces.ids
+    const grey = ids[4]
+    const white = ids[5]
+    const fits = geo.map.edges.map((e): FittedEdge => {
+      const shared =
+        (e.left === grey && e.right === white) || (e.left === white && e.right === grey)
+      if (!shared) return polylineFit(e)
+      const p = e.points
+      const n = p.length / 2
+      return {
+        x0: p[0],
+        y0: p[1],
+        segments: [
+          { type: 'L', x: 5.4, y: 5 },
+          { type: 'L', x: p[2 * n - 2], y: p[2 * n - 1] },
+        ],
+        closed: false,
+        params: 4,
+        chi2: 0,
+      }
+    })
+    const paintLabel = new Int32Array(geo.map.faces.count)
+    for (let p = 0; p < labels.data.length; p++) paintLabel[ids[p]] = labels.data[p]
+    const runs: Float64Array[] = []
+    const setBack = {
+      faceIds: ids,
+      width: 10,
+      height: 10,
+      distance: 1,
+      ramp: 2,
+      fit: (pts: Float64Array): PathCommand[] => {
+        runs.push(pts)
+        return [{ type: 'L', x: pts[pts.length - 2], y: pts[pts.length - 1] }]
+      },
+    }
+    const black = stackedLayers(geo, fits, paintLabel, [0, 1, 2], [], setBack)[1]
+    const cmds = black.shapes.flatMap((sh) => sh.commands)
+    expect(cmds.some((c) => c.type !== 'Z' && c.x === 5.4 && c.y === 5)).toBe(true)
+    // One run was refitted: the deep stretch from the corner down, set back a
+    // pixel beneath the strip.
+    expect(runs).toHaveLength(1)
+    const ys = runs[0].filter((_, k) => k % 2 === 1)
+    const xs = runs[0].filter((_, k) => k % 2 === 0)
+    expect([Math.min(...ys), Math.max(...ys)]).toEqual([5, 10])
+    expect(Math.min(...xs)).toBeLessThan(4.5)
+  })
+
+  it('joins two hidden edges set back on either side of a node halfway between them', () => {
+    // White (0) in the top-left corner; grey (2) right of it and blue (3) below
+    // it, both above the black field (1). The black sheet's outline runs
+    // beneath grey down to the node (5, 5), then beneath blue: each run is set
+    // back a pixel along its own normal, to (6, 5) and (5, 6), and the two
+    // meet halfway, at (5.5, 5.5), instead of the outline hooking across.
+    const labels = labelsOf([
+      '0000022222',
+      '0000022222',
+      '0000022222',
+      '0000022222',
+      '0000022222',
+      '3333322222',
+      '3333333333',
+      '3333333333',
+      '1111111111',
+      '1111111111',
+    ])
+    const geo = planarGeometry(labels)
+    const fits = geo.map.edges.map(polylineFit)
+    const paintLabel = new Int32Array(geo.map.faces.count)
+    for (let p = 0; p < labels.data.length; p++) paintLabel[geo.map.faces.ids[p]] = labels.data[p]
+    const setBack = {
+      faceIds: geo.map.faces.ids,
+      width: 10,
+      height: 10,
+      distance: 1,
+      ramp: 2,
+      fit: (pts: Float64Array): PathCommand[] => {
+        const out: PathCommand[] = []
+        for (let i = 2; i < pts.length; i += 2) out.push({ type: 'L', x: pts[i], y: pts[i + 1] })
+        return out
+      },
+    }
+    const black = stackedLayers(geo, fits, paintLabel, [0, 1, 2, 3], [], setBack)[1]
+    expect(black.label).toBe(1)
+    const at = (x: number, y: number): boolean =>
+      black.shapes.some((sh) =>
+        sh.commands.some(
+          (c) => c.type !== 'Z' && Math.abs(c.x - x) < 1e-9 && Math.abs(c.y - y) < 1e-9,
+        ),
+      )
+    expect([at(5.5, 5.5), at(6, 5), at(5, 6)]).toEqual([true, false, false])
+  })
+
+  it('samples a fitted edge through every segment end, along each segment', () => {
+    const fit: FittedEdge = {
+      x0: 0,
+      y0: 0,
+      segments: [
+        { type: 'L', x: 4, y: 0 },
+        { type: 'C', x1: 5, y1: 0, x2: 6, y2: 1, x: 6, y: 4 },
+        { type: 'A', rx: 2, ry: 2, rotation: 0, largeArc: false, sweep: true, x: 2, y: 4 },
+      ],
+      closed: false,
+      params: 0,
+      chi2: 0,
+    }
+    const { points: pts, ends } = fittedPoints(fit, 0.5)
+    const at = (x: number, y: number): number => {
+      for (let i = 0; i < pts.length; i += 2) if (pts[i] === x && pts[i + 1] === y) return i / 2
+      return -1
+    }
+    const corner = at(4, 0)
+    const join = at(6, 4)
+    expect([at(0, 0), corner > 0, join > corner, at(2, 4)]).toEqual([
+      0,
+      true,
+      true,
+      pts.length / 2 - 1,
+    ])
+    // The line cut every half pixel; the arc's points on its circle about (4, 4).
+    expect(corner).toBe(8)
+    expect([...ends]).toEqual([corner, join, pts.length / 2 - 1])
+    for (let i = 0; i <= corner; i++) expect(pts[2 * i + 1]).toBe(0)
+    for (let i = join; i < pts.length / 2; i++) {
+      expect(Math.hypot(pts[2 * i] - 4, pts[2 * i + 1] - 4)).toBeCloseTo(2, 9)
+      expect(pts[2 * i + 1]).toBeGreaterThanOrEqual(4 - 1e-9)
+    }
+    // A closed edge does not repeat its first point.
+    const ring = fittedPoints(
+      {
+        x0: 0,
+        y0: 0,
+        segments: [
+          { type: 'L', x: 2, y: 0 },
+          { type: 'L', x: 0, y: 0 },
+        ],
+        closed: true,
+        params: 0,
+        chi2: 0,
+      },
+      1,
+    )
+    expect([...ring.points]).toEqual([0, 0, 1, 0, 2, 0, 1, 0])
+    expect([...ring.ends]).toEqual([2, 4])
+  })
+
+  it('measures how far a drawn path strays from its points', () => {
+    // Points along y = 0 bulging to y = 1 midway, against the chord.
+    const pts = new Float64Array(22)
+    for (let i = 0; i <= 10; i++) {
+      pts[2 * i] = i
+      pts[2 * i + 1] = Math.sin((Math.PI * i) / 10)
+    }
+    const chord: PathCommand[] = [{ type: 'L', x: 10, y: pts[21] }]
+    expect(keepsTo(pts, chord, 0.5)).toBe(false)
+    expect(keepsTo(pts, chord, 1.01)).toBe(true)
+    const polyline: PathCommand[] = []
+    for (let i = 1; i <= 10; i++) polyline.push({ type: 'L', x: pts[2 * i], y: pts[2 * i + 1] })
+    expect(keepsTo(pts, polyline, 0.01)).toBe(true)
+  })
+
+  it('splits a set-back fit drawn as a chord off its points', () => {
+    // A set-back run from a twemoji trouser leg on a 2× grid (working px): one
+    // line priced by its points' best-fit line, drawn from the first point to
+    // the last two pixels off the run.
+    const pts = Float64Array.from([
+      73.27, 191.98, 73.81, 193.43, 74.08, 194.7, 74.26, 195.87, 74.44, 197.09, 74.59, 198.29,
+      74.71, 199.29, 74.82, 200.28, 74.93, 201.27, 75.05, 202.26, 75.16, 203.26, 75.27, 204.25,
+      75.39, 205.24, 75.5, 206.24, 75.62, 207.23, 75.73, 208.22, 75.84, 209.22, 75.96, 210.21,
+      76.07, 211.2, 76.18, 212.19, 76.3, 213.19, 76.41, 214.18, 76.52, 215.17, 76.64, 216.17, 76.75,
+      217.16, 76.86, 218.15, 76.98, 219.15, 77.09, 220.14, 77.21, 221.13, 77.32, 222.12, 77.43,
+      223.12, 77.55, 224.11, 77.66, 225.1, 77.77, 226.1, 77.89, 227.09, 78.0, 228.1, 78.12, 229.11,
+      78.23, 230.12, 78.35, 231.14, 78.46, 232.15, 78.48, 233.13, 78.5, 234.12, 78.51, 235.1, 78.53,
+      236.09, 78.55, 237.07, 78.56, 238.04, 78.58, 239.0, 78.59, 239.97, 78.61, 240.93, 78.62,
+      241.9, 78.64, 242.93, 78.58, 243.96, 77.63, 244.91, 76.69, 245.79, 76.7, 246.76,
+    ])
+    const segs = setBackFit(256, 256, 2)(pts)
+    // The halves' fits keep to the run: within a source pixel (2 px) of every point.
+    expect(keepsTo(pts, segs, 2)).toBe(true)
+    expect(segs.length).toBeGreaterThan(1)
+    expect(segs[segs.length - 1]).toMatchObject({ x: pts[pts.length - 2], y: pts[pts.length - 1] })
   })
 
   it('fits a set-back run as curves, not one line per point', () => {

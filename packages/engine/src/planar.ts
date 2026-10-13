@@ -7,7 +7,7 @@
  * `@trazor/trace`'s planar core; every layering reads the same fitted edges.
  */
 import type { GradientPaint, LabelMap, PathCommand, RasterImage } from '@trazor/core'
-import { hexToRgb } from '@trazor/core'
+import { arcToCenter, hexToRgb } from '@trazor/core'
 import {
   buildPlanarMap,
   innerFaces,
@@ -319,8 +319,8 @@ export function ringPrimitive(ring: FaceRing, fits: readonly FittedEdge[]): Prim
 
 /**
  * Positional uncertainty of a set-back point, in source pixels: loose, since it
- * is hidden, but the fit keeps within `τ·σ` (τ = 2) of it — half a source
- * pixel, so a run set back one pixel stays beneath the sheet over it.
+ * is hidden; the fit passes within `τ·σ` (τ = 2) of it, half a source pixel, so
+ * a run set back one pixel stays beneath the sheet over it.
  */
 const SET_BACK_SIGMA = 0.25
 
@@ -328,11 +328,69 @@ const SET_BACK_SIGMA = 0.25
  * The fit of a stacked layer's set-back run (interleaved points, walk order):
  * the multimodel program and its post-fit passes with every point held to
  * {@link SET_BACK_SIGMA}, its ends pinned, as segments after the first point.
+ * A fit that strays from a point by more than a source pixel, the distance the
+ * run is set back, is replaced by the fits of the run's two halves, pinned at
+ * its middle point, down to lines through the points: the program prices a
+ * line by its points' best-fit line but draws it as the chord between its
+ * ends, and pinned to a set-back run's ends that chord can cut a pixel or more
+ * across the sheet's edge.
  */
 export function setBackFit(width: number, height: number, scale: number): SetBack['fit'] {
   const cfg = contentFitConfig(width, height, scale)
-  return (points) =>
-    fitRun(points, new Float64Array(points.length / 2).fill(SET_BACK_SIGMA * scale), cfg).segments
+  const sigma = SET_BACK_SIGMA * scale
+  const fit = (points: Float64Array): PathCommand[] => {
+    const n = points.length >> 1
+    if (n <= 3) {
+      const lines: PathCommand[] = []
+      for (let i = 1; i < n; i++) lines.push({ type: 'L', x: points[i * 2], y: points[i * 2 + 1] })
+      return lines
+    }
+    const segs = fitRun(points, new Float64Array(n).fill(sigma), cfg).segments
+    if (keepsTo(points, segs, scale)) return segs
+    const mid = n >> 1
+    return [...fit(points.subarray(0, (mid + 1) * 2)), ...fit(points.subarray(mid * 2))]
+  }
+  return fit
+}
+
+/**
+ * Whether the path from the first point through `segments` passes within `tol`
+ * of every point (interleaved, in path order). Each point is measured against
+ * the path's polyline (sampled `tol / 2` apart) near its own fraction of the
+ * path's length first, and against the whole path only when that misses.
+ */
+export function keepsTo(
+  points: Float64Array,
+  segments: readonly PathCommand[],
+  tol: number,
+): boolean {
+  const n = points.length >> 1
+  const path = fittedPoints(
+    { x0: points[0], y0: points[1], segments: [...segments], closed: false, params: 0, chi2: 0 },
+    tol / 2,
+  ).points
+  const m = path.length >> 1
+  if (m < 2) return n < 2
+  const reach = Math.max(8, Math.ceil(0.15 * m))
+  const near = (i: number, lo: number, hi: number): boolean => {
+    const x = points[i * 2]
+    const y = points[i * 2 + 1]
+    for (let k = Math.max(0, lo); k < Math.min(m - 1, hi); k++) {
+      const ax = path[k * 2]
+      const ay = path[k * 2 + 1]
+      const dx = path[k * 2 + 2] - ax
+      const dy = path[k * 2 + 3] - ay
+      const len2 = dx * dx + dy * dy
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2)) : 0
+      if (Math.hypot(x - ax - t * dx, y - ay - t * dy) <= tol) return true
+    }
+    return false
+  }
+  for (let i = 0; i < n; i++) {
+    const c = Math.round((i / Math.max(1, n - 1)) * (m - 1))
+    if (!near(i, c - reach, c + reach) && !near(i, 0, m - 1)) return false
+  }
+  return true
 }
 
 /** The planar map of a label map with its rings and nesting, ready for the geometry stages. */
@@ -624,29 +682,104 @@ function faceAt(sb: SetBack, x: number, y: number): number {
 }
 
 /**
- * One hidden edge's points in walk order, each moved along the walk's left
- * normal — into the sheet over it — by the set-back. A point may go the full
- * distance where the sheet's face holds the pixels half a pixel and one and a
- * half pixels in; elsewhere the sheet is too thin and the point stays. The
+ * Arc length either side of a point, in set-back distances, over which the
+ * normal it is set back along is read: the chord across the window, a centred
+ * finite difference over a wide stencil, follows the edge's shape and not its
+ * small turns (an edge fitted as a polyline turns at every vertex, and a
+ * normal from the points next to each one would turn with it).
+ */
+const SET_BACK_WINDOW = 2
+
+/**
+ * A fitted edge as points in its stored direction, about `step` px apart:
+ * every segment's end (so each corner of the fit is a point), lines cut
+ * evenly, cubics and quadratics evenly in their parameter by their control
+ * polygon's length, arcs evenly in angle (their center form, W3C SVG 1.1
+ * F.6.5). A closed edge's points do not repeat its first. `ends[k]` is the
+ * index of segment k's end point (a closed edge's last is the point count:
+ * its first point again).
+ */
+export function fittedPoints(
+  fit: FittedEdge,
+  step: number,
+): { points: Float64Array; ends: Int32Array } {
+  const xy: number[] = [fit.x0, fit.y0]
+  const ends = new Int32Array(fit.segments.length)
+  let x = fit.x0
+  let y = fit.y0
+  for (let k = 0; k < fit.segments.length; k++) {
+    const s = fit.segments[k]
+    if (s.type === 'M' || s.type === 'Z') {
+      ends[k] = xy.length / 2 - 1
+      continue
+    }
+    if (s.type === 'C' || s.type === 'Q') {
+      const x1 = s.type === 'C' ? s.x1 : x + (2 / 3) * (s.x1 - x)
+      const y1 = s.type === 'C' ? s.y1 : y + (2 / 3) * (s.y1 - y)
+      const x2 = s.type === 'C' ? s.x2 : s.x + (2 / 3) * (s.x1 - s.x)
+      const y2 = s.type === 'C' ? s.y2 : s.y + (2 / 3) * (s.y1 - s.y)
+      const net =
+        Math.hypot(x1 - x, y1 - y) + Math.hypot(x2 - x1, y2 - y1) + Math.hypot(s.x - x2, s.y - y2)
+      const pieces = Math.max(1, Math.ceil(net / step))
+      for (let j = 1; j < pieces; j++) {
+        const t = j / pieces
+        const u = 1 - t
+        xy.push(
+          u * u * u * x + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * s.x,
+          u * u * u * y + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * s.y,
+        )
+      }
+    } else if (s.type === 'A') {
+      const c = arcToCenter(x, y, s)
+      if (c !== null) {
+        const pieces = Math.max(1, Math.ceil((Math.abs(c.dTheta) * Math.max(c.rx, c.ry)) / step))
+        const cos = Math.cos(c.phi)
+        const sin = Math.sin(c.phi)
+        for (let j = 1; j < pieces; j++) {
+          const a = c.theta1 + (c.dTheta * j) / pieces
+          const ex = c.rx * Math.cos(a)
+          const ey = c.ry * Math.sin(a)
+          xy.push(c.cx + cos * ex - sin * ey, c.cy + sin * ex + cos * ey)
+        }
+      }
+    } else {
+      const pieces = Math.max(1, Math.ceil(Math.hypot(s.x - x, s.y - y) / step))
+      for (let j = 1; j < pieces; j++) {
+        xy.push(x + ((s.x - x) * j) / pieces, y + ((s.y - y) * j) / pieces)
+      }
+    }
+    xy.push(s.x, s.y)
+    ends[k] = xy.length / 2 - 1
+    x = s.x
+    y = s.y
+  }
+  if (fit.closed && xy.length > 2) xy.length -= 2
+  return { points: Float64Array.from(xy), ends }
+}
+
+/**
+ * One hidden edge's points (walk order), each moved along the walk's left
+ * normal — into the sheet over it — by the set-back. The normal at a point is
+ * the chord's between the points {@link SET_BACK_WINDOW} set-back distances
+ * of arc length either side of it (as far as an open edge runs), so the run
+ * keeps its points' shape instead of amplifying their small turns. A point
+ * may go the full distance where the sheet's face holds the set-back point and
+ * the pixel half a pixel past it; elsewhere the sheet is too thin and the
+ * point stays. (A fitted edge lies anywhere within a pixel or so of the label
+ * map's lattice boundary, so the point itself may sit on either face.) The
  * set-back eases between them: no farther from a point that stays than its arc
  * length to it (a thin spot dips the run at 45° instead of notching it), and
  * growing from nothing over the ramp at an end that meets a visible edge.
  */
-function setBackPoints(
-  edge: PlanarEdge,
-  reversed: boolean,
+export function setBackPoints(
+  edge: { readonly points: ArrayLike<number>; readonly closed: boolean },
   inner: number,
   easeStart: boolean,
   easeEnd: boolean,
   sb: SetBack,
 ): Float64Array {
   const n = edge.points.length >> 1
-  const pts = new Float64Array(n * 2)
-  for (let i = 0; i < n; i++) {
-    const k = reversed ? n - 1 - i : i
-    pts[i * 2] = edge.points[k * 2]
-    pts[i * 2 + 1] = edge.points[k * 2 + 1]
-  }
+  const pts = Float64Array.from(edge.points)
   const along = new Float64Array(n)
   for (let i = 1; i < n; i++) {
     along[i] =
@@ -659,9 +792,31 @@ function setBackPoints(
   // Each point's inward normal, and whether the sheet over it is deep enough there.
   const nrm = new Float64Array(n * 2)
   const stays = new Uint8Array(n)
+  const span = SET_BACK_WINDOW * sb.distance
+  // A closed edge's window never reaches round past the point itself.
+  const reach = edge.closed ? (n - 1) >> 1 : n
+  // The step from point k to the next, round the loop on a closed edge.
+  const stepFrom = (k: number): number => {
+    const j = k + 1 < n ? k + 1 : 0
+    return Math.hypot(pts[j * 2] - pts[k * 2], pts[j * 2 + 1] - pts[k * 2 + 1])
+  }
+  const depth = sb.distance + 0.5
   for (let i = 0; i < n; i++) {
-    const a = edge.closed ? (i + n - 1) % n : Math.max(0, i - 1)
-    const b = edge.closed ? (i + 1) % n : Math.min(n - 1, i + 1)
+    let a = i
+    let back = 0
+    for (let t = 0; t < reach && back < span; t++) {
+      if (!edge.closed && a === 0) break
+      const prev = a === 0 ? n - 1 : a - 1
+      back += stepFrom(prev)
+      a = prev
+    }
+    let b = i
+    let ahead = 0
+    for (let t = 0; t < reach && ahead < span; t++) {
+      if (!edge.closed && b === n - 1) break
+      ahead += stepFrom(b)
+      b = b + 1 < n ? b + 1 : 0
+    }
     const tx = pts[b * 2] - pts[a * 2]
     const ty = pts[b * 2 + 1] - pts[a * 2 + 1]
     const len = Math.hypot(tx, ty)
@@ -677,8 +832,8 @@ function setBackPoints(
     const x = pts[i * 2]
     const y = pts[i * 2 + 1]
     if (
-      faceAt(sb, x + 0.5 * nx, y + 0.5 * ny) !== inner ||
-      faceAt(sb, x + 1.5 * nx, y + 1.5 * ny) !== inner
+      faceAt(sb, x + sb.distance * nx, y + sb.distance * ny) !== inner ||
+      faceAt(sb, x + depth * nx, y + depth * ny) !== inner
     )
       stays[i] = 1
   }
@@ -716,11 +871,81 @@ function setBackPoints(
 }
 
 /**
+ * Largest turn, radians, at a join of a fitted edge that a set-back run is
+ * fitted across: the 10° tangent break the multimodel fit charges a full corner
+ * for (`G1_BREAK_DEGREES`). A sharper join is a corner the set-back keeps.
+ */
+const SET_BACK_SMOOTH_TURN = (10 * Math.PI) / 180
+
+/** A segment's tangents at its start and end (unnormalized), drawn from (x, y). */
+function segmentTangents(x: number, y: number, s: PathCommand): [number, number, number, number] {
+  switch (s.type) {
+    case 'C': {
+      const [ax, ay] = s.x1 !== x || s.y1 !== y ? [s.x1, s.y1] : [s.x2, s.y2]
+      const [bx, by] = s.x2 !== s.x || s.y2 !== s.y ? [s.x2, s.y2] : [s.x1, s.y1]
+      return [ax - x, ay - y, s.x - bx, s.y - by]
+    }
+    case 'Q':
+      return [s.x1 - x, s.y1 - y, s.x - s.x1, s.y - s.y1]
+    case 'A': {
+      const c = arcToCenter(x, y, s)
+      if (c !== null && c.dTheta !== 0) {
+        const at = (t: number): [number, number] => {
+          const dx = -c.rx * Math.sin(t) * Math.sign(c.dTheta)
+          const dy = c.ry * Math.cos(t) * Math.sign(c.dTheta)
+          return [
+            Math.cos(c.phi) * dx - Math.sin(c.phi) * dy,
+            Math.sin(c.phi) * dx + Math.cos(c.phi) * dy,
+          ]
+        }
+        return [...at(c.theta1), ...at(c.theta1 + c.dTheta)]
+      }
+      return [s.x - x, s.y - y, s.x - x, s.y - y]
+    }
+    case 'L':
+      return [s.x - x, s.y - y, s.x - x, s.y - y]
+    default:
+      return [0, 0, 0, 0]
+  }
+}
+
+/** The turn, radians, at the end of each segment of a fitted edge into the next (the last: 0). */
+function joinTurns(fit: FittedEdge): Float64Array {
+  const segs = fit.segments
+  const tan = new Float64Array(segs.length * 4)
+  let x = fit.x0
+  let y = fit.y0
+  for (let k = 0; k < segs.length; k++) {
+    const s = segs[k]
+    tan.set(segmentTangents(x, y, s), k * 4)
+    if (s.type !== 'Z') {
+      x = s.x
+      y = s.y
+    }
+  }
+  const turns = new Float64Array(segs.length)
+  for (let k = 0; k + 1 < segs.length; k++) {
+    const ex = tan[k * 4 + 2]
+    const ey = tan[k * 4 + 3]
+    const sx = tan[k * 4 + 4]
+    const sy = tan[k * 4 + 5]
+    turns[k] = Math.abs(Math.atan2(ex * sy - ey * sx, ex * sx + ey * sy))
+  }
+  return turns
+}
+
+/**
  * A layer ring as a closed subpath: visible steps draw the shared fitted edge,
- * hidden ones (`hidden(inner face)`) their set-back points fitted on their own,
- * each step joined to the last by a line where the set-back left a gap. An edge
- * on the canvas frame is never hidden: nothing lies beyond it to show through,
- * so every sheet that reaches the frame ends on it.
+ * hidden ones (`hidden(inner face)`) the shared fit's points
+ * ({@link fittedPoints}, one per working pixel) set back. Each run of the
+ * fit's segments with a point that moves, joined smoothly (turning at most
+ * {@link SET_BACK_SMOOTH_TURN}), is fitted on its own from its moved points;
+ * every other segment is drawn as the shared fit draws it. So the layer keeps
+ * the fit's corners, and where the sheet over the edge is too thin to set back
+ * under, its very segments. Two hidden steps meet halfway between their
+ * set-back ends; a step is joined to the last by a line wherever their ends
+ * still differ. An edge on the canvas frame is never hidden: nothing lies
+ * beyond it to show through, so every sheet that reaches the frame ends on it.
  */
 function layerRingCommands(
   map: PlanarMap,
@@ -756,31 +981,79 @@ function layerRingCommands(
       }
     }
   }
+  // Each step's fit in walk order and, on a hidden step, its points set back.
+  const steps = ring.edges.map((e, t) => {
+    const fit = fits[e]
+    const last = fit.segments[fit.segments.length - 1] as { x: number; y: number } | undefined
+    const walk = ring.reversed[t]
+      ? { ...fit, x0: last?.x ?? fit.x0, y0: last?.y ?? fit.y0, segments: reversedSegments(fit) }
+      : fit
+    if (!isHidden[t]) return { walk, points: null, ends: null, back: null }
+    const { points, ends } = fittedPoints(walk, 1)
+    const back = setBackPoints(
+      { points, closed: map.edges[e].closed },
+      inner[t],
+      !isHidden[(t + m - 1) % m],
+      !isHidden[(t + 1) % m],
+      sb,
+    )
+    return { walk, points, ends, back }
+  })
+  // Two hidden steps meet where their set-back ends meet: halfway between the
+  // two, each moved along its own edge's normal, so the outline does not hook
+  // back across the node.
   for (let t = 0; t < m; t++) {
-    const e = ring.edges[t]
-    const rev = ring.reversed[t]
-    const edge = map.edges[e]
-    if (isHidden[t]) {
-      const pts = setBackPoints(
-        edge,
-        rev,
-        inner[t],
-        !isHidden[(t + m - 1) % m],
-        !isHidden[(t + 1) % m],
-        sb,
-      )
-      moveOrLine(pts[0], pts[1])
-      take(sb.fit(pts))
+    const a = steps[t].back
+    const b = steps[(t + 1) % m].back
+    // A ring of one edge has no node to meet at.
+    if (m === 1 || a === null || b === null) continue
+    const k = a.length - 2
+    const x = (a[k] + b[0]) / 2
+    const y = (a[k + 1] + b[1]) / 2
+    a[k] = b[0] = x
+    a[k + 1] = b[1] = y
+  }
+  for (let t = 0; t < m; t++) {
+    const { walk, points, ends, back } = steps[t]
+    if (points === null || ends === null || back === null) {
+      moveOrLine(walk.x0, walk.y0)
+      take(walk.segments)
       continue
     }
-    const fit = fits[e]
-    if (rev) {
-      const last = fit.segments[fit.segments.length - 1] as { x: number; y: number } | undefined
-      moveOrLine(last?.x ?? fit.x0, last?.y ?? fit.y0)
-      take(reversedSegments(fit))
-    } else {
-      moveOrLine(fit.x0, fit.y0)
-      take(fit.segments)
+    const n = points.length >> 1
+    const movedIn = (a: number, b: number): boolean => {
+      for (let i = a; i <= b; i++) {
+        const k = (i % n) * 2
+        if (back[k] !== points[k] || back[k + 1] !== points[k + 1]) return true
+      }
+      return false
+    }
+    const segs = walk.segments
+    const turns = joinTurns(walk)
+    moveOrLine(back[0], back[1])
+    for (let k = 0; k < segs.length;) {
+      const a = k === 0 ? 0 : ends[k - 1]
+      if (!movedIn(a, ends[k])) {
+        take([segs[k]])
+        k++
+        continue
+      }
+      // A run of moved segments, through their smooth joins: never round a corner.
+      let j = k
+      while (
+        j + 1 < segs.length &&
+        turns[j] <= SET_BACK_SMOOTH_TURN &&
+        movedIn(ends[j], ends[j + 1])
+      )
+        j++
+      const b = ends[j]
+      const run = new Float64Array((b - a + 1) * 2)
+      for (let i = a; i <= b; i++) {
+        run[(i - a) * 2] = back[(i % n) * 2]
+        run[(i - a) * 2 + 1] = back[(i % n) * 2 + 1]
+      }
+      take(sb.fit(run))
+      k = j + 1
     }
   }
   out.push({ type: 'Z' })

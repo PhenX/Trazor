@@ -127,7 +127,20 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   them leaks the lower color into the edge pixels — a seam of the base color along
   a sheet's edge. A stacked base layer's edge that runs hidden under a sheet
   painted above it is therefore set back beneath the sheet
-  (`packages/engine/src/setback.ts`, applied by `refineRingToField`).
+  (`packages/engine/src/setback.ts`, applied by `refineRingToField`). The planar
+  chain sets back a hidden edge's shared fit, sampled about a working pixel apart
+  with every segment end kept (`fittedPoints`; an arc read in its center form,
+  W3C SVG 1.1 F.6.5): each point one source pixel along the normal of the chord
+  across two set-back distances of arc length either side — a centred difference
+  over a wide stencil — where the sheet holds the set-back point and the pixel
+  half a pixel past it (`setBackPoints`). A run of moved segments is refitted
+  between the fit's corners, every other segment drawn as the shared fit draws
+  it; a refit that strays from a point by more than the set-back distance is
+  replaced by the refits of the run's two halves, recursively (the subdivision of
+  Douglas & Peucker, Canadian Cartographer 10(2), 1973), since the program prices
+  a line by its points' best-fit line but draws the chord between its pinned ends
+  (`setBackFit`, `keepsTo`); and two hidden edges meet halfway between their set-back ends
+  (`layerRingCommands`, `packages/engine/src/planar.ts`).
 - **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
   Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
   for emitting a fitted circular arc as ≤90° circle-exact cubics
