@@ -124,7 +124,9 @@ export interface VectorizeSettings {
   /**
    * Which geometry chain traces the image: `classic`, the per-layer ring
    * tracer, or `planar`, the planar-map core (one shared edge between every
-   * two areas, fitted once, which every layering reads). `classic` by default.
+   * two areas, fitted once, which every layering reads). Explicit settings
+   * default to `classic`; the recommender picks `planar` where it measures
+   * better (see `@trazor/assist`).
    */
   geometry: GeometryChain
   /**

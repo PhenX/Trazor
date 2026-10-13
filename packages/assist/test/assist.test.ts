@@ -776,6 +776,68 @@ describe('recommendSettings — region-growing gates', () => {
   })
 })
 
+describe('recommendSettings — geometry chain', () => {
+  const codes = (rec: { rationaleKeys: { code: string }[] }) => rec.rationaleKeys.map((k) => k.code)
+
+  it('traces stacked non-cartoon color art on the planar chain with the ink front end and gradients', () => {
+    const rec = recommendSettings(analyzeImage(inkWithSoftShadow()))
+    expect(rec.patch.layering).toBe('stacked')
+    expect(rec.patch.geometry).toBe('planar')
+    expect(rec.patch.frontEnd).toBe('ink')
+    expect(rec.patch.gradients).toBe(true)
+    expect(codes(rec)).toContain('planarInk')
+    expect(codes(rec)).not.toContain('planarCartoon')
+  })
+
+  it('traces a cartoon on the planar chain with the classic front end', () => {
+    for (const img of [antialiasedField(), noisyCartoon()]) {
+      const rec = recommendSettings(analyzeImage(img))
+      expect(rec.patch.segmentation).toBe('regions')
+      expect(rec.patch.geometry).toBe('planar')
+      expect(rec.patch.frontEnd).toBe('classic')
+      expect(codes(rec)).toContain('planarCartoon')
+      expect(codes(rec)).not.toContain('planarInk')
+    }
+  })
+
+  it('keeps a cartoon larger than an icon on the classic chain', () => {
+    const a = analyzeImage(noisyCartoon())
+    expect(Math.max(a.width, a.height)).toBeLessThanOrEqual(512)
+    const icon = recommendSettings({ ...a, width: 512, height: 400, pixels: 204_800 })
+    expect(icon.patch.geometry).toBe('planar')
+    const large = recommendSettings({ ...a, width: 750, height: 1000, pixels: 750_000 })
+    expect(large.patch.segmentation).toBe('regions')
+    expect(large.patch.geometry).toBeUndefined()
+    expect(large.patch.frontEnd).toBeUndefined()
+    expect(codes(large)).not.toContain('planarCartoon')
+  })
+
+  it('keeps photos, pixel art, bw, nested and grayscale line art on the classic chain', () => {
+    for (const img of [
+      noisyPhoto(),
+      grayPhoto(),
+      compressedFlat(),
+      sprite(),
+      inkOnWhite(),
+      flatLogo(),
+      inkDrawing(),
+    ]) {
+      const rec = recommendSettings(analyzeImage(img))
+      expect(rec.patch.geometry).toBeUndefined()
+      expect(rec.patch.frontEnd).toBeUndefined()
+      expect(codes(rec)).not.toContain('planarInk')
+      expect(codes(rec)).not.toContain('planarCartoon')
+    }
+  })
+
+  it('keeps output grouped by color on the classic chain', () => {
+    for (const goal of ['vinyl-cut', 'poster'] as const) {
+      const rec = recommendSettings(analyzeImage(inkWithSoftShadow()), goal)
+      expect(rec.patch.geometry).toBeUndefined()
+    }
+  })
+})
+
 describe('suggestPalettes', () => {
   it('offers valid, distinct, deterministic palettes for flat art', () => {
     const img = flatLogo()

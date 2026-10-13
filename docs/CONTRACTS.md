@@ -87,7 +87,9 @@ geometry: GeometryChain
 // takes the classic front end. normalizeSettings maps anything else to 'classic'.
 export type FrontEnd = 'classic' | 'ink'
 frontEnd: FrontEnd
-// Both round-trip through the settings export (parseSettingsImport / serializeSettings).
+// Both round-trip through the settings export (parseSettingsImport / serializeSettings). The
+// recommender picks geometry 'planar' for stacked color/grayscale art not grouped by color (frontEnd
+// 'ink' with gradients, 'classic' for cartoons); see @trazor/assist's recommendSettings.
 ```
 
 ## @trazor/core — supersampling
@@ -1781,6 +1783,11 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
+// The geometry chain: color or grayscale art on stacked layers not grouped by color, from an
+// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
+// geometry 'planar' — a cartoon (segmentation 'regions') whose longest side is at most 512 px with
+// frontEnd 'classic' (reason `planarCartoon`; a larger cartoon stays classic), other art with frontEnd 'ink' and gradients on (reason `planarInk`). bw,
+// centerline, cutout, nested and grouped output keep the classic chain.
 export interface PaletteSuggestion {
   id: string
   label: string

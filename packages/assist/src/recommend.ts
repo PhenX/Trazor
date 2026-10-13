@@ -158,6 +158,15 @@ const GRADIENT_MIN_RAMP_AREA = 0.45
  */
 const GRADIENT_DETECT_CAP = 512
 
+/**
+ * The longest source side (px) up to which a cartoon traces on the planar
+ * chain. The ground-truth gate measures the chain ahead of the classic one on
+ * icon-sized cartoons (128 px: GMSD −20%; 512 px: ΔE00 −8%, extra ink −65%),
+ * and level or behind on full-size cartoon illustrations (735–1680 px) at seven
+ * to ten times the time, so a larger cartoon keeps the classic chain.
+ */
+const PLANAR_CARTOON_MAX_SIDE = 512
+
 /** Whether the image reads as cartoon-style flat art region growing serves best. */
 function isCartoon(a: ImageAnalysis): boolean {
   return (
@@ -461,6 +470,8 @@ export function recommendSettings(
     cartoonSupersample(a, maxDimension, patch, r)
   }
 
+  planarChain(a, profileId, cartoon, patch, r)
+
   if (a.edgeDensity > 0.2 && (patch.mode === 'bw' || patch.mode === 'centerline')) {
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 8)
     r.add('busyEdges', 'Busy edges — filtering specks below 8 px².')
@@ -587,6 +598,47 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   }
   r.add('pickIllustration', 'Mixed flat artwork — illustration profile.')
   return 'illustration'
+}
+
+/**
+ * The planar geometry chain, where the ground-truth gate measures it ahead of
+ * the classic one: color or grayscale art on stacked layers not grouped by
+ * color, from an intake left undenoised (photographic or compressed sources are
+ * denoised and stay classic, as do the photo profile, pixel art, bw and
+ * centerline, cutout and nested layering and grouped output). A cartoon takes
+ * it only up to `PLANAR_CARTOON_MAX_SIDE`, with the classic front end, whose
+ * region growing it is routed to; other art takes the ink front end with
+ * gradient fills, which paints a ramp as one gradient.
+ */
+function planarChain(
+  a: ImageAnalysis,
+  profileId: ProfileId,
+  cartoon: boolean,
+  patch: Partial<VectorizeSettings>,
+  r: Rationale,
+): void {
+  const mode = patch.mode ?? DEFAULT_SETTINGS.mode
+  if (mode !== 'color' && mode !== 'grayscale') return
+  if (profileId === 'photo' || profileId === 'pixel-art') return
+  if ((patch.layering ?? DEFAULT_SETTINGS.layering) !== 'stacked') return
+  if (patch.groupByColor ?? DEFAULT_SETTINGS.groupByColor) return
+  if ((patch.denoise ?? DEFAULT_SETTINGS.denoise) !== 'none') return
+  if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
+  patch.geometry = 'planar'
+  if (cartoon) {
+    patch.frontEnd = 'classic'
+    r.add(
+      'planarCartoon',
+      'Cartoon-style layers — each boundary between two fills is traced and fitted once, so neighboring shapes meet exactly.',
+    )
+    return
+  }
+  patch.frontEnd = 'ink'
+  patch.gradients = true
+  r.add(
+    'planarInk',
+    'Clean layered art — inks measured from the drawing and each boundary between two colors fitted once; smooth ramps become gradient fills.',
+  )
 }
 
 function suggestPaletteSize(a: ImageAnalysis): number {
