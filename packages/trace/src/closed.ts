@@ -160,7 +160,10 @@ export function closedPathToCommands(
   return polygonToCommands(ring, ringPolygon(ring, field ?? opts.coverage), opts)
 }
 
-/** Share of a ring's lattice area its adjusted polygon has to enclose to carry a fit. */
+/**
+ * Share of its ring's area a ring's adjusted polygon has to keep to carry a
+ * fit, the area read on the lattice or on the refined ring, whichever is less.
+ */
 const POLYGON_AREA_FLOOR = 0.75
 
 /**
@@ -169,8 +172,8 @@ const POLYGON_AREA_FLOOR = 0.75
  * refined ring geometry the multi-model run fitter samples. The ring starts at a
  * guaranteed convex corner (decomposition invariant), so the cycle is linearized
  * there for the straightness/DP stages. Returns a {@link RingFit}, or `null` for
- * a ring too short to carry a polygon (the caller falls back to the exact
- * lattice path).
+ * a ring too short to carry a polygon or one whose polygon draws its two sides
+ * together (the caller falls back to the exact lattice path).
  *
  * It depends on the ring, the optional sub-pixel `field` and `setback` only —
  * never on smoothing, curve optimization or the corner threshold — so a caller
@@ -206,10 +209,14 @@ export function ringPolygon(
   // inside the straightness tube of the same lines, and the least-squares
   // vertices draw them together until the polygon encloses a fraction of the
   // ring; it keeps its exact lattice outline instead. A wider ring's polygon
-  // runs through its lattice corners and keeps its area within a few percent.
-  if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * Math.abs(signedAreaFlat(ring))) {
-    return null
-  }
+  // runs through its samples and keeps their area within a few percent. The
+  // ring's area is read both on the lattice and on the refined ring where a
+  // field measured it, and the smaller one is the floor: a band the field
+  // finds thinner than its pixels (an anti-aliased rim the label pass widened
+  // into a ring of its own) keeps the polygon that follows the measurement
+  // rather than drawing its pixels.
+  const area = Math.min(Math.abs(signedAreaFlat(ring)), Math.abs(signedAreaFlat(geom)))
+  if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * area) return null
   const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx, setback)
   const extent = field ? Math.max(field.width, field.height) : 0
   const fit: RingFit = {

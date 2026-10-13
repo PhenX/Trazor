@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
+import { signedAreaFlat } from '@trazor/core'
 import {
   closedPathToCommands,
   decomposeMask,
@@ -269,6 +270,43 @@ describe('curve chain split', () => {
     expect(refined).not.toEqual(lattice)
     // Same polygon, moved off the lattice: vertex count is unchanged.
     expect(refined.length).toBe(lattice.length)
+  })
+
+  it('fits a band its field measures thinner than its pixels', () => {
+    // Three label rows, of which the field puts only the middle one and three
+    // tenths of each outer row inside: a 1.6 px band drawn three pixels wide.
+    const w = 50
+    const h = 24
+    const mask: BinaryMask = { width: w, height: h, data: new Uint8Array(w * h) }
+    const data = new Float32Array(w * h).fill(-0.5)
+    const cover = [0.3, 1, 0.3]
+    for (let y = 10; y < 13; y++) {
+      for (let x = 5; x < 45; x++) {
+        mask.data[y * w + x] = 1
+        data[y * w + x] = cover[y - 10] - 0.5
+      }
+    }
+    const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
+    const fit = ringPolygon(ring, { width: w, height: h, data })
+    expect(fit).not.toBeNull()
+    // The polygon follows the measured band (40 × 1.6 px), well under three
+    // quarters of the 120 px² of lattice.
+    const area = Math.abs(signedAreaFlat(fit?.polygon ?? []))
+    expect(area).toBeLessThan(0.75 * Math.abs(signedAreaFlat(ring)))
+    expect(Math.abs(area - 64)).toBeLessThan(12)
+    expect(
+      closedPathToCommands(ring, { ...OPTS, coverage: { width: w, height: h, data } }),
+    ).not.toEqual(closedPathToCommands(ring, { ...OPTS, curveMode: 'pixel' }))
+  })
+
+  it('keeps the lattice outline of a hairline whose polygon draws its sides together', () => {
+    // A one-pixel line climbing one row every two columns: both of its sides
+    // lie in the straightness tube of the same lines, and nothing refines them.
+    const w = 60
+    const mask: BinaryMask = { width: w, height: 40, data: new Uint8Array(w * 40) }
+    for (let x = 2; x < 58; x++) mask.data[Math.floor(5 + x / 2) * w + x] = 1
+    const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
+    expect(ringPolygon(ring)).toBeNull()
   })
 
   it('feeds shapesFromPaths the same shapes as its own polygon stages', () => {

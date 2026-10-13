@@ -165,8 +165,9 @@ The chain is exported in two halves, split where the curve settings first matter
 steps 2-3 and returns a **`RingFit`** (the adjusted polygon for `polygon` mode and corner detection, the refined ring
 geometry the run fitter samples with its per-point σ, and the segmentation vertex indices), or `null` for a ring too
 short to carry one, or a pixel wide — its two sides lie inside the straightness tube of the same lines and the
-least-squares vertices would draw them together, so a polygon enclosing under three quarters of the ring's lattice
-area is refused and the ring is emitted as its exact lattice outline; it
+least-squares vertices would draw them together, so a polygon enclosing under three quarters of the ring's area,
+read on the lattice or on the refined ring whichever is less, is refused and the ring is emitted as its exact lattice
+outline; a band the field measures thinner than its pixels keeps the polygon that follows the measurement; it
 depends on the ring and the optional field alone, while **`polygonToCommands(ring, fit, opts)`** runs steps 4-5 under
 `smoothing`, `curveOptimize`, `optTolerance` and `cornerThreshold`. `closedPathToCommands` is the two composed;
 `shapesFromPaths` takes the `RingFit`s for a whole path array as an optional argument. Holding them is what lets the

@@ -755,9 +755,10 @@ export interface CoveragePatch {
 }
 // Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
 // §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted
-// polygon would enclose under three quarters of its lattice area (the caller then emits the exact
-// lattice ring). Depends on the ring, the field and the set-back only — never on smoothing, curve
-// optimization or the corner threshold — so a caller may compute it once and re-fit it many times.
+// polygon would enclose under three quarters of the ring's area, read on the lattice or on the
+// refined ring whichever is less (the caller then emits the exact lattice ring). Depends on the
+// ring, the field and the set-back only — never on smoothing, curve optimization or the corner
+// threshold — so a caller may compute it once and re-fit it many times.
 // `setback` (per ring point, with a field; see refineRingToField) sets an edge hidden under a sheet
 // painted above it back beneath the sheet; such a point is fitted no tighter than a lattice point and
 // stays out of the coverage patch.
