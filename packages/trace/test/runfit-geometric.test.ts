@@ -117,6 +117,52 @@ describe('geometric mode — the drawing’s own lines, rounds and corners', () 
     }
   })
 
+  it('keeps a stroke’s round caps round', () => {
+    // A 10.6 px stroke with round caps, the width of an icon's 2-unit stroke
+    // at 128 px: its lattice polygon turns ~45° at each vertex around a cap,
+    // while the samples run smooth through them.
+    const strokes = [
+      [30.3, 64.2, 98.6, 63.7],
+      [30.1, 64.6, 98.2, 63.1],
+    ]
+    const R = 5.3
+    for (const [ax, ay, bx, by] of strokes) {
+      const sd = (x: number, y: number): number => {
+        const ex = bx - ax
+        const ey = by - ay
+        const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)))
+        return Math.hypot(x - ax - t * ex, y - ay - t * ey) - R
+      }
+      const { mask, field } = fieldOf(128, sd)
+      const cmds = trace(mask, field, GEOMETRIC)
+      for (const [x, y] of outline(cmds)) expect(Math.abs(sd(x, y))).toBeLessThan(0.25)
+    }
+  })
+
+  it('keeps a rounded blob’s refit on its samples', () => {
+    // Superellipses |u/a|^p + |v/b|^p = 1, rotated and off the grid, with no
+    // corner the samples turn at: a refitted cubic whose borrowed tangents it
+    // cannot meet strays pixels off its samples, and the ring keeps its pinned
+    // fit instead.
+    const blobs = [
+      [32.379, 32.187, 6.17, 8.068, 2.4, 0.5481],
+      [32.462, 32.964, 11.074, 10.746, 2.736, 1.8676],
+    ]
+    for (const [cx, cy, a, b, p, th] of blobs) {
+      const c = Math.cos(th)
+      const s = Math.sin(th)
+      const sd = (x: number, y: number): number => {
+        const u = (x - cx) * c + (y - cy) * s
+        const v = -(x - cx) * s + (y - cy) * c
+        const f = (Math.abs(u / a) ** p + Math.abs(v / b) ** p) ** (1 / p)
+        return (f - 1) * Math.min(a, b)
+      }
+      const { mask, field } = fieldOf(64, sd)
+      const cmds = trace(mask, field, GEOMETRIC)
+      for (const [x, y] of outline(cmds)) expect(Math.abs(sd(x, y))).toBeLessThan(0.6)
+    }
+  })
+
   it('traces a disk off the pixel grid as one circle', () => {
     const sd = (x: number, y: number): number => Math.hypot(x - 64.3, y - 63.7) - 40
     const { mask, field } = fieldOf(128, sd)

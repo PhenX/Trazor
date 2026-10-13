@@ -260,6 +260,26 @@ function symmetricTangentOf(
 }
 
 /**
+ * The two one-sided tangents at point `k` ({@link oneSidedTangent}): the
+ * direction the boundary arrives with, from the points before `k`, and the one
+ * it leaves with, from the points after it — each from the widest window on
+ * its own side the measurement model accepts, so neither reaches across a
+ * corner at `k`. Null where that side has no neighbour.
+ */
+export function sideTangents(
+  poly: Polyline,
+  k: number,
+  cfg: FitConfig,
+): { incoming: Vec | null; outgoing: Vec | null } {
+  const src: Source = { poly, n: poly.points.length >> 1, edges: null }
+  const win = new TangentWindow()
+  return {
+    incoming: oneSidedTangent(src, k, false, cfg, win),
+    outgoing: oneSidedTangent(src, k, true, cfg, win),
+  }
+}
+
+/**
  * Symmetric tangent at point `k` from the widest window of at most `half` points
  * each side (capped by {@link TANGENT_WINDOW_MAX} and what the polyline has),
  * fitted with a quadratic in signed arc length, widest first; the first with

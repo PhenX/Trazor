@@ -5,6 +5,9 @@ import type { FlatPoints } from '../paths'
 import { fitCubicSegment, refineParam } from '../fit'
 import type { Cubic } from '../fit'
 import { cornerAt } from './smooth'
+import { sideTangents, TANGENT_WINDOW_MAX } from '../fit/tangents'
+import type { Polyline } from '../fit/objective'
+import { fitCircle } from '../fit/primitives'
 
 /**
  * Multi-model run fitting as a bounded dynamic program: the curve half of the
@@ -296,19 +299,70 @@ export function fitClosedRuns(
   ): boolean =>
     turnDeg(ax, ay, bx, by, cx, cy) >= CORNER_TURN_DEG &&
     cornerAt(ax, ay, bx, by, cx, cy, opts.alphamax, opts.cornerThreshold)
-  const corner = new Uint8Array(mv)
+  const single = new Uint8Array(mv)
+  const pair = new Uint8Array(mv) // the pair (i, i + 1) turns as one corner
   for (let i = 0; i < mv; i++) {
     const ip = (i + mv - 1) % mv
     const inx = (i + 1) % mv
-    if (isCorner(vx(ip), vy(ip), vx(i), vy(i), vx(inx), vy(inx))) corner[i] = 1
+    if (isCorner(vx(ip), vy(ip), vx(i), vy(i), vx(inx), vy(inx))) single[i] = 1
     const in2 = (i + 2) % mv
     if (mv > 3 && Math.hypot(vx(inx) - vx(i), vy(inx) - vy(i)) <= CHAMFER_SPAN) {
       const mx = (vx(i) + vx(inx)) / 2
       const my = (vy(i) + vy(inx)) / 2
-      if (isCorner(vx(ip), vy(ip), mx, my, vx(in2), vy(in2))) {
-        corner[i] = 1
-        corner[inx] = 1
-      }
+      if (isCorner(vx(ip), vy(ip), mx, my, vx(in2), vy(in2))) pair[i] = 1
+    }
+  }
+  // A corner of the polygon must also be one in the samples. Around a small
+  // round — a stroke's cap, a rounded corner — the lattice polygon turns at
+  // every vertex while the refined samples run smooth through each of them.
+  // A candidate (or a chamfer pair, at its stub's middle sample) stays a
+  // corner only where the boundary's two one-sided tangents there turn by
+  // CORNER_TURN_DEG. Each side's is read from its samples up to the
+  // neighbouring polygon vertex, at most a tangent window's reach
+  // (TANGENT_WINDOW_MAX), leaving out the vertex sample itself, which the
+  // anti-aliasing cuts across a corner and so bends either side toward the
+  // other: the tangent of the circle they fit within the measurement model
+  // (`sideCircleTangent`; a straight side fits a circle of huge radius), else
+  // the widest Savitzky–Golay window the model accepts on that side
+  // (`sideTangents`, the planar fit's tangent estimate) — a quadratic window
+  // cannot follow a cap a few pixels across, and its tangent there leans
+  // toward the chord.
+  const ringPoly: Polyline = {
+    points: Float64Array.from(geom.slice(0, 2 * n)),
+    sigma: Float64Array.from(sigma.slice(0, n)),
+    closed: true,
+  }
+  const tangentCfg = { tau: opts.tau, lambda: opts.lambda }
+  const turnsAt = (k: number, before: number, after: number): boolean => {
+    const window = sideTangents(ringPoly, k, tangentCfg)
+    const back = Math.min((k - before + n) % n, TANGENT_WINDOW_MAX)
+    const ahead = Math.min((after - k + n) % n, TANGENT_WINDOW_MAX)
+    const circleIn = sideCircleTangent(
+      geom,
+      sigma,
+      n,
+      (k - back + n) % n,
+      (k - 1 + n) % n,
+      k,
+      opts.tau,
+    )
+    const circleOut = sideCircleTangent(geom, sigma, n, (k + 1) % n, (k + ahead) % n, k, opts.tau)
+    const incoming = circleIn ?? window.incoming
+    const outgoing = circleOut ?? window.outgoing
+    if (!incoming || !outgoing) return true
+    const dot = incoming.x * outgoing.x + incoming.y * outgoing.y
+    return dot <= Math.cos((CORNER_TURN_DEG * Math.PI) / 180)
+  }
+  const corner = new Uint8Array(mv)
+  for (let i = 0; i < mv; i++) {
+    const before = vertices[(i + mv - 1) % mv]
+    if (single[i] && turnsAt(vertices[i], before, vertices[(i + 1) % mv])) corner[i] = 1
+    if (!pair[i]) continue
+    const inx = (i + 1) % mv
+    const mid = (vertices[i] + (((vertices[inx] - vertices[i] + n) % n) >> 1)) % n
+    if (turnsAt(mid, before, vertices[(i + 2) % mv])) {
+      corner[i] = 1
+      corner[inx] = 1
     }
   }
   const cornerVerts: number[] = []
@@ -437,6 +491,45 @@ function emitRingPrimitive(out: PathCommand[], prim: RingPrimitive, pts: FlatPoi
 
 /** Least turn (degrees) at a corner (inkvec `CORNER_DEGREES`). */
 const CORNER_TURN_DEG = 45
+
+/**
+ * The tangent at ring sample `at` (one end of the side) of the geometric circle
+ * fitted to the ring samples `from`..`to` (ring order, wrapping), oriented
+ * along the ring; null for fewer than four samples, or a circle whose reduced
+ * χ² exceeds τ² (the whole-primitive rule's test). A straight side fits a
+ * circle of huge radius, and its tangent is the line's.
+ */
+function sideCircleTangent(
+  geom: FlatPoints,
+  sigma: ArrayLike<number>,
+  n: number,
+  from: number,
+  to: number,
+  at: number,
+  tau: number,
+): { x: number; y: number } | null {
+  const m = ((to - from + n) % n) + 1
+  if (m < 4) return null
+  const pts = new Float64Array(2 * m)
+  const sig = new Float64Array(m)
+  for (let j = 0; j < m; j++) {
+    const k = (from + j) % n
+    pts[2 * j] = geom[2 * k]
+    pts[2 * j + 1] = geom[2 * k + 1]
+    sig[j] = sigma[k]
+  }
+  const c = fitCircle(pts, sig)
+  if (c === null || c.chi2 > tau * tau * (m - 3)) return null
+  let tx = c.cy - geom[2 * at + 1]
+  let ty = geom[2 * at] - c.cx
+  const len = Math.hypot(tx, ty)
+  if (len < 1e-12) return null
+  // Along the ring: the way the side runs from its first sample to its last.
+  const sign = tx * (pts[2 * m - 2] - pts[0]) + ty * (pts[2 * m - 1] - pts[1]) < 0 ? -1 : 1
+  tx *= sign / len
+  ty *= sign / len
+  return { x: tx, y: ty }
+}
 
 /** Turn (degrees) at b between the directions a→b and b→c. */
 function turnDeg(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
@@ -2205,7 +2298,9 @@ function fitClosedRefit(
       if (c.r * Math.abs(span) > 2 * samplePathLength(s.pts, s.a, s.b) + 3) return null
       emitArcSpan(out, c, a0, span, sx, sy, ex, ey)
     } else {
-      // Cubic: re-pinned to the joins; a smooth join inherits its neighbour's tangent.
+      // Cubic: re-pinned to the joins; a smooth join inherits its neighbour's
+      // tangent, or, beside another cubic, the data tangent there (the DP's own
+      // join tangent), the same for the two cubics so they stay G1.
       const pts = s.pts.slice()
       pts[s.a * 2] = sx
       pts[s.a * 2 + 1] = sy
@@ -2215,14 +2310,10 @@ function fitClosedRefit(
       const nxt = segs[(k + 1) % m]
       let t0 = forwardTangent(pts, s.a)
       let t1 = forwardTangent(pts, s.b - 1)
-      if (!s.cornerStart) {
-        const t = modelTangent(prev, sx, sy, sx, sy, ex, ey)
-        if (t) t0 = t
-      }
-      if (!nxt.cornerStart) {
-        const t = modelTangent(nxt, ex, ey, sx, sy, ex, ey)
-        if (t) t1 = t
-      }
+      if (!s.cornerStart)
+        t0 = modelTangent(prev, sx, sy, sx, sy, ex, ey) ?? centralTangent(pts, s.a)
+      if (!nxt.cornerStart)
+        t1 = modelTangent(nxt, ex, ey, sx, sy, ex, ey) ?? centralTangent(pts, s.b)
       let c = fitCubicRun(pts, s.a, s.b, t0, t1)
       if (s.b - s.a >= 2) {
         // A tangent borrowed from a neighbour fitted on a few samples can be far
@@ -2238,6 +2329,9 @@ function fitClosedRefit(
             forwardTangent(pts, s.b - 1),
           )
           if (cubicDeviation(pts, s.sig, s.a, s.b, own, opts).chi2 < dev.chi2) c = own
+          // A cubic that still strays more than a pixel from one of its samples
+          // draws worse than the lattice did: the ring keeps its pinned fit.
+          if (cubicStray(c, pts, s.a, s.b) > REFIT_MAX_STRAY) return null
         }
       }
       // Control points far outside the samples: the ring falls back to the pinned fit.
@@ -2304,6 +2398,46 @@ function controlsNearSamples(c: Cubic, pts: FlatPoints, a: number, b: number): b
   const inside = (x: number, y: number): boolean =>
     x >= minX - pad && x <= maxX + pad && y >= minY - pad && y <= maxY + pad
   return inside(c.c1x, c.c1y) && inside(c.c2x, c.c2y)
+}
+
+/** Farthest a refitted cubic may lie from one of its samples (px) before the ring keeps its pinned fit. */
+const REFIT_MAX_STRAY = 1
+
+/** Pieces a cubic is flattened into to measure a sample's distance from it. */
+const STRAY_PIECES = 64
+
+/**
+ * Largest distance (px) from an interior sample of pts[a..b] to the cubic,
+ * each measured to the nearest point of the cubic flattened into
+ * {@link STRAY_PIECES} chords (a sample's own parameter can land on the wrong
+ * lobe of a curve that loops away from it).
+ */
+function cubicStray(c: Cubic, pts: FlatPoints, a: number, b: number): number {
+  const xs = new Float64Array(STRAY_PIECES + 1)
+  const ys = new Float64Array(STRAY_PIECES + 1)
+  for (let k = 0; k <= STRAY_PIECES; k++) {
+    const t = k / STRAY_PIECES
+    const m = 1 - t
+    xs[k] = m * m * m * c.p0x + 3 * m * m * t * c.c1x + 3 * m * t * t * c.c2x + t * t * t * c.p3x
+    ys[k] = m * m * m * c.p0y + 3 * m * m * t * c.c1y + 3 * m * t * t * c.c2y + t * t * t * c.p3y
+  }
+  let far = 0
+  for (let i = a + 1; i < b; i++) {
+    const px = pts[i * 2]
+    const py = pts[i * 2 + 1]
+    let best = Infinity
+    for (let k = 0; k < STRAY_PIECES; k++) {
+      const dx = xs[k + 1] - xs[k]
+      const dy = ys[k + 1] - ys[k]
+      const l2 = dx * dx + dy * dy
+      let t = l2 > 0 ? ((px - xs[k]) * dx + (py - ys[k]) * dy) / l2 : 0
+      t = t < 0 ? 0 : t > 1 ? 1 : t
+      const d = Math.hypot(px - xs[k] - t * dx, py - ys[k] - t * dy)
+      if (d < best) best = d
+    }
+    if (best > far) far = best
+  }
+  return far
 }
 
 /** σ given to a sample on a corner's chamfer: large enough that it constrains nothing. */

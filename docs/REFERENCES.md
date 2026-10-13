@@ -57,7 +57,14 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   from `smoothing`/`cornerThreshold`, an endpoint-pinned circle fit (so the arc
   scored is the arc drawn) and a monotone-sweep gate on the arc. At low smoothing
   (geometric mode) it follows inkvec's structural model too: a corner is a vertex
-  of the unadjusted polygon turning at least `CORNER_DEGREES` (45°); the samples
+  of the unadjusted polygon turning at least `CORNER_DEGREES` (45°) whose refined
+  samples turn by as much — each side's tangent at it read from that side's
+  samples, the vertex's chamfer left out, as the tangent of a geometric circle
+  fitted to them (a straight side fits a huge one) or else of the widest one-sided
+  Savitzky–Golay window the measurement model accepts (A. Savitzky & M. J. E.
+  Golay, “Smoothing and differentiation of data by simplified least squares
+  procedures”, _Analytical Chemistry_ 36(8), 1964), so a stroke's round cap, whose
+  lattice polygon turns ~45° at every vertex, is not drawn as a pointed arch; the samples
   within the anti-aliasing chamfer of a corner (`CORNER_CHAMFER`, reaching
   `1/sin(½·interior)` along sharper corners) carry no weight, and the corner is
   placed where its two fitted edges meet within that allowance

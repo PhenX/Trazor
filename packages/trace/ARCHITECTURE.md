@@ -87,7 +87,12 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    vertex (read on the unadjusted polygon) turning at least 45° (inkvec
    `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
    (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
-   the stub's middle. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
+   the stub's middle. The samples must turn there too: around a small round — a stroke's cap — the lattice polygon
+   turns ~45° at every vertex while the refined samples run smooth, and a corner there draws the cap as a pointed
+   arch. So each side's tangent at the vertex is read from that side's samples, up to the neighbouring vertex and a
+   tangent window's reach, the vertex's own anti-aliasing chamfer left out: the tangent of the circle they fit within
+   the measurement model (a straight side fits a huge one), else the widest Savitzky–Golay window the model accepts
+   (`sideTangents`), and the two must turn by 45° as well. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
    rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
    line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a ring
@@ -119,8 +124,10 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    short transition whose model says little). The samples on a corner's anti-aliasing chamfer (`CORNER_CHAMFER`,
    reaching further along sharper corners) carry no weight, and a chamfer stub between two corners collapses into one
    corner (inkvec `adjust_vertices_at`, `sharpen_corners`). A cubic keeps its fit, re-pinned to the joins with its
-   neighbours' tangents. The refit falls back to the pinned DP fit where it would draw worse than it measured — an arc
-   sweeping far longer than its samples, a cubic whose controls leave them.
+   neighbours' tangents (two cubics meeting smoothly share the data tangent at their join, so they stay G1). The refit
+   falls back to the pinned DP fit where it would draw worse than it measured — an arc sweeping far longer than its
+   samples, a cubic whose controls leave them or that, on its own end tangents too, strays more than a pixel from one
+   of its samples.
 
    **Illustration mode** (`smoothing > 0.5`) reads refined samples at `σ ≥ 0.2`, so higher smoothing simplifies (a
    hand-drawn outline's wobble spanned by one model), and makes every join inside a span smooth. The DP prices a chord
