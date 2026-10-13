@@ -368,6 +368,21 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`),
   and for the arc model of the multi-model run fitter
   (`packages/trace/src/potrace/runfit.ts`).
+- **S. J. Ahn, W. Rauh & H.-J. Warnecke, “Least-squares orthogonal distances
+  fitting of circle, sphere, ellipse, hyperbola, and parabola”, _Pattern
+  Recognition_ 34(12), 2001; K. Levenberg, _Quarterly of Applied Mathematics_
+  2(2), 1944; D. Marquardt, _SIAM J. Applied Mathematics_ 11(2), 1963.**
+  Geometric (orthogonal-distance) least squares by Levenberg–Marquardt: the
+  box and corner radius of a `<rect rx>` candidate fitted to its loop sampled
+  about a pixel apart, on the exact distance to a rounded rectangle (its inner
+  rectangle's distance minus the radius), started from the samples' box and the
+  radius that matches their area (`packages/svg/src/fit.ts` `fitRoundedRect`).
+  The candidate is accepted only when the loop and the fitted outline lie
+  within tolerance of each other both ways — a two-sided Hausdorff test
+  (D. P. Huttenlocher, G. A. Klanderman & W. J. Rucklidge, “Comparing images
+  using the Hausdorff distance”, _IEEE PAMI_ 15(9), 1993) — so a bowl or a
+  spindle whose anchors lie on its box stays a path
+  (`packages/svg/src/primitive.ts` `detectRoundedRect`).
 - **Walter Gander, Gene H. Golub & Rolf Strebel, “Least-squares fitting of
   circles and ellipses”, _BIT Numerical Mathematics_ 34(4), 1994.** Geometric
   (orthogonal-distance) circle fitting by Gauss–Newton from an algebraic start;

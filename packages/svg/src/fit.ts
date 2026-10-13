@@ -8,6 +8,8 @@
  * - circle: Kåsa algebraic fit (a 3×3 linear solve).
  * - ellipse: direct conic fit — the smallest-eigenvector of the design scatter
  *   matrix (Fitzgibbon-class), with the points normalized first for conditioning.
+ * - rounded rectangle: geometric (orthogonal-distance) least squares by
+ *   Levenberg–Marquardt.
  */
 
 export interface Pt {
@@ -215,4 +217,161 @@ export function fitEllipse(
     ry: ry * scale,
     angle: ang,
   }
+}
+
+/** An axis-aligned rounded rectangle: center, half-extents and corner radius. */
+export interface RoundedRectParams {
+  cx: number
+  cy: number
+  hx: number
+  hy: number
+  r: number
+}
+
+/**
+ * Signed distance (positive outside) from a point to an axis-aligned rounded
+ * rectangle. The shape is its inner rectangle (half-extents `hx − r`, `hy − r`)
+ * dilated by a disc of radius `r`, so the distance is that rectangle's minus
+ * `r`: exact on a straight side and on a corner arc alike.
+ */
+export function roundedRectSdf(
+  px: number,
+  py: number,
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  r: number,
+): number {
+  const qx = Math.abs(px - cx) - (hx - r)
+  const qy = Math.abs(py - cy) - (hy - r)
+  const ax = Math.max(qx, 0)
+  const ay = Math.max(qy, 0)
+  // Distance out to the corner arc's center, `hypot(ax, ay)`; alongside a
+  // straight edge one term is zero and the other is that distance already.
+  const outside = ay === 0 ? ax : ax === 0 ? ay : Math.hypot(ax, ay)
+  return outside + Math.min(Math.max(qx, qy), 0) - r
+}
+
+/** Iteration cap of {@link fitRoundedRect}. */
+const RRECT_FIT_ITERATIONS = 50
+
+/** `r` clamped to `[0, min(hx, hy)]` and the half-extents to non-negative. */
+function clampRoundedRect(p: RoundedRectParams): RoundedRectParams {
+  const hx = Math.max(p.hx, 0)
+  const hy = Math.max(p.hy, 0)
+  return { cx: p.cx, cy: p.cy, hx, hy, r: Math.min(Math.max(p.r, 0), hx, hy) }
+}
+
+/** `Σ d²` from the points to the rounded rectangle. */
+function roundedRectCost(xs: Float64Array, ys: Float64Array, p: RoundedRectParams): number {
+  let sum = 0
+  for (let i = 0; i < xs.length; i++) {
+    const d = roundedRectSdf(xs[i], ys[i], p.cx, p.cy, p.hx, p.hy, p.r)
+    sum += d * d
+  }
+  return sum
+}
+
+/**
+ * Least-squares axis-aligned rounded rectangle through the points: the center,
+ * half-extents and corner radius minimizing `Σ d²`, `d` the signed orthogonal
+ * distance of {@link roundedRectSdf} (geometric fitting, S. J. Ahn, W. Rauh &
+ * H.-J. Warnecke, _Pattern Recognition_ 34, 2001), by Levenberg–Marquardt
+ * (Levenberg 1944, Marquardt 1963) from `init`, with `r` kept within
+ * `[0, min(hx, hy)]`. A point beside a straight side pulls only that side; one
+ * off a corner pulls the two sides and the radius along its normal to the arc.
+ * The points should be spaced evenly along the outline, so every stretch of it
+ * weighs by its length.
+ */
+export function fitRoundedRect(
+  xs: Float64Array,
+  ys: Float64Array,
+  init: RoundedRectParams,
+): RoundedRectParams {
+  let p = clampRoundedRect(init)
+  let cost = roundedRectCost(xs, ys, p)
+  let mu = 1e-3
+  const jtj = Array.from({ length: 5 }, () => new Array<number>(5).fill(0))
+  const jtd = new Array<number>(5).fill(0)
+  const g = new Array<number>(5).fill(0)
+  for (let it = 0; it < RRECT_FIT_ITERATIONS && cost > 0; it++) {
+    for (let a = 0; a < 5; a++) {
+      jtd[a] = 0
+      jtj[a].fill(0)
+    }
+    for (let i = 0; i < xs.length; i++) {
+      const dx = xs[i] - p.cx
+      const dy = ys[i] - p.cy
+      const sx = dx >= 0 ? 1 : -1
+      const sy = dy >= 0 ? 1 : -1
+      const qx = Math.abs(dx) - (p.hx - p.r)
+      const qy = Math.abs(dy) - (p.hy - p.r)
+      // Gradient of d in (cx, cy, hx, hy, r): off a corner along the arc's
+      // normal, beside a side along that side's normal.
+      g.fill(0)
+      let d: number
+      if (qx > 0 && qy > 0) {
+        const len = Math.hypot(qx, qy)
+        const ux = qx / len
+        const uy = qy / len
+        d = len - p.r
+        g[0] = -sx * ux
+        g[1] = -sy * uy
+        g[2] = -ux
+        g[3] = -uy
+        g[4] = ux + uy - 1
+      } else if (qx >= qy) {
+        d = Math.abs(dx) - p.hx
+        g[0] = -sx
+        g[2] = -1
+      } else {
+        d = Math.abs(dy) - p.hy
+        g[1] = -sy
+        g[3] = -1
+      }
+      for (let a = 0; a < 5; a++) {
+        if (g[a] === 0) continue
+        jtd[a] += g[a] * d
+        for (let b = 0; b < 5; b++) jtj[a][b] += g[a] * g[b]
+      }
+    }
+    let trace = 0
+    for (let a = 0; a < 5; a++) trace += jtj[a][a]
+    // Marquardt's scaled damping, floored so a parameter no point constrains
+    // (the radius when no point lies off a corner) still gets a finite step.
+    const floor = 1e-9 * trace + 1e-12
+    let accepted = false
+    while (mu < 1e12) {
+      const damped = jtj.map((row, a) =>
+        row.map((v, b) => (a === b ? v + mu * Math.max(v, floor) : v)),
+      )
+      const step = solveLinear(
+        damped,
+        jtd.map((v) => -v),
+      )
+      if (step) {
+        const q = clampRoundedRect({
+          cx: p.cx + step[0],
+          cy: p.cy + step[1],
+          hx: p.hx + step[2],
+          hy: p.hy + step[3],
+          r: p.r + step[4],
+        })
+        const c = roundedRectCost(xs, ys, q)
+        if (c < cost) {
+          accepted = true
+          const gain = cost - c
+          p = q
+          cost = c
+          mu = Math.max(mu / 10, 1e-12)
+          if (gain <= 1e-12 * (cost + gain)) return p
+          break
+        }
+      }
+      mu *= 10
+    }
+    if (!accepted) break
+  }
+  return p
 }

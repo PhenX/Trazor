@@ -151,9 +151,8 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
   })
 
   it('recovers the corner radius to sub-pixel accuracy', () => {
-    // maxR = min(hx, hy) = 25, so the 64-step scan grid is ~0.39 px; this radius
-    // sits between two grid points, where a scan-only fit is ~0.2 px off. The
-    // golden-section refinement must land within a tenth of a pixel.
+    // The least-squares fit of the box and radius to the dense samples lands
+    // within a tenth of a pixel of a radius that is no round number.
     const r = 7.23
     const p = detectPrimitive(roundedRectPath(10, 10, 90, 60, r), 3, true) as Extract<
       Primitive,
@@ -190,6 +189,88 @@ describe('detectPrimitive — rounded rectangles (gated)', () => {
       { type: 'Z' },
     ]
     expect(detectPrimitive(blob, 2, true)).toBeNull()
+  })
+
+  it('keeps a bowl whose anchors and segment midpoints all lie on its box as a path', () => {
+    // A traced mouth: two lines and two cubics whose ends and t = ½ points are
+    // the shape's axis extremes, while the cubics bow up to 4 px inside the box
+    // between them (and past its sides).
+    const bowl: PathCommand[] = [
+      { type: 'M', x: 62.01, y: 111.87 },
+      { type: 'L', x: 65.99, y: 111.87 },
+      { type: 'C', x1: 81.44, y1: 111.48, x2: 92.59, y2: 94.27, x: 79.49, y: 94.2 },
+      { type: 'L', x: 48.49, y: 94.19 },
+      { type: 'C', x1: 35.45, y1: 94.27, x2: 46.49, y2: 111.48, x: 62.01, y: 111.87 },
+      { type: 'Z' },
+    ]
+    expect(detectPrimitive(bowl, 2, true)?.kind).not.toBe('rrect')
+  })
+
+  it('keeps a spindle with short flat ends as a path', () => {
+    // Bulging sides between two 2 px flats: the cubics' midpoints set the box's
+    // sides, the rest of each side curves up to 7 px away from them.
+    const spindle: PathCommand[] = [
+      { type: 'M', x: 49, y: 50 },
+      { type: 'L', x: 51, y: 50 },
+      { type: 'C', x1: 60.6, y1: 60, x2: 60.6, y2: 70, x: 51, y: 80 },
+      { type: 'L', x: 49, y: 80 },
+      { type: 'C', x1: 39.4, y1: 70, x2: 39.4, y2: 60, x: 49, y: 50 },
+      { type: 'Z' },
+    ]
+    expect(detectPrimitive(spindle, 2, true)?.kind).not.toBe('rrect')
+  })
+
+  it('fits a straight side where its samples lie, not where a corner cubic overshoots it', () => {
+    // A traced bar with round ends: its top runs at y = 273.30, and the cubic
+    // that turns the right end's corner bulges 0.12 px above that line. The
+    // emitted rect keeps the top where the long straight side is.
+    const bar: PathCommand[] = [
+      { type: 'M', x: 224.07, y: 273.4 },
+      { type: 'L', x: 232.04, y: 273.3 },
+      { type: 'L', x: 439.94, y: 273.3 },
+      { type: 'C', x1: 448.13, y1: 272.56, x2: 456.3, y2: 275.18, x: 462.66, y: 280.39 },
+      { type: 'C', x1: 473.19, y1: 289.39, x2: 476.01, y2: 304.53, x: 469.5, y: 316.76 },
+      { type: 'C', x1: 464.44, y1: 326.32, x2: 454.49, y2: 332.29, x: 443.67, y: 332.3 },
+      { type: 'L', x: 226.3, y: 332.3 },
+      { type: 'C', x1: 215.97, y1: 332.3, x2: 206.41, y2: 326.8, x: 201.18, y: 317.89 },
+      { type: 'C', x1: 194.88, y1: 307.35, x2: 195.83, y2: 293.99, x: 203.52, y: 284.41 },
+      { type: 'C', x1: 208.59, y1: 278.11, x2: 216.02, y2: 274.16, x: 224.07, y: 273.4 },
+      { type: 'Z' },
+    ]
+    const p = detectPrimitive(bar, 2, true) as Extract<Primitive, { kind: 'rrect' }>
+    expect(p?.kind).toBe('rrect')
+    expect(Math.abs(p.y - 273.3)).toBeLessThan(0.05)
+    expect(Math.abs(p.y + p.height - 332.3)).toBeLessThan(0.05)
+  })
+
+  it('keeps a loop that runs over only part of a rounded rect as a path', () => {
+    // Out along seven eighths of the outline and back the same way: every point
+    // lies on the rounded rect, but half of its left side has no path near it.
+    const k = 0.5522847498 * 8
+    const out: PathCommand[] = [
+      { type: 'L', x: 10, y: 18 },
+      { type: 'C', x1: 10, y1: 18 - k, x2: 18 - k, y2: 10, x: 18, y: 10 },
+      { type: 'L', x: 82, y: 10 },
+      { type: 'C', x1: 82 + k, y1: 10, x2: 90, y2: 18 - k, x: 90, y: 18 },
+      { type: 'L', x: 90, y: 52 },
+      { type: 'C', x1: 90, y1: 52 + k, x2: 82 + k, y2: 60, x: 82, y: 60 },
+      { type: 'L', x: 18, y: 60 },
+      { type: 'C', x1: 18 - k, y1: 60, x2: 10, y2: 52 + k, x: 10, y: 52 },
+    ]
+    const back: PathCommand[] = [
+      { type: 'C', x1: 10, y1: 52 + k, x2: 18 - k, y2: 60, x: 18, y: 60 },
+      { type: 'L', x: 82, y: 60 },
+      { type: 'C', x1: 82 + k, y1: 60, x2: 90, y2: 52 + k, x: 90, y: 52 },
+      { type: 'L', x: 90, y: 18 },
+      { type: 'C', x1: 90, y1: 18 - k, x2: 82 + k, y2: 10, x: 82, y: 10 },
+      { type: 'L', x: 18, y: 10 },
+      { type: 'C', x1: 18 - k, y1: 10, x2: 10, y2: 18 - k, x: 10, y: 18 },
+      { type: 'L', x: 10, y: 35 },
+    ]
+    const cmds: PathCommand[] = [{ type: 'M', x: 10, y: 35 }, ...out, ...back, { type: 'Z' }]
+    expect(detectPrimitive(cmds, 2, true)?.kind).not.toBe('rrect')
+    // The whole outline, traced once, is the rounded rect.
+    expect(detectPrimitive(roundedRectPath(10, 10, 90, 60, 8), 2, true)?.kind).toBe('rrect')
   })
 })
 

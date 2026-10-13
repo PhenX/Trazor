@@ -13,7 +13,7 @@
 
 import type { PathCommand } from '@trazor/core'
 import { conicDistance } from './arc'
-import { fitCircle, fitEllipse } from './fit'
+import { fitCircle, fitEllipse, fitRoundedRect, roundedRectSdf } from './fit'
 import { clampPrecision } from './pathdata'
 
 export type Primitive =
@@ -117,10 +117,16 @@ function detectRect(start: Pt, ops: readonly LineOp[], scale: number): Primitive
 const ROUND_TOL_PX = 0.15
 
 /**
- * Rounded-rect acceptance tolerance in pixels, on the same reasoning as
- * `ROUND_TOL_PX`: every boundary sample within this of the fitted shape.
+ * Rounded-rect acceptance tolerance in pixels: how far apart the loop, sampled
+ * about a pixel apart, and the rounded rect fitted to it may lie, both ways (a
+ * two-sided Hausdorff distance). On the reasoning of `ROUND_TOL_PX`, with room
+ * for the corners: a trace draws each as one or two free cubics, which leave
+ * the one circular arc all four corners share by a few tenths of a pixel.
  */
-const RRECT_TOL_PX = 0.2
+const RRECT_TOL_PX = 0.3
+
+/** Spacing in pixels of the rounded-rect outline points held to the loop. */
+const RRECT_OUTLINE_STEP = 0.5
 
 /**
  * Regular-polygon acceptance tolerance in pixels: every outline sample within
@@ -217,170 +223,211 @@ function cubicPoint(p0: Pt, c: CurveOp, t: number): Pt {
   }
 }
 
-/** Signed distance from a point to an axis-aligned rounded rectangle (circular corners). */
-function roundedRectSdf(
-  px: number,
-  py: number,
-  cx: number,
-  cy: number,
-  hx: number,
-  hy: number,
-  r: number,
-): number {
-  const qx = Math.abs(px - cx) - (hx - r)
-  const qy = Math.abs(py - cy) - (hy - r)
-  const ax = Math.max(qx, 0)
-  const ay = Math.max(qy, 0)
-  // Distance out to the corner arc's center, `hypot(ax, ay)`; alongside a
-  // straight edge one term is zero and the other is that distance already.
-  const outside = ay === 0 ? ax : ax === 0 ? ay : Math.hypot(ax, ay)
-  return outside + Math.min(Math.max(qx, qy), 0) - r
-}
-
 /**
  * How far inside its bounding box a rounded rect's boundary reaches, per unit of
  * corner radius: the corner arc's midpoint, `1 − 1/√2` of the radius from each of
- * its two sides. Rounded up, so the reject below never fires on a shape the SDF
+ * its two sides. Rounded up, so the reject below never fires on a shape the full
  * test would accept.
  */
 const CORNER_INSET_RATIO = 0.3
 
 /**
+ * Samples of a closed loop of straight and cubic edges, at most `step` apart
+ * along each edge (a cubic at least four times, a line at least at its
+ * midpoint), the start first and every anchor included; a loop whose last
+ * anchor is not its start is closed by the straight edge `Z` draws.
+ */
+function sampleEdgeLoop(
+  start: Pt,
+  ops: readonly (LineOp | CurveOp)[],
+  step: number,
+): { sx: Float64Array; sy: Float64Array } {
+  const xs: number[] = [start.x]
+  const ys: number[] = [start.y]
+  const line = (ax: number, ay: number, bx: number, by: number): void => {
+    const parts = Math.max(2, Math.ceil(Math.hypot(bx - ax, by - ay) / step))
+    for (let k = 1; k <= parts; k++) {
+      xs.push(ax + ((bx - ax) * k) / parts)
+      ys.push(ay + ((by - ay) * k) / parts)
+    }
+  }
+  let prev = start
+  for (const op of ops) {
+    if (op.type === 'C') {
+      const hull =
+        Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+        Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+        Math.hypot(op.x - op.x2, op.y - op.y2)
+      const parts = Math.max(4, Math.ceil(hull / step))
+      for (let k = 1; k < parts; k++) {
+        const p = cubicPoint(prev, op, k / parts)
+        xs.push(p.x)
+        ys.push(p.y)
+      }
+      xs.push(op.x)
+      ys.push(op.y)
+    } else line(prev.x, prev.y, op.x, op.y)
+    prev = { x: op.x, y: op.y }
+  }
+  if (prev.x !== start.x || prev.y !== start.y) {
+    line(prev.x, prev.y, start.x, start.y)
+    xs.pop() // the start, already first
+    ys.pop()
+  }
+  return { sx: Float64Array.from(xs), sy: Float64Array.from(ys) }
+}
+
+/**
+ * The corner radius of the rounded rect with half-extents `hx`, `hy` whose
+ * area matches the closed polyline's: the four corners cut `(4 − π)·r²` off
+ * the box. Clamped to `[0, min(hx, hy)]`.
+ */
+function areaRadius(sx: Float64Array, sy: Float64Array, hx: number, hy: number): number {
+  const n = sx.length
+  let twice = 0
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 === n ? 0 : i + 1
+    twice += sx[i] * sy[j] - sx[j] * sy[i]
+  }
+  const cut = 4 * hx * hy - Math.abs(twice) / 2
+  return Math.min(Math.sqrt(Math.max(cut, 0) / (4 - Math.PI)), hx, hy)
+}
+
+/**
+ * Whether every point of the rounded rect's outline, sampled at most `step`
+ * apart (its four extreme sides included), lies within `tol` of the closed
+ * polyline through the loop's samples: the second half of the two-sided
+ * (Hausdorff) test, which catches a loop that stays on the outline but covers
+ * only part of it. The samples run in order along the loop, so each outline
+ * point starts its search for a near segment where the previous one found it,
+ * widening both ways.
+ */
+function outlineNearLoop(
+  sx: Float64Array,
+  sy: Float64Array,
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  r: number,
+  tol: number,
+  step: number,
+): boolean {
+  const n = sx.length
+  let hit = 0
+  const near = (px: number, py: number): boolean => {
+    for (let k = 0; k < n; k++) {
+      // hit, hit + 1, hit − 1, hit + 2, … around the loop
+      const off = k % 2 === 1 ? (k + 1) / 2 : -k / 2
+      const i = (((hit + off) % n) + n) % n
+      const j = i + 1 === n ? 0 : i + 1
+      if (pointSegDist(px, py, sx[i], sy[i], sx[j], sy[j]) <= tol) {
+        hit = i
+        return true
+      }
+    }
+    return false
+  }
+  // Four quarter arcs and four straight sides (possibly empty), in turn.
+  const ax = hx - r
+  const ay = hy - r
+  const corners: [number, number, number][] = [
+    [cx + ax, cy - ay, -Math.PI / 2],
+    [cx + ax, cy + ay, 0],
+    [cx - ax, cy + ay, Math.PI / 2],
+    [cx - ax, cy - ay, Math.PI],
+  ]
+  const arcParts = Math.max(2, Math.ceil((0.5 * Math.PI * r) / step))
+  for (let c = 0; c < 4; c++) {
+    const [ox, oy, a0] = corners[c]
+    for (let k = 0; k < arcParts; k++) {
+      const a = a0 + (0.5 * Math.PI * k) / arcParts
+      if (!near(ox + r * Math.cos(a), oy + r * Math.sin(a))) return false
+    }
+    // The side from this arc's end to the next arc's start.
+    const a1 = a0 + 0.5 * Math.PI
+    const bx = ox + r * Math.cos(a1)
+    const by = oy + r * Math.sin(a1)
+    const [nx, ny, na] = corners[(c + 1) % 4]
+    const ex = nx + r * Math.cos(na)
+    const ey = ny + r * Math.sin(na)
+    const parts = Math.max(1, Math.ceil(Math.hypot(ex - bx, ey - by) / step))
+    for (let k = 0; k < parts; k++) {
+      if (!near(bx + ((ex - bx) * k) / parts, by + ((ey - by) * k) / parts)) return false
+    }
+  }
+  return true
+}
+
+/**
  * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
- * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
- * coarse scan refined with a golden-section search (sub-pixel), and accepts only
- * if every densely sampled boundary point lies on that rounded rect within
- * tolerance, so a shape that is not really one is rejected. `ops` are the loop's
- * four or more straight and curved edges, at least one of them a corner arc.
+ * arcs) and emit `<rect rx>`. Structure-agnostic: the loop is sampled about a
+ * pixel apart along its whole length, the box and one corner radius are fitted
+ * to those samples by geometric least squares (`fitRoundedRect`, started from
+ * the samples' bounding box and the radius that matches their area), and the
+ * shape is accepted only when the two outlines lie within `RRECT_TOL_PX` of
+ * each other both ways (a two-sided Hausdorff test). A bowl, a spindle or an
+ * ellipse whose anchors and segment midpoints happen to lie on its box
+ * therefore stays a path, and a cubic that overshoots a straight side by a
+ * fraction of a pixel does not drag that whole side with it. `ops` are the
+ * loop's four or more straight and curved edges, at least one of them a corner
+ * arc.
  */
 function detectRoundedRect(
   start: Pt,
   ops: readonly (LineOp | CurveOp)[],
   precision: number,
 ): Primitive | null {
-  // Dense samples: anchors plus each segment's midpoint (a non-axis-aligned edge
-  // or a wrong corner then fails the fit).
-  const count = 1 + 2 * ops.length
-  const sx = new Float64Array(count)
-  const sy = new Float64Array(count)
-  sx[0] = start.x
-  sy[0] = start.y
-  let prevX = start.x
-  let prevY = start.y
-  let k = 1
-  for (const op of ops) {
-    if (op.type === 'C') {
-      sx[k] = 0.125 * prevX + 0.375 * op.x1 + 0.375 * op.x2 + 0.125 * op.x
-      sy[k] = 0.125 * prevY + 0.375 * op.y1 + 0.375 * op.y2 + 0.125 * op.y
-    } else {
-      sx[k] = (prevX + op.x) / 2
-      sy[k] = (prevY + op.y) / 2
-    }
-    sx[k + 1] = op.x
-    sy[k + 1] = op.y
-    k += 2
-    prevX = op.x
-    prevY = op.y
-  }
-
+  const { sx, sy } = sampleEdgeLoop(start, ops, ROUND_SAMPLE_STEP)
+  const count = sx.length
   let minX = Infinity
   let maxX = -Infinity
   let minY = Infinity
   let maxY = -Infinity
   for (let i = 0; i < count; i++) {
-    minX = Math.min(minX, sx[i])
-    maxX = Math.max(maxX, sx[i])
-    minY = Math.min(minY, sy[i])
-    maxY = Math.max(maxY, sy[i])
+    if (sx[i] < minX) minX = sx[i]
+    if (sx[i] > maxX) maxX = sx[i]
+    if (sy[i] < minY) minY = sy[i]
+    if (sy[i] > maxY) maxY = sy[i]
   }
   const cx = (minX + maxX) / 2
   const cy = (minY + maxY) / 2
   const hx = (maxX - minX) / 2
   const hy = (maxY - minY) / 2
   if (hx <= 0 || hy <= 0) return null
-
-  const maxR = Math.min(hx, hy)
   const tol = RRECT_TOL_PX
 
-  // Every point of a rounded rect with corner radius r lies within
-  // `(1 − 1/√2)·r + tol` of its bounding box, and the radius search cannot
-  // return more than `maxR`: a sample deeper inside than that fails the SDF
-  // test at every candidate radius, so there is nothing to search for.
-  const band = CORNER_INSET_RATIO * maxR + tol
+  // An accepted rounded rect has each side within `tol` of the samples' box
+  // (every sample lies within `tol` of it, and each of its sides within `tol`
+  // of the samples), so its radius is at most `min(hx, hy) + tol` and every
+  // sample lies within `(1 − 1/√2)·r + tol` of its box, `2·tol` of the
+  // samples': a sample deeper inside than that rejects the loop outright.
+  const band = CORNER_INSET_RATIO * (Math.min(hx, hy) + tol) + 2 * tol
   for (let i = 0; i < count; i++) {
     const inset = Math.min(hx - Math.abs(sx[i] - cx), hy - Math.abs(sy[i] - cy))
     if (inset > band) return null
   }
 
-  // Largest |SDF| over all samples for a candidate corner radius — minimized at
-  // the true radius (V-shaped: too small clips the corners, too large bulges).
-  // A candidate already past `cutoff` cannot win, so it stops there.
-  const maxErr = (r: number, cutoff: number): number => {
-    let err = 0
-    for (let i = 0; i < count; i++) {
-      const d = Math.abs(roundedRectSdf(sx[i], sy[i], cx, cy, hx, hy, r))
-      if (d > err) {
-        err = d
-        if (err >= cutoff) return err
-      }
-    }
-    return err
-  }
-  // Coarse scan to bracket the minimum, then a golden-section search refines the
-  // radius to sub-pixel — the scan step (maxR/64) would otherwise cap accuracy.
-  const steps = 64
-  const step = maxR / steps
-  let bestR = step
-  let bestErr = Infinity
-  for (let i = 1; i <= steps; i++) {
-    const err = maxErr(step * i, bestErr)
-    if (err < bestErr) {
-      bestErr = err
-      bestR = step * i
+  const fit = fitRoundedRect(sx, sy, { cx, cy, hx, hy, r: areaRadius(sx, sy, hx, hy) })
+  for (let i = 0; i < count; i++) {
+    if (Math.abs(roundedRectSdf(sx[i], sy[i], fit.cx, fit.cy, fit.hx, fit.hy, fit.r)) > tol) {
+      return null
     }
   }
-  // The SDF moves by at most `dr` when the radius moves by `dr`, so `maxErr` is
-  // 1-Lipschitz and no radius in the bracket below can beat the scan's best by
-  // more than one step: once that best is a step past tolerance, refining it
-  // cannot bring it back under.
-  if (bestErr - step > tol) return null
-  bestR = goldenMin(
-    (r) => maxErr(r, Infinity),
-    Math.max(0, bestR - step),
-    Math.min(maxR, bestR + step),
-  )
-  bestErr = maxErr(bestR, Infinity)
-  if (bestErr > tol) return null
-  if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
+  if (fit.r < tol) return null // square corners — a plain rect (handled elsewhere)
+  if (!outlineNearLoop(sx, sy, fit.cx, fit.cy, fit.hx, fit.hy, fit.r, tol, RRECT_OUTLINE_STEP))
+    return null
   return round(
-    { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
+    {
+      kind: 'rrect',
+      x: fit.cx - fit.hx,
+      y: fit.cy - fit.hy,
+      width: 2 * fit.hx,
+      height: 2 * fit.hy,
+      r: fit.r,
+    },
     precision,
   )
-}
-
-/** Golden-section search: the minimizer of a unimodal `f` on `[a, b]`. */
-function goldenMin(f: (x: number) => number, a: number, b: number): number {
-  const gr = (Math.sqrt(5) - 1) / 2 // 0.618…
-  let c = b - gr * (b - a)
-  let d = a + gr * (b - a)
-  let fc = f(c)
-  let fd = f(d)
-  for (let i = 0; i < 40; i++) {
-    if (fc < fd) {
-      b = d
-      d = c
-      fd = fc
-      c = b - gr * (b - a)
-      fc = f(c)
-    } else {
-      a = c
-      c = d
-      fc = fd
-      d = a + gr * (b - a)
-      fd = f(d)
-    }
-  }
-  return (a + b) / 2
 }
 
 /** Signed smallest angle a − b in (−π, π]. */
