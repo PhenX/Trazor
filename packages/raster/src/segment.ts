@@ -22,7 +22,11 @@
  *      always claiming the cheapest pixel next (smallest Oklab distance to the
  *      claiming region's mean); the boundary settles on the ramp crest. A region
  *      then takes its color from its flat interior (`CORE_MIN_PIXELS`), so the
- *      rim the flood attached never tints it toward a neighbor.
+ *      rim the flood attached never tints it toward a neighbor; a thin region
+ *      with no such interior (a line, a counter) takes the ink its rim blends
+ *      toward, unmixed from it, and a thin stripe of the blend between two
+ *      regions — a marker seeded inside a ramp — is flooded again from them
+ *      (`unmixThinInks`).
  *   4. A region-adjacency-graph merge folds near-duplicate neighbors and small
  *      regions together (agglomerative, closest pair first) down to the real
  *      colors; `maxRegions` then caps the count, folding the pairs whose union
@@ -47,6 +51,7 @@ import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 import { dissolveBlendBands, returnSeamPixels } from './mixture'
 import { representedRegions } from './represent'
+import { unmixThinInks } from './unmix'
 
 export interface SegmentOptions {
   /**
@@ -129,6 +134,15 @@ const PRISTINE_FLOOR = 0.005
  * (Nock & Nielsen 2004), times the size bias and the supersampling factor.
  */
 const SRM_SCALE = 0.5
+
+/**
+ * CIEDE2000 a rare ink represented only at its own scale (`represent.ts`, level
+ * 2) must differ from a neighbor by to stay apart from it: a claw or a pupil
+ * differs from the outline or the iris around it at a glance, while the handful
+ * of votes a seam's overshoot gathers is for a color a few units from its
+ * fill's.
+ */
+const OWN_SCALE_DE00 = 10
 
 /**
  * CIEDE2000 below which two regions are the same ink whatever their evidence
@@ -422,7 +436,6 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   // `coreSpeaks`) takes its color from the core alone — the rim the flood
   // attached is a mixture that would tint it toward its neighbors — while a
   // shaded region, or a rescued feature with no core, uses every pixel.
-  size.fill(0, 0, regionCount)
   const fullL = new Float64Array(regionCount)
   const fullA = new Float64Array(regionCount)
   const fullB = new Float64Array(regionCount)
@@ -430,20 +443,32 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   const coreA = new Float64Array(regionCount)
   const coreB = new Float64Array(regionCount)
   const coreN = new Int32Array(regionCount)
-  for (let p = 0; p < n; p++) {
-    const r = region[p]
-    if (r < 0) continue
-    fullL[r] += ok[p * 3]
-    fullA[r] += ok[p * 3 + 1]
-    fullB[r] += ok[p * 3 + 2]
-    size[r]++
-    if (grad[p] < flatThreshold) {
-      coreL[r] += ok[p * 3]
-      coreA[r] += ok[p * 3 + 1]
-      coreB[r] += ok[p * 3 + 2]
-      coreN[r]++
+  const tally = (): void => {
+    size.fill(0, 0, regionCount)
+    fullL.fill(0)
+    fullA.fill(0)
+    fullB.fill(0)
+    coreL.fill(0)
+    coreA.fill(0)
+    coreB.fill(0)
+    coreN.fill(0)
+    for (let p = 0; p < n; p++) {
+      const r = region[p]
+      if (r < 0) continue
+      fullL[r] += ok[p * 3]
+      fullA[r] += ok[p * 3 + 1]
+      fullB[r] += ok[p * 3 + 2]
+      size[r]++
+      if (grad[p] < flatThreshold) {
+        coreL[r] += ok[p * 3]
+        coreA[r] += ok[p * 3 + 1]
+        coreB[r] += ok[p * 3 + 2]
+        coreN[r]++
+      }
     }
   }
+  tally()
+  const coreless = new Uint8Array(regionCount)
   for (let r = 0; r < regionCount; r++) {
     if (coreSpeaks(coreN[r], size[r], scale * scale)) {
       mL[r] = coreL[r] / coreN[r]
@@ -453,6 +478,77 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
       mL[r] = fullL[r] / size[r]
       mA[r] = fullA[r] / size[r]
       mB[r] = fullB[r] / size[r]
+      coreless[r] = 1
+    }
+  }
+
+  // ---- 3a. A thin region with no speaking core takes its ink, unmixed from its rim ----
+  // Its mean blends the feature's ink with the field its rim fades into; where
+  // the two-color model explains its pixels and the ink is a color extreme
+  // standing apart from its sides, the ink is its color instead (see
+  // `unmixThinInks`).
+  const unmix = unmixThinInks(
+    image.data,
+    region,
+    w,
+    h,
+    regionCount,
+    coreless,
+    size,
+    mL,
+    mA,
+    mB,
+    scale,
+  )
+  for (let r = 0; r < regionCount; r++) {
+    if (unmix.unmixed[r] === 0) continue
+    mL[r] = unmix.ink[r * 3]
+    mA[r] = unmix.ink[r * 3 + 1]
+    mB[r] = unmix.ink[r * 3 + 2]
+  }
+  // A thin region of blends of the two colors it runs between is a marker
+  // seeded inside an anti-aliased ramp and grown along it as a stripe of the
+  // blend: its pixels are flooded again from the regions around it, which split
+  // the ramp at its crest as they split any edge.
+  let bands = false
+  for (let p = 0; p < n; p++) {
+    const r = region[p]
+    if (r >= 0 && unmix.band[r] === 1) {
+      region[p] = -1
+      bands = true
+    }
+  }
+  if (bands) {
+    floodRegions(ok, region, w, n, mask, mL, mA, mB)
+    tally()
+  }
+  // Each region's color, and its ink times its size (`inkL`/`inkA`/`inkB`):
+  // the unmixed ink where there is one, else the sum over every pixel, so a
+  // union without a speaking core keeps the size-weighted mean of its parts'
+  // inks. A region with neither a speaking core nor an unmixed ink is rim
+  // material (`plain`).
+  const inkL = Float64Array.from(fullL)
+  const inkA = Float64Array.from(fullA)
+  const inkB = Float64Array.from(fullB)
+  const plain = new Uint8Array(regionCount)
+  for (let r = 0; r < regionCount; r++) {
+    if (size[r] === 0) continue
+    if (coreSpeaks(coreN[r], size[r], scale * scale)) {
+      mL[r] = coreL[r] / coreN[r]
+      mA[r] = coreA[r] / coreN[r]
+      mB[r] = coreB[r] / coreN[r]
+    } else if (unmix.unmixed[r] === 1) {
+      mL[r] = unmix.ink[r * 3]
+      mA[r] = unmix.ink[r * 3 + 1]
+      mB[r] = unmix.ink[r * 3 + 2]
+      inkL[r] = mL[r] * size[r]
+      inkA[r] = mA[r] * size[r]
+      inkB[r] = mB[r] * size[r]
+    } else {
+      mL[r] = fullL[r] / size[r]
+      mA[r] = fullA[r] / size[r]
+      mB[r] = fullB[r] / size[r]
+      plain[r] = 1
     }
   }
 
@@ -506,6 +602,10 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     mA,
     mB,
     size,
+    inkL,
+    inkA,
+    inkB,
+    plain,
     fullL,
     fullA,
     fullB,
@@ -1017,19 +1117,24 @@ function rescueMarkerlessFeatures(
 
 /**
  * Agglomerative region-adjacency-graph merge. Union-find over regions; each
- * round folds every adjacent pair whose mean-color ΔE is under `mergeThreshold`
- * or where either side is below `minArea`, closest pair first. Adjacent pairs
- * are judged on their means over *every* pixel, rims included: a sliver the
- * flood grew from a lone flat pixel is rim material (a chroma-bled speck of
- * black along a pupil), and what folds it into the region it lies against is
- * the tint of that region's own rim — which its flat core would hide. The
- * surviving *color* is that of the merged flat cores when they speak for the
- * region (see `coreSpeaks` — so the rims a region gathers never tint it, and a
- * white counter split into specks by compression still reads white), else the
- * mean over every pixel; consolidation and the `maxRegions` cap compare those
- * rendered colors, so two regions that would paint the same become one palette
- * entry. The cap is hard: it folds pairs by least added squared color error
- * (Ward) until the count is met, however different the remaining hues are.
+ * round folds every adjacent pair whose ΔE is under `mergeThreshold` or where
+ * either side is below `minArea`, closest pair first. Adjacent pairs are judged
+ * on their means over *every* pixel, rims included: a sliver the flood grew
+ * from a lone flat pixel is rim material (a chroma-bled speck of black along a
+ * pupil), and what folds it into the region it lies against is the tint of
+ * that region's own rim — which its flat core would hide. A thin feature whose
+ * ink was unmixed from its rim stands for that ink instead (`inkL`/`inkA`/
+ * `inkB`, each region's ink times its size) against any region that is not rim
+ * material (`plain`: neither a speaking core nor an unmixed ink), so a black
+ * outline and the dark navy claws inside it, which their rims would blend
+ * toward each other, stay two colors. The surviving *color* is that of the
+ * merged flat cores when they speak for the region (see `coreSpeaks` — so the
+ * rims a region gathers never tint it, and a white counter split into specks
+ * by compression still reads white), else the size-weighted mean of its parts'
+ * inks; consolidation and the `maxRegions` cap compare those rendered colors,
+ * so two regions that would paint the same become one palette entry. The cap
+ * is hard: it folds pairs by least added squared color error (Ward) until the
+ * count is met, however different the remaining hues are.
  * Returns the parent array (each region's representative root).
  */
 function mergeRegions(
@@ -1041,6 +1146,10 @@ function mergeRegions(
   mA: Float64Array,
   mB: Float64Array,
   size: Float64Array,
+  inkL: Float64Array,
+  inkA: Float64Array,
+  inkB: Float64Array,
+  plain: Uint8Array,
   fullL: Float64Array,
   fullA: Float64Array,
   fullB: Float64Array,
@@ -1076,12 +1185,14 @@ function mergeRegions(
     const db = mB[a] - mB[b]
     return Math.sqrt(dl * dl + da * da + db * db)
   }
-  // ΔE between two regions' means over every pixel, rims included — what the
-  // adjacency rounds merge on.
-  const fullDelta = (a: number, b: number): number => {
-    const dl = fullL[a] / size[a] - fullL[b] / size[b]
-    const da = fullA[a] / size[a] - fullA[b] / size[b]
-    const db = fullB[a] / size[a] - fullB[b] / size[b]
+  // ΔE the adjacency rounds merge on: between two regions' inks (an unmixed
+  // ink, else the mean over every pixel), or between their means over every
+  // pixel when either is rim material (see `mergeRegions`).
+  const inkDelta = (a: number, b: number): number => {
+    const ink = plain[a] === 0 && plain[b] === 0
+    const dl = ink ? inkL[a] / size[a] - inkL[b] / size[b] : fullL[a] / size[a] - fullL[b] / size[b]
+    const da = ink ? inkA[a] / size[a] - inkA[b] / size[b] : fullA[a] / size[a] - fullA[b] / size[b]
+    const db = ink ? inkB[a] / size[a] - inkB[b] / size[b] : fullB[a] / size[a] - fullB[b] / size[b]
     return Math.sqrt(dl * dl + da * da + db * db)
   }
   // Size-aware merge tolerance (Nock & Nielsen 2004). Off (`sizeBias === 0`) it
@@ -1103,6 +1214,10 @@ function mergeRegions(
     fullL[keep] += fullL[drop]
     fullA[keep] += fullA[drop]
     fullB[keep] += fullB[drop]
+    inkL[keep] += inkL[drop]
+    inkA[keep] += inkA[drop]
+    inkB[keep] += inkB[drop]
+    plain[keep] &= plain[drop]
     coreL[keep] += coreL[drop]
     coreA[keep] += coreA[drop]
     coreB[keep] += coreB[drop]
@@ -1113,14 +1228,18 @@ function mergeRegions(
       mA[keep] = coreA[keep] / coreN[keep]
       mB[keep] = coreB[keep] / coreN[keep]
     } else if (nn > 0) {
-      mL[keep] = fullL[keep] / nn
-      mA[keep] = fullA[keep] / nn
-      mB[keep] = fullB[keep] / nn
+      // No speaking core: the size-weighted mean of the parts' inks.
+      mL[keep] = inkL[keep] / nn
+      mA[keep] = inkA[keep] / nn
+      mB[keep] = inkB[keep] / nn
     }
     size[keep] = nn
     parent[drop] = keep
-    if (represented[keep] === 0 && represented[drop] === 1) {
-      represented[keep] = 1
+    if (
+      represented[drop] > 0 &&
+      (represented[keep] === 0 || represented[drop] < represented[keep])
+    ) {
+      represented[keep] = represented[drop]
       evidenceLab[keep * 3] = evidenceLab[drop * 3]
       evidenceLab[keep * 3 + 1] = evidenceLab[drop * 3 + 1]
       evidenceLab[keep * 3 + 2] = evidenceLab[drop * 3 + 2]
@@ -1144,16 +1263,18 @@ function mergeRegions(
   // not that ink, when only the size term would fold it: the smaller of the two
   // is represented, both clear the speck floor, they are no near-duplicates, and
   // the ink its votes are for differs from the neighbor's color by the same-ink
-  // floor (a strand of hair the rim blends darken still folds into the hair).
+  // floor (a strand of hair the rim blends darken still folds into the hair) —
+  // by a visible difference (`OWN_SCALE_DE00`) when its votes reach only its own
+  // scale's floor.
   const keepsApart = (a: number, b: number, d: number): boolean => {
     const small = size[a] <= size[b] ? a : b
     const other = small === a ? b : a
     return (
-      represented[small] === 1 &&
+      represented[small] > 0 &&
       size[a] >= minArea &&
       size[b] >= minArea &&
       d >= floor &&
-      inkDe00(small, other) >= SAME_INK_DE00
+      inkDe00(small, other) >= (represented[small] === 1 ? SAME_INK_DE00 : OWN_SCALE_DE00)
     )
   }
 
@@ -1198,12 +1319,14 @@ function mergeRegions(
     return edges
   }
 
-  let activeRegions = regionCount
+  // Regions a band left empty take no part.
+  let activeRegions = 0
+  for (let i = 0; i < regionCount; i++) if (size[i] > 0) activeRegions++
   for (let round = 0; round < 64; round++) {
     const edges = collectEdges()
     // Candidates ordered by ΔE, then region ids, for a deterministic sequence.
     const cand = edges
-      .map(([a, b]): [number, number, number] => [a, b, fullDelta(a, b)])
+      .map(([a, b]): [number, number, number] => [a, b, inkDelta(a, b)])
       .toSorted((p, q) => p[2] - q[2] || p[0] - q[0] || p[1] - q[1])
     let merged = false
     for (const [a, b, d] of cand) {
@@ -1231,7 +1354,7 @@ function mergeRegions(
   // dominant colors the adjacency pass deliberately kept apart.
   const consolidateDist = sizeBias > 0 ? floor : mergeThreshold
   const roots: number[] = []
-  for (let i = 0; i < regionCount; i++) if (find(i) === i) roots.push(i)
+  for (let i = 0; i < regionCount; i++) if (find(i) === i && size[i] > 0) roots.push(i)
   roots.sort((a, b) => size[b] - size[a] || a - b)
   const reps: number[] = []
   for (const r of roots) {
@@ -1241,7 +1364,7 @@ function mergeRegions(
       // hair between two outlines) joins it: its votes are for that ink.
       if (
         meanDelta(r, rep) < consolidateDist ||
-        (represented[r] === 1 && inkDe00(r, rep) < SAME_INK_DE00)
+        (represented[r] > 0 && inkDe00(r, rep) < SAME_INK_DE00)
       ) {
         repFor = rep
         break
@@ -1263,7 +1386,7 @@ function mergeRegions(
   // root and every root whose partner it consumed. Ties break on the lower id.
   if (maxRegions > 0 && activeRegions > maxRegions) {
     const capRoots: number[] = []
-    for (let i = 0; i < regionCount; i++) if (find(i) === i) capRoots.push(i)
+    for (let i = 0; i < regionCount; i++) if (find(i) === i && size[i] > 0) capRoots.push(i)
     const active = new Uint8Array(regionCount)
     for (const r of capRoots) active[r] = 1
     const partner = new Int32Array(regionCount).fill(-1)

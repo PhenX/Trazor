@@ -509,3 +509,146 @@ describe('segmentRegions — size-aware merge (SRM)', () => {
     expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
 })
+
+/** Pixel coverage (8×8 samples) of a shape, as a blend of `ink` over `paper` per channel. */
+function coverageImage(
+  w: number,
+  h: number,
+  inside: (x: number, y: number) => boolean,
+  ink: readonly number[],
+  paper: (x: number, y: number) => readonly number[],
+): ReturnType<typeof rasterOf> {
+  return rasterOf(w, h, (x, y) => {
+    let c = 0
+    for (let sy = 0; sy < 8; sy++) {
+      for (let sx = 0; sx < 8; sx++) if (inside(x + (sx + 0.5) / 8, y + (sy + 0.5) / 8)) c++
+    }
+    const t = c / 64
+    const p = paper(x, y)
+    return [
+      Math.round(ink[0] * t + p[0] * (1 - t)),
+      Math.round(ink[1] * t + p[1] * (1 - t)),
+      Math.round(ink[2] * t + p[2] * (1 - t)),
+      255,
+    ]
+  })
+}
+
+/** The engine's region-growing options. */
+const ENGINE = { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24 }
+
+describe('segmentRegions — thin features take their unmixed ink', () => {
+  it('paints a thin anti-aliased ring its ink, not the mean of its rim', () => {
+    // A black ring two pixels wide on white: no pixel of it is flat, so its mean
+    // over every pixel is a dark grey; the ink its rim blends toward is black.
+    const img = coverageImage(
+      48,
+      48,
+      (x, y) => Math.abs(Math.hypot(x - 24.3, y - 23.6) - 14) <= 1,
+      [0, 0, 0],
+      () => [255, 255, 255],
+    )
+    const seg = segmentRegions(img, ENGINE)
+    const ring = seg.labels.data[Math.round(23.6) * 48 + Math.round(24.3 + 14)]
+    expect(ring).not.toBe(seg.labels.data[0])
+    expect(paletteL(seg, ring)).toBeLessThan(0.03)
+  })
+
+  it('paints a small counter inside a dark shape white, not grey', () => {
+    // A white hole three pixels across in a black disc (a glyph's counter).
+    const img = coverageImage(
+      40,
+      40,
+      (x, y) => {
+        const r = Math.hypot(x - 20.3, y - 19.6)
+        return r <= 12 && r > 1.5
+      },
+      [0, 0, 0],
+      () => [255, 255, 255],
+    )
+    const seg = segmentRegions(img, ENGINE)
+    const hole = seg.labels.data[20 * 40 + 20]
+    expect(hole).not.toBe(seg.labels.data[20 * 40 + 27])
+    expect(paletteL(seg, hole)).toBeGreaterThan(0.97)
+  })
+
+  it('keeps a small dark pad inside its black outline apart from the outline', () => {
+    // Navy claws ringed by a black outline on a blue field, none of them with a
+    // flat core: their rims blend the means of pad and outline toward each
+    // other until the merge folds them into one dark blue, while their inks
+    // are two colors.
+    const BLUE = [71, 121, 170]
+    const NAVY = [39, 42, 82]
+    const pads = [
+      [14.3, 16.2],
+      [30.6, 16.7],
+      [22.4, 30.1],
+    ]
+    const inPad = (x: number, y: number): boolean =>
+      pads.some(([cx, cy]) => Math.hypot((x - cx) / 2.2, (y - cy) / 1.6) <= 1)
+    const inRing = (x: number, y: number): boolean =>
+      pads.some(([cx, cy]) => Math.hypot((x - cx) / 3.8, (y - cy) / 3.2) <= 1 && !inPad(x, y))
+    const padded = coverageImage(44, 44, inPad, NAVY, () => BLUE)
+    const img = coverageImage(44, 44, inRing, [0, 0, 0], (x, y) => {
+      const o = (y * 44 + x) * 4
+      return [padded.data[o], padded.data[o + 1], padded.data[o + 2]]
+    })
+    const seg = segmentRegions(img, ENGINE)
+    const pad = seg.labels.data[16 * 44 + 14]
+    const ring = seg.labels.data[16 * 44 + 17]
+    expect(pad).not.toBe(ring)
+    expect(paletteL(seg, ring)).toBeLessThan(0.03)
+    expect(paletteL(seg, pad)).toBeGreaterThan(0.1)
+  })
+
+  it('floods a stripe of blend colors seeded inside a ramp back into its two sides', () => {
+    // A soft edge between orange and blue, fourteen pixels wide, where a few
+    // pixels of the ramp hold one blend flat: the marker they seed grows along
+    // the whole ramp as a stripe of the blend, enlarged twice. Its pixels are
+    // blends of the two sides, so the edge splits between them.
+    const A = [224, 87, 41]
+    const B = [91, 126, 172]
+    const img = rasterOf(60, 40, (x, y) => {
+      const x0 = 23 + Math.round(3 * Math.sin(y / 6))
+      let t = Math.min(1, Math.max(0, (x - x0) / 14))
+      if (y >= 18 && y < 21 && Math.abs(x - x0 - 7) < 2) t = 0.5
+      return [
+        Math.round(A[0] * (1 - t) + B[0] * t),
+        Math.round(A[1] * (1 - t) + B[1] * t),
+        Math.round(A[2] * (1 - t) + B[2] * t),
+        255,
+      ]
+    })
+    const seg = segmentRegions(upscaleImage(img, 2, true), {
+      ...ENGINE,
+      minRegionArea: 16,
+      scale: 2,
+    })
+    expect(seg.labels.count).toBe(2)
+  })
+
+  it('folds the overshoot seam between two fills of nearly one color', () => {
+    // Two magenta tiles a few units apart, meeting along a row a resampler
+    // pushed off both (greener than either): a seam, not a feature.
+    const img = rasterOf(240, 240, (_x, y) =>
+      y < 120 ? [211, 69, 211, 255] : y === 120 ? [213, 80, 204, 255] : [211, 69, 188, 255],
+    )
+    const seg = segmentRegions(upscaleImage(img, 2, true), {
+      ...ENGINE,
+      minRegionArea: 16,
+      scale: 2,
+    })
+    expect(seg.labels.count).toBe(2)
+  })
+
+  it('folds a compression-tinted rim along an edge into the edge', () => {
+    // Black against orange with a one-pixel dark red rim between them — the
+    // chroma a compressed edge smears across it. The rim is no mixture of the
+    // two, yet it sits within a rim's reach of the black: no third color.
+    const img = rasterOf(60, 30, (x) =>
+      x < 30 ? [13, 3, 4, 255] : x === 30 ? [42, 8, 5, 255] : [236, 144, 62, 255],
+    )
+    const seg = segmentRegions(img, ENGINE)
+    expect(seg.labels.count).toBe(2)
+  })
+})

@@ -494,7 +494,22 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   edge model of Yang et al., “Antialiasing Recovery”, _ACM TOG_ 30(3), 2011 — is
   an ink of its own, and the size term does not fold it into a visibly different
   neighbor; resampling overshoot of those colors (15 % past a chord's end, or an
-  ink scaled by up to 1.15) is no evidence.
+  ink scaled by up to 1.15) is no evidence. A region whose votes reach half its own
+  pixels but not the image's share is represented at its own scale — a claw or a
+  pupil on a large image — and stays apart from a neighbor it differs from at a
+  glance.
+- **Anat Levin, Dani Lischinski & Yair Weiss, “A Closed-Form Solution to Natural Image
+  Matting”, _IEEE Trans. PAMI_ 30(2), 2008.** The two-color compositing model
+  c = α·F + (1 − α)·B behind matting. The region-growing segmentation's thin-feature
+  inks (`packages/raster/src/unmix.ts`): a line or counter too thin for a flat core is
+  painted the ink its rim blends toward — α read in encoded sRGB along each pixel's
+  field→ink direction, the field being the nearest region of another color, the ink
+  the mean of the most covered quarter of its pixels — not the mean of its rim, when
+  the two-color fit explains its pixels, the ink is a color extreme between its sides
+  (no mixture or overshoot of them, as in `represent.ts`) and stands apart from each
+  side as the rescue's features do; the region merge then compares those rim-free
+  inks. A thin region whose pixels are blends of two sides is a marker seeded inside a
+  ramp and is flooded again from them.
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared

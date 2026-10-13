@@ -32,6 +32,16 @@ export const MIN_VOTES = 8
 export const VOTE_SHARE = MIN_VOTES / 16384
 
 /**
+ * Votes as a share of the region's own pixels that make it represented at its
+ * own scale: a small feature on a large image (a claw, a pupil a few pixels
+ * across) never reaches the image share, yet half its pixels being an ink no
+ * mixture around them explains is evidence for it. A handful of votes is weaker
+ * evidence than the image share, which a seam's resampling overshoot can also
+ * supply, so a region represented only at its own scale is told apart (level 2).
+ */
+export const VOTE_REGION_SHARE = 0.5
+
+/**
  * Residual, in encoded sRGB units, above which a pixel is not explained by the
  * colors around it (inkvec's `max(3σ, 0.025)` at its noise floor).
  */
@@ -182,9 +192,11 @@ const NEIGHBORS: readonly (readonly [number, number])[] = (() => {
  * when a neighbor is outside the mask, the ground a transparent pixel blends
  * with) nor as their overshoot, by more than {@link MIXTURE_TOLERANCE}; a pixel
  * with no neighbor of another region compares against nothing and votes. The
- * region is represented when its votes reach `max(MIN_VOTES·scale², VOTE_SHARE·n)`
- * — the same evidence at any resolution, counted in source pixels for a
- * supersampled image. `regionRgb` holds each region's color, three per region.
+ * region is represented (1) when its votes reach `max(MIN_VOTES·scale²,
+ * VOTE_SHARE·n)` — the same evidence at any resolution, counted in source
+ * pixels for a supersampled image — or represented at its own scale (2) when
+ * they reach `max(MIN_VOTES·scale², VOTE_REGION_SHARE·|r|)` only. `regionRgb`
+ * holds each region's color, three per region.
  * The result also carries each represented region's evidence: the mean color of
  * its voting pixels (encoded sRGB in [0, 1], three per region), the ink its
  * votes are for — a region that also holds blends of its rim has a mean color
@@ -202,6 +214,7 @@ export function representedRegions(
   const n = w * h
   const regionCount = candidate.length
   const votes = new Float64Array(regionCount)
+  const pixels = new Float64Array(regionCount)
   const evidence = new Float64Array(regionCount * 3)
   const ids = new Int32Array(NEIGHBORS.length)
   const counts = new Int32Array(NEIGHBORS.length)
@@ -210,6 +223,7 @@ export function representedRegions(
   for (let p = 0; p < n; p++) {
     const r = region[p]
     if (r < 0 || candidate[r] === 0) continue
+    pixels[r]++
     const cr = rgba[p * 4] / 255 - regionRgb[r * 3]
     const cg = rgba[p * 4 + 1] / 255 - regionRgb[r * 3 + 1]
     const cb = rgba[p * 4 + 2] / 255 - regionRgb[r * 3 + 2]
@@ -283,7 +297,6 @@ export function representedRegions(
     }
   }
   const area = scale * scale
-  const floor = Math.max(MIN_VOTES, (VOTE_SHARE * n) / area)
   const represented = new Uint8Array(regionCount)
   for (let r = 0; r < regionCount; r++) {
     if (votes[r] > 0) {
@@ -291,7 +304,9 @@ export function representedRegions(
       evidence[r * 3 + 1] /= votes[r]
       evidence[r * 3 + 2] /= votes[r]
     }
-    if (votes[r] / area >= floor) represented[r] = 1
+    const v = votes[r] / area
+    if (v >= Math.max(MIN_VOTES, (VOTE_SHARE * n) / area)) represented[r] = 1
+    else if (v >= Math.max(MIN_VOTES, (VOTE_REGION_SHARE * pixels[r]) / area)) represented[r] = 2
   }
   return { represented, evidence }
 }

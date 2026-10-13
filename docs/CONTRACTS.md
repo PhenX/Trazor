@@ -408,8 +408,25 @@ export function fitRegionGradients(
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
   no third color is ever created on a boundary.
+- A region takes its color from its flat core when the core speaks for it (≥ 4
+  source pixels and ≥ 5 % of the region). A thin region without one (mean width
+  ≤ 6 source pixels) takes the ink its anti-aliased rim blends toward
+  (`unmix.ts`; Levin et al. 2008's compositing model c = α·ink + (1 − α)·field in
+  encoded sRGB, each pixel's field the nearest region of another color, the ink the
+  mean of the most covered quarter of its pixels) when that two-color fit explains
+  its pixels within 10 % of the ink's contrast, the ink is no mixture or overshoot of
+  the regions around it (0.025 sRGB, as `represent.ts`) and it stands ≥ 0.25 Oklab
+  from each side it runs along (0.125 within one field); otherwise its mean over
+  every pixel. A thin region whose pixels are blends of two sides of different
+  colors, centered inside the chord between them and spread across it, is a
+  marker seeded inside a ramp: its pixels are flooded again from the regions around
+  it.
 - A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
-  regions under `minRegionArea` (closest first), then consolidates non-adjacent
+  regions under `minRegionArea` (closest first) — a pair judged on its means over
+  every pixel, rims included, except that an unmixed ink stands for its region
+  against any region that is not rim material (a coreless region with no unmixed
+  ink), and a union without a speaking core is painted the size-weighted mean of
+  its parts' inks — then consolidates non-adjacent
   near-duplicates globally; `maxRegions` is a hard cap — pairs fold by least
   added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
   so a budget spends its damage on the smallest, closest regions first. With
@@ -420,7 +437,9 @@ export function fitRegionGradients(
   (≥ max(8, 8/16384 of the image) source pixels with a residual over 0.025 sRGB to the
   nearest two- or three-color mixture of the 4 most frequent regions within two pixels,
   and not their resampling overshoot) stays apart from a neighbor whose color is
-  ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017),
+  ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017)
+  — or, when its votes reach only half its own pixels (a claw on a large image), from
+  a neighbor ≥ 10 ΔE00 from that mean —
   and joins a non-adjacent region of that same ink. A pupil or a star a few pixels
   across keeps its color.
 - After the merge, a seam a third region captured goes back to the two regions
