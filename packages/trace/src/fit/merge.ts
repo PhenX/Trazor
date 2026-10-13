@@ -52,7 +52,14 @@ import type { PathCommand } from '@trazor/core'
 import type { FitConfig, FittedEdge } from '../planar/types'
 import { cubicMaxTurnRadians, cubicParams } from './cost'
 import { MAX_ARM } from './cubicfit'
-import { chi2 as sampledChi2, cubicSelfIntersects, cubicTo, lineTo, segmentParams } from './curves'
+import {
+  chi2 as sampledChi2,
+  cubicSelfIntersects,
+  cubicTo,
+  lineTo,
+  sampleRun,
+  segmentParams,
+} from './curves'
 import type { Bezier, FitSegment, Vec } from './curves'
 import { CORNER_CHAMFER, CORNER_TURN_MIN, pathParams } from './objective'
 import type { FitPath, Polyline } from './objective'
@@ -112,6 +119,15 @@ export const SHARPEN_MAX_EDGE = 8
 
 /** Turn between two lines from which their meeting is a corner: {@link CORNER_TURN_MIN}. */
 export const SHARPEN_MIN_TURN = CORNER_TURN_MIN
+
+/** Fewest segments a sharpened ring may keep: a triangle. */
+export const SHARPEN_MIN_RING_SEGMENTS = 3
+
+/** Share of its area a sharpened ring must keep. */
+export const SHARPEN_MIN_RING_AREA = 0.5
+
+/** Sample spacing, px, of the area a ring keeps under sharpening. */
+const AREA_SPACING = 0.05
 
 /** Below this a lower-bound quotient may involve subnormals and screens as 0. */
 const SCREEN_FLOOR = 1e-290
@@ -980,7 +996,10 @@ export interface SharpenTrack {
  * predecessor and its start may move to a corner; an open path's ends never
  * move. With `track`, the vertex list is kept in step (a corner takes the
  * measured index nearest it within the replaced span) and a segment touching a
- * vertex of `track.keep` is never sharpened. Returns the number of corners made.
+ * vertex of `track.keep` is never sharpened. A ring is left as it was when the
+ * corners would leave it under {@link SHARPEN_MIN_RING_SEGMENTS} segments or
+ * under {@link SHARPEN_MIN_RING_AREA} of its area. Returns the number of
+ * corners made.
  */
 export function sharpenCorners(path: FitPath, track?: SharpenTrack): number {
   const segs = path.segments
@@ -1043,20 +1062,42 @@ export function sharpenCorners(path: FitPath, track?: SharpenTrack): number {
     }
     sharpened++
   }
-  // A ring of chamfers only has nothing left to draw: it stays as it was.
-  if (sharpened > 0 && out.length < (looped ? 2 : 1)) return 0
-  if (sharpened > 0) {
-    if (lastEnd) {
-      endLastLineAt(out, lastEnd)
-      startX = lastEnd.x
-      startY = lastEnd.y
-    }
-    path.x0 = startX
-    path.y0 = startY
-    path.segments = out
-    if (v) v.splice(0, v.length, ...outVerts)
+  if (sharpened === 0) return 0
+  // A path of chamfers only has nothing left to draw: it stays as it was. So
+  // does a ring left with fewer than three segments (a triangle whose third
+  // side was taken for a chamfer) or enclosing under half its area: it has
+  // lost the small shape it drew, not a fillet.
+  if (out.length < (looped ? SHARPEN_MIN_RING_SEGMENTS : 1)) return 0
+  if (lastEnd) {
+    endLastLineAt(out, lastEnd)
+    startX = lastEnd.x
+    startY = lastEnd.y
   }
+  if (looped) {
+    const before = Math.abs(loopArea(path.x0, path.y0, segs))
+    if (Math.abs(loopArea(startX, startY, out)) < SHARPEN_MIN_RING_AREA * before) return 0
+  }
+  path.x0 = startX
+  path.y0 = startY
+  path.segments = out
+  if (v) v.splice(0, v.length, ...outVerts)
   return sharpened
+}
+
+/**
+ * Signed area enclosed by a closed run of segments starting at `(x0, y0)`: the
+ * shoelace sum over the run sampled every {@link AREA_SPACING} px
+ * ({@link sampleRun}), so a cubic or arc counts the area it bows over.
+ */
+function loopArea(x0: number, y0: number, segs: readonly FitSegment[]): number {
+  const pts = sampleRun(x0, y0, segs, AREA_SPACING)
+  const m = pts.length >> 1
+  let twice = 0
+  for (let i = 0; i < m; i++) {
+    const j = i + 1 === m ? 0 : i + 1
+    twice += pts[2 * i] * pts[2 * j + 1] - pts[2 * j] * pts[2 * i + 1]
+  }
+  return twice / 2
 }
 
 // ---------------------------------------------------------------------------

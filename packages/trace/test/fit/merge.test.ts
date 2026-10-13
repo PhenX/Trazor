@@ -656,6 +656,42 @@ describe('sharpenCorners', () => {
     expect([end.x, end.y]).toEqual([0, 0])
     expect(seam.segments.length).toBe(4)
   })
+
+  it('keeps a small triangle whose short side reads as a chamfer', () => {
+    // A 2.5 px eye fitted as three lines: the 1.9 px side lies between two
+    // lines that meet at the far vertex, and taking it for a chamfer leaves a
+    // two-segment loop of no area.
+    const eye = (): FitPath => ({
+      x0: 90.88,
+      y0: 33.83,
+      segments: [lineTo(89.85, 31.03), lineTo(88.97, 33.5), lineTo(90.88, 33.83)],
+      closed: true,
+    })
+    const ring = eye()
+    expect(sharpenCorners(ring)).toBe(0)
+    expect(shape(ring)).toEqual(shape(eye()))
+  })
+
+  it('keeps a small ring whose corners would leave under half its area', () => {
+    // An arrowhead whose short sides read as chamfers: the corners they make
+    // keep three segments but fold the ring onto a fifth of its area.
+    const pts = [
+      [5.75, 4.25],
+      [4.5, 0],
+      [2.75, 7],
+      [3.75, 4.75],
+      [5, 2.75],
+    ]
+    const arrow = (): FitPath => ({
+      x0: pts[0][0],
+      y0: pts[0][1],
+      segments: [...pts.slice(1), pts[0]].map(([x, y]) => lineTo(x, y)),
+      closed: true,
+    })
+    const ring = arrow()
+    expect(sharpenCorners(ring)).toBe(0)
+    expect(shape(ring)).toEqual(shape(arrow()))
+  })
 })
 
 describe('snapSmoothJoins', () => {
