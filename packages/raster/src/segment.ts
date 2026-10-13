@@ -1245,6 +1245,14 @@ function mergeRegions(
       evidenceLab[keep * 3 + 2] = evidenceLab[drop * 3 + 2]
     }
   }
+  // CIEDE2000 between the colors two regions are rendered with.
+  const renderedDe00 = (a: number, b: number): number => {
+    const [ar, ag, ab] = oklabToRgb(mL[a], mA[a], mB[a])
+    const [br, bg, bb] = oklabToRgb(mL[b], mA[b], mB[b])
+    const [L1, A1, B1] = rgbToLab(ar, ag, ab)
+    const [L2, A2, B2] = rgbToLab(br, bg, bb)
+    return ciede2000(L1, A1, B1, L2, A2, B2)
+  }
   // CIEDE2000 between a represented region's ink and the color another region
   // is rendered with.
   const inkDe00 = (ink: number, other: number): number => {
@@ -1344,9 +1352,12 @@ function mergeRegions(
   }
 
   // Global near-duplicate consolidation: fold together regions whose mean colors
-  // are within the consolidation distance even when they do not touch, and a
-  // rare ink into the region of the same ink — two
-  // separate black outlines become one palette color. Greedy by descending size,
+  // are within the consolidation distance even when they do not touch, regions
+  // rendered in colors no eye tells apart (under `SAME_INK_DE00`: Oklab spreads
+  // the darkest values, so #000000 and #010101 lie further apart there than the
+  // distance allows while CIEDE2000 puts them 0.3 apart), and a rare ink into the
+  // region of the same ink — two separate black outlines become one palette
+  // color. Greedy by descending size,
   // so the largest region of a color is the representative. Perceptual-distance
   // gated, so it can never merge genuinely different colors (a blue strap into a
   // black outline). Under size-aware merging it uses the near-duplicate `floor`
@@ -1364,6 +1375,7 @@ function mergeRegions(
       // hair between two outlines) joins it: its votes are for that ink.
       if (
         meanDelta(r, rep) < consolidateDist ||
+        renderedDe00(r, rep) < SAME_INK_DE00 ||
         (represented[r] > 0 && inkDe00(r, rep) < SAME_INK_DE00)
       ) {
         repFor = rep

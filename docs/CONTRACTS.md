@@ -427,7 +427,9 @@ export function fitRegionGradients(
   against any region that is not rim material (a coreless region with no unmixed
   ink), and a union without a speaking core is painted the size-weighted mean of
   its parts' inks — then consolidates non-adjacent
-  near-duplicates globally; `maxRegions` is a hard cap — pairs fold by least
+  near-duplicates globally (means within the merge's near-duplicate floor in Oklab,
+  or rendered colors under 1.5 ΔE00 — Oklab spreads the darkest values, so a
+  dithered black and a flat one are one color); `maxRegions` is a hard cap — pairs fold by least
   added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
   so a budget spends its damage on the smallest, closest regions first. With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large

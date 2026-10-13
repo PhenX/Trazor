@@ -652,3 +652,29 @@ describe('segmentRegions — thin features take their unmixed ink', () => {
     expect(seg.labels.count).toBe(2)
   })
 })
+
+describe('segmentRegions — near-duplicate consolidation', () => {
+  it('folds separate fills no eye tells apart into one color, however dark', () => {
+    // A black field and, past a white bar, a dithered one (#010101 and #020202
+    // alternating, as compression leaves a black): their colors lie 0.07 apart
+    // in Oklab, which spreads the darkest values, above the near-duplicate
+    // floor, while CIEDE2000 puts them under half a unit apart.
+    const ONE: Rgba = [1, 1, 1, 255]
+    const TWO: Rgba = [2, 2, 2, 255]
+    const w = 100
+    const img = rasterOf(w, 60, (x, y) =>
+      x < 45 ? BLACK : x < 55 ? WHITE : (x + y) % 2 === 1 ? ONE : TWO,
+    )
+    const seg = segmentRegions(img, { mergeSizeBias: 0.8 })
+    expect(seg.labels.count).toBe(2)
+    expect(seg.labels.data[30 * w + 10]).toBe(seg.labels.data[30 * w + 90])
+  })
+
+  it('keeps two dark fills apart that differ at a glance', () => {
+    const DARK_GREY: Rgba = [40, 40, 40, 255]
+    const w = 100
+    const img = rasterOf(w, 60, (x) => (x < 45 ? BLACK : x < 55 ? WHITE : DARK_GREY))
+    const seg = segmentRegions(img, { mergeSizeBias: 0.8 })
+    expect(seg.labels.count).toBe(3)
+  })
+})
