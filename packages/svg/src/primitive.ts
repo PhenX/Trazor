@@ -11,7 +11,7 @@
  * never reaches that shape's fit.
  */
 
-import type { PathCommand } from '@trazor/core'
+import { arcToCenter, type PathCommand } from '@trazor/core'
 import { conicDistance } from './arc'
 import { fitCircle, fitEllipse, fitRoundedRect, roundedRectSdf } from './fit'
 import { clampPrecision } from './pathdata'
@@ -438,14 +438,42 @@ function angleDiff(a: number, b: number): number {
   return d
 }
 
+/** Spacing in pixels of the samples {@link denseOutline} takes along an elliptical arc. */
+const ARC_SAMPLE_STEP = 1
+
 /**
- * Dense point samples along the outline (curves sampled too), one loop, in
- * order, appended to `px`/`py` as parallel coordinate lists.
+ * Dense point samples along the outline (curves and elliptical arcs sampled too),
+ * one loop, in order, appended to `px`/`py` as parallel coordinate lists. An arc
+ * is sampled on its own ellipse (`arcToCenter`, W3C SVG 1.1 F.6.5) about
+ * {@link ARC_SAMPLE_STEP} apart, so a loop of arcs reads as the curve it is and
+ * not as the polygon of its endpoints.
  */
 function denseOutline(start: Pt, ops: readonly PathCommand[], px: number[], py: number[]): void {
   let prevX = start.x
   let prevY = start.y
   for (const op of ops) {
+    if (op.type === 'A') {
+      const arc = arcToCenter(prevX, prevY, op)
+      if (arc === null) {
+        px.push(prevX)
+        py.push(prevY)
+      } else {
+        const cos = Math.cos(arc.phi)
+        const sin = Math.sin(arc.phi)
+        const length = Math.abs(arc.dTheta) * Math.max(arc.rx, arc.ry)
+        const steps = Math.max(2, Math.ceil(length / ARC_SAMPLE_STEP))
+        for (let s = 0; s < steps; s++) {
+          const t = arc.theta1 + (arc.dTheta * s) / steps
+          const ex = arc.rx * Math.cos(t)
+          const ey = arc.ry * Math.sin(t)
+          px.push(arc.cx + cos * ex - sin * ey)
+          py.push(arc.cy + sin * ex + cos * ey)
+        }
+      }
+      prevX = op.x
+      prevY = op.y
+      continue
+    }
     if (op.type === 'C') {
       // Bernstein form, eight samples per segment.
       for (let s = 0; s < 8; s++) {

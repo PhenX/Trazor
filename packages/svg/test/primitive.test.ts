@@ -417,6 +417,43 @@ function regularStarPath(
   return out
 }
 
+describe('detectPrimitive — loops of elliptical arcs', () => {
+  it('reads an arc loop as the curve it is, not the polygon of its endpoints', () => {
+    // A traced compass face: eight arcs of a 45.6 px circle between eight short chords
+    // where tick marks cut it. Each arc bows up to 2.4 px off the chord joining its ends,
+    // so the octagon through those ends is no fit of it.
+    const ring: [number, number, number, number, number][] = [
+      [45.64, 32.54, 30.88, 27.65, 35.77],
+      [45.72, 16.72, 62.18, 16.72, 69],
+      [45.64, 27.67, 95.49, 32.51, 100.36],
+      [45.58, 58.97, 111.31, 65.83, 111.31],
+      [45.59, 92.22, 100.36, 97.07, 95.5],
+      [45.64, 108.02, 69.05, 108.02, 62.18],
+      [45.7, 97.08, 35.76, 92.21, 30.9],
+      [45.63, 65.82, 19.95, 58.95, 19.94],
+    ]
+    const cmds: PathCommand[] = [{ type: 'M', x: 58.95, y: 19.94 }]
+    for (const [r, ax, ay, lx, ly] of ring) {
+      cmds.push({
+        type: 'A',
+        rx: r,
+        ry: r,
+        rotation: 0,
+        largeArc: false,
+        sweep: false,
+        x: ax,
+        y: ay,
+      })
+      cmds.push({ type: 'L', x: lx, y: ly })
+    }
+    cmds.push({ type: 'Z' })
+    expect(detectPrimitive(cmds, 2, true)?.kind).not.toBe('polygon')
+    // A true octagon through the same corners is still one.
+    const octagon = regularPolygonPath(62.37, 65.63, 45.8, 8, -94.3)
+    expect(detectPrimitive(octagon, 2, true)?.kind).toBe('polygon')
+  })
+})
+
 describe('detectPrimitive — regular polygons and stars (gated)', () => {
   it('detects a rotated regular pentagon as a polygon', () => {
     const cmds = regularPolygonPath(50, 50, 30, 5, 12)

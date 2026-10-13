@@ -7,7 +7,7 @@
  * when a detector's math changes.
  */
 
-import type { PathCommand } from '@trazor/core'
+import { arcToCenter, type PathCommand } from '@trazor/core'
 import type { Primitive } from '../src/index'
 import { fitCircle, fitEllipse, fitRoundedRect } from '../src/fit'
 import { clampPrecision } from '../src/pathdata'
@@ -330,7 +330,24 @@ function denseOutline(start: Pt, ops: PathCommand[]): Pt[] {
   const pts: Pt[] = []
   let prev = start
   for (const op of ops) {
-    if (op.type === 'C') {
+    if (op.type === 'A') {
+      // The arc on its own ellipse, about a pixel apart.
+      const arc = arcToCenter(prev.x, prev.y, op)
+      if (arc === null) {
+        pts.push(prev)
+      } else {
+        const cos = Math.cos(arc.phi)
+        const sin = Math.sin(arc.phi)
+        const steps = Math.max(2, Math.ceil(Math.abs(arc.dTheta) * Math.max(arc.rx, arc.ry)))
+        for (let s = 0; s < steps; s++) {
+          const t = arc.theta1 + (arc.dTheta * s) / steps
+          const ex = arc.rx * Math.cos(t)
+          const ey = arc.ry * Math.sin(t)
+          pts.push({ x: arc.cx + cos * ex - sin * ey, y: arc.cy + sin * ex + cos * ey })
+        }
+      }
+      prev = { x: op.x, y: op.y }
+    } else if (op.type === 'C') {
       for (let s = 0; s < 8; s++) pts.push(cubicPoint(prev, op, s / 8))
       prev = { x: op.x, y: op.y }
     } else if (op.type === 'Q') {

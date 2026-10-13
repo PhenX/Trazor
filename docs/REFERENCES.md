@@ -458,8 +458,10 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
 - **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements
-  arc bounds and arc→Bézier reconstruction (`packages/core/src/path.ts`
-  `arcToCenter`, `packages/svg/src/arc.ts` `arcToCubics`). Near half a turn the
+  arc bounds, arc→Bézier reconstruction and the arc samples the serializer's
+  regular-polygon test reads (`packages/core/src/path.ts` `arcToCenter`,
+  `packages/svg/src/arc.ts` `arcToCubics`, `packages/svg/src/primitive.ts`
+  `denseOutline`). Near half a turn the
   endpoint form reconstructs the centre ill-conditioned from the radius: rounding
   the radius to the output grid by ε moves the centre by about √(2rε), so
   `fitArcs` tries the grid radii around the fitted one and keeps the one whose
