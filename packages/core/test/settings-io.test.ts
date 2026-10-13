@@ -56,6 +56,23 @@ describe('settings import', () => {
     expect(restored.profileModified).toBe(true)
   })
 
+  it('round-trips the geometry chain and its front end', () => {
+    const settings = normalizeSettings({ geometry: 'planar', frontEnd: 'ink' })
+    const restored = parseSettingsImport(serializeSettings(settings))
+    expect(restored.settings.geometry).toBe('planar')
+    expect(restored.settings.frontEnd).toBe('ink')
+  })
+
+  it('defaults the chain to classic and maps an unknown chain to classic', () => {
+    expect(DEFAULT_SETTINGS.geometry).toBe('classic')
+    expect(DEFAULT_SETTINGS.frontEnd).toBe('classic')
+    const restored = parseSettingsImport(
+      JSON.stringify({ settings: { mode: 'color', geometry: 'mesh', frontEnd: 'neural' } }),
+    )
+    expect(restored.settings.geometry).toBe('classic')
+    expect(restored.settings.frontEnd).toBe('classic')
+  })
+
   it('accepts a bare settings object without the export wrapper', () => {
     const restored = parseSettingsImport(JSON.stringify({ mode: 'centerline', pruneLength: 20 }))
     expect(restored.settings.mode).toBe('centerline')

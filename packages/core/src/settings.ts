@@ -20,6 +20,12 @@ export type VectorizeMode = 'color' | 'grayscale' | 'bw' | 'centerline'
  */
 export type LayeringMode = 'stacked' | 'cutout' | 'nested'
 
+/** The geometry chain (`VectorizeSettings.geometry`). */
+export type GeometryChain = 'classic' | 'planar'
+
+/** The planar chain's front end (`VectorizeSettings.frontEnd`). */
+export type FrontEnd = 'classic' | 'ink'
+
 /**
  * - `spline`: full curve chain (optimal polygon → corner analysis → cubic
  *   Béziers). The high-quality default.
@@ -115,6 +121,20 @@ export interface VectorizeSettings {
    */
   palette: string[] | null
   layering: LayeringMode
+  /**
+   * Which geometry chain traces the image: `classic`, the per-layer ring
+   * tracer, or `planar`, the planar-map core (one shared edge between every
+   * two areas, fitted once, which every layering reads). `classic` by default.
+   */
+  geometry: GeometryChain
+  /**
+   * The planar chain's front end for opaque color images: `classic`, the
+   * segmentation every chain shares, or `ink`, the MDL palette and region
+   * passes. Read only with `geometry` `planar` (ignored by the classic chain),
+   * for `color` mode on an opaque image; a transparent image takes the
+   * classic front end.
+   */
+  frontEnd: FrontEnd
   /** Regions smaller than this many pixels are merged into their surroundings. */
   minRegionArea: number
   /**
@@ -296,6 +316,8 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   quantizeQuality: 5,
   palette: null,
   layering: 'stacked',
+  geometry: 'classic',
+  frontEnd: 'classic',
   minRegionArea: 6,
   preserveDetails: false,
   dissolveBands: 0,
@@ -366,6 +388,8 @@ export function normalizeSettings(
     s.palette = valid.length > 0 ? valid : null
   }
   s.segmentation = s.segmentation === 'regions' ? 'regions' : 'quantize'
+  s.geometry = s.geometry === 'planar' ? 'planar' : 'classic'
+  s.frontEnd = s.frontEnd === 'ink' ? 'ink' : 'classic'
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)

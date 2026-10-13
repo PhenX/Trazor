@@ -541,16 +541,13 @@ export interface VectorizeRunOptions {
    */
   withDocument?: boolean
   /**
-   * Which geometry chain traces color and grayscale: `classic` (the default)
-   * or `planar`, the planar-map core every layering reads its fitted edges
-   * from (in development; see `@trazor/trace`'s planar core).
+   * Overrides `settings.geometry` for this run when set (a probe's choice of
+   * chain); unset, the settings choose.
    */
   geometry?: 'classic' | 'planar'
   /**
-   * The planar chain's front end for opaque color images: `classic` (the
-   * default, the segmentation every chain shares) or `ink`, inkvec's MDL
-   * palette and region passes (`./ink`); in development. A transparent image
-   * takes the classic front end.
+   * Overrides `settings.frontEnd` for this run when set; read only on the
+   * planar chain, as the setting is.
    */
   frontEnd?: 'classic' | 'ink'
   /**
@@ -745,6 +742,10 @@ export async function vectorize(
   const requested =
     scale === normalized.supersample ? normalized : { ...normalized, supersample: scale }
   const settings = scale === 1 ? requested : forWorkingGrid(requested, scale)
+  // The geometry chain and its front end: the run options when set, else the
+  // settings; the front end is read only on the planar chain.
+  const geometry = opts?.geometry ?? settings.geometry
+  const frontEnd = geometry === 'planar' ? (opts?.frontEnd ?? settings.frontEnd) : 'classic'
   const started = nowMs()
   const run = new Run(ctx)
   const warnings: VectorizeWarning[] = []
@@ -770,7 +771,7 @@ export async function vectorize(
   // it and the hard edge the canvas cuts is measured as an edge; the geometry
   // moves back by the margin afterwards.
   const pad =
-    opts?.geometry === 'planar' &&
+    geometry === 'planar' &&
     settings.background !== 'custom' &&
     !settings.omitBackground &&
     ctx?.edgeHint === undefined &&
@@ -779,7 +780,7 @@ export async function vectorize(
       : 0
   // The planar chain keeps the image before its enlargement and reads the
   // intake's verdict, the ink front end its edges' residual too.
-  const preKey = `${preKeyOf(settings)}|${pad}|${opts?.geometry ?? 'classic'}|${opts?.geometry === 'planar' ? (opts.frontEnd ?? 'classic') : ''}`
+  const preKey = `${preKeyOf(settings)}|${pad}|${geometry}|${frontEnd}`
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
@@ -801,11 +802,11 @@ export async function vectorize(
   } else {
     let img = resizeToFit(source, settings.maxDimension)
     if (pad > 0) img = padImage(img, pad)
-    if (opts?.geometry === 'planar') {
+    if (geometry === 'planar') {
       intakeSoft = intakeIsSoft(img)
       // The ink front end's palette keeps every variant of a damaged edge's inks apart
       // unless the intake is soft; edges that stray off their blends make it so.
-      if (!intakeSoft && opts.frontEnd === 'ink' && settings.mode === 'color') {
+      if (!intakeSoft && frontEnd === 'ink' && settings.mode === 'color') {
         intakeEdgeNoise = edgeNoise(img)
         intakeSoft = intakeEdgeNoise !== undefined
       }
@@ -827,7 +828,7 @@ export async function vectorize(
     alpha = flat.alpha
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
-    if (opts?.geometry === 'planar' && scale > 1) {
+    if (geometry === 'planar' && scale > 1) {
       const src = flattenImage(before, settings, 1)
       if (settings.mode === 'grayscale') desaturateInPlace(src.image)
       planarSource = {
@@ -938,10 +939,10 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
-      opts?.geometry === 'planar'
+      geometry === 'planar'
         ? {
-            onStage: opts.onPlanarStage,
-            frontEnd: opts.frontEnd ?? 'classic',
+            onStage: opts?.onPlanarStage,
+            frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
             source: planarSource,
@@ -961,10 +962,10 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
-      opts?.geometry === 'planar'
+      geometry === 'planar'
         ? {
-            onStage: opts.onPlanarStage,
-            frontEnd: opts.frontEnd ?? 'classic',
+            onStage: opts?.onPlanarStage,
+            frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
             source: planarSource,

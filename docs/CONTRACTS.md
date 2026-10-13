@@ -73,6 +73,23 @@ export const NOISE_FLOOR: number
 export function estimateNoise(gray: ArrayLike<number>, w: number, h: number): number
 ```
 
+## @trazor/core — geometry chain
+
+```ts
+// settings.ts — VectorizeSettings.geometry: the geometry chain. 'classic' (DEFAULT_SETTINGS) traces
+// each layer's rings; 'planar' is the planar-map core whose shared fitted edges every layering
+// walks (see vectorize's opts below). normalizeSettings maps anything else to 'classic'.
+export type GeometryChain = 'classic' | 'planar'
+geometry: GeometryChain
+// VectorizeSettings.frontEnd: the planar chain's front end for opaque color images — 'classic'
+// (DEFAULT_SETTINGS, the segmentation every chain shares) or 'ink' (the MDL palette and region
+// passes). Read only with geometry 'planar'; the classic chain ignores it, and a transparent image
+// takes the classic front end. normalizeSettings maps anything else to 'classic'.
+export type FrontEnd = 'classic' | 'ink'
+frontEnd: FrontEnd
+// Both round-trip through the settings export (parseSettingsImport / serializeSettings).
+```
+
 ## @trazor/core — supersampling
 
 ```ts
@@ -1407,17 +1424,19 @@ export function vectorize(
   // helpers (optional) farms the trace and the per-shape serialization out to a HelperPool. Absent or
   // empty, the whole pipeline runs on this thread — the default. Results are placed by unit index,
   // so the SVG text, the shapes and `document` are byte-identical to a sequential run.
-  // geometry selects the color/grayscale geometry chain: 'classic' (default) or 'planar', the
-  // planar-map core (in development) whose shared fitted edges every layering walks — cutout as one
-  // compound path per label, nested as faces over their parents, stacked as unions of faces
-  // (packages/engine/src/planar.ts).
+  // geometry overrides settings.geometry for this run when set (a probe's choice; unset, the
+  // settings choose): 'classic' or 'planar', the planar-map core whose shared fitted edges every
+  // layering walks — cutout as one compound path per label, nested as faces over their parents,
+  // stacked as unions of faces (packages/engine/src/planar.ts). The stage cache keys the chain and
+  // its front end.
   opts?: {
     imageId?: number
     cache?: StageCache
     withDocument?: boolean
     helpers?: HelperPool
     geometry?: 'classic' | 'planar'
-    // The planar chain's front end for color images: 'classic' (default) or 'ink', inkvec's MDL
+    // Overrides settings.frontEnd when set (read only on the planar chain). The planar chain's
+    // front end for color images: 'classic' or 'ink', inkvec's MDL
     // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`), then each
     // region's fill from its own pixels (with `settings.gradients` a gradient where one pays, and
     // a ramp's bands merged), the carve and the flat-fill snap, each label one paint (a flat color
