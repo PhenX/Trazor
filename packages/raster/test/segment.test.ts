@@ -670,6 +670,29 @@ describe('segmentRegions — near-duplicate consolidation', () => {
     expect(seg.labels.data[30 * w + 10]).toBe(seg.labels.data[30 * w + 90])
   })
 
+  it('folds repeated shapes of one size into one color, and meets a fixed budget', () => {
+    // Twenty identical white squares on blue over eight vivid stripes: ten
+    // colors. Every square is as large as the first, so each joins that one's
+    // color however the ties between them fall, and a budget of four is met.
+    const stripes: Rgba[] = [
+      [220, 30, 30, 255],
+      [30, 180, 60, 255],
+      [235, 220, 60, 255],
+      [200, 60, 200, 255],
+      [40, 200, 210, 255],
+      [250, 140, 20, 255],
+      [120, 70, 20, 255],
+      [20, 20, 20, 255],
+    ]
+    const img = rasterOf(200, 100, (x, y) => {
+      if (y >= 80) return stripes[(x / 25) | 0]
+      const inSquare = x % 20 >= 7 && x % 20 < 13 && y % 20 >= 7 && y % 20 < 13
+      return inSquare ? WHITE : [40, 60, 220, 255]
+    })
+    expect(segmentRegions(img, { mergeSizeBias: 0.8 }).labels.count).toBe(10)
+    expect(segmentRegions(img, { mergeSizeBias: 0.8, maxRegions: 4 }).labels.count).toBe(4)
+  })
+
   it('keeps two dark fills apart that differ at a glance', () => {
     const DARK_GREY: Rgba = [40, 40, 40, 255]
     const w = 100

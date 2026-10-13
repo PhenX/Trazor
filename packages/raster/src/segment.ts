@@ -1384,7 +1384,9 @@ function mergeRegions(
     }
     if (repFor === -1) reps.push(r)
     else {
-      union(r, repFor)
+      // The representative keeps its id (it is at least as large, so it stays
+      // the root on a tie), so a later match joins it, not a folded region.
+      union(repFor, r)
       activeRegions--
     }
   }
