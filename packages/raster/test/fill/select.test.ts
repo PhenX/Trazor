@@ -3,6 +3,7 @@ import { colorAt, fillKind } from '../../src/fill/model'
 import type { FillFit, FillModel, Rgb } from '../../src/fill/model'
 import { collectSamples, FIT_PIXELS_CAP, interiorCount, stridedUnion } from '../../src/fill/samples'
 import {
+  bicLambda,
   commonPixelGain,
   fitCandidates,
   fitFill,
@@ -267,5 +268,13 @@ describe('unions and common-pixel gains', () => {
     expect(gain!).toBeGreaterThan(0)
     // The union's model reads the ramp where the two halves meet.
     close3(colorAt(union.model, 48, 40), rampLinear(LINEAR_C0, LINEAR_C1, 47.5 / 95), 3 / 255)
+  })
+})
+
+describe('bicLambda on an enlarged raster', () => {
+  it('prices a parameter over the source pixels, in working-pixel units', () => {
+    expect(bicLambda(10000, 1)).toBe(bicLambda(10000))
+    expect(bicLambda(40000, 2)).toBeCloseTo(4 * bicLambda(10000), 12)
+    expect(bicLambda(90000, 3)).toBeCloseTo(9 * bicLambda(10000), 12)
   })
 })

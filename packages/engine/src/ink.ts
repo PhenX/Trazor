@@ -157,7 +157,8 @@ interface TwoGround {
  * within sight of its ink's best-evidenced face is painted that face's color
  * (`snapFlatFills`, over the 4-connected faces). Every face of a label carries
  * the label's fill and ink, so a snap decides for the whole label. The price of
- * a parameter is the BIC's over the working image's pixels. Without
+ * a parameter is the BIC's over the source's pixels (`bicLambda` at `scale`),
+ * and the merge's and the carve's pixel counts are taken in source pixels too. Without
  * `gradients` every fill is flat and nothing merges, but each region still
  * takes its color from its own pixels and the carve still runs: the palette
  * names a region's ink, it does not color it (a dark gray handle labelled with
@@ -174,10 +175,11 @@ function labelFills(
   pal: ink.Palette,
   sigma: number,
   minRegion: number,
+  scale: number,
   gradients: boolean,
   two: TwoGround | null,
 ): LabelFills {
-  const lambda = ink.bicLambda(w * h)
+  const lambda = ink.bicLambda(w * h, scale)
   const { fills, ink: labelInk } = ink.mergeGradientBands(
     labels,
     rgb,
@@ -186,7 +188,7 @@ function labelFills(
     pal.inkRgb,
     sigma,
     lambda,
-    { gradients, sameClass: two?.sameClass ?? null },
+    { gradients, sameClass: two?.sameClass ?? null, scale },
   )
   const from = fills.length
   ink.carveResidualFeatures(
@@ -202,6 +204,7 @@ function labelFills(
     Math.max(minRegion, 2),
     null,
     gradients,
+    scale,
   )
   let fades: (ink.Fade | null)[] = []
   if (two !== null) {
@@ -391,7 +394,7 @@ export function inkFrontEnd(
     h,
     ink.DEFAULT_MERGE_DISTANCE,
     ink.DEFAULT_MAX_COLORS,
-    ink.paletteEvidence(sigma, n, soft),
+    ink.paletteEvidence(sigma, n, soft, scale),
     ids,
   )
   const raw = ink.labelImage(rgb, pal, ids)
@@ -407,12 +410,12 @@ export function inkFrontEnd(
   const minRegion = MIN_REGION * scale * scale
   const colors = { px: rgb, inks: pal.inkRgb, channels: 3 }
   ink.despeckle(raw, w, h, minRegion, colors)
-  const absorbed = ink.absorbBlendSlivers(raw, rgb, null, w, h, pal.inkRgb, sigma)
+  const absorbed = ink.absorbBlendSlivers(raw, rgb, null, w, h, pal.inkRgb, sigma, scale)
   const moved = ink.reassignBlendPixels(raw, rgb, null, w, h, pal.inkRgb, sigma)
   if (absorbed > 0 || moved > 0) ink.despeckle(raw, w, h, minRegion, colors)
   if (ink.findComponents(raw, w, h).count > ink.MAX_FACES)
     ink.capComponents(raw, w, h, ink.MAX_FACES)
-  const lf = labelFills(raw, rgb, w, h, pal, sigma, minRegion, gradients, null)
+  const lf = labelFills(raw, rgb, w, h, pal, sigma, minRegion, scale, gradients, null)
   return paintLabels(raw, w, h, pal, lf, sigma, gradients, false)
 }
 
@@ -442,12 +445,12 @@ export function nativeInkFrontEnd(
     w,
     h,
     { sigmaNoise: estimateNoise(lum, w, h), soft, edgeNoise: edgeSigma },
-    { minRegion },
+    { minRegion, scale },
   )
   const raw = fe.labels
   if (ink.findComponents(raw, w, h).count > ink.MAX_FACES)
     ink.capComponents(raw, w, h, ink.MAX_FACES)
-  const lf = labelFills(raw, rgb, w, h, fe.palette, fe.sigmaNoise, minRegion, gradients, {
+  const lf = labelFills(raw, rgb, w, h, fe.palette, fe.sigmaNoise, minRegion, scale, gradients, {
     alpha: a,
     sameClass: fe.sameClass,
   })

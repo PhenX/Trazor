@@ -116,14 +116,18 @@ export function findComponents(labels: ArrayLike<number>, w: number, h: number):
 }
 
 /**
- * Per component: how many of its pixels have all their in-image 4-neighbors in it
- * (`interior`; the image border does not make a pixel a boundary pixel), and how many
- * (pixel, neighbor) pairs cross into another component (`foreign`).
+ * Per component: how many of its pixels are interior (`interior`), and how many (pixel,
+ * neighbor) pairs cross into another component (`foreign`). A pixel is interior when every
+ * in-image pixel up to `reach` steps from it along the rows and columns is in its component
+ * (`reach` 1: its 4-neighbors; the image border does not make a pixel a boundary pixel).
+ * On a raster enlarged `s` times a reach of `s` asks the question at the source's pixel
+ * size: a band one source pixel wide has no interior at any enlargement.
  */
 export function componentShape(
   c: Components,
   w: number,
   h: number,
+  reach = 1,
 ): { interior: Int32Array; foreign: Int32Array } {
   const interior = new Int32Array(c.count)
   const foreign = new Int32Array(c.count)
@@ -138,10 +142,33 @@ export function componentShape(
       if (y > 0 && comp[i - w] !== id) out++
       if (y + 1 < h && comp[i + w] !== id) out++
       foreign[id] += out
-      if (out === 0) interior[id]++
+      if (out === 0 && (reach <= 1 || reachesWithin(comp, w, h, x, y, reach))) interior[id]++
     }
   }
   return { interior, foreign }
+}
+
+/**
+ * Whether every in-image pixel up to `reach` steps from `(x, y)` along its row and column
+ * belongs to the component of `(x, y)`.
+ */
+export function reachesWithin(
+  comp: Int32Array,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+  reach: number,
+): boolean {
+  const i = y * w + x
+  const id = comp[i]
+  for (let k = 1; k <= reach; k++) {
+    if (x - k >= 0 && comp[i - k] !== id) return false
+    if (x + k < w && comp[i + k] !== id) return false
+    if (y - k >= 0 && comp[i - k * w] !== id) return false
+    if (y + k < h && comp[i + k * w] !== id) return false
+  }
+  return true
 }
 
 /** The pixels of every component `keep` selects, each component's in raster order. */

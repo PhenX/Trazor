@@ -317,6 +317,28 @@ describe('absorbBlendSlivers', () => {
     }
   })
 
+  it('reads a seam as thin at the source pixel size on an enlarged raster', () => {
+    // The seam enlarged 2× (nearest): four columns of blend, two of them interior to it.
+    const s = seam(null)
+    const w = 2 * s.w
+    const h = 2 * s.h
+    const labels = new Int32Array(w * h)
+    const rgb = new Float32Array(w * h * 3)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const q = (y >> 1) * s.w + (x >> 1)
+        labels[y * w + x] = s.labels[q]
+        rgb.set(s.rgb.subarray(q * 3, q * 3 + 3), (y * w + x) * 3)
+      }
+    }
+    // Read at the working pixel size it has an interior and stays.
+    expect(absorbBlendSlivers(labels.slice(), rgb, null, w, h, s.inks, 0.002)).toBe(0)
+    expect(absorbBlendSlivers(labels, rgb, null, w, h, s.inks, 0.002, 2)).toBe(1)
+    for (let y = 0; y < h; y++) {
+      expect(Array.from(labels.subarray(y * w + 10, y * w + 14))).toEqual([0, 0, 1, 1])
+    }
+  })
+
   it('keeps a thin real ink that is no blend of its neighbors', () => {
     // A dark one-pixel line between white and yellow: off the white–yellow segment.
     const w = 10

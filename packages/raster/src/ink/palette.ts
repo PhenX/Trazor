@@ -149,17 +149,19 @@ export function isSoftIntake(
 
 /**
  * The evidence the pipeline hands the palette: `sigmaNoise` as measured before the palette,
- * `lambda = bicLambda(pixels)` (`½·ln(max(n, 2))`, the BIC price of one number), and the clean
- * or soft guard and same-ink floor.
+ * `lambda = bicLambda(pixels, scale)` (`½·ln(max(n, 2))`, the BIC price of one number; on a
+ * raster enlarged `scale` times, priced over the source's pixels), and the clean or soft
+ * guard and same-ink floor.
  */
 export function paletteEvidence(
   sigmaNoise: number,
   pixels: number,
   soft: boolean,
+  scale = 1,
 ): PaletteEvidence {
   return {
     sigmaNoise,
-    lambda: bicLambda(pixels),
+    lambda: bicLambda(pixels, scale),
     noiseSigmas: soft ? SOFT_NOISE_SIGMAS : NOISE_SIGMAS,
     sameInkDe00: soft ? SOFT_SAME_INK_DE00 : SAME_INK_DE00,
   }

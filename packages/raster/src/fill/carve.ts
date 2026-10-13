@@ -39,7 +39,7 @@
  */
 
 import { fillEvidence } from './evidence'
-import { FillEval, flatOnly, representative } from './model'
+import { FillEval, flatOnly, MIN_GRADIENT_PIXELS, representative } from './model'
 import type { FillFit, Rgb } from './model'
 import { toFittingFrame } from './samples'
 import { fitPixels, pixelsOf, select } from './select'
@@ -72,7 +72,8 @@ const fr = Math.fround
  * per-channel sRGB noise, `lambda` the price of one editable number, `minSize` the
  * least cluster (raised to 4), and `detailSigma`, when not null, the noise for a
  * pixel whose 7 × 7 neighborhood is all its own label. Without `gradients` a
- * parent is refitted flat.
+ * parent is refitted flat; on a raster enlarged `scale` times a parent's gradient
+ * needs `MIN_GRADIENT_PIXELS · scale²` samples.
  */
 export function carveResidualFeatures(
   labels: Int32Array,
@@ -87,6 +88,7 @@ export function carveResidualFeatures(
   minSize: number,
   detailSigma: number | null = null,
   gradients = true,
+  scale = 1,
 ): number {
   const n = w * h
   if (fills.length === 0 || n === 0) return 0
@@ -107,7 +109,20 @@ export function carveResidualFeatures(
     parents,
   )
   if (minted === 0) return 0
-  refitParents(labels, rgb, w, h, palette, fills, parents, sigmaNoise, lambda, gradients)
+  const minSamples = MIN_GRADIENT_PIXELS * scale * scale
+  refitParents(
+    labels,
+    rgb,
+    w,
+    h,
+    palette,
+    fills,
+    parents,
+    sigmaNoise,
+    lambda,
+    gradients,
+    minSamples,
+  )
   return minted
 }
 
@@ -336,6 +351,7 @@ function refitParents(
   sigmaNoise: number,
   lambda: number,
   gradients: boolean,
+  minSamples: number,
 ): void {
   const pure = fillEvidence(rgb, w, h, labels, inksOf(palette, fills), sigmaNoise)
   for (const l of parents) {
@@ -350,6 +366,7 @@ function refitParents(
         sigmaNoise,
         lambda,
         gradients,
+        minSamples,
       ),
     )
   }

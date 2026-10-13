@@ -422,6 +422,12 @@ export interface PlanarTraceInput {
    */
   scale?: number
   /**
+   * The source the working image was enlarged from (`scale` > 1), composited
+   * as the working image is, with its alpha (null when opaque): the boundary
+   * solve renders each of its pixels' exact coverage against it.
+   */
+  source?: { image: RasterImage; alpha: Uint8Array | null }
+  /**
    * The pixel noise the sub-pixel stage divides by (encoded sRGB units), when
    * the front end measured it; else the stage reads it off the image.
    */
@@ -449,8 +455,9 @@ export function contentFitConfig(width: number, height: number, scale: number): 
  * The planar chain's geometry: the label map's faces and the edges they share;
  * every boundary point measured to sub-pixel against its two faces' paint,
  * every junction placed where its edges meet, then the whole boundary solved
- * at once against the observed image — all in the forward model's space —
- * and each edge described once, as curves or a whole primitive, the edges of
+ * at once against the observed image — all in the forward model's space; on
+ * an enlarged copy, against the source's own pixels (`source`) — and each
+ * edge described once, as curves or a whole primitive, the edges of
  * a ring whose fits cross refitted until none does. Each stage is reported to `onStage`.
  */
 export function tracePlanar(input: PlanarTraceInput): {
@@ -462,6 +469,11 @@ export function tracePlanar(input: PlanarTraceInput): {
   input.onStage?.('lattice', map)
   const image = premultipliedImage(input.image, input.alpha)
   const fills = faceFills(map.faces.label, input.paints)
+  const s = input.scale ?? 1
+  const source =
+    s > 1 && input.source !== undefined
+      ? { image: premultipliedImage(input.source.image, input.source.alpha), scale: s }
+      : undefined
   refineSubpixel(
     map,
     image,
@@ -471,10 +483,9 @@ export function tracePlanar(input: PlanarTraceInput): {
   input.onStage?.('subpixel', map)
   refineJunctions(map)
   input.onStage?.('junctions', map)
-  solveBoundaries(map, image, fills)
+  solveBoundaries(map, image, fills, source !== undefined ? { source } : {})
   input.onStage?.('solve', map)
   // From here on σ is in content units (source pixels), as the fit's prices are.
-  const s = input.scale ?? 1
   if (s !== 1) for (const e of map.edges) e.sigma = e.sigma.map((v) => v * s)
   const cfg = contentFitConfig(map.width, map.height, s)
   const fitted = fitEdges(map, cfg)

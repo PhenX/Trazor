@@ -863,6 +863,11 @@ export interface NativeFrontEndOptions {
   maxColors?: number
   /** The speckle floor: components smaller than this fold into a neighbor (default 2). */
   minRegion?: number
+  /**
+   * Working pixels per source pixel of an enlarged raster (default 1): the palette's price
+   * of a parameter and the sliver absorption's thinness are taken over the source's pixels.
+   */
+  scale?: number
   /** Run the four-channel blend absorption (default true). */
   absorbBlends?: boolean
   /**
@@ -880,7 +885,7 @@ export interface NativeFrontEnd {
   labels: Int32Array
   /** The noise every later stage reads: the intake's, raised on a soft intake by the residual against the labels. */
   sigmaNoise: number
-  /** Nats per parameter, `bicLambda(width · height)`. */
+  /** Nats per parameter, `bicLambda(width · height, scale)`. */
   lambda: number
   /** The band merge's opacity gate ({@link sameOpacity}), passed as its `sameClass`. */
   sameClass: (a: number, b: number) => boolean
@@ -911,8 +916,9 @@ export function nativeFrontEnd(
   const mergeDistance = options.mergeDistance ?? DEFAULT_MERGE_DISTANCE
   const maxColors = options.maxColors ?? DEFAULT_MAX_COLORS
   const minRegion = options.minRegion ?? 2
+  const scale = options.scale ?? 1
   const n = width * height
-  const ev = paletteEvidence(intake.sigmaNoise, n, intake.soft)
+  const ev = paletteEvidence(intake.sigmaNoise, n, intake.soft, scale)
   const ids = colorIdsOfRgba(rgb, alpha)
   const palette = extractPaletteNative(rgb, alpha, width, height, mergeDistance, maxColors, ev, ids)
   const labels = labelImageNative(rgb, alpha, palette, ids)
@@ -934,7 +940,7 @@ export function nativeFrontEnd(
   let absorbed = 0
   let moved = 0
   if (options.absorbBlends ?? true) {
-    absorbed = absorbBlendSliversNative(labels, px, width, height, inks, sigmaNoise)
+    absorbed = absorbBlendSliversNative(labels, px, width, height, inks, sigmaNoise, scale)
     moved = reassignBlendPixelsNative(labels, px, width, height, inks, sigmaNoise)
     if (absorbed > 0 || moved > 0) despeckle(labels, width, height, minRegion, colors)
   }

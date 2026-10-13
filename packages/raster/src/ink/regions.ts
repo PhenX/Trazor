@@ -31,7 +31,7 @@
  * `relabel_rounds`, `split_components`, `split_within`, `cap_components`, `MAX_FACES`).
  */
 import { MIXTURE_TOLERANCE } from '../represent'
-import { componentMembers, componentShape, findComponents } from './components'
+import { componentMembers, componentShape, findComponents, reachesWithin } from './components'
 import type { Components, Members } from './components'
 
 /**
@@ -308,16 +308,41 @@ export function tallyContacts(
  * One round of sliver absorption's view of the label map: its components, and the member
  * lists of the thin ones only (`5·interior < area` and touching another component, the
  * counts that turn every other component down, which depend on the components alone).
+ * `reach` is the interior's reach (`componentShape`): the working pixels per source pixel,
+ * so a blend band is thin at the source's pixel size however far the raster was enlarged.
  */
 export function sliverRound(
   labels: Int32Array,
   w: number,
   h: number,
+  reach = 1,
 ): { comps: Components; thin: Members } {
   const comps = findComponents(labels, w, h)
-  const { interior, foreign } = componentShape(comps, w, h)
+  const { interior, foreign } = componentShape(comps, w, h, reach)
   const thin = componentMembers(comps, (id) => interior[id] * 5 < comps.size[id] && foreign[id] > 0)
   return { comps, thin }
+}
+
+/**
+ * The interior of component `id` (pixels `pixels[from .. to]`) at `reach`: how many of its
+ * pixels {@link reachesWithin} its component.
+ */
+export function interiorAt(
+  pixels: Int32Array,
+  from: number,
+  to: number,
+  comp: Int32Array,
+  w: number,
+  h: number,
+  reach: number,
+): number {
+  let n = 0
+  for (let k = from; k < to; k++) {
+    const p = pixels[k]
+    const y = (p / w) | 0
+    if (reachesWithin(comp, w, h, p - y * w, y, reach)) n++
+  }
+  return n
 }
 
 /** The inputs every sliver of one absorption call shares. */
@@ -329,6 +354,8 @@ interface SliverScene {
   inkRgb: Float64Array
   inkCount: number
   tol: number
+  /** The interior's reach: working pixels per source pixel. */
+  reach: number
   tally: ContactTally
   /** The (up to three) neighboring labels, most-touched first. */
   top: Int32Array
@@ -368,7 +395,10 @@ function absorbSliver(
   const area = to - from
   if (area === 0) return false
   const id = comp[pixels[from]]
-  const { interior, foreign } = tallyContacts(pixels, from, to, id, comp, labels, s.w, s.h, s.tally)
+  const contacts = tallyContacts(pixels, from, to, id, comp, labels, s.w, s.h, s.tally)
+  const { foreign } = contacts
+  const interior =
+    s.reach > 1 ? interiorAt(pixels, from, to, comp, s.w, s.h, s.reach) : contacts.interior
   if (interior * 5 >= area || foreign === 0) return false
   const nTop = s.tally.top(3, s.top)
   let covered = 0
@@ -435,7 +465,8 @@ function absorbSliver(
  * {@link blendTolerance}`(sigmaNoise)`. At most {@link ABSORB_ROUNDS} rounds, stopping on a
  * round that absorbs nothing; each round finds the components once and visits them in
  * raster order, and each edit is visible to later components of the round. Returns the
- * number of components absorbed.
+ * number of components absorbed. On a raster enlarged `scale` times, thinness is read at the
+ * source's pixel size (an interior reach of `scale`).
  */
 export function absorbBlendSlivers(
   labels: Int32Array,
@@ -445,6 +476,7 @@ export function absorbBlendSlivers(
   h: number,
   inkRgb: Float64Array,
   sigmaNoise: number,
+  scale = 1,
 ): number {
   const inkCount = Math.floor(inkRgb.length / 3)
   const n = w * h
@@ -456,6 +488,7 @@ export function absorbBlendSlivers(
     inkRgb,
     inkCount,
     tol: blendTolerance(sigmaNoise),
+    reach: Math.max(1, Math.round(scale)),
     tally: new ContactTally(1),
     top: new Int32Array(3),
     cols: new Float64Array(4 * 3),
@@ -464,7 +497,7 @@ export function absorbBlendSlivers(
   }
   let absorbed = 0
   for (let round = 0; round < ABSORB_ROUNDS; round++) {
-    const { comps, thin } = sliverRound(labels, w, h)
+    const { comps, thin } = sliverRound(labels, w, h, scene.reach)
     scene.tally = new ContactTally(labelBound(labels, inkCount))
     let changed = 0
     for (let id = 0; id < comps.count; id++) {

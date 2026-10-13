@@ -24,6 +24,7 @@ import {
   TRANSLUCENT_ALPHA,
   blendCandidates,
   blendTolerance,
+  interiorAt,
   labelBound,
   mixture,
   relabelRounds,
@@ -84,7 +85,8 @@ function putInk(cols: Float64Array, k: number, inks: ArrayLike<number>, l: numbe
  * candidates when a pixel of the sliver is translucent (`a < 0.99`) and no candidate is
  * already clear. On success each pixel moves to the dominant ink of its nearest mixture;
  * where the clear ink dominates, to the dominant real ink (or the most-touched neighbor
- * when the real inks have no mixture). Returns the number of components absorbed.
+ * when the real inks have no mixture). Returns the number of components absorbed. On a
+ * raster enlarged `scale` times, thinness is read at the source's pixel size.
  */
 export function absorbBlendSliversNative(
   labels: Int32Array,
@@ -93,7 +95,9 @@ export function absorbBlendSliversNative(
   h: number,
   inks: Float64Array,
   sigmaNoise: number,
+  scale = 1,
 ): number {
+  const reach = Math.max(1, Math.round(scale))
   const inkCount = Math.floor(inks.length / 4)
   const tol = blendTolerance(sigmaNoise)
   const top = new Int32Array(3)
@@ -102,7 +106,7 @@ export function absorbBlendSliversNative(
   const mix: Mixture = { r: 0, who: -1 }
   let absorbed = 0
   for (let round = 0; round < ABSORB_ROUNDS; round++) {
-    const { comps, thin } = sliverRound(labels, w, h)
+    const { comps, thin } = sliverRound(labels, w, h, reach)
     const tally = new ContactTally(labelBound(labels, inkCount))
     let changed = 0
     for (let id = 0; id < comps.count; id++) {
@@ -111,17 +115,10 @@ export function absorbBlendSliversNative(
       if (from === to) continue
       const pixels = thin.pixels
       const area = to - from
-      const { interior, foreign } = tallyContacts(
-        pixels,
-        from,
-        to,
-        id,
-        comps.comp,
-        labels,
-        w,
-        h,
-        tally,
-      )
+      const contacts = tallyContacts(pixels, from, to, id, comps.comp, labels, w, h, tally)
+      const { foreign } = contacts
+      const interior =
+        reach > 1 ? interiorAt(pixels, from, to, comps.comp, w, h, reach) : contacts.interior
       if (interior * 5 >= area || foreign === 0) continue
       const nTop = tally.top(3, top)
       let covered = 0

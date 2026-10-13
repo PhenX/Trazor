@@ -89,3 +89,24 @@ describe('findComponents', () => {
     expect(foreign[1]).toBe(4)
   })
 })
+
+describe('componentShape at a reach', () => {
+  it('counts a pixel interior only when its row and column stay in its component that far', () => {
+    // A band six columns wide across a 10 × 5 map: interior at reach 1 are the four inner
+    // columns, at reach 2 the two, at reach 3 none.
+    const w = 10
+    const h = 5
+    const labels = Int32Array.from({ length: w * h }, (_, p) => (p % w >= 2 && p % w < 8 ? 1 : 0))
+    const c = findComponents(labels, w, h)
+    const band = c.comp[2]
+    expect(componentShape(c, w, h).interior[band]).toBe(4 * h)
+    expect(componentShape(c, w, h, 1).interior[band]).toBe(4 * h)
+    expect(componentShape(c, w, h, 2).interior[band]).toBe(2 * h)
+    expect(componentShape(c, w, h, 3).interior[band]).toBe(0)
+    // The image border is not a boundary: the left strip, two columns wide, has its first
+    // column interior at reach 1 and none at reach 2.
+    const left = c.comp[0]
+    expect(componentShape(c, w, h).interior[left]).toBe(h)
+    expect(componentShape(c, w, h, 2).interior[left]).toBe(0)
+  })
+})

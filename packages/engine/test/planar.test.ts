@@ -1,4 +1,5 @@
 import type { LabelMap, PathCommand } from '@trazor/core'
+import { upscaleImage } from '@trazor/raster'
 import type { FittedEdge } from '@trazor/trace'
 import { describe, expect, it } from 'vitest'
 import {
@@ -148,6 +149,37 @@ describe('the planar chain against its image', () => {
     expect(fits.reduce((n, f) => n + f.segments.length, 0)).toBeLessThan(12)
     expect(err.subpixel).toBeLessThan(err.lattice / 2)
     expect(err.solve).toBeLessThan(0.05)
+  })
+
+  it('solves a trace on an enlarged copy against the source pixels', () => {
+    // The labels and the map on the 2× grid, the circle measured on the 32 px source:
+    // solved against the enlargement's interpolated ramps the boundary would zigzag back
+    // to the lattice.
+    const source = diskImage(32, 32, 15.3, 16.1, 9.4)
+    const work = diskImage(64, 64, 30.6, 32.2, 18.8)
+    const err: Record<string, number> = {}
+    tracePlanar({
+      labels: work.labels,
+      image: upscaleImage(source.image, 2, true),
+      alpha: null,
+      paints: [{ hex: '#000000' }, { hex: '#ffffff' }],
+      scale: 2,
+      source: { image: source.image, alpha: null },
+      onStage: (stage, map) => {
+        let sum = 0
+        let n = 0
+        for (const e of map.edges) {
+          if (e.left < 0 || e.right < 0) continue
+          for (let i = 0; i < e.points.length; i += 2) {
+            sum += Math.abs(Math.hypot(e.points[i] - 30.6, e.points[i + 1] - 32.2) - 18.8)
+            n++
+          }
+        }
+        err[stage] = sum / n
+      },
+    })
+    expect(err.solve).toBeLessThan(0.05)
+    expect(err.solve).toBeLessThan(err.subpixel)
   })
 
   it('keeps a curved hole in a stacked sheet', () => {

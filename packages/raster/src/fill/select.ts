@@ -65,9 +65,17 @@ export const MIN_RAMP_SUPPORT = 0.1
  * The BIC choice of `λ` for `n` observations, `½·ln(max(n, 2))`: the value at
  * which the MDL cost is the Bayesian information criterion. The pipeline calls it
  * with the image's pixel count.
+ *
+ * On a raster enlarged `scale` times every source pixel is `scale²` working
+ * pixels that interpolate it, so a fit's χ² over the working pixels counts each
+ * observation `scale²` times: the price of a parameter in those units is
+ * `scale² · ½·ln(max(n / scale², 2))`, the BIC of the source's `n / scale²`
+ * observations — what inkvec's `price_in_raster_units` does for its own knobs.
+ * The identity at `scale` 1.
  */
-export function bicLambda(n: number): number {
-  return 0.5 * Math.log(Math.max(n, 2))
+export function bicLambda(n: number, scale = 1): number {
+  const area = scale * scale
+  return area * 0.5 * Math.log(Math.max(n / area, 2))
 }
 
 /**
@@ -240,7 +248,9 @@ function rampCandidates(s: Samples, w: number): SpaceCandidates[] {
  *
  * `sigma` is the per-channel sRGB noise (0.5/255 when not positive), `lambda` the
  * price of one editable number, `w` the image width (to find neighbors by pixel
- * index). Models are in the fitting frame.
+ * index), `minSamples` the fewest samples a gradient is tried on
+ * ({@link MIN_GRADIENT_PIXELS}, times the area of a source pixel on an enlarged
+ * raster). Models are in the fitting frame.
  */
 export function fitSamples(
   s: Samples,
@@ -248,6 +258,7 @@ export function fitSamples(
   strict: boolean,
   sigmaIn: number,
   lambda: number,
+  minSamples = MIN_GRADIENT_PIXELS,
 ): FillFit[] {
   const sigma = sigmaIn > 0 ? sigmaIn : 0.5 / 255
   const scored = (model: FillModel, preds: Predictions): FillFit => {
@@ -258,7 +269,7 @@ export function fitSamples(
   const flat = fitFlat(s)
   const flatC: Rgb = flat.kind === 'flat' ? flat.color : [0, 0, 0]
   const out = [scored(flat, new Predictions(flat, s))]
-  if (!strict || s.n < MIN_GRADIENT_PIXELS) return out
+  if (!strict || s.n < minSamples) return out
   if (out[0].cost <= lambda * PARAMS_RADIAL) return out
   const nFlatOnly = out.length
   const minContrast = Math.max(3 * sigma, MIN_VISIBLE_CONTRAST)
@@ -305,7 +316,8 @@ export function select(candidates: readonly FillFit[]): FillFit {
  * interior pixels that pass `evidence` (every model is tried, gradients only
  * when `gradients`); any pixel that passes `evidence`; any pixel (both flat
  * only). No pixels gives a black flat fill at the cost of its parameters.
- * `evidence` null lets every pixel testify. Models are in Trazor's pixel frame.
+ * `evidence` null lets every pixel testify; `minSamples` as for
+ * {@link fitSamples}. Models are in Trazor's pixel frame.
  */
 export function fitPixels(
   rgb: Float32Array,
@@ -317,12 +329,13 @@ export function fitPixels(
   sigma: number,
   lambda: number,
   gradients = true,
+  minSamples = MIN_GRADIENT_PIXELS,
 ): FillFit[] {
   if (pixels.length === 0) return [flatOnly([0, 0, 0], lambda)]
   let fits: FillFit[]
   const interior = collectSamples(rgb, w, h, pixels, member, evidence, true)
   if (interior.n > 0) {
-    fits = fitSamples(interior, w, gradients, sigma, lambda)
+    fits = fitSamples(interior, w, gradients, sigma, lambda, minSamples)
   } else {
     const anyEvidence = collectSamples(rgb, w, h, pixels, member, evidence, false)
     fits =
@@ -401,7 +414,8 @@ export function fitFill(
  * strided), and when it saw fewer than all, chi² is scaled back up by the
  * subsampling factor (and the cost with it) so costs stay comparable across
  * region sizes. `member` is the union's membership, `evidence` which pixels
- * testify (null: all); without `gradients` the fill is flat.
+ * testify (null: all); without `gradients` the fill is flat; `minSamples` as
+ * for {@link fitSamples}.
  */
 export function fitUnion(
   rgb: Float32Array,
@@ -414,10 +428,13 @@ export function fitUnion(
   sigma: number,
   lambda: number,
   gradients = true,
+  minSamples = MIN_GRADIENT_PIXELS,
 ): FillFit {
   const total = a.length + b.length
   const seen = stridedUnion(a, b)
-  const fit = select(fitPixels(rgb, w, h, seen, member, evidence, sigma, lambda, gradients))
+  const fit = select(
+    fitPixels(rgb, w, h, seen, member, evidence, sigma, lambda, gradients, minSamples),
+  )
   if (seen.length >= total) return fit
   const k = total / seen.length
   const paramsTerm = fit.cost - 0.5 * fit.chi2

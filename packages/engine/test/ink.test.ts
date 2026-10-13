@@ -81,6 +81,19 @@ describe('the ink front end', () => {
     }
   })
 
+  it('reads an enlarged copy as the image it enlarges', () => {
+    // The ramp 3× larger, each pixel a 3 × 3 block, traced at scale 3: the same one
+    // gradient in its frame, its sizes and its prices taken in source pixels.
+    const k = 3
+    const big = image(72 * k, 40 * k, (x, y) => {
+      const p = 4 * (Math.floor(y / k) * 72 + Math.floor(x / k))
+      return [ramp.data[p], ramp.data[p + 1], ramp.data[p + 2]]
+    })
+    const front = inkFrontEnd(big, k, false, true)
+    expect(front.labels.count).toBe(2)
+    expect((front.gradients ?? []).filter((g) => g !== null)).toHaveLength(1)
+  })
+
   it('merges the bands of a ramp into one linear gradient', () => {
     const banded = inkFrontEnd(ramp, 1, false, false)
     expect(banded.labels.count).toBeGreaterThan(3)

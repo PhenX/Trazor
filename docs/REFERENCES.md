@@ -224,7 +224,12 @@ uses. Each file names the inkvec files it follows.
   and radial (circular or elliptical) in linear light and in sRGB, with up to two interior
   stops, by `½·χ² + λ·params` with the BIC price `λ = ½·ln n` (G. Schwarz, “Estimating the
   dimension of a model”, _Ann. Statist._ 6(2), 1978) and a half-LSB dead zone in the residual;
-  only strictly interior, unblended pixels testify. The radial centre by variable projection
+  only strictly interior, unblended pixels testify. On a raster enlarged `s` times the price is
+  taken over the source's `n/s²` pixels and in working-pixel units, `s²·½·ln(n/s²)` (each source
+  pixel is `s²` interpolated working pixels, one observation counted `s²` times), and the
+  front end's pixel counts — the sliver test's interior, the least gradient region, the least
+  shared seam — in source pixels: inkvec's `price_in_raster_units`, which prices its own
+  pixel knobs in the raster's units. The radial centre by variable projection
   (G. H. Golub & V. Pereyra, “The differentiation of pseudo-inverses and nonlinear least
   squares problems whose variables separate”, _SIAM J. Numer. Anal._ 10(2), 1973; L. Kaufman,
   “A variable projection method for solving separable nonlinear least squares problems”,
@@ -309,7 +314,11 @@ follows.
   font-rs, an exact box filter as in J. Manson & S. Schaefer, “Wavelet Rasterization”,
   _Computer Graphics Forum_ 30(2), 2011, with one carry per face; the analytic gradient by
   suffix sums. Afterwards the boundaries in a self-crossing the solve made are backed off
-  (a coarse-grid join and exact segment tests).
+  (a coarse-grid join and exact segment tests). A map built on an enlarged copy is solved
+  against the source's own pixels, each the box filter of the drawing over its whole area, so
+  the forward model is the sampling the source went through (analysis by synthesis with the
+  true point-spread function, the box of Manson & Schaefer above); the enlargement's
+  interpolated ramps are no box filter of the boundary and pull the solve off it.
 - **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
   optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
   search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The

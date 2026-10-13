@@ -448,6 +448,8 @@ export interface StageCache {
   intakeSoft?: boolean
   /** The noise of the edges that made the intake soft (`edgeNoise`; ink front end). */
   intakeEdgeNoise?: number
+  /** What a supersampled planar run's geometry measures against (`PlanarRun.source`). */
+  planarSource?: PlanarSource
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
   /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
@@ -560,6 +562,14 @@ export interface VectorizeRunOptions {
   onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
 }
 
+/** The image a supersampled run was enlarged from, prepared as the working image is. */
+interface PlanarSource {
+  /** Composited as the working image is (over white, or the custom background). */
+  image: RasterImage
+  /** Its straight alpha, or null when the working image is opaque. */
+  alpha: Uint8Array | null
+}
+
 /** How the planar chain runs: its stage probe and its front end. */
 interface PlanarRun {
   onStage?: VectorizeRunOptions['onPlanarStage']
@@ -568,6 +578,12 @@ interface PlanarRun {
   soft: boolean
   /** The residual of the edges against the clean labels, when it made the intake soft (`edgeNoise`). */
   edgeNoise?: number
+  /**
+   * On a supersampled run, the image before the enlargement: the boundary
+   * solve compares the coverage of its pixels, the box-filtered samples of the
+   * drawing, while the labels keep the enlarged grid.
+   */
+  source?: PlanarSource
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -761,8 +777,9 @@ export async function vectorize(
     touchesBorder(source)
       ? BORDER_PAD
       : 0
-  // The ink front end reads its edges' residual at the intake as well.
-  const preKey = `${preKeyOf(settings)}|${pad}|${opts?.geometry === 'planar' ? (opts.frontEnd ?? 'classic') : ''}`
+  // The planar chain keeps the image before its enlargement and reads the
+  // intake's verdict, the ink front end its edges' residual too.
+  const preKey = `${preKeyOf(settings)}|${pad}|${opts?.geometry ?? 'classic'}|${opts?.geometry === 'planar' ? (opts.frontEnd ?? 'classic') : ''}`
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
@@ -771,12 +788,14 @@ export async function vectorize(
   // residual on a soft intake.
   let intakeSoft = false
   let intakeEdgeNoise: number | undefined
+  let planarSource: PlanarSource | undefined
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
     alpha = cache.alpha ?? null
     intakeSoft = cache.intakeSoft ?? false
     intakeEdgeNoise = cache.intakeEdgeNoise
+    planarSource = cache.planarSource
     cacheStats(cache).preHits++
     run.progress(1)
   } else {
@@ -795,6 +814,7 @@ export async function vectorize(
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
     if (settings.blurRadius > 0) img = gaussianBlur(img, settings.blurRadius)
+    const before = img
     // Color segmentation would keep the cubic's ringing as colors of its own; a
     // threshold reads the smoother contour of the plain cubic.
     if (scale > 1) {
@@ -807,6 +827,17 @@ export async function vectorize(
     alpha = flat.alpha
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
+    if (opts?.geometry === 'planar' && scale > 1) {
+      const src = flattenImage(before, settings, 1)
+      if (settings.mode === 'grayscale') desaturateInPlace(src.image)
+      planarSource = {
+        image: src.image,
+        alpha:
+          alpha === null
+            ? null
+            : (src.alpha ?? new Uint8Array(src.image.width * src.image.height).fill(255)),
+      }
+    }
     if (cacheable) {
       cacheStats(cache).preMisses++
       // New image or preprocess ⇒ every palette and ink entry depended on it.
@@ -817,6 +848,7 @@ export async function vectorize(
       cache.alpha = alpha
       cache.intakeSoft = intakeSoft
       cache.intakeEdgeNoise = intakeEdgeNoise
+      cache.planarSource = planarSource
       cache.palette = new Map()
       cache.ink = undefined
     }
@@ -912,6 +944,7 @@ export async function vectorize(
             frontEnd: opts.frontEnd ?? 'classic',
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
+            source: planarSource,
           }
         : undefined,
     )
@@ -934,6 +967,7 @@ export async function vectorize(
             frontEnd: opts.frontEnd ?? 'classic',
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
+            source: planarSource,
           }
         : undefined,
       alpha,
@@ -1533,6 +1567,7 @@ async function colorPipeline(
             ink: inkOf(l),
           })),
           scale: settings.supersample,
+          source: planarRun.source,
           sigmaNoise:
             sigmaNoise ?? (planarRun.soft ? softNoise(image, labels, paletteRgb) : undefined),
           onStage: planarRun.onStage,
@@ -2668,6 +2703,7 @@ async function inkPipeline(
       alpha,
       paints: means.map((hex) => ({ hex })),
       scale: settings.supersample,
+      source: planarRun.source,
       sigmaNoise: planarRun.soft ? softNoise(image, labels, meanRgb) : undefined,
       onStage: planarRun.onStage,
     })

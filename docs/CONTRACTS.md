@@ -586,7 +586,13 @@ export namespace ink {
     ids?,
   ): Palette
   function labelImage(rgb, palette: Palette, ids?): Int32Array // nearest ink per pixel
-  function paletteEvidence(sigmaNoise: number, pixels: number, soft: boolean): PaletteEvidence
+  // scale: working pixels per source pixel of an enlarged raster; λ priced over the source's pixels.
+  function paletteEvidence(
+    sigmaNoise: number,
+    pixels: number,
+    soft: boolean,
+    scale?: number,
+  ): PaletteEvidence
   function isSoftIntake(
     edgeWidth: number,
     ringing: number,
@@ -611,6 +617,7 @@ export namespace ink {
     h,
     inkRgb: Float64Array,
     sigma,
+    scale?: number, // thinness read at the source's pixel size on an enlarged raster
   ): number
   function reassignBlendPixels(labels, rgb, alpha, w, h, inkRgb, sigma): number
   function residualSigma(rgb, labels, w, h, inkRgb): number // the noise against the labels
@@ -642,6 +649,7 @@ export namespace ink {
       sameClass?: (a, b) => boolean
       budget?: MergeBudget
       gradients?: boolean
+      scale?: number // pixel counts (gradient size, shared seam) in source pixels
     },
   ): BandMerge // { fills: FillFit[]; ink: number[]; budget }
   function carveResidualFeatures(
@@ -657,10 +665,12 @@ export namespace ink {
     minSize,
     detailSigma?: number | null,
     gradients?: boolean, // false: parents refitted flat
+    scale?: number, // a parent's gradient needs MIN_GRADIENT_PIXELS · scale² samples
   ): number
   // Flat faces of one ink within sight (CIEDE2000 0.5) of its best-evidenced face take its color.
   function snapFlatFills(faces, w, h, fills: FillFit[], faceInk, palette: Palette, skip?): number
-  function bicLambda(n: number): number // ½·ln n, the price of one parameter
+  // ½·ln n, the price of one parameter; on a raster enlarged `scale` times, scale²·½·ln(n/scale²)
+  function bicLambda(n: number, scale?: number): number
   function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
   function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
   // A fade (opacity and color profiles on one geometry) as one gradient whose stops carry opacities;
@@ -677,7 +687,7 @@ export namespace ink {
     h,
     // edgeNoise: on an intake its edges made soft, the noise they measured against the clean labels.
     intake: { sigmaNoise: number; soft: boolean; edgeNoise?: number },
-    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends?; colorFold? },
+    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends?; colorFold?; scale? },
   ): NativeFrontEnd // { palette, labels, sigmaNoise, lambda, sameClass, absorbed, moved }
   function extractPaletteNative(rgb, alpha, w, h, merge?, maxColors?, ev?, ids?): Palette
   function labelImageNative(rgb, alpha, palette: Palette, ids?): Int32Array
@@ -1013,7 +1023,9 @@ export function refineJunctions(map: PlanarMap): void
 // Every point and node moved at once (≤ 1 px, frame points along the frame) so the map's exact
 // box coverage of fills matches image, by L-BFGS over independent parts; folds it made are
 // backed off. On 'solved' points and nodes are overwritten (sigmas kept); otherwise untouched.
-export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep? }
+// source: a map built on a copy enlarged `scale` times is solved against the source's own pixels
+// (each one's exact coverage), the steps, the 1 px reach and the anchor in the map's pixels.
+export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep?; source?: { image: PremultipliedImage; scale: number } }
 export interface SolveReport { outcome: 'solved' | 'degenerate' | 'over-budget' | 'no-residual' | 'no-gain'; before; after; iters; moved; scale; parts; evals }
 export function solveBoundaries(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SolveReport
 // One boundary (interleaved points, per-point σ, px) fitted by the multimodel DP: absolute L/C/A

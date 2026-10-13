@@ -33,7 +33,9 @@
  * gain is `cost(a) + cost(b) − cost(a ∪ b)`, each cost on its fit's own samples, or
  * for a smooth pair (region recovery) {@link commonPixelGain}, both alternatives
  * priced on the union's own interior evidence pixels. Exact ties go to the lowest
- * `(a, b)`.
+ * `(a, b)`. On a raster enlarged `scale` times both counts are taken in source
+ * pixels (`MergeOptions.scale`): a shared boundary is `scale` times longer and a
+ * region `scale²` times larger in working pixels.
  *
  * The loop is bounded by a deterministic work cap ({@link MergeBudget}): a wave is
  * charged before it is fitted, the sum of {@link unionWork} over its unions, and so
@@ -179,6 +181,14 @@ export interface MergeOptions {
    * own its own color.
    */
   gradients?: boolean
+  /**
+   * Working pixels per source pixel of an enlarged raster (default 1): a gradient
+   * then needs `MIN_GRADIENT_PIXELS · scale²` pixels and a pair of components
+   * `MIN_SHARED_BOUNDARY · scale` shared pixel pairs, so the tests read the
+   * source's pixels; `lambda` is priced in the same units (`bicLambda` with the
+   * scale).
+   */
+  scale?: number
 }
 
 /** What {@link mergeGradientBands} returns. */
@@ -216,6 +226,7 @@ export function mergeGradientBands(
   const innerBlends = options.regionRecovery ?? true
   const sameClass = options.sameClass ?? null
   const gradients = options.gradients ?? true
+  const scale = options.scale ?? 1
   const budget = options.budget ?? new MergeBudget(w, h)
   const nInk = Math.floor(inkRgb.length / 3)
   let nPal = nInk
@@ -243,7 +254,18 @@ export function mergeGradientBands(
 
   // 2. Per-component fits; 3. the greedy agglomeration; 4. the write-back.
   const merge = new Agglomeration(
-    { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients },
+    {
+      rgb,
+      w,
+      h,
+      sigmaNoise,
+      lambda,
+      pure,
+      partner,
+      gradients,
+      minPixels: MIN_GRADIENT_PIXELS * scale * scale,
+      minShared: MIN_SHARED_BOUNDARY * scale,
+    },
     comp,
     members,
     compLabel,
@@ -372,6 +394,10 @@ interface UnionFitter {
   readonly partner: Uint32Array
   /** Whether a fill may be a gradient. */
   readonly gradients: boolean
+  /** Fewest pixels a gradient, or a component on an edge, needs (`MIN_GRADIENT_PIXELS`, scaled). */
+  readonly minPixels: number
+  /** Fewest shared pixel pairs of a merge candidate (`MIN_SHARED_BOUNDARY`, scaled). */
+  readonly minShared: number
 }
 
 /** One cached union fit of the pair `a < b`. */
@@ -447,11 +473,11 @@ class Agglomeration {
    * in the union testifies too.
    */
   private fit(pa: Int32Array, pb: Int32Array, a: number, b: number, inner: boolean): FillFit {
-    const { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients } = this.fitter
+    const { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients, minPixels } = this.fitter
     const group = this.group
     const member: PixelTest = (p) => group[p] === a || group[p] === b
     const evidence: PixelTest = (p) => pure[p] === 1 || (inner && allInside(partner, p, member))
-    return fitUnion(rgb, w, h, pa, pb, member, evidence, sigmaNoise, lambda, gradients)
+    return fitUnion(rgb, w, h, pa, pb, member, evidence, sigmaNoise, lambda, gradients, minPixels)
   }
 
   private key(a: number, b: number): number {
@@ -493,14 +519,14 @@ class Agglomeration {
 
   /**
    * Whether the seam is an edge two regions meet at: both components hold at least
-   * `MIN_GRADIENT_PIXELS` pixels and more than half the seam steps across a
+   * `minPixels` pixels and more than half the seam steps across a
    * discontinuity (Chakraborty et al. 2025 §3.2). Anti-aliasing flecks, all edge,
    * stay absorbable.
    */
   private acrossEdge(a: number, b: number): boolean {
     return (
-      this.size[a] >= MIN_GRADIENT_PIXELS &&
-      this.size[b] >= MIN_GRADIENT_PIXELS &&
+      this.size[a] >= this.fitter.minPixels &&
+      this.size[b] >= this.fitter.minPixels &&
       isEdge(this.adj, this.sharp, a, b)
     )
   }
@@ -530,14 +556,14 @@ class Agglomeration {
 
   /**
    * Candidate pairs `a < b` not yet cached (keys, ascending): both alive, sharing at
-   * least {@link MIN_SHARED_BOUNDARY} pixel pairs and worth a union.
+   * least `minShared` pixel pairs and worth a union.
    */
   private missingUnions(): number[] {
     const missing: number[] = []
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < MIN_SHARED_BOUNDARY) continue
+        if (b <= a || shared < this.fitter.minShared) continue
         if (!this.worthAUnion(a, b)) continue
         const k = this.key(a, b)
         if (!this.cache.has(k)) missing.push(k)
@@ -587,7 +613,7 @@ class Agglomeration {
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < MIN_SHARED_BOUNDARY) continue
+        if (b <= a || shared < this.fitter.minShared) continue
         const k = this.key(a, b)
         if (!this.worthAUnion(a, b) || this.gains.has(k)) continue
         const entry = this.cache.get(k)
@@ -605,7 +631,7 @@ class Agglomeration {
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < MIN_SHARED_BOUNDARY) continue
+        if (b <= a || shared < this.fitter.minShared) continue
         if (!this.worthAUnion(a, b)) continue
         const gain = this.pairGain(a, b)
         if (gain === null) continue
@@ -716,7 +742,7 @@ class Agglomeration {
   /**
    * Write the result back into `labels` and build one fill per label id: the
    * palette labels first, then a fresh label for every live component that is a
-   * gradient or flat with at least `MIN_GRADIENT_PIXELS` interior pixels of its own
+   * gradient or flat with at least `minPixels` interior pixels of its own
    * (two disconnected regions of one ink are two objects). A thin flat component
    * keeps its palette label, whose fill is refitted flat over every flat component
    * of that label (evidence pixels only), the wide ones included. Past
@@ -746,7 +772,7 @@ class Agglomeration {
       const ownColor =
         !gradient &&
         canMint &&
-        interiorCount(members, w, h, (p) => group[p] === c) >= MIN_GRADIENT_PIXELS
+        interiorCount(members, w, h, (p) => group[p] === c) >= this.fitter.minPixels
       const minted = canMint && (gradient || ownColor)
       if (minted) {
         const id = fills.length

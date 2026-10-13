@@ -44,7 +44,7 @@ import { syncNodes } from '../planar/types'
 import type { FaceFill, PlanarMap, PremultipliedImage } from '../planar/types'
 import { BandProblem, buildUnknowns, pinFrame, tableBudget } from './band'
 import { foldGuard } from './folds'
-import { lbfgsDescend } from './lbfgs'
+import { lbfgsDescend, MAX_STEP, MAX_TOTAL } from './lbfgs'
 import type { LbfgsStep } from './lbfgs'
 
 /** Kink weight: the kink term starts at this fraction of the data term. */
@@ -52,7 +52,22 @@ export const K_KINK = 0.05
 /** Anchor weight: a point 1 px from its start costs this fraction of a point's share of the data term. */
 export const K_ANCHOR = 0.1
 
+/**
+ * The image a map traced on an enlarged copy is solved against: the source at its own
+ * resolution, the map `scale` times its size (a positive integer).
+ */
+export interface SolveSource {
+  image: PremultipliedImage
+  scale: number
+}
+
 export interface SolveOptions {
+  /**
+   * Solve against the source instead of the enlarged image the map was built on: the data
+   * term compares each source pixel with the exact coverage of its whole area, while the
+   * steps, the 1 px reach and the anchor stay in the map's pixels.
+   */
+  source?: SolveSource
   /**
    * Iterations per independent part (it only lowers the solver's own ceiling
    * of 64, so a cap at or above what a part takes changes nothing).
@@ -100,12 +115,78 @@ export interface SolveReport {
  * success every edge's points, and every node's position, are overwritten
  * (sigmas are not touched; a boundary the fold guard backed off keeps part or
  * none of its displacement). Otherwise the map is left as it was.
+ *
+ * With `opts.source` (a map built on an enlarged copy, `scale` map pixels per
+ * source pixel) the solve runs in source coordinates against the source image:
+ * the map's points divided by `scale`, each gradient fill read where the point
+ * lies on the map, a step capped at {@link MAX_STEP} and a point held within
+ * {@link MAX_TOTAL} map pixels, and the anchor priced per map pixel (`K_ANCHOR`
+ * times `scale²`); the solved points are written back multiplied by `scale`. A
+ * source pixel is a box-filtered sample of the drawing over its whole area, so
+ * the exact coverage of a source pixel is the forward model the source
+ * observes; an interpolated enlargement observes no box filter at all.
  */
 export function solveBoundaries(
   map: PlanarMap,
   image: PremultipliedImage,
   fills: readonly FaceFill[],
   opts: SolveOptions = {},
+): SolveReport {
+  const source = opts.source
+  if (source === undefined || source.scale === 1) return solveAt(map, image, fills, opts, 1)
+  const s = source.scale
+  if (
+    !(Number.isInteger(s) && s > 1) ||
+    source.image.width * s !== map.width ||
+    source.image.height * s !== map.height
+  ) {
+    throw new Error('solveBoundaries: the source is not the map divided by its scale')
+  }
+  const scaled = scaledMap(map, 1 / s)
+  const at = fills.map((f): FaceFill => {
+    const read = f.at
+    if (read === undefined) return f
+    return { r: f.r, g: f.g, b: f.b, a: f.a, at: (x, y, out) => read(x * s, y * s, out) }
+  })
+  const report = solveAt(scaled, source.image, at, opts, s)
+  if (report.outcome !== 'solved') return report
+  for (let k = 0; k < map.edges.length; k++) {
+    const from = scaled.edges[k].points
+    const to = map.edges[k].points
+    for (let i = 0; i < to.length; i++) to[i] = from[i] * s
+  }
+  for (let v = 0; v < map.nodes.length; v++) {
+    map.nodes[v].x = scaled.nodes[v].x * s
+    map.nodes[v].y = scaled.nodes[v].y * s
+  }
+  syncNodes(map)
+  return report
+}
+
+/**
+ * A copy of `map` with every coordinate and its size multiplied by `f`: the
+ * edges' points and the nodes, sharing everything else.
+ */
+function scaledMap(map: PlanarMap, f: number): PlanarMap {
+  return {
+    width: map.width * f,
+    height: map.height * f,
+    faces: map.faces,
+    edges: map.edges.map((e) => ({ ...e, points: e.points.map((v) => v * f) })),
+    nodes: map.nodes.map((nd) => ({ x: nd.x * f, y: nd.y * f, ends: nd.ends })),
+  }
+}
+
+/**
+ * {@link solveBoundaries} in coordinates where one map pixel measures `1 / unit`:
+ * the step cap, the reach and the anchor's unit displacement are a map pixel.
+ */
+function solveAt(
+  map: PlanarMap,
+  image: PremultipliedImage,
+  fills: readonly FaceFill[],
+  opts: SolveOptions,
+  unit: number,
 ): SolveReport {
   const report: SolveReport = {
     outcome: 'degenerate',
@@ -137,7 +218,7 @@ export function solveBoundaries(
   }
   if (!(kink0 > 0)) return report
   prob.wKink = (K_KINK * data0) / kink0
-  prob.wAnchor = (K_ANCHOR * data0) / n
+  prob.wAnchor = (K_ANCHOR * data0 * unit * unit) / n
   const parts = prob.components()
   const result = lbfgsDescend(
     (x, grad, part) => {
@@ -148,6 +229,8 @@ export function solveBoundaries(
     {
       parts: parts.map((p) => p.vars),
       pin: u.pin,
+      maxStep: MAX_STEP / unit,
+      maxTotal: MAX_TOTAL / unit,
       maxIters: opts.maxIterations,
       iterationBudget: opts.iterationBudget,
       fixedEnergy: prob.restResidual,

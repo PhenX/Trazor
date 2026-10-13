@@ -435,6 +435,88 @@ describe('solveBoundaries from the lattice', () => {
   })
 })
 
+describe('solveBoundaries on a map built on an enlarged copy', () => {
+  /** Catmull–Rom weight at distance `t`. */
+  function cubic(t: number): number {
+    const a = Math.abs(t)
+    if (a < 1) return 1.5 * a * a * a - 2.5 * a * a + 1
+    if (a < 2) return -0.5 * a * a * a + 2.5 * a * a - 4 * a + 2
+    return 0
+  }
+
+  /** `img` enlarged `s` times by Catmull–Rom interpolation, edge pixels repeated. */
+  function enlarge(img: PremultipliedImage, s: number): PremultipliedImage {
+    const w = img.width * s
+    const h = img.height * s
+    const out = new Float32Array(w * h * 4)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const sx = (x + 0.5) / s - 0.5
+        const sy = (y + 0.5) / s - 0.5
+        const x0 = Math.floor(sx)
+        const y0 = Math.floor(sy)
+        for (let j = -1; j <= 2; j++) {
+          for (let i = -1; i <= 2; i++) {
+            const xi = Math.min(Math.max(x0 + i, 0), img.width - 1)
+            const yj = Math.min(Math.max(y0 + j, 0), img.height - 1)
+            const wt = cubic(sx - x0 - i) * cubic(sy - y0 - j)
+            for (let ch = 0; ch < 4; ch++)
+              out[4 * (y * w + x) + ch] += img.data[4 * (yj * img.width + xi) + ch] * wt
+          }
+        }
+      }
+    }
+    return { width: w, height: h, data: out }
+  }
+
+  /** Mean distance of the map's inner points from the circle of radius `r` about `(cx, cy)`. */
+  function offCircle(map: PlanarMap, cx: number, cy: number, r: number): number {
+    return mean(interiorPoints(map).map(([x, y]) => Math.abs(Math.hypot(x - cx, y - cy) - r)))
+  }
+
+  it('lands a disk on its circle by the source pixels, where the enlargement misleads it', () => {
+    for (const [cx, cy, r] of [
+      [12.3, 11.6, 6.7],
+      [15.1, 14.45, 9.3],
+      [10.7, 12.2, 4.15],
+    ]) {
+      const s = 2
+      const source = render(32, 32, [diskRegion(cx, cy, r, rgbaOf(INK))], rgbaOf(PAPER))
+      const work = enlarge(source, s)
+      const map = mapOfLabels(
+        labelsOfRegions(64, 64, [diskRegion(cx * s, cy * s, r * s, rgbaOf(INK))]),
+      )
+      const fills = fillsByFace(map.faces, [PAPER, INK])
+      const lattice = offCircle(map, cx * s, cy * s, r * s)
+      const start = map.edges.map((e) => e.points.slice())
+      const against = cloneMap(map)
+      solveBoundaries(against, work, fills)
+      // The enlargement's ramps are no box filter of the circle: solved against them the
+      // boundary ends no nearer than the lattice.
+      expect(offCircle(against, cx * s, cy * s, r * s)).toBeGreaterThan(lattice / 2)
+      const rep = solveBoundaries(map, work, fills, { source: { image: source, scale: s } })
+      expect(rep.outcome).toBe('solved')
+      expect(offCircle(map, cx * s, cy * s, r * s)).toBeLessThan(0.03)
+      // The reach stays one map pixel.
+      map.edges.forEach((e, k) => {
+        for (let i = 0; i < e.points.length; i += 2) {
+          const d = Math.hypot(e.points[i] - start[k][i], e.points[i + 1] - start[k][i + 1])
+          expect(d).toBeLessThanOrEqual(MAX_TOTAL + 1e-9)
+        }
+      })
+    }
+  })
+
+  it('refuses a source that is not the map divided by the scale', () => {
+    const source = render(16, 16, [diskRegion(8, 8, 4, rgbaOf(INK))], rgbaOf(PAPER))
+    const map = mapOfLabels(labelsOfRegions(30, 32, [diskRegion(16, 16, 8, rgbaOf(INK))]))
+    const fills = fillsByFace(map.faces, [PAPER, INK])
+    expect(() =>
+      solveBoundaries(map, enlarge(source, 2), fills, { source: { image: source, scale: 2 } }),
+    ).toThrow('the source is not the map divided by its scale')
+  })
+})
+
 describe('thin lines', () => {
   it('keeps the width of a 1.2 px line', () => {
     // Its pixel rows make a lattice band two pixels wide; the solve narrows it to the line.
