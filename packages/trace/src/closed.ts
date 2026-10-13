@@ -202,7 +202,8 @@ export function ringPolygon(
   // the polygon's edges, then feeds the moment sums, the vertex adjustment and
   // the run fitter's samples, so each fit tracks the true edge rather than the
   // staircase.
-  const geom = field ? refineRingToField(ext, field, vertexIdx, setback) : ext
+  const measured: number[] = []
+  const geom = field ? refineRingToField(ext, field, vertexIdx, setback, measured) : ext
   const sums = computeSums(geom)
   const polygon = adjustVertices(geom, sums, vertexIdx, true)
   // A ring a pixel wide — a hairline, a stroke's counter — has its two sides
@@ -217,7 +218,7 @@ export function ringPolygon(
   // rather than drawing its pixels.
   const area = Math.min(Math.abs(signedAreaFlat(ring)), Math.abs(signedAreaFlat(geom)))
   if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * area) return null
-  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx, setback)
+  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx, setback, measured)
   const extent = field ? Math.max(field.width, field.height) : 0
   const fit: RingFit = {
     polygon,

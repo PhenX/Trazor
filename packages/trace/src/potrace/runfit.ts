@@ -144,6 +144,10 @@ export function runTau(): number {
  * geometry, `geom` the (possibly) refined geometry, both flat. A point with a
  * nonzero `setback` (per ring point) runs hidden under a sheet painted above it,
  * where no position shows, so it is held no tighter than a lattice point.
+ * `measured` (per ring point, from the refinement) is a point's own positional
+ * uncertainty where the field measured it: a moved point on a soft edge is
+ * held to that, never tighter than {@link SIGMA_REFINED}, and one the field
+ * refused to move to that, never tighter than {@link SIGMA_LATTICE}.
  */
 export function ringSigmas(
   lattice: FlatPoints,
@@ -151,6 +155,7 @@ export function ringSigmas(
   refined: boolean,
   vertices?: readonly number[],
   setback?: ArrayLike<number>,
+  measured?: ArrayLike<number>,
 ): number[] {
   const n = geom.length >> 1
   const axis = new Uint8Array(n)
@@ -164,10 +169,24 @@ export function ringSigmas(
     }
   }
   const sigma = new Array<number>(n)
+  // A closed ring repeats its first point as its last; its neighbours wrap.
+  const closed = n > 2 && geom[0] === geom[(n - 1) * 2] && geom[1] === geom[(n - 1) * 2 + 1]
+  const period = closed ? n - 1 : n
   for (let i = 0; i < n; i++) {
     const moved =
       refined && (geom[i * 2] !== lattice[i * 2] || geom[i * 2 + 1] !== lattice[i * 2 + 1])
-    sigma[i] = moved ? SIGMA_REFINED : axis[i] ? SIGMA_HARD : SIGMA_LATTICE
+    let own = measured ? measured[i] : Number.NaN
+    // A point moved without both of its nearest pixels measured (a staircase
+    // corner, read across the diagonal) lies on the same edge as its
+    // neighbours: it is held as loosely as the looser of them.
+    if (moved && measured && Number.isNaN(own)) {
+      const before = measured[(i - 1 + period) % period]
+      const after = measured[(i + 1) % period]
+      own = Math.max(before >= 0 ? before : 0, after >= 0 ? after : 0)
+    }
+    if (moved) sigma[i] = own > SIGMA_REFINED ? own : SIGMA_REFINED
+    else if (own >= 0) sigma[i] = own > SIGMA_LATTICE ? own : SIGMA_LATTICE
+    else sigma[i] = axis[i] ? SIGMA_HARD : SIGMA_LATTICE
     if (setback && setback[i % setback.length] !== 0) sigma[i] = SIGMA_LATTICE
   }
   return sigma

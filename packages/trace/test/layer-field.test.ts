@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { GrayImage } from '@trazor/core'
+import type { BinaryMask, GrayImage } from '@trazor/core'
 import {
   coverageOf,
   decomposeMask,
@@ -167,6 +167,106 @@ describe('layerField', () => {
     const a = layerField({ width: W, height: H, ...src, label: -1 })
     const b = layerField({ width: W, height: H, ...src, label: -1 })
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) expect(a.at(x, y)).toBe(b.at(x, y))
+  })
+})
+
+describe('layerField on a soft color band', () => {
+  const OCHRE: [number, number, number] = [200, 100, 0]
+  const AMBER: [number, number, number] = [220, 120, 0]
+
+  /**
+   * Ochre (label 0) left of x = 10, amber (label 1) from it, the amber layer's
+   * mask x ≥ 10, the image's amber share per column given by `share`.
+   */
+  function band(share: (x: number) => number): ReturnType<typeof layerField> {
+    const w = 20
+    const h = 12
+    const mask = new Uint8Array(w * h)
+    const labels = new Int32Array(w * h)
+    const pixels = new Uint8ClampedArray(w * h * 4)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x
+        labels[p] = x < 10 ? 0 : 1
+        mask[p] = x >= 10 ? 1 : 0
+        const t = Math.min(Math.max(share(x), 0), 1)
+        for (let c = 0; c < 3; c++) {
+          pixels[p * 4 + c] = Math.round(OCHRE[c] + (AMBER[c] - OCHRE[c]) * t)
+        }
+        pixels[p * 4 + 3] = 255
+      }
+    }
+    return layerField({
+      width: w,
+      height: h,
+      mask,
+      labels,
+      pixels,
+      paletteRgb: new Uint8Array([...OCHRE, ...AMBER]),
+      label: 1,
+    })
+  }
+
+  /** A soft band: a ramp over sixteen columns whose ½ level lies 2½ px inside the mask. */
+  const soft = (x: number): number => (x + 0.5 - 4.5) / 16
+  /** A clean edge: column 10 a 70% mix, everything else flat. */
+  const clean = (x: number): number => (x < 10 ? 0 : x === 10 ? 0.7 : 1)
+  /** A clean edge at x = 10.64 spread over four columns, as a 2× enlargement leaves it. */
+  const spread = (x: number): number => (x + 0.5 - 10.64) / 4 + 0.5
+
+  /** The amber ring's points on its left edge (x = 10), as refined, with their σ. */
+  function leftEdge(share: (x: number) => number): { x: number; sigma: number }[] {
+    const field = band(share)
+    const mask: BinaryMask = { width: 20, height: 12, data: new Uint8Array(20 * 12) }
+    for (let y = 0; y < 12; y++) for (let x = 10; x < 20; x++) mask.data[y * 20 + x] = 1
+    const ring = decomposeMask(mask, 'minority', 1)[0].points
+    const fit = ringPolygon(ring, field)
+    expect(fit).not.toBeNull()
+    const out: { x: number; sigma: number }[] = []
+    for (let i = 0; i < ring.length >> 1; i++) {
+      const y = ring[i * 2 + 1]
+      if (ring[i * 2] === 10 && y > 1 && y < 11) {
+        out.push({ x: fit?.geom[i * 2] ?? Number.NaN, sigma: fit?.sigma[i] ?? Number.NaN })
+      }
+    }
+    expect(out.length).toBeGreaterThan(4)
+    return out
+  }
+
+  it('leaves a band edge where the image shows no ½ crossing, held loosely', () => {
+    // Both pixels beside the boundary, and the one past them, read under ½
+    // amber: only the saturated values filled in beyond the rim would make a
+    // step of it. The ramp puts its ½ level 2½ px off, past the search's one
+    // pixel of reach, which bounds how loosely the point is held.
+    for (const p of leftEdge(soft)) {
+      expect(p.x).toBe(10)
+      expect(p.sigma).toBeGreaterThanOrEqual(0.5)
+      expect(p.sigma).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('still moves a clean anti-aliased edge onto its ½ crossing, held tightly', () => {
+    // The 70% column puts the edge 0.3 px into it.
+    for (const p of leftEdge(clean)) {
+      expect(p.x).toBeCloseTo(10.3, 1)
+      expect(p.sigma).toBeLessThanOrEqual(0.1)
+    }
+  })
+
+  it('moves an edge spread over several pixels whose ½ crossing lies past the rim', () => {
+    // Both rim pixels read under ½, but the column past them reads over it:
+    // the image shows the edge within the search, and the point leaves the
+    // lattice towards it.
+    for (const p of leftEdge(spread)) expect(p.x).toBeGreaterThan(10.1)
+  })
+
+  it('reports measured values as measured and filled-in ones as not', () => {
+    const field = band(soft)
+    // The two rim pixels unmix ochre against amber; deep pixels are filled in.
+    expect(field.uncertainty?.(9, 5)).toBeGreaterThan(0)
+    expect(field.uncertainty?.(10, 5)).toBeGreaterThan(0)
+    expect(Number.isNaN(field.uncertainty?.(5, 5) ?? 0)).toBe(true)
+    expect(Number.isNaN(field.uncertainty?.(15, 5) ?? 0)).toBe(true)
   })
 })
 

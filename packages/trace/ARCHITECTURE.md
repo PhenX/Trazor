@@ -79,7 +79,12 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
 precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective).
    `σ` is 0.1 px where a sample was snapped onto the sub-pixel edge, 0.06 px on an axis-aligned stretch of a refined
    ring's polygon that stayed on the lattice (a hard edge the drawing put on the grid, or the image border), ½ px
-   elsewhere on the lattice. A corner is a polygon vertex (read on the unadjusted polygon) turning at least 45° (inkvec
+   elsewhere on the lattice. A stacked layer's field measures each point's own uncertainty from the two pixels beside
+   it (noise over contrast over the coverage step, inkvec's `position_sigma`): a snapped sample on a soft edge is held
+   to that where it is looser, and a sample the field refused to move — its two pixels on the same side of ½ and none
+   past them crossing it, a ramp the label pass cut away from its ½ level — stays on the lattice, held as loosely as
+   its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A corner is a polygon
+   vertex (read on the unadjusted polygon) turning at least 45° (inkvec
    `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
    (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
    the stub's middle. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A

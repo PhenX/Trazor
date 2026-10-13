@@ -1,5 +1,7 @@
 import type { GrayImage } from '@trazor/core'
+import { estimateNoise } from '@trazor/core'
 import type { FlatPoints } from './paths'
+import { positionSigma } from './planar/subpixel'
 
 /**
  * A signed scalar field over the pixel grid, in [-0.5, 0.5]: positive on one
@@ -13,6 +15,22 @@ export interface SignedField {
   width: number
   height: number
   at(x: number, y: number): number
+  /**
+   * Coverage uncertainty of the value at integer pixel (x, y): the image noise
+   * over the contrast of the two colors the pixel was unmixed between, in
+   * coverage units; `NaN` where the value is not read from the image but filled
+   * in (a pixel the field takes as fully inside or outside, or two coincident
+   * colors). Absent, every value is taken as measured, and a refined point's
+   * uncertainty is left to the caller.
+   */
+  uncertainty?(x: number, y: number): number
+  /**
+   * The value at integer pixel (x, y) unmixed between the two colors the field
+   * reads pixel (rx, ry) between — a pixel beyond the rim read as that rim
+   * pixel's edge would continue there; `NaN` where (rx, ry) is not read from
+   * the image or the colors coincide.
+   */
+  along?(x: number, y: number, rx: number, ry: number): number
 }
 
 /**
@@ -60,6 +78,8 @@ export function pairwiseField(
 const SATURATED = 0.4999
 /** Clamp for a single point's sub-pixel displacement along the normal (px). */
 const MAX_SHIFT = 1.0
+/** Largest positional uncertainty (px) a refined point is given (inkvec `vertex_sigma`'s clamp). */
+const MAX_POINT_SIGMA = 2
 /**
  * A coverage this close to 0 or 1 is a fully outside/inside pixel that carries no
  * sub-pixel information: a hard edge shows only these, and moving a point off the
@@ -115,16 +135,39 @@ const TIE_NUDGE = 1e-6
  * down) — so an edge that runs hidden under a sheet painted above it follows the
  * sheet's true edge at a fixed depth beneath it. A point on the image border
  * stays put.
+ *
+ * A field that tells its measured values from the ones it fills in
+ * ({@link SignedField.uncertainty}) moves a point only where the image shows a
+ * ½ crossing at it: the two pixels nearest the point across the boundary, both
+ * measured and both partial, must not read coverage on the same side of ½. Two
+ * such pixels on one side are a ramp the label boundary cut through away from
+ * its ½ level — a soft color band split into flat ones — whose saturated ends
+ * are only the values filled in beyond the rim, and a move there would trace
+ * the label's staircase as an edge. Such a field also gives each point whose
+ * two nearest pixels it measured a positional uncertainty in `sigma` (per ring
+ * point, `NaN` otherwise): the coverage uncertainty over the coverage change
+ * per pixel between those two pixels, in quadrature with the level set's model
+ * error (inkvec `CoverageField::position_sigma`), so a point on a soft edge is
+ * held loosely and one on a crisp edge tightly; a refused point's adds the
+ * distance to the ½ level the ramp extrapolates to, up to the search's one
+ * pixel of reach.
  */
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
   vertices?: readonly number[],
   setback?: ArrayLike<number>,
+  sigma?: number[],
 ): FlatPoints {
   const w = field.width
   const h = field.height
   const data = 'data' in field ? field.data : null
+  const signed = data === null ? (field as SignedField) : undefined
+  const uncertainty = signed?.uncertainty?.bind(signed)
+  const along = signed?.along?.bind(signed)
+  const measure: PointMeasure | undefined = uncertainty
+    ? { uncertainty, along, sigma: Number.NaN, refused: false }
+    : undefined
   /** Centered field value at integer pixel (x, y), coordinates clamped to grid. */
   const at = (x: number, y: number): number => {
     const cx = x < 0 ? 0 : x >= w ? w - 1 : x
@@ -221,11 +264,13 @@ export function refineRingToField(
   }
 
   const out: FlatPoints = new Array(ring.length)
+  if (sigma) sigma.length = n
   for (let i = 0; i < n; i++) {
     const px = ring[i * 2]
     const py = ring[i * 2 + 1]
     out[i * 2] = px
     out[i * 2 + 1] = py
+    if (sigma) sigma[i] = Number.NaN
     // Pin the image border so a clipped straight edge is not pulled inward.
     if (px <= 0 || py <= 0 || px >= w || py >= h) continue
 
@@ -243,7 +288,17 @@ export function refineRingToField(
     if (tl < 1e-9) continue
     const nx = -tany / tl
     const ny = tanx / tl
-    const shift = solveNormal(coverageAt, px, py, nx, ny, w, h)
+    if (measure) {
+      measure.sigma = Number.NaN
+      measure.refused = false
+    }
+    const shift = solveNormal(coverageAt, px, py, nx, ny, w, h, measure)
+    // A point the search moved keeps the σ it was measured at, a point the
+    // field refused keeps the σ of its distance to the ½ level; one left in
+    // place otherwise (a hard edge on the lattice) has none of its own.
+    if (sigma && measure && ((shift !== null && shift !== 0) || measure.refused)) {
+      sigma[i] = measure.sigma
+    }
     const back = setback ? setback[i % period] : 0
     if (shift === null && back === 0) continue
     const move = (shift ?? 0) + back
@@ -251,6 +306,76 @@ export function refineRingToField(
     out[i * 2 + 1] = py + ny * move
   }
   return out
+}
+
+/**
+ * Whether the two probed pixels nearest a point, one on either side of it,
+ * leave a ½ crossing possible there, and the point's positional σ in
+ * `measure.sigma` (`NaN` unless the field measured both). Two measured partial
+ * pixels reading coverage on the same side of ½ are a ramp the label boundary
+ * cut through away from its ½ level — a soft color band split into flat ones,
+ * whose saturated ends are only the values filled in beyond the rim — so the
+ * point is refused, at σ the distance to that level as the ramp extrapolates
+ * it, `|½ − ā| / g`, in quadrature with the coverage's own and at most the
+ * search's reach ({@link MAX_SHIFT}: the probes say nothing of a level further
+ * off, and a looser point lets the fit pull a layer clear of the one beside it,
+ * opening a sliver between them) — unless a measured
+ * probe past them, or the pixel past the nearer one read between the same two
+ * colors ({@link SignedField.along}), crosses ½: then the image does show the
+ * edge within the search, a step the working image's enlargement or the
+ * anti-aliasing spread over several pixels.
+ * Otherwise σ is the position uncertainty of the coverage step `g` between the
+ * two.
+ */
+function measuredCrossing(
+  measure: PointMeasure,
+  at: { px: number; py: number; nx: number; ny: number; w: number; h: number },
+  a: readonly number[],
+  u: readonly number[],
+  pix: readonly number[],
+  order: readonly number[],
+): boolean {
+  measure.sigma = Number.NaN
+  let lo = -1
+  let hi = -1
+  for (let k = 0; k < u.length; k++) {
+    if (u[k] < 0) lo = k
+    else if (u[k] > 0 && hi < 0) hi = k
+  }
+  if (lo < 0 || hi < 0) return true
+  const uLo = measure.uncertainty(pix[order[lo] * 2], pix[order[lo] * 2 + 1])
+  const uHi = measure.uncertainty(pix[order[hi] * 2], pix[order[hi] * 2 + 1])
+  if (Number.isNaN(uLo) || Number.isNaN(uHi)) return true
+  const gradient = Math.abs(a[hi] - a[lo]) / (u[hi] - u[lo])
+  measure.sigma = Math.min(positionSigma(Math.max(uLo, uHi), gradient), MAX_POINT_SIGMA)
+  const partialLo = a[lo] > PARTIAL_LO && a[lo] < PARTIAL_HI
+  const partialHi = a[hi] > PARTIAL_LO && a[hi] < PARTIAL_HI
+  if (!partialLo || !partialHi || (a[lo] - 0.5) * (a[hi] - 0.5) <= 0) return true
+  // The ½ level lies beyond the one of the two nearer to it; the pixel past
+  // that one, read as its edge would continue, shows whether the ramp reaches
+  // it within the search.
+  const towardHi = a[lo] < 0.5 ? a[hi] >= a[lo] : a[hi] <= a[lo]
+  const near = towardHi ? hi : lo
+  for (let k = towardHi ? hi + 1 : lo - 1; k >= 0 && k < u.length; k += towardHi ? 1 : -1) {
+    const measured = !Number.isNaN(measure.uncertainty(pix[order[k] * 2], pix[order[k] * 2 + 1]))
+    if (measured && (a[k] - 0.5) * (a[near] - 0.5) <= 0) return true
+  }
+  if (measure.along) {
+    // The pixel centre a pixel further along the normal than the nearer one's.
+    const nearX = pix[order[near] * 2]
+    const nearY = pix[order[near] * 2 + 1]
+    const ahead = u[near] + (towardHi ? 1 : -1)
+    const ix = Math.round(at.px + at.nx * ahead - 0.5)
+    const iy = Math.round(at.py + at.ny * ahead - 0.5)
+    if ((ix !== nearX || iy !== nearY) && ix >= 0 && iy >= 0 && ix < at.w && iy < at.h) {
+      const v = measure.along(ix, iy, nearX, nearY) + 0.5
+      if ((v - 0.5) * (a[near] - 0.5) <= 0) return true
+    }
+  }
+  const away = Math.abs(0.5 - 0.5 * (a[lo] + a[hi])) / Math.max(gradient, 1e-6)
+  measure.sigma = Math.min(Math.hypot(away, measure.sigma), MAX_SHIFT)
+  measure.refused = true
+  return false
 }
 
 /**
@@ -272,11 +397,28 @@ function edgeOffset(a: number, na: number, nb: number): number {
 }
 
 /**
+ * What a field with measured values ({@link SignedField.uncertainty}) adds to
+ * one point's search: the per-pixel coverage uncertainty it reads, and the
+ * positional σ the search leaves for a point it moves (`NaN` when the two
+ * pixels nearest the point are not both measured).
+ */
+interface PointMeasure {
+  uncertainty: (x: number, y: number) => number
+  along?: (x: number, y: number, rx: number, ry: number) => number
+  sigma: number
+  /** Whether the search refused the point: no ½ crossing the image shows at it. */
+  refused: boolean
+}
+
+/**
  * Search along the normal (nx, ny) from point (px, py) for the coverage = ½
  * crossing, returning the signed offset along the normal in [-1, 1] px, or `null`
  * to leave the point where it is. inkvec `refine_subpixel`'s per-point search
  * (`planar.rs`): probe coverage at the pixel centres nearest ±1, ±½, 0 px along
- * the normal, bracket the ½ crossing, and invert a clean step exactly.
+ * the normal, bracket the ½ crossing, and invert a clean step exactly. With
+ * `measure`, the two probed pixels nearest the point on either side decide
+ * whether the image shows a crossing here at all, and set its σ
+ * ({@link refineRingToField}).
  */
 function solveNormal(
   coverageAt: (px: number, py: number) => number,
@@ -286,6 +428,7 @@ function solveNormal(
   ny: number,
   w: number,
   h: number,
+  measure?: PointMeasure,
 ): number | null {
   const ax = Math.abs(nx)
   const ay = Math.abs(ny)
@@ -294,6 +437,7 @@ function solveNormal(
   // Probe coverage at the pixel centre containing each offset along the normal.
   const us: number[] = []
   const as: number[] = []
+  const pix: number[] = []
   for (const u of [-1, -0.5, 0, 0.5, 1]) {
     // A lattice point ±1 px along an axis-aligned normal lands on a pixel
     // boundary; the tie breaks away from the point, onto the pixel beyond the
@@ -311,6 +455,7 @@ function solveNormal(
     if (dup) continue
     us.push(uc)
     as.push(coverageAt(cx, cy))
+    pix.push(ix, iy)
   }
   // Sort by signed offset along the normal.
   const order = us.map((_, k) => k).toSorted((p, q) => us[p] - us[q])
@@ -322,10 +467,11 @@ function solveNormal(
   let anyPartial = false
   for (const av of a) if (av > PARTIAL_LO && av < PARTIAL_HI) anyPartial = true
   if (!anyPartial) return null
-
   // Direction coverage grows along the normal.
   let dir = 0
   if (u[m - 1] > u[0] && Math.abs(a[m - 1] - a[0]) > 0.05) dir = Math.sign(a[m - 1] - a[0])
+
+  if (measure && !measuredCrossing(measure, { px, py, nx, ny, w, h }, a, u, pix, order)) return null
 
   const partial = (v: number): boolean => v > PARTIAL_LO && v < PARTIAL_HI
   let hit: number | null = null
@@ -402,6 +548,29 @@ function solveNormal(
   return hit > MAX_SHIFT ? MAX_SHIFT : hit < -MAX_SHIFT ? -MAX_SHIFT : hit
 }
 
+/** {@link estimateNoise} of each working image a layer field reads, by its pixel buffer. */
+const noiseByPixels = new WeakMap<Uint8ClampedArray, number>()
+
+/**
+ * Per-channel noise of an RGBA image in encoded sRGB units (0–1):
+ * {@link estimateNoise} of its Rec. 709 luma composited over white, computed
+ * once per pixel buffer.
+ */
+function imageNoiseOf(pixels: Uint8ClampedArray, w: number, h: number): number {
+  let noise = noiseByPixels.get(pixels)
+  if (noise === undefined) {
+    const gray = new Float32Array(w * h)
+    for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+      const a = pixels[p + 3] / 255
+      const luma = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255
+      gray[i] = luma * a + 1 - a
+    }
+    noise = estimateNoise(gray, w, h)
+    noiseByPixels.set(pixels, noise)
+  }
+  return noise
+}
+
 /** What a stacked layer's boundary field is read from (`layerField`). */
 export interface LayerFieldSource {
   width: number
@@ -445,6 +614,12 @@ export interface LayerFieldSource {
  * across the mask is deep inside or outside (±0.5, or the alpha coverage on a
  * soft exterior rim); two identical palette colors carry no edge information
  * and read as a hard edge.
+ *
+ * Its {@link SignedField.uncertainty} is the image noise over the contrast of
+ * the pair a pixel was projected between (the noise alone for an alpha
+ * reading), and `NaN` where the value is filled in: a pixel with no neighbor
+ * across the mask, or two coincident colors. {@link SignedField.along} reads
+ * any pixel between the pair a rim pixel was projected between.
  */
 export function layerField(src: LayerFieldSource): SignedField {
   const { width: w, height: h, mask, labels, pixels, paletteRgb, label, alpha } = src
@@ -468,6 +643,24 @@ export function layerField(src: LayerFieldSource): SignedField {
     if (y < h - 1 && mask[p + w] === side) return p + w
     return -1
   }
+  let noise = -1
+  /** The image noise, measured on first use. */
+  const noiseLevel = (): number => {
+    if (noise < 0) noise = imageNoiseOf(pixels, w, h)
+    return noise
+  }
+  /** Coverage uncertainty of a projection between labels `a` and `b`; NaN for coincident colors. */
+  const pairUncertainty = (a: number, b: number): number => {
+    const dr = paletteRgb[a * 3] - paletteRgb[b * 3]
+    const dg = paletteRgb[a * 3 + 1] - paletteRgb[b * 3 + 1]
+    const db = paletteRgb[a * 3 + 2] - paletteRgb[b * 3 + 2]
+    const d2 = dr * dr + dg * dg + db * db
+    if (d2 < 1) return Number.NaN
+    return (noiseLevel() * 255) / Math.sqrt(d2)
+  }
+  /** Uncertainty of {@link exterior}'s reading at `p`: the noise where the alpha coverage carries it. */
+  const exteriorUncertainty = (p: number): number =>
+    alphaData !== undefined && alphaData[p] < SATURATED ? noiseLevel() : Number.NaN
   return {
     width: w,
     height: h,
@@ -488,6 +681,45 @@ export function layerField(src: LayerFieldSource): SignedField {
       const own = label >= 0 ? label : labels[q]
       if (own < 0) return -0.5
       return project(p, own, l, -0.5)
+    },
+    along(x: number, y: number, rx: number, ry: number): number {
+      const r = ry * w + rx
+      const l = labels[r]
+      let own: number
+      let other: number
+      if (mask[r] !== 0) {
+        const q = across(r, rx, ry, 0)
+        if (q < 0 || labels[q] < 0) return Number.NaN
+        own = label >= 0 ? label : l
+        other = labels[q]
+      } else {
+        if (l < 0) return Number.NaN
+        const q = across(r, rx, ry, 1)
+        if (q < 0) return Number.NaN
+        own = label >= 0 ? label : labels[q]
+        other = l
+      }
+      if (own < 0) return Number.NaN
+      const c = coverageOf(pixels, (y * w + x) * 4, paletteRgb, own * 3, other * 3)
+      return c < 0 ? Number.NaN : c - 0.5
+    },
+    uncertainty(x: number, y: number): number {
+      const p = y * w + x
+      const l = labels[p]
+      if (mask[p] !== 0) {
+        const q = across(p, x, y, 0)
+        if (q >= 0 && labels[q] >= 0) {
+          const own = label >= 0 ? label : l
+          return own < 0 ? Number.NaN : pairUncertainty(own, labels[q])
+        }
+        return exteriorUncertainty(p)
+      }
+      if (l < 0) return exteriorUncertainty(p)
+      const q = across(p, x, y, 1)
+      if (q < 0) return Number.NaN
+      const own = label >= 0 ? label : labels[q]
+      if (own < 0) return Number.NaN
+      return pairUncertainty(own, l)
     },
   }
 }

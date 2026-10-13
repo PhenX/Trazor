@@ -727,10 +727,13 @@ export function closedPathToCommands(
 // indices into `geom`; `sigma` is the per-point positional uncertainty (px, parallel to `geom`) the
 // fitter weights χ² by — 0.1 for a point refined off the lattice, 0.06 for a lattice point on an
 // axis-aligned stretch of a refined ring's polygon (a hard edge on the grid), 0.5 elsewhere on the
-// lattice; `refined` is whether `geom` was snapped to a sub-pixel field; `extent` is the field's longer
-// side (px, 0 when unknown) for the fitter's description-length weight λ; `coverage` is the observed
-// coverage around a refined ring at most 64 px across, which a whole-ring circle or ellipse must render
-// no worse than the fitted outline it replaces.
+// lattice; against a field that measures its uncertainty (SignedField.uncertainty) a refined point is
+// held to its own measured σ where that is looser (up to 2 px; a staircase corner read across the
+// diagonal takes the looser of its neighbours'), and a point the field refused to move stays on the
+// lattice at its own σ, from 0.5 to 1; `refined` is whether `geom` was snapped to a sub-pixel field;
+// `extent` is the field's longer side (px, 0 when unknown) for the fitter's description-length weight
+// λ; `coverage` is the observed coverage around a refined ring at most 64 px across, which a
+// whole-ring circle or ellipse must render no worse than the fitted outline it replaces.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
@@ -772,22 +775,45 @@ export function ringPolygon(
 // pixel. The normal is the optimal-polygon edge's (`vertices`: ascending indices into `ring`), turning
 // towards each end vertex's own direction; without `vertices` it is read from the point's two
 // neighbours. A point stays put on the image border, with no partial probe (a hard edge), or where the
-// profile never crosses ½. `setback`, per ring point, is a signed distance then added along the same
-// normal (positive towards the pixel on the right of the walk, y down). Returns a new array, parallel
-// to `ring`.
+// profile never crosses ½; against a field with `uncertainty`, also where the two pixels nearest it
+// across the boundary are both measured, both partial and on the same side of ½ (a ramp the label
+// boundary cut away from its ½ level) and neither a measured probe past them nor the pixel past the
+// nearer one (`along`) crosses ½. `setback`, per ring point, is a signed distance then added along
+// the same normal (positive towards the pixel on the right of the walk, y down). `sigma`, filled per
+// ring point with such a field, is the point's positional uncertainty from those two pixels (their
+// coverage noise over the coverage step between them, in quadrature with a 0.05 px model error,
+// ≤ 2 px; a refused point's adds its distance to the ½ level the ramp extrapolates to, ≤ 1 px, the
+// search's reach), `NaN` where they are not both measured. Returns a new array, parallel to `ring`.
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
   vertices?: readonly number[],
   setback?: ArrayLike<number>,
+  sigma?: number[],
 ): FlatPoints
+// A signed field over the pixel grid in [-0.5, 0.5] (positive on one side, 0 at the edge, ±0.5
+// saturated); `at` reads integer pixels (callers clamp). `uncertainty`, where present, is the
+// coverage noise of a value (image noise over the contrast of the colors it was unmixed between),
+// `NaN` for a value the field fills in rather than reads from the image; `along(x, y, rx, ry)`, where
+// present, reads pixel (x, y) between the two colors the field reads pixel (rx, ry) between (`NaN`
+// where (rx, ry) is not read from the image).
+export interface SignedField {
+  width: number
+  height: number
+  at(x: number, y: number): number
+  uncertainty?(x: number, y: number): number
+  along?(x: number, y: number, rx: number, ry: number): number
+}
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
 // 4-neighbor on the other side: left, right, up, down) — a translucent paint included, whose alpha is
 // its opacity, not an edge; an edge against a pixel cut away as transparent reads the transparency
 // coverage (`alpha`) where the source is not solid; ±0.5 deep inside/outside; identical palette colors
 // read as a hard edge. `label` is the color painted inside the mask (a lifted island's label; −1 for a
-// base layer: each inside pixel's own).
+// base layer: each inside pixel's own). Its `uncertainty` is the image noise (Immerkær's Laplacian
+// estimate of the working image's luma) over the contrast of the projected pair, the noise alone for
+// an alpha reading, and `NaN` for a pixel with no neighbour across the mask or two coincident colors;
+// its `along` reads any pixel between the pair a rim pixel is read between.
 export interface LayerFieldSource {
   width: number
   height: number

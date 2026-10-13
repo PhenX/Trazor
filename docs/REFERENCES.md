@@ -93,7 +93,15 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   (a slanted edge is otherwise read ~0.15 px fat). `refineRingToField` in
   `packages/trace/src/refine.ts` implements this over the engine's signed coverage
   fields (`alphaCoverageField`, `pairwiseField`, `layerField`), feeding the
-  polygon, vertex-adjustment and run-fitting stages the de-staircased points.
+  polygon, vertex-adjustment and run-fitting stages the de-staircased points. A
+  stacked layer's field reads its rim pixels only and fills in the rest, so a
+  point moves only where the two pixels beside it straddle ½, one of them is
+  saturated, or a pixel past them read between the same colors crosses ½; each
+  point it measured takes inkvec's positional uncertainty
+  (`CoverageField::position_sigma`): the image noise of J. Immerkær, “Fast noise
+  variance estimation”, _CVIU_ 64(2), 1996, over the pair's contrast and the
+  coverage step per pixel, in quadrature with a 0.05 px model error, so a soft
+  color-band edge is fitted loosely instead of as the label pass's staircase.
 - **logolabs, “inkvec” — boundary solve (stage 08, Apache-2.0).**
   <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/boundary_opt.rs`
   `optimise`, `docs/algorithm/08-boundary-solve.md`). The data term of inkvec's
