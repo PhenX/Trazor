@@ -66,6 +66,7 @@ import type { FitPath, Polyline } from './objective'
 import { fmax, fmin, hypot } from './roots'
 import { DEFAULT_GRID, snapAxisAligned, snapSmoothJoins } from './snap'
 import type { OutputGrid } from './snap'
+import { nextUp } from './scan'
 import { turnAngle } from './tangents'
 
 /**
@@ -355,6 +356,17 @@ const GRID_BERN = (() => {
   return out
 })()
 
+/**
+ * The grid candidate scored first: both ends along the contour's own
+ * directions (0°) with arms of 0.3 chord, the shape of a typical smooth run.
+ * Indexed as the grid visits candidates, `((a0·angles + a1)·arms + i0)·arms + i1`.
+ */
+const GRID_SEED =
+  ((GRID_ANGLES.indexOf(0) * GRID_ANGLES.length + GRID_ANGLES.indexOf(0)) * GRID_ARMS.length +
+    GRID_ARMS.indexOf(0.3)) *
+    GRID_ARMS.length +
+  GRID_ARMS.indexOf(0.3)
+
 /** Whether each grid arm lies in `[MIN_ARM, MAX_ARM]`. */
 const GRID_ARM_OK = GRID_ARMS.map((d) => d >= MIN_ARM && d <= MAX_ARM)
 
@@ -492,33 +504,41 @@ class FreeCubicSearch {
       lastY[k] = GRID_BERN[4 * k + 3] * p3y
     }
     let rough = Infinity
+    let roughAt = -1
     cur[0] = 0
     cur[1] = 0
     cur[2] = 0.35
     cur[3] = 0.35
-    for (let a0 = 0; a0 < GRID_ANGLES.length; a0++) {
-      for (let a1 = 0; a1 < GRID_ANGLES.length; a1++) {
-        for (let i0 = 0; i0 < arms; i0++) {
-          for (let i1 = 0; i1 < arms; i1++) {
-            if (!GRID_ARM_OK[i0] || !GRID_ARM_OK[i1]) continue
-            const e0 = a0 * arms + i0
-            const e1 = a1 * arms + i1
-            const h = e0 * N1
-            const t = e1 * N1
-            for (let k = 0; k < N1; k++) {
-              coarseSamples[2 * k] = headX[h + k] + tailX[t + k] + lastX[k]
-              coarseSamples[2 * k + 1] = headY[h + k] + tailY[t + k] + lastY[k]
-            }
-            const x = scoreBelow(coarseSamples, N1, this.pts, this.sigma, this.a, this.b, rough)
-            if (x < rough && !this.crosses(e0, e1)) {
-              rough = x
-              cur[0] = GRID_ANGLES[a0]
-              cur[1] = GRID_ANGLES[a1]
-              cur[2] = GRID_ARMS[i0]
-              cur[3] = GRID_ARMS[i1]
-            }
-          }
-        }
+    // The chord-aligned candidate is scored first, so the screen has a tight
+    // bound from the start; the rest follow in grid order. The winner is the
+    // grid order's: the smallest residual, the earliest of equal ones.
+    const count = GRID_ANGLES.length * GRID_ANGLES.length * arms * arms
+    for (let v = -1; v < count; v++) {
+      const at = v < 0 ? GRID_SEED : v
+      if (v >= 0 && at === GRID_SEED) continue
+      const i1 = at % arms
+      const i0 = Math.floor(at / arms) % arms
+      const a1 = Math.floor(at / (arms * arms)) % GRID_ANGLES.length
+      const a0 = Math.floor(at / (arms * arms * GRID_ANGLES.length))
+      if (!GRID_ARM_OK[i0] || !GRID_ARM_OK[i1]) continue
+      const e0 = a0 * arms + i0
+      const e1 = a1 * arms + i1
+      const h = e0 * N1
+      const t = e1 * N1
+      for (let k = 0; k < N1; k++) {
+        coarseSamples[2 * k] = headX[h + k] + tailX[t + k] + lastX[k]
+        coarseSamples[2 * k + 1] = headY[h + k] + tailY[t + k] + lastY[k]
+      }
+      // Above the bound by one unit in the last place, so a tie still comes
+      // back exact and an earlier candidate can take it.
+      const x = scoreBelow(coarseSamples, N1, this.pts, this.sigma, this.a, this.b, nextUp(rough))
+      if ((x < rough || (x === rough && at < roughAt)) && !this.crosses(e0, e1)) {
+        rough = x
+        roughAt = at
+        cur[0] = GRID_ANGLES[a0]
+        cur[1] = GRID_ANGLES[a1]
+        cur[2] = GRID_ARMS[i0]
+        cur[3] = GRID_ARMS[i1]
       }
     }
     return Number.isFinite(rough)
@@ -547,6 +567,10 @@ class FreeCubicSearch {
     let best = this.score(cur[0], cur[1], cur[2], cur[3], Infinity)
     const step = [10, 10, 0.1, 0.1]
     const trial = new Float64Array(4)
+    // Every point scored, with its score: the search steps back onto points it
+    // has left. A score that was cut short at an earlier, larger bound is
+    // above every later bound too, so a stored score answers as a fresh one.
+    const seen: number[] = [cur[0], cur[1], cur[2], cur[3], best]
     for (let round = 0; round < 6; round++) {
       let improved = true
       while (improved) {
@@ -555,7 +579,24 @@ class FreeCubicSearch {
           for (let sign = -1; sign <= 1; sign += 2) {
             trial.set(cur)
             trial[k] += sign * step[k]
-            const x = this.score(trial[0], trial[1], trial[2], trial[3], best)
+            let x = NaN
+            let known = false
+            for (let q = 0; q < seen.length; q += 5) {
+              if (
+                seen[q] === trial[0] &&
+                seen[q + 1] === trial[1] &&
+                seen[q + 2] === trial[2] &&
+                seen[q + 3] === trial[3]
+              ) {
+                x = seen[q + 4]
+                known = true
+                break
+              }
+            }
+            if (!known) {
+              x = this.score(trial[0], trial[1], trial[2], trial[3], best)
+              seen.push(trial[0], trial[1], trial[2], trial[3], x)
+            }
             if (x < best) {
               best = x
               cur.set(trial)
