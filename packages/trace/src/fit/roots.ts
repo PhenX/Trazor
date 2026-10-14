@@ -169,6 +169,36 @@ function depressedCubicDominant(g: number, h: number): number {
 }
 
 /**
+ * Relative error of the factors `(x² + a1·x + b1)(x² + a2·x + b2)` against the
+ * quartic's `a`, `b`, `c` (the three coefficients a quadratic pair is chosen on).
+ */
+function quadEps(
+  a1: number,
+  b1: number,
+  a2: number,
+  b2: number,
+  a: number,
+  b: number,
+  c: number,
+): number {
+  return epsRel(a1 + a2, a) + epsRel(b1 + a1 * a2 + b2, b) + epsRel(b1 * a2 + a1 * b2, c)
+}
+
+/** {@link quadEps} plus the constant coefficient `d`: the factorization's whole error. */
+function quarticEps(
+  a1: number,
+  b1: number,
+  a2: number,
+  b2: number,
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+): number {
+  return quadEps(a1, b1, a2, b2, a, b, c) + epsRel(b1 * b2, d)
+}
+
+/**
  * Factor the monic quartic `x⁴ + a·x³ + b·x² + c·x + d` into two real quadratics
  * `x² + αᵢ·x + βᵢ`, returned as `[α1, β1, α2, β2]`. `null` on overflow (when
  * `rescale` might succeed) or when the factors would be complex.
@@ -180,10 +210,6 @@ export function factorQuarticInner(
   d: number,
   rescale: boolean,
 ): [number, number, number, number] | null {
-  const calcEpsQ = (a1: number, b1: number, a2: number, b2: number) =>
-    epsRel(a1 + a2, a) + epsRel(b1 + a1 * a2 + b2, b) + epsRel(b1 * a2 + a1 * b2, c)
-  const calcEpsT = (a1: number, b1: number, a2: number, b2: number) =>
-    calcEpsQ(a1, b1, a2, b2) + epsRel(b1 * b2, d)
   const disc = 9 * a * a - 24 * b
   const s = disc >= 0 ? (-2 * b) / (3 * a + copysign(Math.sqrt(disc), a)) : -0.25 * a
   const aPrime = a + 4 * s
@@ -270,7 +296,7 @@ export function factorQuarticInner(
       for (let i = 0; i < 3; i++) {
         const [a1, a2] = pairs[i]
         if (Number.isFinite(a1) && Number.isFinite(a2)) {
-          const epsQ = calcEpsQ(a1, beta1, a2, beta2)
+          const epsQ = quadEps(a1, beta1, a2, beta2, a, b, c)
           if (i === 0 || epsQ < epsQBest) {
             alpha1 = a1
             alpha2 = a2
@@ -292,7 +318,7 @@ export function factorQuarticInner(
     return null
   }
   // Newton–Raphson on the factors' coefficients.
-  let epsT = calcEpsT(alpha1, beta1, alpha2, beta2)
+  let epsT = quarticEps(alpha1, beta1, alpha2, beta2, a, b, c, d)
   for (let it = 0; it < 8; it++) {
     if (epsT === 0) break
     const f0 = beta1 * beta2 - d
@@ -313,7 +339,7 @@ export function factorQuarticInner(
     const b1 = beta1 - inv * dz1
     const a2 = alpha2 - inv * dz2
     const b2 = beta2 - inv * dz3
-    const newEpsT = calcEpsT(a1, b1, a2, b2)
+    const newEpsT = quarticEps(a1, b1, a2, b2, a, b, c, d)
     if (!(newEpsT < epsT)) break
     alpha1 = a1
     beta1 = b1

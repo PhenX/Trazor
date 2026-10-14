@@ -608,6 +608,21 @@ function chi2Until(plan: CubicSamples, b: Bezier, best: number, ab: Readonly<Aba
   return acc
 }
 
+/** `bestCubic`'s own answer for the span, as a bounded result. */
+function exactG1(
+  pts: Float64Array,
+  sigma: ArrayLike<number>,
+  s: ArrayLike<number>,
+  i: number,
+  j: number,
+  t0: Vec,
+  t1: Vec,
+  raw: ArrayLike<number>,
+): BoundedG1 {
+  const f = bestCubic(pts, sigma, s, i, j, t0, t1, raw, true)
+  return f ? { kind: 'exact', chi2: f.chi2, d0: f.d0, d1: f.d1 } : UNTRIED
+}
+
 /**
  * `bestCubic` with subsampling, for the dynamic program, stopping each root's
  * residual as soon as `ab` says the program cannot use it. The roots are scored
@@ -631,17 +646,13 @@ export function bestCubicBounded(
   raw: ArrayLike<number>,
   ab: Readonly<Abandon>,
 ): BoundedG1 {
-  const exact = (): BoundedG1 => {
-    const f = bestCubic(pts, sigma, s, i, j, t0, t1, raw, true)
-    return f ? { kind: 'exact', chi2: f.chi2, d0: f.d0, d1: f.d1 } : UNTRIED
-  }
   const p0x = pts[2 * i]
   const p0y = pts[2 * i + 1]
   const p3x = pts[2 * j]
   const p3y = pts[2 * j + 1]
   const fr = g1Frame(p0x, p0y, p3x, p3y, t0, t1, raw)
   if (!fr) return UNTRIED
-  if (!boundedSamples.fill(pts, sigma, s, i, j)) return exact()
+  if (!boundedSamples.fill(pts, sigma, s, i, j)) return exactG1(pts, sigma, s, i, j, t0, t1, raw)
   const plan = boundedSamples
   let hasBest = false
   let bestChi2 = Infinity
@@ -659,7 +670,7 @@ export function bestCubicBounded(
     const b = cubicFromArms(p0x, p0y, p3x, p3y, t0, t1, fr.chord, d0, d1)
     const chi2 = chi2Until(plan, b, hasBest ? bestChi2 : Infinity, ab)
     if (rootEnd === ROOT_DONE) {
-      if (!Number.isFinite(chi2)) return exact()
+      if (!Number.isFinite(chi2)) return exactG1(pts, sigma, s, i, j, t0, t1, raw)
       if (!hasBest || chi2 < bestChi2) {
         hasBest = true
         bestChi2 = chi2
@@ -677,6 +688,6 @@ export function bestCubicBounded(
   if (hasBest && (!dropped || !ab.dead(bestChi2))) {
     return { kind: 'exact', chi2: bestChi2, d0: bestD0, d1: bestD1 }
   }
-  if (hasBest && bestChi2 < ab.gate) return exact()
+  if (hasBest && bestChi2 < ab.gate) return exactG1(pts, sigma, s, i, j, t0, t1, raw)
   return over ? DEAD_OVER : DEAD_UNDER
 }

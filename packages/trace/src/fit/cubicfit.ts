@@ -139,6 +139,11 @@ export function g1Frame(
   return { th0, th1, area: area * inv, mx: moment * inv * inv, chord: Math.sqrt(chord2) }
 }
 
+/** Append `r` to `roots` while they hold fewer than four. */
+function pushRoot(roots: number[], r: number): void {
+  if (roots.length < 4) roots.push(r)
+}
+
 /**
  * Arm lengths `(d0, d1)` of the G1 cubics matching signed `area` and x-moment
  * `mx` on a unit chord with end-tangent angles `th0`, `th1`, flattened as
@@ -184,9 +189,6 @@ export function armsFromMoments(th0: number, th1: number, area: number, mx: numb
   const a0 = 80 * s1 * (42 * s1 * mx - 25 * area * (s1 - c1 * area))
 
   const roots: number[] = []
-  const push = (r: number) => {
-    if (roots.length < 4) roots.push(r)
-  }
   const eps = 1e-12
   if (Math.abs(a4) > eps) {
     const quads = factorQuarticInner(a3 / a4, a2 / a4, a1 / a4, a0 / a4, false)
@@ -195,14 +197,14 @@ export function armsFromMoments(th0: number, th1: number, area: number, mx: numb
         const qc1 = quads[2 * q]
         const qc0 = quads[2 * q + 1]
         const qroots = solveQuadratic(qc0, qc1, 1)
-        if (qroots.length === 0) push(-0.5 * qc1)
-        else for (const r of qroots) push(r)
+        if (qroots.length === 0) pushRoot(roots, -0.5 * qc1)
+        else for (const r of qroots) pushRoot(roots, r)
       }
     }
   } else if (Math.abs(a3) > eps) {
-    for (const r of solveCubic(a0, a1, a2, a3)) push(r)
+    for (const r of solveCubic(a0, a1, a2, a3)) pushRoot(roots, r)
   } else if (Math.abs(a2) > eps || Math.abs(a1) > eps || Math.abs(a0) > eps) {
-    for (const r of solveQuadratic(a0, a1, a2)) push(r)
+    for (const r of solveQuadratic(a0, a1, a2)) pushRoot(roots, r)
   } else {
     return [1 / 3, 1 / 3]
   }
