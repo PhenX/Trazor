@@ -169,13 +169,15 @@ const PLANAR_CARTOON_MAX_SIDE = 512
 
 /**
  * Most traced pixels (at the traced size, before supersampling) an image
- * takes the planar chain with by default. The chain's cost grows faster than
- * the image: 512 px icons trace in about 5 s against 1 s classic, while a
- * 1400×980 flat illustration took 243 s against 5 s for a GMSD gain of a
- * quarter. A larger image keeps the classic chain until the planar chain is
- * made faster; the Geometry setting still selects it.
+ * takes the planar chain with by default: 512 × 512. Past it the chain's
+ * geometry steps alone take tens of seconds — a flat illustration at 768 px
+ * 56 s and at 918 px 71 s against 6 s classic, without the gradient merges its
+ * work cap leaves no room for — while at 512 px a shaded emoji takes 20–40 s
+ * (4 s classic) for its GMSD gain and a plain icon a few seconds. A larger
+ * image keeps the classic chain until the planar chain is made faster; the
+ * Geometry setting still selects it.
  */
-const PLANAR_MAX_PIXELS = 600_000
+const PLANAR_MAX_PIXELS = 512 * 512
 
 /** Whether the image reads as cartoon-style flat art region growing serves best. */
 function isCartoon(a: ImageAnalysis): boolean {

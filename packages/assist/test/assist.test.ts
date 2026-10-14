@@ -802,9 +802,9 @@ describe('recommendSettings — geometry chain', () => {
 
   it('keeps an image traced past the planar pixel budget on the classic chain', () => {
     const a = analyzeImage(inkWithSoftShadow())
-    const small = recommendSettings({ ...a, width: 700, height: 700, pixels: 490_000 })
+    const small = recommendSettings({ ...a, width: 512, height: 512, pixels: 262_144 })
     expect(small.patch.geometry).toBe('planar')
-    const large = recommendSettings({ ...a, width: 1400, height: 980, pixels: 1_372_000 })
+    const large = recommendSettings({ ...a, width: 918, height: 643, pixels: 590_274 })
     expect(large.patch.geometry).toBeUndefined()
     expect(large.patch.frontEnd).toBeUndefined()
     expect(codes(large)).not.toContain('planarInk')
