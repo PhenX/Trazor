@@ -248,12 +248,11 @@ export class StopProblem {
       }
       parentR[j] = Math.sqrt(r2)
     }
-    const sortedR = parentR.toSorted()
-    const delta = Math.max(3 * 1.4826 * sortedR[count >> 1], 1 / 255)
+    const delta = Math.max(3 * 1.4826 * orderStatistic(parentR.slice(), count >> 1), 1 / 255)
     const weight = new Float64Array(count)
     for (let j = 0; j < count; j++) weight[j] = parentR[j] > delta ? delta / parentR[j] : 1
-    const sorted = t.toSorted()
-    const q = (f: number): number => sorted[Math.round((count - 1) * f)]
+    const scratch = t.slice()
+    const q = (f: number): number => orderStatistic(scratch, Math.round((count - 1) * f))
     const qLo = q(0.02)
     const qHi = q(0.98)
     const span = qHi - qLo
@@ -336,10 +335,15 @@ export class StopProblem {
 /** The median of `v` (its upper middle element when even); 0 when empty. */
 export function median(v: readonly number[]): number {
   if (v.length === 0) return 0
-  const a = Float64Array.from(v)
-  const k = v.length >> 1
-  // The element a sort would put at `k`, found by selection; a NaN, which the
-  // typed-array sort puts last, takes the sort.
+  return orderStatistic(Float64Array.from(v), v.length >> 1)
+}
+
+/**
+ * The element a typed-array sort of `a` would put at `k`, found by selection
+ * (C. A. R. Hoare 1961, Algorithm 65: Find); `a` is reordered. A NaN, which the
+ * sort puts last, takes the sort.
+ */
+export function orderStatistic(a: Float64Array, k: number): number {
   for (let i = 0; i < a.length; i++) if (Number.isNaN(a[i])) return a.toSorted()[k]
   let lo = 0
   let hi = a.length - 1

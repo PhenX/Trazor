@@ -11,7 +11,14 @@ import {
 } from '../../src/fill/knots'
 import type { FillModel } from '../../src/fill/model'
 import { colorsIn, samplesOf } from '../../src/fill/samples'
-import { fitMidStops, fitPiecewise, median, repartition, StopProblem } from '../../src/fill/stops'
+import {
+  fitMidStops,
+  fitPiecewise,
+  median,
+  orderStatistic,
+  repartition,
+  StopProblem,
+} from '../../src/fill/stops'
 
 /** `n` samples of a three-stop profile with a kink at `kink`, plus noise, and weights. */
 function problem(
@@ -299,5 +306,15 @@ describe('the sliver median', () => {
     }
     expect(median([])).toBe(0)
     expect(median([3, Number.NaN, 1])).toBe(3)
+  })
+
+  it('selects the element a sort puts at every rank', () => {
+    const rand = mulberry32(23)
+    for (let n = 1; n < 40; n++) {
+      const v = Float64Array.from({ length: n }, () => Math.floor(rand() * 9) / 8 - 0.5)
+      const sorted = v.toSorted()
+      for (let k = 0; k < n; k++) expect(orderStatistic(v.slice(), k)).toBe(sorted[k])
+    }
+    expect(orderStatistic(Float64Array.from([2, Number.NaN, 1]), 2)).toBeNaN()
   })
 })
