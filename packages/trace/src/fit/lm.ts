@@ -130,6 +130,15 @@ export function symEigen(
 ): { values: Float64Array; vectors: Float64Array } {
   const a = Float64Array.from(matrix)
   const v = new Float64Array(n * n)
+  jacobiInPlace(a, n, v)
+  const values = new Float64Array(n)
+  for (let i = 0; i < n; i++) values[i] = a[i * n + i]
+  return { values, vectors: v }
+}
+
+/** {@link symEigen}'s rotations on `a` itself, the eigenvectors written into `v`. */
+function jacobiInPlace(a: Float64Array, n: number, v: Float64Array): void {
+  v.fill(0)
   for (let i = 0; i < n; i++) v[i * n + i] = 1
   for (let sweep = 0; sweep < 100; sweep++) {
     let off = 0
@@ -165,10 +174,48 @@ export function symEigen(
       }
     }
   }
-  const values = new Float64Array(n)
-  for (let i = 0; i < n; i++) values[i] = a[i * n + i]
-  return { values, vectors: v }
 }
+
+/** {@link cholesky} into `l` (its lower triangle; the upper is not written). False where it is null. */
+function choleskyInto(a: Float64Array, n: number, l: Float64Array): boolean {
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j <= i; j++) {
+      let dot = 0
+      for (let k = 0; k < j; k++) dot += l[i * n + k] * l[j * n + k]
+      const s = a[i * n + j] - dot
+      if (i === j) {
+        if (!(s > 0)) return false
+        l[i * n + j] = Math.sqrt(s)
+      } else {
+        l[i * n + j] = s / l[j * n + j]
+      }
+    }
+  }
+  return true
+}
+
+/** {@link forwardSub} of `b[o..o + n)` into `x[r..r + n)`. */
+function forwardSubInto(
+  l: Float64Array,
+  b: Float64Array,
+  o: number,
+  n: number,
+  x: Float64Array,
+  r: number,
+): void {
+  for (let i = 0; i < n; i++) {
+    let s = b[o + i]
+    for (let k = 0; k < i; k++) s -= l[i * n + k] * x[r + k]
+    x[r + i] = s / l[i * n + i]
+  }
+}
+
+// Scratch of genEigen5: the factor, L⁻¹·cov transposed, A, its eigenvectors, a column.
+const gL = new Float64Array(25)
+const gT = new Float64Array(25)
+const gA = new Float64Array(25)
+const gV = new Float64Array(25)
+const gCol = new Float64Array(10)
 
 /**
  * The 5×5 generalized symmetric eigenproblem: the `θ` minimizing `θᵀ·cov·θ`
@@ -176,24 +223,24 @@ export function symEigen(
  * `y = Lᵀθ` it is the ordinary problem for `A = L⁻¹·cov·L⁻ᵀ` (symmetrized
  * against rounding): `y` is `A`'s eigenvector of the smallest eigenvalue and
  * `θ = L⁻ᵀy`, normalized in the `nrm` metric. Null if `nrm` is not positive
- * definite.
+ * definite. Works in module scratch: only the returned `θ` is allocated.
  */
 export function genEigen5(
   cov: Float64Array,
   nrm: Float64Array,
 ): { theta: Float64Array; mu: number } | null {
   const n = 5
-  const l = cholesky(nrm, n)
-  if (l === null) return null
-  const tmp = new Float64Array(n * n)
-  const col = new Float64Array(n)
+  const l = gL
+  if (!choleskyInto(nrm, n, l)) return null
+  const tmp = gT
+  const col = gCol
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) col[i] = cov[i * n + j]
-    const x = forwardSub(l, col, n)
-    for (let i = 0; i < n; i++) tmp[i * n + j] = x[i]
+    forwardSubInto(l, col, 0, n, col, n)
+    for (let i = 0; i < n; i++) tmp[i * n + j] = col[n + i]
   }
-  const a = new Float64Array(n * n)
-  for (let i = 0; i < n; i++) a.set(forwardSub(l, tmp.subarray(i * n, i * n + n), n), i * n)
+  const a = gA
+  for (let i = 0; i < n; i++) forwardSubInto(l, tmp, i * n, n, a, i * n)
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       const m = 0.5 * (a[i * n + j] + a[j * n + i])
@@ -201,12 +248,12 @@ export function genEigen5(
       a[j * n + i] = m
     }
   }
-  const { values, vectors } = symEigen(a, n)
+  const vectors = gV
+  jacobiInPlace(a, n, vectors)
   let best = 0
-  for (let i = 1; i < n; i++) if (values[i] < values[best]) best = i
-  const y = new Float64Array(n)
-  for (let i = 0; i < n; i++) y[i] = vectors[i * n + best]
-  return { theta: backSubT(l, y, n), mu: values[best] }
+  for (let i = 1; i < n; i++) if (a[i * n + i] < a[best * n + best]) best = i
+  for (let i = 0; i < n; i++) col[i] = vectors[i * n + best]
+  return { theta: backSubT(l, col.subarray(0, n), n), mu: a[best * n + best] }
 }
 
 /**
