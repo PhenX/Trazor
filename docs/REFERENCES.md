@@ -240,7 +240,12 @@ uses. Each file names the inkvec files it follows.
   K. Lange, “A tutorial on MM algorithms”, _Am. Stat._ 58(1), 2004) and Huber-weighted
   iteratively reweighted least squares (P. J. Huber, _Ann. Math. Statist._ 35(1), 1964; P. W.
   Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), the medians of its sliver test found by
-  selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); gradient meshes
+  selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); the sRGB
+  transfer curves' powers in single precision (`fill/power.ts`) from a table at the leading
+  mantissa bits and a binomial series between them (P. T. P. Tang, “Table-driven implementation
+  of the exponential function in IEEE floating-point arithmetic”, _ACM TOMS_ 15(2), 1989), bit
+  for bit `Math.pow`'s rounding by Ziv's test (A. Ziv, “Fast evaluation of elementary
+  mathematical functions with correctly rounded last bit”, _ACM TOMS_ 17(3), 1991); gradient meshes
   as in G. Lecot & B.
   Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
   recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,

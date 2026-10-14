@@ -25,6 +25,8 @@
  * `with_stops`), and `color.rs` (`srgb_to_linear`, `linear_to_srgb`).
  */
 
+import { Pow32 } from './power'
+
 /** An encoded sRGB color, components in `[0, 1]` (single-precision values). */
 export type Rgb = readonly [number, number, number]
 
@@ -132,6 +134,11 @@ const F_1_055 = fr(1.055)
 const F_GAMMA = fr(2.4)
 const F_INV_GAMMA = fr(1 / F_GAMMA)
 
+/** `fr(x^2.4)` over the decoding curve's power range `x ∈ (0.0905, 1]` (binades 2⁻⁴ to 2⁰). */
+const DECODE_POW = new Pow32(F_GAMMA, -4, 1)
+/** `fr(c^(1/2.4))` over the encoding curve's power range `c ∈ (0.0031308, 1]` (binades 2⁻⁹ to 2⁰). */
+const ENCODE_POW = new Pow32(F_INV_GAMMA, -9, 1)
+
 /**
  * The sRGB decoding curve in single precision (IEC 61966-2-1): `c / 12.92` up to
  * 0.04045, `((c + 0.055) / 1.055)^2.4` above. Not clamped.
@@ -147,7 +154,7 @@ export function srgbToLinear32(c: number): number {
 
 /** {@link srgbToLinear32}'s curve, evaluated. */
 function decode32(c: number): number {
-  return c <= F_SRGB_KNEE ? fr(c / F_12_92) : fr(Math.pow(fr(fr(c + F_0_055) / F_1_055), F_GAMMA))
+  return c <= F_SRGB_KNEE ? fr(c / F_12_92) : DECODE_POW.of(fr(fr(c + F_0_055) / F_1_055))
 }
 
 /** The 8-bit channel values `fr(k/255)`, `k = 0..255`. */
@@ -161,9 +168,7 @@ const BYTE_LINEAR = BYTE_VALUES.map(decode32)
  * above. Not clamped.
  */
 export function linearToSrgb32(c: number): number {
-  return c <= F_LIN_KNEE
-    ? fr(c * F_12_92)
-    : fr(fr(F_1_055 * fr(Math.pow(c, F_INV_GAMMA))) - F_0_055)
+  return c <= F_LIN_KNEE ? fr(c * F_12_92) : fr(fr(F_1_055 * ENCODE_POW.of(c)) - F_0_055)
 }
 
 /** `v` clamped to `[lo, hi]`; NaN stays NaN. */
