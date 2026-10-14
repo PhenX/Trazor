@@ -49,7 +49,7 @@ import {
   tryArc,
   tryEllipse,
 } from './candidates'
-import type { ArcSpan } from './candidates'
+import type { ArcSpan, EllipseMemo } from './candidates'
 import { CirclePrefix } from './circle'
 import { arcParams, cubicParams, PARAMS_ELLIPTICAL_ARC, PARAMS_LINE } from './cost'
 import { cubicFromArms, wobblePenalty } from './cubicfit'
@@ -267,6 +267,8 @@ export class SpanScorer implements OverOracle {
     private readonly cfg: FitConfig,
     /** Whether both ends of the polyline are joins (an opened loop). */
     private readonly joinsAtEnds: boolean,
+    /** The opened loop's ellipse fits, shared with its other cuts' runs. */
+    private readonly ellipses?: EllipseMemo,
   ) {
     this.n = pts.length >> 1
     this.circles = new CirclePrefix(pts, sigma)
@@ -446,7 +448,16 @@ export class SpanScorer implements OverOracle {
       c - base > this.ellipseFloor &&
       !(this.bounds && base + this.ellipseFloor >= bestJ)
     ) {
-      const e = tryEllipse(this.pts, this.sigma, this.tan, i, j, this.cfg, this.joinsAtEnds)
+      const e = tryEllipse(
+        this.pts,
+        this.sigma,
+        this.tan,
+        i,
+        j,
+        this.cfg,
+        this.joinsAtEnds,
+        this.ellipses,
+      )
       if (e) {
         const cc = base + e.cost
         if (cc < c) {

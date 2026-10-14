@@ -39,7 +39,7 @@
  * `multimodel/limits.rs` (`optimal_multimodel_forced`) and `decimate.rs`.
  */
 import type { FitConfig, FittedEdge } from '../planar/types'
-import { bowPenalty, lineCostTerms, overTurnParams, tryArc } from './candidates'
+import { bowPenalty, EllipseMemo, lineCostTerms, overTurnParams, tryArc } from './candidates'
 import { CirclePrefix } from './circle'
 import { arcParams, cubicParams, g1BreakRadians } from './cost'
 import { bestCubic, cubicFromArms, polishArms, rawMomentsDirect, wobblePenalty } from './cubicfit'
@@ -526,7 +526,8 @@ export interface Solution {
 /**
  * The program on an open polyline (`./scan`): the cheapest path through the
  * spans `lim` allows, read back from the last point. `joinsAtEnds` marks the
- * ends as joins (the cut of a closed loop) so the break terms apply there too.
+ * ends as joins (the cut of a closed loop) so the break terms apply there too;
+ * `ellipses` holds the loop's ellipse fits across its cuts.
  */
 export function solveOpen(
   poly: Polyline,
@@ -535,9 +536,11 @@ export function solveOpen(
   cfg: FitConfig,
   joinsAtEnds: boolean,
   lim: Limits,
+  ellipses?: EllipseMemo,
 ): Solution {
   const n = polylineSize(poly)
-  const tab = new SpanScorer(poly.points, poly.sigma, tan, pre, cfg, joinsAtEnds).fillTable(lim)
+  const scorer = new SpanScorer(poly.points, poly.sigma, tan, pre, cfg, joinsAtEnds, ellipses)
+  const tab = scorer.fillTable(lim)
   const vertices: number[] = []
   const kinds: SegKind[] = []
   const arms: (Arms | null)[] = []
@@ -911,9 +914,10 @@ function solveAndRefine(
   cfg: FitConfig,
   joinsAtEnds: boolean,
   lim: Limits,
+  ellipses?: EllipseMemo,
 ): { sol: Solution; path: FitPath } {
   const pre = new PrefixSums(poly.points, poly.sigma)
-  const sol = solveOpen(poly, tan, pre, cfg, joinsAtEnds, lim)
+  const sol = solveOpen(poly, tan, pre, cfg, joinsAtEnds, lim, ellipses)
   return { sol, path: refine(poly, tan, pre, sol, cfg) }
 }
 
@@ -956,14 +960,16 @@ export function openAt(
  * is kept. The cut vertex pays its `vertexCost`, which the opened program cannot
  * see. With forced vertices the loop is cut at the first one, which every
  * admissible solution has, and solved once. Returned vertices index `poly`, the
- * cut at both ends.
+ * cut at both ends. Both runs share one {@link EllipseMemo}.
  */
 function solveClosed(poly: Polyline, cfg: FitConfig, lim: Limits): MultimodelFit {
   const n = polylineSize(poly)
   const tan = estimateTangents(poly, cfg)
+  const ellipses = new EllipseMemo(n)
   const run = (cut: number, l: Limits): MultimodelFit => {
     const opened = openAt(poly, tan, cut)
-    const { sol, path } = solveAndRefine(opened.poly, opened.tan, cfg, true, l)
+    ellipses.offset = cut
+    const { sol, path } = solveAndRefine(opened.poly, opened.tan, cfg, true, l, ellipses)
     return {
       path,
       vertices: sol.vertices.map((i) => (cut + i) % n),

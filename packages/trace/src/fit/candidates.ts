@@ -308,6 +308,32 @@ function ellipseEndTangents(frame: ArcFrame): [Vec, Vec] | null {
 }
 
 /**
+ * Taubin's ellipses of a closed loop's spans, shared by the program runs that
+ * open the loop at different cuts. The copy opened at loop index `offset`
+ * holds at `i..j` the loop's points from `(offset + i) mod n` on, so the start
+ * and length name the same samples, and the same fit, in every run.
+ */
+export class EllipseMemo {
+  /** Loop index of the opened copy's first point: the run's cut. */
+  offset = 0
+  private readonly fits = new Map<number, EllipseFit | null>()
+
+  /** For a loop of `n` points. */
+  constructor(private readonly n: number) {}
+
+  /** `taubinEllipse` of the opened copy's span `i..j` (`span`, `spanSigma`), fitted once per loop span. */
+  fit(span: Float64Array, spanSigma: Float64Array, i: number, j: number): EllipseFit | null {
+    const key = ((this.offset + i) % this.n) * (this.n + 1) + (j - i)
+    let f = this.fits.get(key)
+    if (f === undefined) {
+      f = taubinEllipse(span, spanSigma)
+      this.fits.set(key, f)
+    }
+    return f
+  }
+}
+
+/**
  * The elliptical arc for span `(i, j)` and its cost, or null. Tried only on
  * spans of at least {@link ELLIPSE_MIN_POINTS} steps whose length is a multiple
  * of {@link ELLIPSE_LENGTH_STRIDE}. Then:
@@ -331,11 +357,12 @@ export function tryEllipse(
   j: number,
   cfg: FitConfig,
   joinsAtEnds: boolean,
+  memo?: EllipseMemo,
 ): EllipseSpan | null {
   if (j < i + ELLIPSE_MIN_POINTS || (j - i) % ELLIPSE_LENGTH_STRIDE !== 0) return null
   const span = pts.subarray(2 * i, 2 * j + 2)
   const spanSigma = sigma.subarray(i, j + 1)
-  const fit = taubinEllipse(span, spanSigma)
+  const fit = memo ? memo.fit(span, spanSigma, i, j) : taubinEllipse(span, spanSigma)
   if (!fit) return null
   if (!(Number.isFinite(fit.rx) && Number.isFinite(fit.ry)) || fit.rx <= 1e-6 || fit.ry <= 1e-6) {
     return null
