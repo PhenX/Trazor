@@ -333,11 +333,14 @@ const SET_BACK_SIGMA = 0.25
  * its middle point, down to lines through the points: the program prices a
  * line by its points' best-fit line but draws it as the chord between its
  * ends, and pinned to a set-back run's ends that chord can cut a pixel or more
- * across the sheet's edge.
+ * across the sheet's edge. The fit is a function of the points alone, so each
+ * distinct run (bit for bit) is fitted once and its segments handed out again
+ * to every sheet that sets the same run back.
  */
 export function setBackFit(width: number, height: number, scale: number): SetBack['fit'] {
   const cfg = contentFitConfig(width, height, scale)
   const sigma = SET_BACK_SIGMA * scale
+  const fitted = new Map<string, readonly PathCommand[]>()
   const fit = (points: Float64Array): PathCommand[] => {
     const n = points.length >> 1
     if (n <= 3) {
@@ -345,12 +348,28 @@ export function setBackFit(width: number, height: number, scale: number): SetBac
       for (let i = 1; i < n; i++) lines.push({ type: 'L', x: points[i * 2], y: points[i * 2 + 1] })
       return lines
     }
+    const key = bitsKey(points)
+    const known = fitted.get(key)
+    if (known !== undefined) return known.slice()
     const segs = fitRun(points, new Float64Array(n).fill(sigma), cfg).segments
-    if (keepsTo(points, segs, scale)) return segs
     const mid = n >> 1
-    return [...fit(points.subarray(0, (mid + 1) * 2)), ...fit(points.subarray(mid * 2))]
+    const out = keepsTo(points, segs, scale)
+      ? segs
+      : [...fit(points.subarray(0, (mid + 1) * 2)), ...fit(points.subarray(mid * 2))]
+    fitted.set(key, out.slice())
+    return out
   }
   return fit
+}
+
+/** A string that two arrays share exactly when their values are the same bits. */
+function bitsKey(a: Float64Array): string {
+  const units = new Uint16Array(a.buffer, a.byteOffset, a.length * 4)
+  let key = ''
+  for (let i = 0; i < units.length; i += 4096) {
+    key += String.fromCharCode(...units.subarray(i, i + 4096))
+  }
+  return key
 }
 
 /**

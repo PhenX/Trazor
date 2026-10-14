@@ -623,6 +623,24 @@ describe('the planar chain against its image', () => {
     expect(segs.length).toBe(1)
     expect(segs[0]).toMatchObject({ type: 'L', x: pts[2 * n - 2], y: pts[2 * n - 1] })
   })
+
+  it('fits a repeated set-back run as a fresh one, in its own array', () => {
+    const n = 60
+    const pts = new Float64Array(2 * n)
+    for (let i = 0; i < n; i++) {
+      pts[2 * i] = 20 + 12 * Math.cos(i / 15)
+      pts[2 * i + 1] = 20 + 12 * Math.sin(i / 15)
+    }
+    const fresh = setBackFit(64, 64, 1)(pts)
+    const fit = setBackFit(64, 64, 1)
+    const first = fit(pts)
+    const again = fit(pts.slice())
+    expect(first).toEqual(fresh)
+    expect(again).toEqual(fresh)
+    expect(again).not.toBe(first)
+    again.pop()
+    expect(fit(pts)).toEqual(fresh)
+  })
 })
 
 describe('gradient paint in the forward model', () => {
