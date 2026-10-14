@@ -33,6 +33,7 @@ import {
 import type { FillModel, Interp, Stop } from './model'
 import { fitStride } from './samples'
 import type { Samples } from './samples'
+import { Predictions } from './score'
 
 /** Rounds of reweighting when a stop count's final profile is fitted. */
 export const IRLS_ROUNDS = 2
@@ -208,7 +209,13 @@ export class StopProblem {
    * 2–98 % quantile range of `t`. Null below `4·MIN_GRADIENT_PIXELS` subsamples
    * or when that range is under 0.1.
    */
-  static of(model: FillModel, s: Samples, cols: Float64Array, space: Interp): StopProblem | null {
+  static of(
+    model: FillModel,
+    s: Samples,
+    cols: Float64Array,
+    space: Interp,
+    parentPreds?: Predictions,
+  ): StopProblem | null {
     const n = s.n
     const stride = fitStride(n)
     const count = n > 0 ? Math.ceil(n / stride) : 0
@@ -226,7 +233,13 @@ export class StopProblem {
       c[3 * j] = cols[3 * i]
       c[3 * j + 1] = cols[3 * i + 1]
       c[3 * j + 2] = cols[3 * i + 2]
-      parent.colorAt(s.x[i], s.y[i], p, 0)
+      if (parentPreds !== undefined) {
+        p[0] = parentPreds.p[3 * j]
+        p[1] = parentPreds.p[3 * j + 1]
+        p[2] = parentPreds.p[3 * j + 2]
+      } else {
+        parent.colorAt(s.x[i], s.y[i], p, 0)
+      }
       let r2 = 0
       for (let k = 0; k < 3; k++) {
         const q = space === 'linearRgb' ? srgbToLinear32(p[k]) : p[k]
@@ -283,7 +296,12 @@ export class StopProblem {
    * subsamples and its median residual (sRGB distance to the observation)
    * exceeds {@link MAX_SLIVER_MISFIT} times the other side's, floored at 1/255.
    */
-  cutsAMisfitSliver(cand: FillModel, knots: readonly number[], k: number): boolean {
+  cutsAMisfitSliver(
+    cand: FillModel,
+    knots: readonly number[],
+    k: number,
+    candPreds?: Predictions,
+  ): boolean {
     const s = this.s
     const seg = knots.indexOf(k)
     const loT = seg === 0 ? -Infinity : knots[seg - 1]
@@ -295,7 +313,13 @@ export class StopProblem {
       const tj = this.t[j]
       if (tj < loT || tj > hiT) continue
       const i = this.idx[j]
-      ev.colorAt(s.x[i], s.y[i], p, 0)
+      if (candPreds !== undefined) {
+        p[0] = candPreds.p[3 * j]
+        p[1] = candPreds.p[3 * j + 1]
+        p[2] = candPreds.p[3 * j + 2]
+      } else {
+        ev.colorAt(s.x[i], s.y[i], p, 0)
+      }
       const d0 = fr(p[0] - s.srgb[3 * i])
       const d1 = fr(p[1] - s.srgb[3 * i + 1])
       const d2 = fr(p[2] - s.srgb[3 * i + 2])
@@ -353,8 +377,10 @@ export function fitMidStops(
   s: Samples,
   cols: Float64Array,
   space: Interp,
+  parentPreds?: Predictions,
+  predsOut?: Predictions[],
 ): FillModel[] {
-  const p = StopProblem.of(model, s, cols, space)
+  const p = StopProblem.of(model, s, cols, space, parentPreds)
   if (p === null) return []
   const out: FillModel[] = []
   const knots: number[] = []
@@ -372,8 +398,12 @@ export function fitMidStops(
     const mids: Stop[] = knots.map((offset, i) => ({ offset, color: fromSpace(x[i + 1], space) }))
     const cand = withStops(model, fromSpace(x[0], space), mids, fromSpace(x[m - 1], space))
     const moved = knots.length === 2 ? knots.slice() : [k]
-    if (moved.some((q) => p.cutsAMisfitSliver(cand, knots, q))) break
+    // The sliver tests between them read every subsample's prediction, the
+    // ones the caller scores the variant on.
+    const preds = new Predictions(cand, s)
+    if (moved.some((q) => p.cutsAMisfitSliver(cand, knots, q, preds))) break
     out.push(cand)
+    predsOut?.push(preds)
   }
   return out
 }

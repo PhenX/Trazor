@@ -279,10 +279,12 @@ export function fitSamples(
       const contrast = preds.contrast()
       const support = preds.support(flatC, contrast)
       if (contrast < minContrast || support < MIN_RAMP_SUPPORT || imperceptible(cand)) continue
-      const multi = fitMidStops(cand, s, cols, space)
+      const multiPreds: Predictions[] = []
+      const multi = fitMidStops(cand, s, cols, space, preds, multiPreds)
       out.push(scored(cand, preds))
-      for (const m of multi) {
-        const pm = new Predictions(m, s)
+      for (let q = 0; q < multi.length; q++) {
+        const m = multi[q]
+        const pm = multiPreds[q]
         const c = pm.contrast()
         if (c >= minContrast && pm.support(flatC, c) >= MIN_RAMP_SUPPORT && !imperceptible(m)) {
           out.push(scored(m, pm))
