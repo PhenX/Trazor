@@ -10,6 +10,7 @@ import {
 import { bestCubic, rawMomentsDirect } from '../../src/fit/cubicfit'
 import type { FitSegment, Vec } from '../../src/fit/curves'
 import { chi2 as sampledChi2, segmentParams } from '../../src/fit/curves'
+import { shippingPostFit } from '../../src/fit/edge'
 import { Limits } from '../../src/fit/limits'
 import {
   decimationCells,
@@ -589,6 +590,37 @@ describe('limits', () => {
     for (let k = 1; k < kept.length; k++) expect(kept[k]).toBeGreaterThan(kept[k - 1])
     const fit = optimalMultimodel(poly, fitConfig(256), { maxPoints: 401 })
     expect(fit.vertices).toEqual([0, 801, 1602])
+  })
+
+  /** A closed ring through `corners`, measured about every pixel along each side. */
+  function ringPoints(corners: readonly [number, number][]): [number, number][] {
+    const pairs: [number, number][] = []
+    corners.forEach(([ax, ay], k) => {
+      const [bx, by] = corners[(k + 1) % corners.length]
+      const n = Math.max(1, Math.round(Math.hypot(bx - ax, by - ay)))
+      for (let i = 0; i < n; i++) pairs.push([ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n])
+    })
+    return pairs
+  }
+
+  it('runs the post-fit passes of a decimated fit on its measured points', () => {
+    // A bar's lower edge meets a short step and a long slash: a ring decimated
+    // four points to a cell, the bar's edge 80 cells long.
+    const pairs = ringPoints([
+      [21.33, 362.67],
+      [21.33, 405.33],
+      [341.33, 405.33],
+      [341.33, 401.7],
+      [937, 997.3],
+      [967.2, 967.2],
+      [362.67, 362.67],
+    ])
+    const poly = uniformPolyline(flat(pairs), 0.05, true)
+    expect(pairs.length).toBeGreaterThan(3 * DP_MAX_POINTS)
+    const fit = optimalMultimodel(poly, fitConfig(1012), { postFit: shippingPostFit })
+    // The bar's edge stays one horizontal line and the step its own segment.
+    expect(pathMaxDeviation(poly, fit.path)).toBeLessThan(0.1)
+    expect(fit.path.segments.every((s) => s.type === 'L')).toBe(true)
   })
 
   /** A wobbly open run and a lobed closed ring, the shapes the crossing repair refits. */

@@ -15,10 +15,11 @@
  * units on a supersampled image).
  *
  * The post-fit passes ({@link shippingPostFit}) run where inkvec runs
- * `post_fit_passes`: inside the program, on the centered (and, above
- * `DP_MAX_POINTS`, decimated) polyline it solved, on every free fit and every
- * pinned fit without a span cap, keeping the pins; never under a span cap. The
- * free-cubic merge and the corner sharpening ship; the research snaps do not.
+ * `post_fit_passes`: inside the program, on the centered polyline (every
+ * measured point, also where the program solved on decimated cells above
+ * `DP_MAX_POINTS`), on every free fit and every pinned fit without a span cap,
+ * keeping the pins; never under a span cap. The free-cubic merge and the corner
+ * sharpening ship; the research snaps do not.
  *
  * Coordinates are px, y down, lattice corners on integers.
  *

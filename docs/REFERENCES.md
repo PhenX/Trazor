@@ -382,8 +382,12 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   Higham, “The accuracy of floating point summation”, _SIAM J. Sci. Comput._ 14(4), 1993,
   eq. 2.6), a rejected run not retried until its vertices change (local invalidation, M.
   Garland & P. S. Heckbert, “Surface simplification using quadric error metrics”, SIGGRAPH
-  1997); a chamfer the rasterizer rounded sharpened back into the corner of its two lines,
-  unless that would leave a closed ring under three segments or half its area (a small
+  1997); on a decimated fit the passes read every measured point, not the cell means — the
+  grouped-data reduction (Bevington & Robinson ch. 4) holds for the program's squared
+  distance to the curve, not for the passes' nearest-sample residual, whose overstatement
+  (up to half the sample spacing) a cell would weigh by its point count over runs as many
+  times longer; a chamfer the rasterizer rounded sharpened back into the corner of its two
+  lines, unless that would leave a closed ring under three segments or half its area (a small
   closed shape whose short side looks like a chamfer); and the research snaps (axis lines, `S`-reflected smooth joins on the output grid), off by
   default. Distances use the correctly rounded `hypot` of F. Borges, “An improved algorithm
   for hypot(a,b)”, arXiv:1904.09481, 2019.

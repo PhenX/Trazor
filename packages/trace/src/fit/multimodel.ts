@@ -29,7 +29,8 @@
  * G1 where that costs less residual than the break it removes. The post-fit
  * passes (free-cubic merge, corner sharpening) live in the merge module; a caller
  * hands them in as {@link PostFitPass} to run them on the centered polyline as the
- * reference does.
+ * reference does, a decimated fit's on every measured point rather than its cells
+ * ({@link solveDecimated}).
  *
  * Coordinates are px, y down; the fit is translation invariant, so inkvec's
  * pixel-center convention needs no shift here.
@@ -291,7 +292,13 @@ function multimodel(
 /**
  * Fit a long boundary on a decimated copy ({@link decimationCells}) and map
  * the chosen vertices back to indices of the full polyline: a vertex at a cell
- * stands for the cell's middle point.
+ * stands for the cell's middle point. The post-fit passes then run on the full
+ * polyline, centered as the program centers it: the cell means stand in for
+ * their points only under the program's own residual, the squared distance to
+ * the curve, while the passes price a run by each point's distance to the
+ * nearest of a fixed number of curve samples (an overstatement of up to half
+ * the sample spacing, which a cell of `m` points at `σ/√m` weighs `m` times)
+ * and bound a run by its point count (`merge.MAX_SPAN`).
  */
 function solveDecimated(
   poly: Polyline,
@@ -302,8 +309,13 @@ function solveDecimated(
 ): MultimodelFit {
   const cells = decimationCells(poly, cfg, maxPoints)
   const decimated = { points: cells.points, sigma: cells.sigma, closed: poly.closed }
-  const fit = multimodel(decimated, cfg, lim, opts)
+  const fit = multimodel(decimated, cfg, lim, { maxPoints })
   fit.vertices = fit.vertices.map((v) => cells.index[v])
+  if (opts.postFit) {
+    const { cx, cy, shifted } = centered(poly)
+    const path = opts.postFit(translatePath(fit.path, -cx, -cy), shifted, fit.vertices, cfg, null)
+    fit.path = translatePath(path, cx, cy)
+  }
   return fit
 }
 
