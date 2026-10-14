@@ -63,18 +63,29 @@ export function fit1d(cols: Float64Array, t: Float64Array, n: number): LineFit {
   for (let i = 0; i < n; i++) tsum += t[i]
   const tbar = tsum / n
   const cbar = mean3(cols, n)
+  const [m0, m1, m2] = cbar
   let stt = 0
-  const stc = [0, 0, 0]
-  const scc = [0, 0, 0]
+  let stc0 = 0
+  let stc1 = 0
+  let stc2 = 0
+  let scc0 = 0
+  let scc1 = 0
+  let scc2 = 0
   for (let i = 0; i < n; i++) {
     const dt = t[i] - tbar
     stt += dt * dt
-    for (let k = 0; k < 3; k++) {
-      const dc = cols[3 * i + k] - cbar[k]
-      stc[k] += dt * dc
-      scc[k] += dc * dc
-    }
+    const dc0 = cols[3 * i] - m0
+    const dc1 = cols[3 * i + 1] - m1
+    const dc2 = cols[3 * i + 2] - m2
+    stc0 += dt * dc0
+    scc0 += dc0 * dc0
+    stc1 += dt * dc1
+    scc1 += dc1 * dc1
+    stc2 += dt * dc2
+    scc2 += dc2 * dc2
   }
+  const stc = [stc0, stc1, stc2]
+  const scc = [scc0, scc1, scc2]
   const a: [number, number, number] = [0, 0, 0]
   const g: [number, number, number] = [0, 0, 0]
   let resid = 0
@@ -127,12 +138,14 @@ export class Resid1d {
   /** The line residual with `t_i = |P_i − c|`: what a circular gradient centered at `c` leaves. */
   radial(cx: number, cy: number): number {
     const t = this.t
+    let tsum = 0
     for (let j = 0; j < t.length; j++) {
       const dx = this.xs[j] - cx
       const dy = this.ys[j] - cy
       t[j] = Math.sqrt(dx * dx + dy * dy)
+      tsum += t[j]
     }
-    return this.finish()
+    return this.finish(tsum)
   }
 
   /**
@@ -140,8 +153,17 @@ export class Resid1d {
    * `(sin, cos, aspect k)`: `u = dx·cos + dy·sin`, `v = (−dx·sin + dy·cos)·k`, `t = √(u² + v²)`.
    */
   elliptic(cx: number, cy: number, sn: number, cs: number, k: number): number {
-    this.ellipticT(cx, cy, sn, cs, k)
-    return this.finish()
+    const t = this.t
+    let tsum = 0
+    for (let j = 0; j < t.length; j++) {
+      const dx = this.xs[j] - cx
+      const dy = this.ys[j] - cy
+      const u = dx * cs + dy * sn
+      const v = (-dx * sn + dy * cs) * k
+      t[j] = Math.sqrt(u * u + v * v)
+      tsum += t[j]
+    }
+    return this.finish(tsum)
   }
 
   /** Fill {@link Resid1d.t} with the elliptical distances of {@link Resid1d.elliptic}. */
@@ -156,12 +178,13 @@ export class Resid1d {
     }
   }
 
-  /** The residual of the least-squares line through `(t, color)`: `Σ_ch max(S_cc − S_tc²/S_tt, 0)`. */
-  finish(): number {
+  /**
+   * The residual of the least-squares line through `(t, color)`:
+   * `Σ_ch max(S_cc − S_tc²/S_tt, 0)`, given `tsum = Σ t_j` (summed in index order).
+   */
+  private finish(tsum: number): number {
     const t = this.t
     const n = t.length
-    let tsum = 0
-    for (let j = 0; j < n; j++) tsum += t[j]
     const tbar = tsum / n
     let stt = 0
     let stc0 = 0
@@ -289,25 +312,41 @@ export function fitLinear(s: Samples, cols: Float64Array, space: Interp): FillMo
   if (n < MIN_GRADIENT_PIXELS) return null
   const [xc, yc] = centroid(s)
   const cbar = mean3(cols, n)
+  const [m0, m1, m2] = cbar
   let sxx = 0
   let sxy = 0
   let syy = 0
-  const sxc = [0, 0, 0]
-  const syc = [0, 0, 0]
-  const scc = [0, 0, 0]
+  let sxc0 = 0
+  let sxc1 = 0
+  let sxc2 = 0
+  let syc0 = 0
+  let syc1 = 0
+  let syc2 = 0
+  let scc0 = 0
+  let scc1 = 0
+  let scc2 = 0
   for (let i = 0; i < n; i++) {
     const dx = s.x[i] - xc
     const dy = s.y[i] - yc
     sxx += dx * dx
     sxy += dx * dy
     syy += dy * dy
-    for (let k = 0; k < 3; k++) {
-      const dc = cols[3 * i + k] - cbar[k]
-      sxc[k] += dx * dc
-      syc[k] += dy * dc
-      scc[k] += dc * dc
-    }
+    const dc0 = cols[3 * i] - m0
+    const dc1 = cols[3 * i + 1] - m1
+    const dc2 = cols[3 * i + 2] - m2
+    sxc0 += dx * dc0
+    syc0 += dy * dc0
+    scc0 += dc0 * dc0
+    sxc1 += dx * dc1
+    syc1 += dy * dc1
+    scc1 += dc1 * dc1
+    sxc2 += dx * dc2
+    syc2 += dy * dc2
+    scc2 += dc2 * dc2
   }
+  const sxc = [sxc0, sxc1, sxc2]
+  const syc = [syc0, syc1, syc2]
+  const scc = [scc0, scc1, scc2]
   const det = sxx * syy - sxy * sxy
   const tr = sxx + syy
   if (det <= 1e-9 * (tr * tr)) return null
@@ -408,16 +447,30 @@ export function fitLinear(s: Samples, cols: Float64Array, space: Interp): FillMo
  * collapses.
  */
 export function colorAxis(cols: Float64Array, n: number): [number, number, number] | null {
-  const cbar = mean3(cols, n)
-  const cov = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-  ]
+  const [m0, m1, m2] = mean3(cols, n)
+  // The scatter's six distinct entries; `d_i·d_j = d_j·d_i` exactly.
+  let c00 = 0
+  let c01 = 0
+  let c02 = 0
+  let c11 = 0
+  let c12 = 0
+  let c22 = 0
   for (let p = 0; p < n; p++) {
-    const d = [cols[3 * p] - cbar[0], cols[3 * p + 1] - cbar[1], cols[3 * p + 2] - cbar[2]]
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[i][j] += d[i] * d[j]
+    const d0 = cols[3 * p] - m0
+    const d1 = cols[3 * p + 1] - m1
+    const d2 = cols[3 * p + 2] - m2
+    c00 += d0 * d0
+    c01 += d0 * d1
+    c02 += d0 * d2
+    c11 += d1 * d1
+    c12 += d1 * d2
+    c22 += d2 * d2
   }
+  const cov = [
+    [c00, c01, c02],
+    [c01, c11, c12],
+    [c02, c12, c22],
+  ]
   const trace = cov[0][0] + cov[1][1] + cov[2][2]
   if (trace <= 1e-12) return null
   const s0 = 1 / Math.sqrt(3)
