@@ -238,6 +238,14 @@ export function fittedEdgeOf(
 }
 
 /**
+ * Each polyline's ellipse fits, kept for as long as the polyline: every
+ * program run over it (both cuts of a loop, and each refit the crossing repair
+ * makes under a cap or pins) fits a span's ellipse once. A polyline's points
+ * are never changed once it is made.
+ */
+const ellipseMemos = new WeakMap<Polyline, EllipseMemo>()
+
+/**
  * The body of every entry point. `lim` says which spans may be used. The work
  * is done on a centered copy and the path moved back. Fewer than two points give
  * an empty path.
@@ -270,11 +278,17 @@ function multimodel(
   if (lim.free && n > maxPoints) return solveDecimated(poly, cfg, lim, opts, maxPoints)
 
   const { cx, cy, shifted } = centered(poly)
+  let ellipses = ellipseMemos.get(poly)
+  if (ellipses === undefined) {
+    ellipses = new EllipseMemo(n)
+    ellipseMemos.set(poly, ellipses)
+  }
   let fit: MultimodelFit
-  if (poly.closed && n >= 3) fit = solveClosed(shifted, cfg, lim)
+  if (poly.closed && n >= 3) fit = solveClosed(shifted, cfg, lim, ellipses)
   else {
     const tan = estimateTangents(shifted, cfg)
-    const { sol, path } = solveAndRefine(shifted, tan, cfg, false, lim)
+    ellipses.offset = 0
+    const { sol, path } = solveAndRefine(shifted, tan, cfg, false, lim, ellipses)
     fit = { path, vertices: sol.vertices, kinds: sol.kinds, cost: sol.cost }
   }
   if (opts.postFit) {
@@ -960,12 +974,16 @@ export function openAt(
  * is kept. The cut vertex pays its `vertexCost`, which the opened program cannot
  * see. With forced vertices the loop is cut at the first one, which every
  * admissible solution has, and solved once. Returned vertices index `poly`, the
- * cut at both ends. Both runs share one {@link EllipseMemo}.
+ * cut at both ends. Both runs take their ellipse fits from `ellipses`.
  */
-function solveClosed(poly: Polyline, cfg: FitConfig, lim: Limits): MultimodelFit {
+function solveClosed(
+  poly: Polyline,
+  cfg: FitConfig,
+  lim: Limits,
+  ellipses: EllipseMemo,
+): MultimodelFit {
   const n = polylineSize(poly)
   const tan = estimateTangents(poly, cfg)
-  const ellipses = new EllipseMemo(n)
   const run = (cut: number, l: Limits): MultimodelFit => {
     const opened = openAt(poly, tan, cut)
     ellipses.offset = cut
