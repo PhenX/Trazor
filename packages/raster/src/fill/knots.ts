@@ -1,20 +1,25 @@
 /**
- * Where a gradient's interior stops go: an exact scan of every stop offset the
- * SVG carries (multiples of 1/1000), on weighted moments binned by the gradient
- * coordinate, alternated with Huber reweighting.
+ * Where a gradient's interior stops go: a coarse-to-fine scan of the stop
+ * offsets the SVG carries (multiples of 1/1000), on weighted moments binned by
+ * the gradient coordinate, alternated with Huber reweighting.
  *
  * With the ramp's geometry fixed every sample has a coordinate `t`, and a stop
  * is the join of a continuous piecewise-linear profile in `t`: a segmented
  * regression with an unknown join. Every entry of the hat basis's normal
  * equations on a piece `[τa, τb]` is a quadratic in `t`, so the per-bin sums
  * `Σw, Σwt, Σwt², Σwy, Σwty, Σw|y|²` (prefix-summed) price any set of grid knots
- * in O(1), and all ≤ 999 offsets are priced exactly. The scan minimizes a
+ * in O(1), each exactly. The scan prices every {@link KNOT_COARSE_STEP}-th
+ * offset, then every offset around the {@link KNOT_REFINE_MINIMA} least coarse
+ * local minima (a grid search refined around its best cells), about a sixth of
+ * the ≤ 999 offsets. It minimizes a
  * weighted square that majorizes the Huber loss at the current fit, so the
  * search alternates the scan with a reweighting (the majorize–minimize reading
  * of IRLS).
  *
  * Method from: D. J. Hudson (1966), Fitting segmented curves whose join points
- * have to be estimated, JASA 61(316), doi:10.1080/01621459.1966.10482198; J. Bai,
+ * have to be estimated, JASA 61(316), doi:10.1080/01621459.1966.10482198; P. M.
+ * Lerman (1980), Fitting segmented regression models by grid search, Applied
+ * Statistics 29(1):77–84 (the join by a grid search, refined); J. Bai,
  * P. Perron (2003), Computation and analysis of multiple structural change
  * models, J. Applied Econometrics 18(1), doi:10.1002/jae.659; S. Chakraborty et
  * al. (2025), Image Vectorization via Gradient Reconstruction, Computer Graphics
@@ -33,6 +38,12 @@ export const OFFSET_STEPS = 1000
 
 /** Rounds of the majorize–minimize search: the first at the starting weights, each later one at the previous fit's Huber weights. */
 export const MM_ROUNDS = 3
+
+/** Spacing, in grid positions, of the knot scan's coarse pass. */
+export const KNOT_COARSE_STEP = 16
+
+/** Coarse local minima of the knot scan whose neighborhoods are scanned position by position. */
+export const KNOT_REFINE_MINIMA = 3
 
 /** Most profile nodes: the two end stops and two interior ones. */
 export const MAX_NODES = 4
@@ -142,6 +153,10 @@ export class BinnedProfile {
   private readonly elimB = new Float64Array(MAX_NODES * 3)
   private readonly sol = new Float64Array(MAX_NODES * 3)
   private readonly nodeBuf: number[] = [0, 0, 0, 0]
+  /** The coarse scan's residuals, one per coarse position. */
+  private readonly coarse = new Float64Array(Math.ceil(OFFSET_STEPS / KNOT_COARSE_STEP) + 2)
+  /** Knot sets priced so far by {@link BinnedProfile.scan}. */
+  priced = 0
 
   /** Bin samples `(t_i, c_i)` (colors three per sample) with weights `w_i`; `t` in `[0, 1]`. */
   constructor(t: Float64Array, c: Float64Array, w: Float64Array) {
@@ -293,41 +308,105 @@ export class BinnedProfile {
 
   /**
    * The grid position in `lo ..= hi`, not in `fixed`, whose knot added to `fixed`
-   * leaves the least weighted sum of squares, with that fit; the lowest position
-   * on a tie. Null when every candidate is singular or none remains.
+   * leaves the least weighted sum of squares among those the coarse-to-fine scan
+   * prices, with that fit; the lowest position on a tie. The scan prices every
+   * {@link KNOT_COARSE_STEP}-th position from `lo` (and `hi`), then every position
+   * between the coarse neighbors of the {@link KNOT_REFINE_MINIMA} least coarse
+   * local minima (the lower position first on a tie); with no solvable coarse
+   * position it prices them all. Null when every candidate is singular or none
+   * remains.
    */
   scan(fixed: readonly number[], lo: number, hi: number): KnotFit | null {
     const inner = fixed.toSorted((p, q) => p - q)
-    const nodes = this.nodeBuf
-    const m = inner.length + 3
+    const coarse = this.coarse
+    let n = 0
+    for (let j = lo; ; j += KNOT_COARSE_STEP) {
+      const pos = Math.min(j, hi)
+      coarse[n++] = this.price(inner, pos)
+      if (pos === hi) break
+    }
+    const at = (i: number): number => (i + 1 < n ? lo + i * KNOT_COARSE_STEP : hi)
+    // The least coarse local minima, each scanned between its coarse neighbors.
+    const minima: number[] = []
+    for (let i = 0; i < n; i++) {
+      const v = coarse[i]
+      if (v === Infinity) continue
+      if (i > 0 && coarse[i - 1] < v) continue
+      if (i + 1 < n && coarse[i + 1] < v) continue
+      minima.push(i)
+    }
+    if (minima.length === 0) return this.best(inner, lo, hi, -1, 0)
+    minima.sort((p, q) => coarse[p] - coarse[q] || p - q)
     let bestJ = -1
     let bestSse = 0
-    for (let j = lo; j <= hi; j++) {
-      if (inner.includes(j)) continue
-      // [0, ...fixed, j, end], sorted.
-      let k = 0
-      nodes[k++] = 0
-      let placed = false
-      for (const f of inner) {
-        if (!placed && j < f) {
-          nodes[k++] = j
-          placed = true
-        }
-        nodes[k++] = f
+    for (let i = 0; i < n; i++) {
+      if (coarse[i] !== Infinity && (bestJ < 0 || coarse[i] < bestSse)) {
+        bestJ = at(i)
+        bestSse = coarse[i]
       }
-      if (!placed) nodes[k++] = j
-      nodes[k++] = OFFSET_STEPS + 1
-      const sse = this.fit(nodes, m)
-      if (!Number.isFinite(sse)) continue
+    }
+    for (let r = 0; r < Math.min(minima.length, KNOT_REFINE_MINIMA); r++) {
+      const i = minima[r]
+      const a = i > 0 ? at(i - 1) + 1 : lo
+      const b = i + 1 < n ? at(i + 1) - 1 : hi
+      for (let j = a; j <= b; j++) {
+        const sse = this.price(inner, j)
+        if (sse < bestSse || (sse === bestSse && j < bestJ)) {
+          bestJ = j
+          bestSse = sse
+        }
+      }
+    }
+    return this.answer(inner, bestJ)
+  }
+
+  /** The exhaustive scan: every position in `lo ..= hi`, starting from the best so far `(bestJ, bestSse)` (`bestJ < 0`: none). */
+  private best(
+    inner: readonly number[],
+    lo: number,
+    hi: number,
+    bestJ: number,
+    bestSse: number,
+  ): KnotFit | null {
+    for (let j = lo; j <= hi; j++) {
+      const sse = this.price(inner, j)
+      if (sse === Infinity) continue
       if (bestJ < 0 || sse < bestSse) {
         bestJ = j
         bestSse = sse
       }
     }
-    if (bestJ < 0) return null
-    const best = [0, ...inner, bestJ, OFFSET_STEPS + 1].toSorted((p, q) => p - q)
+    return this.answer(inner, bestJ)
+  }
+
+  /** The fit with one more knot at `j` (`j < 0`: none found, null). */
+  private answer(inner: readonly number[], j: number): KnotFit | null {
+    if (j < 0) return null
+    const best = [0, ...inner, j, OFFSET_STEPS + 1].toSorted((p, q) => p - q)
     const fit = this.solve(best)
-    return fit === null ? null : { j: bestJ, nodes: best, x: fit.x }
+    return fit === null ? null : { j, nodes: best, x: fit.x }
+  }
+
+  /** The residual with one more knot at grid position `j` added to the ascending `inner`; Infinity when `j` is in `inner` or the system is singular. */
+  private price(inner: readonly number[], j: number): number {
+    if (inner.includes(j)) return Infinity
+    // [0, ...inner, j, end], sorted.
+    const nodes = this.nodeBuf
+    let k = 0
+    nodes[k++] = 0
+    let placed = false
+    for (const f of inner) {
+      if (!placed && j < f) {
+        nodes[k++] = j
+        placed = true
+      }
+      nodes[k++] = f
+    }
+    if (!placed) nodes[k++] = j
+    nodes[k++] = OFFSET_STEPS + 1
+    this.priced++
+    const sse = this.fit(nodes, inner.length + 3)
+    return Number.isFinite(sse) ? sse : Infinity
   }
 }
 

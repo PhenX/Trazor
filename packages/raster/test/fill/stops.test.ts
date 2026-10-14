@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { mulberry32 } from '@trazor/core'
-import { BinnedProfile, bestKnot, binOf, OFFSET_STEPS, solveSmall, tau } from '../../src/fill/knots'
+import {
+  BinnedProfile,
+  bestKnot,
+  binOf,
+  KNOT_COARSE_STEP,
+  OFFSET_STEPS,
+  solveSmall,
+  tau,
+} from '../../src/fill/knots'
 import type { FillModel } from '../../src/fill/model'
 import { colorsIn, samplesOf } from '../../src/fill/samples'
 import { fitMidStops, fitPiecewise, median, repartition, StopProblem } from '../../src/fill/stops'
@@ -88,6 +96,56 @@ describe('the piecewise profile', () => {
       let brute = Infinity
       for (let jj = 60; jj <= 940; jj++) brute = Math.min(brute, sseDirect(t, c, w, [tau(jj)]).sse)
       expect(sseDirect(t, c, w, [tau(j)]).sse).toBeLessThanOrEqual(brute * (1 + 1e-9))
+    }
+  })
+
+  it('prices about a sixth of the offsets, coarse then around the best coarse minima', () => {
+    const { t, c, w } = problem(2000, 0.43, 0.05, mulberry32(5))
+    const prof = new BinnedProfile(t, c, w)
+    expect(prof.scan([], 60, 940)).not.toBeNull()
+    expect(prof.priced).toBeLessThan(881 / 4)
+    expect(prof.priced).toBeGreaterThanOrEqual(Math.ceil(881 / KNOT_COARSE_STEP))
+  })
+
+  it("lands on the exhaustive scan's knot on a profile with two kinks", () => {
+    // Two kinks: a strong one at 0.71 and a weak one at 0.23. One knot can only
+    // take one, and the exhaustive scan puts it near the strong one.
+    const rand = mulberry32(31)
+    const n = 4000
+    const t = new Float64Array(n)
+    const c = new Float64Array(3 * n)
+    const w = new Float64Array(n).fill(1)
+    for (let i = 0; i < n; i++) {
+      const ti = rand()
+      t[i] = ti
+      const v =
+        0.3 * Math.min(ti, 0.23) + 0.1 * Math.max(ti - 0.23, 0) - 0.6 * Math.max(ti - 0.71, 0)
+      for (let k = 0; k < 3; k++) c[3 * i + k] = (k + 1) * v + 0.01 * (rand() - 0.5)
+    }
+    const prof = new BinnedProfile(t, c, w)
+    let brute = -1
+    let bruteSse = Infinity
+    for (let j = 50; j <= 950; j++) {
+      const fit = prof.solve([0, j, OFFSET_STEPS + 1])!
+      if (fit.sse < bruteSse) {
+        bruteSse = fit.sse
+        brute = j
+      }
+    }
+    expect(Math.abs(brute - 710)).toBeLessThan(50)
+    for (const fixed of [[], [230]]) {
+      const got = prof.scan(fixed, 50, 950)!.j
+      let want = -1
+      let wantSse = Infinity
+      for (let j = 50; j <= 950; j++) {
+        if (fixed.includes(j)) continue
+        const fit = prof.solve([0, ...[...fixed, j].toSorted((p, q) => p - q), OFFSET_STEPS + 1])!
+        if (fit.sse < wantSse) {
+          wantSse = fit.sse
+          want = j
+        }
+      }
+      expect(got).toBe(want)
     }
   })
 
