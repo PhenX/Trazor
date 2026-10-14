@@ -171,6 +171,19 @@ describe('stop interpolation', () => {
       expect(srgbToLinear32(c)).toBe(Math.fround(srgbToLinear32(c)))
     }
   })
+
+  it('decodes 8-bit levels and every other value on the same single-precision curve', () => {
+    const fr = Math.fround
+    const curve = (c: number): number =>
+      c <= fr(0.04045)
+        ? fr(c / fr(12.92))
+        : fr(Math.pow(fr(fr(c + fr(0.055)) / fr(1.055)), fr(2.4)))
+    const rand = mulberry32(7)
+    const values = [-0, 0, 1, -0.5, 1.5, NaN, fr(0.04045), fr(0.5 / 255)]
+    for (let v = 0; v <= 255; v++) values.push(fr(v / 255), v / 255, fr(fr(v / 255) + 1e-7))
+    for (let i = 0; i < 1000; i++) values.push(fr(rand()))
+    for (const c of values) expect(Object.is(srgbToLinear32(c), curve(c))).toBe(true)
+  })
 })
 
 describe('description lengths and names', () => {

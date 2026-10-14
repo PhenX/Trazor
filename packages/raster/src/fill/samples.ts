@@ -149,7 +149,10 @@ export function collectSamples(
     if (strict && !isInterior(p, w, h, member)) continue
     keep[n++] = p
   }
-  const px = keep.subarray(0, n).toSorted()
+  // Pixel lists usually arrive ascending already, and sorting them changes nothing.
+  let ascending = true
+  for (let i = 1; i < n && ascending; i++) ascending = keep[i - 1] < keep[i]
+  const px = ascending ? keep.slice(0, n) : keep.subarray(0, n).toSorted()
   const x = new Float64Array(n)
   const y = new Float64Array(n)
   const srgb = new Float32Array(3 * n)

@@ -137,8 +137,23 @@ const F_INV_GAMMA = fr(1 / F_GAMMA)
  * 0.04045, `((c + 0.055) / 1.055)^2.4` above. Not clamped.
  */
 export function srgbToLinear32(c: number): number {
+  // An 8-bit channel value `k/255` (as single precision) is read from a table
+  // of the curve's own results; `k = 0` stays on the curve, which keeps the
+  // sign of a zero.
+  const k = Math.round(c * 255)
+  if (k > 0 && k <= 255 && BYTE_VALUES[k] === c) return BYTE_LINEAR[k]
+  return decode32(c)
+}
+
+/** {@link srgbToLinear32}'s curve, evaluated. */
+function decode32(c: number): number {
   return c <= F_SRGB_KNEE ? fr(c / F_12_92) : fr(Math.pow(fr(fr(c + F_0_055) / F_1_055), F_GAMMA))
 }
+
+/** The 8-bit channel values `fr(k/255)`, `k = 0..255`. */
+const BYTE_VALUES = Float64Array.from({ length: 256 }, (_, k) => fr(k / 255))
+/** {@link decode32} of each of {@link BYTE_VALUES}. */
+const BYTE_LINEAR = BYTE_VALUES.map(decode32)
 
 /**
  * The sRGB encoding curve in single precision, inverse of
