@@ -667,6 +667,8 @@ export namespace ink {
     options?: {
       regionRecovery?: boolean
       sameClass?: (a, b) => boolean
+      // The work cap: by default max(MERGE_WORK_FLOOR = 2^24, 32·w·h) units (mergeWorkCap);
+      // inkvec's floor is INKVEC_MERGE_WORK_FLOOR = 2^28.
       budget?: MergeBudget
       gradients?: boolean
       scale?: number // pixel counts (gradient size, shared seam) in source pixels

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   gainWork,
+  INKVEC_MERGE_WORK_FLOOR,
   MERGE_WORK_FLOOR,
   MergeBudget,
+  mergeWorkCap,
   mergeGradientBands,
   MODEL_WORK_PER_SAMPLE,
   unionWork,
@@ -221,6 +223,16 @@ describe('the work cap', () => {
     expect(b.stopped).toBe(true)
     expect(new MergeBudget(128, 128).cap).toBe(MERGE_WORK_FLOOR)
     expect(new MergeBudget(4096, 4096).cap).toBe(32 * 4096 * 4096)
+  })
+
+  it('grows its default cap with the image past a 2^24 floor', () => {
+    expect(mergeWorkCap(724, 724)).toBe(2 ** 24)
+    // A 918 × 643 illustration gets 32 units a pixel, not a large image's budget.
+    expect(new MergeBudget(918, 643).cap).toBe(32 * 918 * 643)
+    expect(new MergeBudget(918, 643).cap).toBeLessThan(2 ** 25)
+    // inkvec's rule: 2^28 up to about 2900 × 2900 px.
+    expect(mergeWorkCap(918, 643, INKVEC_MERGE_WORK_FLOOR)).toBe(2 ** 28)
+    expect(mergeWorkCap(4096, 4096, INKVEC_MERGE_WORK_FLOOR)).toBe(32 * 4096 * 4096)
   })
 
   it('stops the merge at the cap and otherwise leaves it unchanged', { timeout: 60_000 }, () => {
@@ -569,6 +581,7 @@ describe('parity with inkvec', () => {
       const { rgb, labels, inks } = decodeRef(ref)
       const m = mergeGradientBands(labels, rgb, ref.w, ref.h, inks, ref.sigma, ref.lambda, {
         search: INKVEC_SEARCH,
+        budget: new MergeBudget(ref.w, ref.h, mergeWorkCap(ref.w, ref.h, INKVEC_MERGE_WORK_FLOOR)),
       })
       expect(labelDiff(labels, labelsOf(ref.merge.labels))).toBe(0)
       expect(m.ink).toEqual(ref.merge.ink)
@@ -579,7 +592,8 @@ describe('parity with inkvec', () => {
       const what = `${v.regions ? 'region recovery' : 'no region recovery'}, cap ${v.cap ?? 'default'}`
       it(`merges ${ref.name} as inkvec does (${what})`, { timeout: 60_000 }, () => {
         const { rgb, labels, inks } = decodeRef(ref)
-        const budget = new MergeBudget(ref.w, ref.h, v.cap ?? undefined)
+        const cap = v.cap ?? mergeWorkCap(ref.w, ref.h, INKVEC_MERGE_WORK_FLOOR)
+        const budget = new MergeBudget(ref.w, ref.h, cap)
         const m = mergeGradientBands(labels, rgb, ref.w, ref.h, inks, ref.sigma, ref.lambda, {
           regionRecovery: v.regions,
           budget,

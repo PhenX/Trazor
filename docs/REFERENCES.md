@@ -274,11 +274,14 @@ uses. Each file names the inkvec files it follows.
   same description length as a fill.
 - **Band merge and carve** (`fill/bands.ts`, `fill/recovery.ts`, `fill/carve.ts`, after inkvec's
   `inkvec-trace/src/gradient/{bands,regions}.rs` and `carve.rs`, identical label maps and work
-  spent to an inkvec build on 98 corpus images under `INKVEC_SEARCH`, 105 carved features
-  identical): the palette's
+  spent to an inkvec build on 98 corpus images under `INKVEC_SEARCH` and inkvec's work cap,
+  105 carved features identical): the palette's
   bands of one ramp merged back into one gradient region by greedy agglomeration of 4-connected
   components, the pair that saves the most description length first, under a deterministic
-  work cap (the region-adjacency merging of Haris et al. 1998, above); a seam between two
+  work cap (the region-adjacency merging of Haris et al. 1998, above), inkvec's
+  `max(floor, 32·w·h)` units with a floor of 2²⁴ against inkvec's 2²⁸, so the merge's work
+  grows with the image rather than every image up to about 2900 × 2900 px getting 2²⁸ units
+  (`MERGE_WORK_FLOOR`, `INKVEC_MERGE_WORK_FLOOR`); a seam between two
   regions read as smooth when most of its pixel pairs step under 3 CIE76 units and as an edge
   when most step over 6 OKLab units, so an edge is never merged across and two flat regions
   are unioned only across a smooth seam whose inks are one ramp step apart (CIEDE2000 under

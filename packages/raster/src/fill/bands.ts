@@ -42,7 +42,10 @@
  * are a stale refit and the common-pixel gains a pick prices for the first time
  * ({@link gainWork}); a charge that would pass the cap stops the loop, and every
  * merge accepted so far stands. The charges are functions of the region sizes
- * alone, so where the loop stops does not depend on the machine.
+ * alone, so where the loop stops does not depend on the machine. The cap is
+ * inkvec's rule with a floor 16 times lower ({@link MERGE_WORK_FLOOR} against
+ * {@link INKVEC_MERGE_WORK_FLOOR}), so the merge's work, and its time, grows with
+ * the image.
  *
  * `rgb` is the image composited over white (encoded sRGB, three per pixel),
  * `labels` one non-negative ink index per pixel (rewritten in place), `inkRgb` the
@@ -83,8 +86,8 @@ export const MIN_SHARED_BOUNDARY = 3
 
 /**
  * Work units per image pixel of the merge's work cap,
- * `max(MERGE_WORK_FLOOR, MERGE_WORK_PER_PIXEL · w · h)`: 2²⁸ units up to about
- * 2900 × 2900 px, 32 a pixel beyond.
+ * `max(MERGE_WORK_FLOOR, MERGE_WORK_PER_PIXEL · w · h)` ({@link mergeWorkCap}):
+ * 2²⁴ units up to 524 288 px (about 724 × 724), 32 a pixel beyond.
  *
  * Not from the literature: a resource bound on the greedy loop, which nothing else
  * bounds on an image whose background is a smooth non-flat field. Inspired by the
@@ -97,8 +100,27 @@ export const MIN_SHARED_BOUNDARY = 3
  */
 export const MERGE_WORK_PER_PIXEL = 32
 
-/** The least work cap any image gets, so a small icon with many bands is not starved. */
-export const MERGE_WORK_FLOOR = 2 ** 28
+/**
+ * The least work cap any image gets, so an icon with many shaded bands is not
+ * starved: every 128 px icon of the ground-truth corpus merges within it (the
+ * most, a cookie of many bands, spends 1.6 · 10⁷ units), and at 512 px only that
+ * cookie stops short of its merges (8.5 · 10⁷ units). A floor of 2²² cut the
+ * merges of several shaded emoji (the 512 px cookie's GMSD +85 %), for little
+ * time saved past 384 px, where the planar geometry takes most of the trace.
+ */
+export const MERGE_WORK_FLOOR = 2 ** 24
+
+/**
+ * inkvec's floor (`MERGE_WORK_FLOOR` in `bands.rs`), which gives every image up to
+ * about 2900 × 2900 px the same 2²⁸ units: the cap of a parity run,
+ * `mergeWorkCap(w, h, INKVEC_MERGE_WORK_FLOOR)`.
+ */
+export const INKVEC_MERGE_WORK_FLOOR = 2 ** 28
+
+/** The work cap of a `w × h` image: `max(floor, MERGE_WORK_PER_PIXEL · w · h)`. */
+export function mergeWorkCap(w: number, h: number, floor = MERGE_WORK_FLOOR): number {
+  return Math.max(floor, MERGE_WORK_PER_PIXEL * w * h)
+}
 
 /**
  * Gathered pixels one scored sample of a union fit is worth: the split of a union
@@ -143,9 +165,9 @@ export class MergeBudget {
   /** True once a refused charge has stopped the loop. */
   stopped = false
 
-  /** The budget of a `w × h` image, or an explicit `cap`. */
+  /** The budget of a `w × h` image ({@link mergeWorkCap}), or an explicit `cap`. */
   constructor(w: number, h: number, cap?: number) {
-    this.cap = cap ?? Math.max(MERGE_WORK_FLOOR, MERGE_WORK_PER_PIXEL * w * h)
+    this.cap = cap ?? mergeWorkCap(w, h)
   }
 
   /** Charge `work` if it fits under the cap; otherwise charge nothing, record the stop and return false. */
