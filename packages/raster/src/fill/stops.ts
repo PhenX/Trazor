@@ -334,9 +334,35 @@ export class StopProblem {
 }
 
 /** The median of `v` (its upper middle element when even); 0 when empty. */
-function median(v: readonly number[]): number {
+export function median(v: readonly number[]): number {
   if (v.length === 0) return 0
-  return Float64Array.from(v).toSorted()[v.length >> 1]
+  const a = Float64Array.from(v)
+  const k = v.length >> 1
+  // The element a sort would put at `k`, found by selection; a NaN, which the
+  // typed-array sort puts last, takes the sort.
+  for (let i = 0; i < a.length; i++) if (Number.isNaN(a[i])) return a.toSorted()[k]
+  let lo = 0
+  let hi = a.length - 1
+  while (lo < hi) {
+    const pivot = a[(lo + hi) >> 1]
+    let i = lo
+    let j = hi
+    while (i <= j) {
+      while (a[i] < pivot) i++
+      while (a[j] > pivot) j--
+      if (i <= j) {
+        const t = a[i]
+        a[i] = a[j]
+        a[j] = t
+        i++
+        j--
+      }
+    }
+    if (k <= j) hi = j
+    else if (k >= i) lo = i
+    else break
+  }
+  return a[k]
 }
 
 /** A non-negative integer from a rounded float (Rust's saturating `as usize`). */

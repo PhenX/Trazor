@@ -3,7 +3,7 @@ import { mulberry32 } from '@trazor/core'
 import { BinnedProfile, bestKnot, binOf, OFFSET_STEPS, solveSmall, tau } from '../../src/fill/knots'
 import type { FillModel } from '../../src/fill/model'
 import { colorsIn, samplesOf } from '../../src/fill/samples'
-import { fitMidStops, fitPiecewise, repartition, StopProblem } from '../../src/fill/stops'
+import { fitMidStops, fitPiecewise, median, repartition, StopProblem } from '../../src/fill/stops'
 
 /** `n` samples of a three-stop profile with a kink at `kink`, plus noise, and weights. */
 function problem(
@@ -226,5 +226,20 @@ describe('interior stops', () => {
       mids: [],
     }
     expect(fitMidStops(model, s, colorsIn(s, 'srgb'), 'srgb')).toEqual([])
+  })
+})
+
+describe('the sliver median', () => {
+  it('picks the element a sort puts in the upper middle', () => {
+    const rand = mulberry32(17)
+    for (let n = 1; n < 60; n++) {
+      for (let rep = 0; rep < 5; rep++) {
+        // Few distinct values, so ties are common.
+        const v = Array.from({ length: n }, () => Math.fround(Math.floor(rand() * 7) / 255))
+        expect(median(v)).toBe(Float64Array.from(v).toSorted()[n >> 1])
+      }
+    }
+    expect(median([])).toBe(0)
+    expect(median([3, Number.NaN, 1])).toBe(3)
   })
 })

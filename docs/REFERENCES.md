@@ -239,7 +239,9 @@ uses. Each file names the inkvec files it follows.
   models”, _J. Appl. Econometrics_ 18, 2003) refined by majorize–minimize (D. R. Hunter &
   K. Lange, “A tutorial on MM algorithms”, _Am. Stat._ 58(1), 2004) and Huber-weighted
   iteratively reweighted least squares (P. J. Huber, _Ann. Math. Statist._ 35(1), 1964; P. W.
-  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977); gradient meshes as in G. Lecot & B.
+  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), the medians of its sliver test found by
+  selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); gradient meshes
+  as in G. Lecot & B.
   Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
   recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,
   _CGF_ 44(2), 2025.
