@@ -281,6 +281,26 @@ export function fitRoundRect(
     }
     return chi2
   }
+  // `evaluate`'s χ² alone, the same terms in the same order.
+  const chi2At = (p: Float64Array): number => {
+    fill(0, p)
+    let chi2 = 0
+    for (let s = 0; s < n; s++) {
+      const d = roundRectDistance(
+        pts[2 * s],
+        pts[2 * s + 1],
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        sets[4],
+        sets[5],
+        sets[6],
+      )
+      chi2 += w[s] * d * d
+    }
+    return chi2
+  }
   const project = (p: Float64Array): void => {
     p[2] = Math.max(Math.abs(p[2]), 1e-3)
     p[3] = Math.max(Math.abs(p[3]), 1e-3)
@@ -292,7 +312,7 @@ export function fitRoundRect(
     const p0 = [cx, cy, hw, hh]
     if (freeR) p0.push(g)
     if (freeRotation) p0.push(rotation)
-    const out = levenbergMarquardt(p0, 100, evaluate, project)
+    const out = levenbergMarquardt(p0, 100, evaluate, project, chi2At)
     if (out !== null && (best === null || out.chi2 < best.chi2)) best = out
   }
   if (best === null) return null

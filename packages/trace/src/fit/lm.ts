@@ -228,13 +228,16 @@ export type NormalEquations = (
  * relative 1e-10; a rejected step multiplies `μ` by 4 and a singular system by
  * 10, and past `μ = 1e12` the search returns the best point so far. At most
  * `maxIter` iterations, `μ` starting at 1e-3. Null only if `evaluate` fails at
- * the projected start.
+ * the projected start. With `chi2At` (χ² alone, bit for bit what `evaluate`
+ * returns), a step whose χ² it turns down is rejected without forming the
+ * normal equations there.
  */
 export function levenbergMarquardt(
   p0: ArrayLike<number>,
   maxIter: number,
   evaluate: NormalEquations,
   project: (p: Float64Array) => void,
+  chi2At?: (p: Float64Array) => number | null,
 ): { p: Float64Array; chi2: number } | null {
   const n = p0.length
   let p = Float64Array.from(p0)
@@ -265,7 +268,12 @@ export function levenbergMarquardt(
     }
     for (let k = 0; k < n; k++) q[k] = p[k] + delta[k]
     project(q)
-    const trial = evaluate(q, jtjTrial, jtrTrial)
+    // A step the residual alone turns down needs no normal equations.
+    const screened = chi2At?.(q)
+    const trial =
+      screened === undefined || (screened !== null && screened <= chi2 && Number.isFinite(screened))
+        ? evaluate(q, jtjTrial, jtrTrial)
+        : null
     if (trial !== null && trial <= chi2 && Number.isFinite(trial)) {
       const improvement = chi2 - trial
       ;[p, q] = [q, p]

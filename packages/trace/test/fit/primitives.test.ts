@@ -633,6 +633,42 @@ describe('solver', () => {
     expect(out.p[0]).toBeCloseTo(2, 6)
     expect(out.p[1]).toBeCloseTo(-0.7, 6)
   })
+
+  it('takes the same steps when trials are screened by their residual alone', () => {
+    const xs = [0, 0.5, 1, 1.5, 2, 2.5, 3]
+    const ys = xs.map((x) => 2 * Math.exp(-0.7 * x) + 0.01 * Math.sin(7 * x))
+    const residual = (p: Float64Array): number => {
+      let chi2 = 0
+      for (let i = 0; i < xs.length; i++) {
+        const res = p[0] * Math.exp(p[1] * xs[i]) - ys[i]
+        chi2 += res * res
+      }
+      return chi2
+    }
+    let full = 0
+    const evaluate = (p: Float64Array, jtj: Float64Array, jtr: Float64Array): number => {
+      full++
+      jtj.fill(0)
+      jtr.fill(0)
+      for (let i = 0; i < xs.length; i++) {
+        const e = Math.exp(p[1] * xs[i])
+        const res = p[0] * e - ys[i]
+        const j = [e, p[0] * xs[i] * e]
+        for (let a = 0; a < 2; a++) {
+          jtr[a] += j[a] * res
+          for (let b = 0; b < 2; b++) jtj[a * 2 + b] += j[a] * j[b]
+        }
+      }
+      return residual(p)
+    }
+    const plain = levenbergMarquardt([10, 3], 100, evaluate, () => {})!
+    const plainEvals = full
+    full = 0
+    const screened = levenbergMarquardt([10, 3], 100, evaluate, () => {}, residual)!
+    expect(Array.from(screened.p)).toEqual(Array.from(plain.p))
+    expect(screened.chi2).toBe(plain.chi2)
+    expect(full).toBeLessThan(plainEvals)
+  })
 })
 
 describe('ellipse geometry', () => {
