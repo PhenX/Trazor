@@ -175,6 +175,8 @@ export class StopProblem {
   readonly span: number
   readonly kLo: number
   readonly kHi: number
+  /** {@link bestKnot}'s answers, by the knots asked about. */
+  private readonly scanned = new Map<string, number | null>()
 
   private constructor(
     s: Samples,
@@ -252,6 +254,18 @@ export class StopProblem {
    * grid offset or no offset gives a solvable profile.
    */
   bestKnot(knots: readonly number[]): number | null {
+    // The scan is a pure function of the problem and the knots: the
+    // re-placement asks again for knots a greedy round already scanned.
+    const key = knots.join(',')
+    const known = this.scanned.get(key)
+    if (known !== undefined) return known
+    const k = this.scanKnot(knots)
+    this.scanned.set(key, k)
+    return k
+  }
+
+  /** {@link bestKnot}, scanned. */
+  private scanKnot(knots: readonly number[]): number | null {
     const steps = OFFSET_STEPS
     const fixed = knots.map((k) => toIndex(Math.round(k * steps)))
     // A whisker of slack so an end of the range that is itself a grid offset counts.

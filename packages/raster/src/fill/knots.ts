@@ -117,6 +117,9 @@ export function tau(j: number): number {
   return Math.min(j, OFFSET_STEPS) / OFFSET_STEPS
 }
 
+/** {@link tau} of every grid position `0 ..= OFFSET_STEPS + 1`. */
+const TAUS = Float64Array.from({ length: OFFSET_STEPS + 2 }, (_, j) => tau(j))
+
 /** The weighted least-squares profile through one candidate knot. */
 export interface KnotFit {
   /** The new knot's grid position. */
@@ -151,31 +154,28 @@ export class BinnedProfile {
       for (let k = 0; k < 3; k++) swy[k] += wi * c[3 * i + k]
     }
     this.mean = sw > 0 ? [swy[0] / sw, swy[1] / sw, swy[2] / sw] : [0, 0, 0]
-    const bins = new Float64Array((OFFSET_STEPS + 1) * MOMENTS)
+    // Each bin's sums are gathered in the slot after it, then summed forward in
+    // place: `prefix[j + 1] = prefix[j] + bin j`.
+    const prefix = new Float64Array((OFFSET_STEPS + 2) * MOMENTS)
     for (let i = 0; i < n; i++) {
       const ti = t[i]
       const wi = w[i]
-      const o = binOf(ti) * MOMENTS
+      const o = (binOf(ti) + 1) * MOMENTS
       const y0 = c[3 * i] - this.mean[0]
       const y1 = c[3 * i + 1] - this.mean[1]
       const y2 = c[3 * i + 2] - this.mean[2]
-      bins[o] += wi
-      bins[o + 1] += wi * ti
-      bins[o + 2] += wi * ti * ti
-      bins[o + 3] += wi * y0
-      bins[o + 4] += wi * y1
-      bins[o + 5] += wi * y2
-      bins[o + 6] += wi * ti * y0
-      bins[o + 7] += wi * ti * y1
-      bins[o + 8] += wi * ti * y2
-      bins[o + 9] += wi * (y0 * y0 + y1 * y1 + y2 * y2)
+      prefix[o] += wi
+      prefix[o + 1] += wi * ti
+      prefix[o + 2] += wi * ti * ti
+      prefix[o + 3] += wi * y0
+      prefix[o + 4] += wi * y1
+      prefix[o + 5] += wi * y2
+      prefix[o + 6] += wi * ti * y0
+      prefix[o + 7] += wi * ti * y1
+      prefix[o + 8] += wi * ti * y2
+      prefix[o + 9] += wi * (y0 * y0 + y1 * y1 + y2 * y2)
     }
-    const prefix = new Float64Array((OFFSET_STEPS + 2) * MOMENTS)
-    for (let j = 0; j <= OFFSET_STEPS; j++) {
-      for (let k = 0; k < MOMENTS; k++) {
-        prefix[(j + 1) * MOMENTS + k] = prefix[j * MOMENTS + k] + bins[j * MOMENTS + k]
-      }
-    }
+    for (let q = MOMENTS; q < prefix.length; q++) prefix[q] = prefix[q - MOMENTS] + prefix[q]
     this.prefix = prefix
   }
 
@@ -209,20 +209,26 @@ export class BinnedProfile {
    * every grid position. The arithmetic is {@link solveSmall}'s, step for step.
    */
   private fit(nodes: ArrayLike<number>, m: number): number {
+    // Only the leading `m × m` block and `m` rows are read or written: every
+    // other entry of the `MAX_NODES`-wide system is zero and stays out of it.
     const a = this.sysA
     const b = this.sysB
     const pre = this.prefix
     const W = MAX_NODES
-    a.fill(0)
-    b.fill(0)
+    for (let r = 0; r < m; r++) {
+      for (let c = 0; c < m; c++) a[r * W + c] = 0
+      b[3 * r] = 0
+      b[3 * r + 1] = 0
+      b[3 * r + 2] = 0
+    }
     for (let i = 0; i < m - 1; i++) {
       const lo = nodes[i] * MOMENTS
       const hi = nodes[i + 1] * MOMENTS
       const s0 = pre[hi] - pre[lo]
       const s1 = pre[hi + 1] - pre[lo + 1]
       const s2 = pre[hi + 2] - pre[lo + 2]
-      const ta = tau(nodes[i])
-      const tb = tau(nodes[i + 1])
+      const ta = TAUS[nodes[i]]
+      const tb = TAUS[nodes[i + 1]]
       const l = tb - ta
       const l2 = l * l
       a[i * W + i] += (tb * tb * s0 - 2 * tb * s1 + s2) / l2
@@ -241,15 +247,19 @@ export class BinnedProfile {
     // Gaussian elimination with partial pivoting (the last of equal pivots) on copies.
     const ea = this.elimA
     const eb = this.elimB
-    ea.set(a)
-    eb.set(b)
+    for (let r = 0; r < m; r++) {
+      for (let c = 0; c < m; c++) ea[r * W + c] = a[r * W + c]
+      eb[3 * r] = b[3 * r]
+      eb[3 * r + 1] = b[3 * r + 1]
+      eb[3 * r + 2] = b[3 * r + 2]
+    }
     for (let i = 0; i < m; i++) {
       let piv = i
       for (let r = i + 1; r < m; r++)
         if (totalGe(Math.abs(ea[r * W + i]), Math.abs(ea[piv * W + i]))) piv = r
       if (Math.abs(ea[piv * W + i]) < 1e-12) return NaN
       if (piv !== i) {
-        for (let c = 0; c < W; c++) {
+        for (let c = 0; c < m; c++) {
           const t = ea[i * W + c]
           ea[i * W + c] = ea[piv * W + c]
           ea[piv * W + c] = t
