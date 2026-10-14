@@ -364,12 +364,20 @@ function huberWeights(
   return out
 }
 
+/** Whether `a` and `b` hold the same values, element for element (`Object.is`). */
+function sameValues(a: Float64Array, b: Float64Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false
+  return true
+}
+
 /**
  * The best grid position for one more knot given the knots already placed
  * (`fixed`, grid positions) and the range `lo ..= hi` a knot may take:
  * {@link MM_ROUNDS} exact scans from the weights `w0`, each later scan weighted
- * by the Huber weights (threshold `delta`) of the previous fit. Null when the
- * first scan finds no solvable knot.
+ * by the Huber weights (threshold `delta`) of the previous fit; the rounds end
+ * early once the weights stop changing. Null when the first scan finds no
+ * solvable knot.
  */
 export function bestKnot(
   t: Float64Array,
@@ -386,7 +394,13 @@ export function bestKnot(
     const fit = new BinnedProfile(t, c, w).scan(fixed, lo, hi)
     if (fit === null) break
     best = fit.j
-    if (round + 1 < MM_ROUNDS) w = huberWeights(t, c, fit.nodes, fit.x, delta)
+    if (round + 1 < MM_ROUNDS) {
+      const next = huberWeights(t, c, fit.nodes, fit.x, delta)
+      // Weights that come back unchanged give the same profile and the same
+      // scan: every later round would repeat this one.
+      if (sameValues(next, w)) break
+      w = next
+    }
   }
   return best
 }
