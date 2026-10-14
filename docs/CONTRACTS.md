@@ -670,6 +670,10 @@ export namespace ink {
       budget?: MergeBudget
       gradients?: boolean
       scale?: number // pixel counts (gradient size, shared seam) in source pixels
+      // How far each fit searches for ramps: RAMP_SEARCH (default; a second interior stop on the
+      // three geometries cheapest with one, the radial centers searched once, in linear light)
+      // or INKVEC_SEARCH (inkvec's exhaustive search: every geometry's stops, the centers per space).
+      search?: RampSearch // { stopGeometries: number; radialsPerSpace: boolean }
     },
   ): BandMerge // { fills: FillFit[]; ink: number[]; budget }
   function carveResidualFeatures(
@@ -691,6 +695,8 @@ export namespace ink {
   function snapFlatFills(faces, w, h, fills: FillFit[], faceInk, palette: Palette, skip?): number
   // ½·ln n, the price of one parameter; on a raster enlarged `scale` times, scale²·½·ln(n/scale²)
   function bicLambda(n: number, scale?: number): number
+  const RAMP_SEARCH: RampSearch // the band merge's default ramp search (see `search` above)
+  const INKVEC_SEARCH: RampSearch // inkvec's exhaustive ramp search
   function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
   function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
   // A fade (opacity and color profiles on one geometry) as one gradient whose stops carry opacities;

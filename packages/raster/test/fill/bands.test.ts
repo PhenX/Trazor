@@ -29,7 +29,7 @@ import {
 } from '../../src/fill/recovery'
 import type { SeamCounts } from '../../src/fill/recovery'
 import { FIT_PIXELS_CAP, MAX_FIT_SAMPLES, stridedUnion } from '../../src/fill/samples'
-import { bicLambda, commonPixelGain } from '../../src/fill/select'
+import { bicLambda, commonPixelGain, INKVEC_SEARCH } from '../../src/fill/select'
 import { BANDS_REFS } from './bands-fixtures'
 import {
   bandedRamp,
@@ -567,7 +567,9 @@ describe('parity with inkvec', () => {
   for (const ref of BANDS_REFS) {
     it(`merges ${ref.name} as inkvec does`, { timeout: 60_000 }, () => {
       const { rgb, labels, inks } = decodeRef(ref)
-      const m = mergeGradientBands(labels, rgb, ref.w, ref.h, inks, ref.sigma, ref.lambda)
+      const m = mergeGradientBands(labels, rgb, ref.w, ref.h, inks, ref.sigma, ref.lambda, {
+        search: INKVEC_SEARCH,
+      })
       expect(labelDiff(labels, labelsOf(ref.merge.labels))).toBe(0)
       expect(m.ink).toEqual(ref.merge.ink)
       expectSameFills(m.fills, ref.merge.fills.map(parseFill))
@@ -581,6 +583,7 @@ describe('parity with inkvec', () => {
         const m = mergeGradientBands(labels, rgb, ref.w, ref.h, inks, ref.sigma, ref.lambda, {
           regionRecovery: v.regions,
           budget,
+          search: INKVEC_SEARCH,
         })
         expect(labelDiff(labels, labelsOf(v.labels))).toBe(0)
         expect(m.ink).toEqual(v.ink)

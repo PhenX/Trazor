@@ -8,9 +8,11 @@ import {
   fitPixels,
   fitUnion,
   pixelsOf,
+  INKVEC_SEARCH,
+  RAMP_SEARCH,
   select,
-  STOP_SEARCH_GEOMETRIES,
 } from '../../src/fill/select'
+import type { RampSearch } from '../../src/fill/select'
 import { CORPUS_REFS, SCENE_REFS } from './parity-fixtures'
 import type { RefBrief, RefCandidate } from './parity-fixtures'
 import { SCENES } from './scenes'
@@ -74,8 +76,8 @@ describe('parity with inkvec on the synthetic scenes', () => {
       const pure = ref.evidence
         ? fillEvidence(sc.rgb, sc.w, sc.h, sc.labels, sc.inks, sc.sigma)
         : null
-      // inkvec's full stop search lists every candidate; the default one picks the same fit.
-      const fit = (stopGeometries: number): FillFit[] =>
+      // inkvec's exhaustive search lists every candidate; the default one picks the same fit.
+      const fit = (search: RampSearch): FillFit[] =>
         fitPixels(
           sc.rgb,
           sc.w,
@@ -87,14 +89,14 @@ describe('parity with inkvec on the synthetic scenes', () => {
           sc.lambda,
           true,
           MIN_GRADIENT_PIXELS,
-          stopGeometries,
+          search,
         )
-      const cands = fit(Infinity)
+      const cands = fit(INKVEC_SEARCH)
       expectSameList(cands, ref.candidates)
       const best = select(cands)
       expect(cands.indexOf(best)).toBe(ref.selected)
       expectSameFit(asRef(best), ref.best)
-      expectSameFit(asRef(select(fit(STOP_SEARCH_GEOMETRIES))), ref.best)
+      expectSameFit(asRef(select(fit(RAMP_SEARCH))), ref.best)
     })
   }
 })
@@ -128,8 +130,8 @@ describe('parity with inkvec on corpus gradient regions', () => {
   for (const ref of CORPUS_REFS) {
     it(`${ref.name}`, () => {
       const { rgb, labels } = decode(ref)
-      // inkvec's full stop search lists every candidate; the default one picks the same fit.
-      const fit = (stopGeometries: number): FillFit[] =>
+      // inkvec's exhaustive search lists every candidate; the default one picks the same fit.
+      const fit = (search: RampSearch): FillFit[] =>
         fitPixels(
           rgb,
           ref.w,
@@ -141,16 +143,18 @@ describe('parity with inkvec on corpus gradient regions', () => {
           ref.lambda,
           true,
           MIN_GRADIENT_PIXELS,
-          stopGeometries,
+          search,
         )
-      const cands = fit(Infinity)
+      const cands = fit(INKVEC_SEARCH)
       expectSameList(cands, ref.candidates)
       const best = select(cands)
       expect(cands.indexOf(best)).toBe(ref.selected)
       expectSameFit(asRef(best), ref.best)
-      const pruned = fit(STOP_SEARCH_GEOMETRIES)
+      const pruned = fit(RAMP_SEARCH)
       expectSameFit(asRef(select(pruned)), ref.best)
-      expect(pruned.filter((f) => twoStops(f)).length).toBeLessThanOrEqual(STOP_SEARCH_GEOMETRIES)
+      expect(pruned.filter((f) => twoStops(f)).length).toBeLessThanOrEqual(
+        RAMP_SEARCH.stopGeometries,
+      )
     })
   }
   for (const ref of CORPUS_REFS.filter((r) => r.union !== undefined)) {

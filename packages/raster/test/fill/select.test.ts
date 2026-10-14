@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { colorAt, fillKind, srgbToLinear32 } from '../../src/fill/model'
+import { colorAt, fillKind, MIN_GRADIENT_PIXELS, srgbToLinear32 } from '../../src/fill/model'
 import type { FillFit, FillModel, Rgb } from '../../src/fill/model'
 import { collectSamples, FIT_PIXELS_CAP, interiorCount, stridedUnion } from '../../src/fill/samples'
 import {
@@ -9,9 +9,12 @@ import {
   fitFill,
   fitPixels,
   fitUnion,
+  INKVEC_SEARCH,
   pixelsOf,
+  RAMP_SEARCH,
   select,
 } from '../../src/fill/select'
+import type { RampSearch } from '../../src/fill/select'
 import {
   clampedRadial,
   ELLIPSE,
@@ -176,6 +179,57 @@ describe('fill selection on synthetic regions', () => {
     expect(f.model).toEqual({ kind: 'flat', color: [0, 0, 0] })
     expect(f.cost).toBe(6)
   })
+})
+
+describe('the ramp search', () => {
+  /** The first radial (circular or elliptic) candidate of each space. */
+  function radials(fits: FillFit[]): Map<string, FillModel> {
+    const out = new Map<string, FillModel>()
+    for (const f of fits) {
+      const m = f.model
+      if (m.kind === 'radial' && m.mids.length === 0 && !out.has(`${m.interp}${m.aspect === 1}`)) {
+        out.set(`${m.interp}${m.aspect === 1}`, m)
+      }
+    }
+    return out
+  }
+
+  for (const scene of [radial, ellipse]) {
+    it(`searches the ${scene().name} centers once, in linear light, by default`, () => {
+      const sc = scene()
+      const fitWith = (search: RampSearch): FillFit[] =>
+        fitPixels(
+          sc.rgb,
+          sc.w,
+          sc.h,
+          pixelsOf(sc.labels, 1),
+          (p) => sc.labels[p] === 1,
+          null,
+          sc.sigma,
+          sc.lambda,
+          true,
+          MIN_GRADIENT_PIXELS,
+          search,
+        )
+      const shared = radials(fitWith(RAMP_SEARCH))
+      for (const circle of [true, false]) {
+        const lin = shared.get(`linearRgb${circle}`)
+        const srgb = shared.get(`srgb${circle}`)
+        if (lin === undefined || srgb === undefined) continue
+        if (lin.kind !== 'radial' || srgb.kind !== 'radial') throw new Error('not radial')
+        expect([lin.c, lin.r, lin.aspect, lin.angle]).toEqual([
+          srgb.c,
+          srgb.r,
+          srgb.aspect,
+          srgb.angle,
+        ])
+      }
+      expect(shared.size).toBeGreaterThanOrEqual(2)
+      // inkvec's search finds them per space.
+      const own = radials(fitWith(INKVEC_SEARCH))
+      expect(own.size).toBe(shared.size)
+    })
+  }
 })
 
 describe('samples', () => {

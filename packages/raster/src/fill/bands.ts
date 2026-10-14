@@ -75,7 +75,8 @@ import {
 import type { SeamCounts } from './recovery'
 import { FIT_PIXELS_CAP, interiorCount, MAX_FIT_SAMPLES } from './samples'
 import type { PixelTest } from './samples'
-import { commonPixelGain, fitPixels, fitUnion } from './select'
+import { commonPixelGain, fitPixels, fitUnion, RAMP_SEARCH } from './select'
+import type { RampSearch } from './select'
 
 /** Two components must touch along at least this many pixel pairs to be merge candidates. */
 export const MIN_SHARED_BOUNDARY = 3
@@ -189,6 +190,8 @@ export interface MergeOptions {
    * scale).
    */
   scale?: number
+  /** How far each fit searches for ramps (default `RAMP_SEARCH`; `INKVEC_SEARCH` for inkvec's exhaustive search). */
+  search?: RampSearch
 }
 
 /** What {@link mergeGradientBands} returns. */
@@ -228,6 +231,7 @@ export function mergeGradientBands(
   const gradients = options.gradients ?? true
   const scale = options.scale ?? 1
   const budget = options.budget ?? new MergeBudget(w, h)
+  const search = options.search ?? RAMP_SEARCH
   const nInk = Math.floor(inkRgb.length / 3)
   let nPal = nInk
   for (let p = 0; p < labels.length; p++) if (labels[p] + 1 > nPal) nPal = labels[p] + 1
@@ -265,6 +269,7 @@ export function mergeGradientBands(
       gradients,
       minPixels: MIN_GRADIENT_PIXELS * scale * scale,
       minShared: MIN_SHARED_BOUNDARY * scale,
+      search,
     },
     comp,
     members,
@@ -398,6 +403,8 @@ interface UnionFitter {
   readonly minPixels: number
   /** Fewest shared pixel pairs of a merge candidate (`MIN_SHARED_BOUNDARY`, scaled). */
   readonly minShared: number
+  /** How far each fit searches for ramps. */
+  readonly search: RampSearch
 }
 
 /** One cached union fit of the pair `a < b`. */
@@ -477,7 +484,20 @@ class Agglomeration {
     const group = this.group
     const member: PixelTest = (p) => group[p] === a || group[p] === b
     const evidence: PixelTest = (p) => pure[p] === 1 || (inner && allInside(partner, p, member))
-    return fitUnion(rgb, w, h, pa, pb, member, evidence, sigmaNoise, lambda, gradients, minPixels)
+    return fitUnion(
+      rgb,
+      w,
+      h,
+      pa,
+      pb,
+      member,
+      evidence,
+      sigmaNoise,
+      lambda,
+      gradients,
+      minPixels,
+      this.fitter.search,
+    )
   }
 
   private key(a: number, b: number): number {

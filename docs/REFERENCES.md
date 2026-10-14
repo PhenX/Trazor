@@ -245,7 +245,9 @@ uses. Each file names the inkvec files it follows.
   Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), a second stop searched on a beam of the
   three geometries cheapest with at most one (B. T. Lowerre, _The HARPY speech recognition
   system_, PhD thesis, Carnegie Mellon University, 1976) and on every geometry before the
-  ramp-or-step test drops them, the medians of its sliver test found by
+  ramp-or-step test drops them, the radial and elliptic centers searched once, on the
+  linear-light colors, and their stops refitted in sRGB (inkvec searches them in each space;
+  `INKVEC_SEARCH` keeps that, pinned by the parity suite), the medians of its sliver test found by
   selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); the sRGB
   transfer curves' powers in single precision (`fill/power.ts`) from a table at the leading
   mantissa bits and a binomial series between them (P. T. P. Tang, “Table-driven implementation
@@ -272,7 +274,8 @@ uses. Each file names the inkvec files it follows.
   same description length as a fill.
 - **Band merge and carve** (`fill/bands.ts`, `fill/recovery.ts`, `fill/carve.ts`, after inkvec's
   `inkvec-trace/src/gradient/{bands,regions}.rs` and `carve.rs`, identical label maps and work
-  spent to an inkvec build on 98 corpus images, 105 carved features identical): the palette's
+  spent to an inkvec build on 98 corpus images under `INKVEC_SEARCH`, 105 carved features
+  identical): the palette's
   bands of one ramp merged back into one gradient region by greedy agglomeration of 4-connected
   components, the pair that saves the most description length first, under a deterministic
   work cap (the region-adjacency merging of Haris et al. 1998, above); a seam between two
