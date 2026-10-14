@@ -43,13 +43,21 @@ import {
 } from './samples'
 import type { PixelTest, Samples } from './samples'
 import { imperceptible, Predictions, QUANT_HALF_STEP } from './score'
-import { fitMidStops } from './stops'
+import { StopSearch } from './stops'
 
 /**
  * How much better two flat colors must fit than the best gradient before a
  * region is judged a step rather than a ramp and every gradient is declined.
  */
 export const BIMODAL_MARGIN = 0.85
+
+/**
+ * Geometries whose stop search goes past one interior stop: a beam of those
+ * cheapest with at most one (B. T. Lowerre 1976, The HARPY speech recognition
+ * system, CMU, beam search). Of 265 regions of a noto-emoji icon whose fill wins
+ * with two stops, 261 win on one of the three geometries cheapest with at most one.
+ */
+export const STOP_SEARCH_GEOMETRIES = 3
 
 /** A gradient must change the fill by at least this much (sRGB, some channel) across the region. */
 export const MIN_VISIBLE_CONTRAST = 1.5 / 255
@@ -241,16 +249,21 @@ function rampCandidates(s: Samples, w: number): SpaceCandidates[] {
  * 3. Linear, radial and elliptical ramps in both spaces, then the profile-aware
  *    radials, each gated on a visible contrast of `max(3σ, 1.5/255)`, a
  *    {@link MIN_RAMP_SUPPORT} and on not being imperceptible once emitted, each
- *    followed by its interior-stop variants under the same gates.
+ *    followed by its one-interior-stop variant under the same gates, and the
+ *    {@link STOP_SEARCH_GEOMETRIES} cheapest of them so far (by their best cost,
+ *    the earlier on a tie) by their two-stop variant.
  * 4. The ramp-or-step test: when two flat colors fit better than
  *    {@link BIMODAL_MARGIN} times the best gradient's chi², every gradient is
- *    dropped.
+ *    dropped. Before it drops them, the geometries left out of the two-stop
+ *    search get theirs, so the test reads every variant's chi².
  *
  * `sigma` is the per-channel sRGB noise (0.5/255 when not positive), `lambda` the
  * price of one editable number, `w` the image width (to find neighbors by pixel
  * index), `minSamples` the fewest samples a gradient is tried on
  * ({@link MIN_GRADIENT_PIXELS}, times the area of a source pixel on an enlarged
- * raster). Models are in the fitting frame.
+ * raster), `stopGeometries` how many geometries get a second interior stop
+ * ({@link STOP_SEARCH_GEOMETRIES}; Infinity for every one). Models are in the
+ * fitting frame.
  */
 export function fitSamples(
   s: Samples,
@@ -259,6 +272,7 @@ export function fitSamples(
   sigmaIn: number,
   lambda: number,
   minSamples = MIN_GRADIENT_PIXELS,
+  stopGeometries = STOP_SEARCH_GEOMETRIES,
 ): FillFit[] {
   const sigma = sigmaIn > 0 ? sigmaIn : 0.5 / 255
   const scored = (model: FillModel, preds: Predictions): FillFit => {
@@ -271,35 +285,50 @@ export function fitSamples(
   const out = [scored(flat, new Predictions(flat, s))]
   if (!strict || s.n < minSamples) return out
   if (out[0].cost <= lambda * PARAMS_RADIAL) return out
-  const nFlatOnly = out.length
   const minContrast = Math.max(3 * sigma, MIN_VISIBLE_CONTRAST)
+  // A variant is kept when it draws a visible, supported, perceptible ramp.
+  const admissible = (model: FillModel, preds: Predictions): boolean => {
+    const c = preds.contrast()
+    return c >= minContrast && preds.support(flatC, c) >= MIN_RAMP_SUPPORT && !imperceptible(model)
+  }
+  const geometries: { i: number; fits: FillFit[]; search: StopSearch; best: number }[] = []
   for (const { space, cols, cands } of rampCandidates(s, w)) {
     for (const cand of cands) {
       const preds = new Predictions(cand, s)
-      const contrast = preds.contrast()
-      const support = preds.support(flatC, contrast)
-      if (contrast < minContrast || support < MIN_RAMP_SUPPORT || imperceptible(cand)) continue
-      const multiPreds: Predictions[] = []
-      const multi = fitMidStops(cand, s, cols, space, preds, multiPreds)
-      out.push(scored(cand, preds))
-      for (let q = 0; q < multi.length; q++) {
-        const m = multi[q]
-        const pm = multiPreds[q]
-        const c = pm.contrast()
-        if (c >= minContrast && pm.support(flatC, c) >= MIN_RAMP_SUPPORT && !imperceptible(m)) {
-          out.push(scored(m, pm))
-        }
-      }
+      if (!admissible(cand, preds)) continue
+      const search = new StopSearch(cand, s, cols, space, preds)
+      const fits = [scored(cand, preds)]
+      const one = search.next()
+      if (one !== null && admissible(one.model, one.preds)) fits.push(scored(one.model, one.preds))
+      let best = fits[0].cost
+      for (const f of fits) best = fmin(best, f.cost)
+      geometries.push({ i: geometries.length, fits, search, best })
     }
   }
-  if (out.length > nFlatOnly) {
-    let bestGrad = Infinity
-    for (let i = nFlatOnly; i < out.length; i++) bestGrad = fmin(bestGrad, out[i].chi2)
-    const two = chi2TwoFlats(s, sigma)
-    if (Number.isFinite(two) && Number.isFinite(bestGrad) && two < BIMODAL_MARGIN * bestGrad) {
-      out.length = nFlatOnly
+  if (geometries.length === 0) return out
+  const extend = (g: (typeof geometries)[number]): void => {
+    for (let v = g.search.next(); v !== null; v = g.search.next()) {
+      if (admissible(v.model, v.preds)) g.fits.push(scored(v.model, v.preds))
     }
   }
+  const bestChi2 = (): number => {
+    let b = Infinity
+    for (const g of geometries) for (const f of g.fits) b = fmin(b, f.chi2)
+    return b
+  }
+  const two = chi2TwoFlats(s, sigma)
+  const step = (bestGrad: number): boolean =>
+    Number.isFinite(two) && Number.isFinite(bestGrad) && two < BIMODAL_MARGIN * bestGrad
+  // Further stops for the geometries that fit best so far, and for the rest
+  // only when the ramp-or-step test would drop every gradient without them.
+  const open = geometries.filter((g) => g.search.open)
+  open.sort((a, b) => a.best - b.best || a.i - b.i)
+  for (const g of open.slice(0, stopGeometries)) extend(g)
+  if (open.length > stopGeometries && step(bestChi2())) {
+    for (const g of open.slice(stopGeometries)) extend(g)
+  }
+  if (step(bestChi2())) return out
+  for (const g of geometries) out.push(...g.fits)
   return out
 }
 
@@ -318,8 +347,8 @@ export function select(candidates: readonly FillFit[]): FillFit {
  * interior pixels that pass `evidence` (every model is tried, gradients only
  * when `gradients`); any pixel that passes `evidence`; any pixel (both flat
  * only). No pixels gives a black flat fill at the cost of its parameters.
- * `evidence` null lets every pixel testify; `minSamples` as for
- * {@link fitSamples}. Models are in Trazor's pixel frame.
+ * `evidence` null lets every pixel testify; `minSamples` and `stopGeometries` as
+ * for {@link fitSamples}. Models are in Trazor's pixel frame.
  */
 export function fitPixels(
   rgb: Float32Array,
@@ -332,12 +361,13 @@ export function fitPixels(
   lambda: number,
   gradients = true,
   minSamples = MIN_GRADIENT_PIXELS,
+  stopGeometries = STOP_SEARCH_GEOMETRIES,
 ): FillFit[] {
   if (pixels.length === 0) return [flatOnly([0, 0, 0], lambda)]
   let fits: FillFit[]
   const interior = collectSamples(rgb, w, h, pixels, member, evidence, true)
   if (interior.n > 0) {
-    fits = fitSamples(interior, w, gradients, sigma, lambda, minSamples)
+    fits = fitSamples(interior, w, gradients, sigma, lambda, minSamples, stopGeometries)
   } else {
     const anyEvidence = collectSamples(rgb, w, h, pixels, member, evidence, false)
     fits =
@@ -416,8 +446,8 @@ export function fitFill(
  * strided), and when it saw fewer than all, chi² is scaled back up by the
  * subsampling factor (and the cost with it) so costs stay comparable across
  * region sizes. `member` is the union's membership, `evidence` which pixels
- * testify (null: all); without `gradients` the fill is flat; `minSamples` as
- * for {@link fitSamples}.
+ * testify (null: all); without `gradients` the fill is flat; `minSamples` and
+ * `stopGeometries` as for {@link fitSamples}.
  */
 export function fitUnion(
   rgb: Float32Array,
@@ -431,11 +461,24 @@ export function fitUnion(
   lambda: number,
   gradients = true,
   minSamples = MIN_GRADIENT_PIXELS,
+  stopGeometries = STOP_SEARCH_GEOMETRIES,
 ): FillFit {
   const total = a.length + b.length
   const seen = stridedUnion(a, b)
   const fit = select(
-    fitPixels(rgb, w, h, seen, member, evidence, sigma, lambda, gradients, minSamples),
+    fitPixels(
+      rgb,
+      w,
+      h,
+      seen,
+      member,
+      evidence,
+      sigma,
+      lambda,
+      gradients,
+      minSamples,
+      stopGeometries,
+    ),
   )
   if (seen.length >= total) return fit
   const k = total / seen.length

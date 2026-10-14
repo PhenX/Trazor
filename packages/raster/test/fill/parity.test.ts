@@ -1,8 +1,16 @@
 import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
+import { MIN_GRADIENT_PIXELS } from '../../src/fill/model'
 import type { FillFit } from '../../src/fill/model'
 import { fillEvidence } from '../../src/fill/evidence'
-import { commonPixelGain, fitPixels, fitUnion, pixelsOf, select } from '../../src/fill/select'
+import {
+  commonPixelGain,
+  fitPixels,
+  fitUnion,
+  pixelsOf,
+  select,
+  STOP_SEARCH_GEOMETRIES,
+} from '../../src/fill/select'
 import { CORPUS_REFS, SCENE_REFS } from './parity-fixtures'
 import type { RefBrief, RefCandidate } from './parity-fixtures'
 import { SCENES } from './scenes'
@@ -20,6 +28,11 @@ function asRef(f: FillFit): RefCandidate {
       ? [m.p0[0] - 0.5, m.p0[1] - 0.5, m.p1[0] - 0.5, m.p1[1] - 0.5, 0, 0]
       : [m.c[0] - 0.5, m.c[1] - 0.5, m.r, m.aspect, m.angle, 0]
   return [m.kind, interp, g, [...m.c0], [...m.c1], mids, f.chi2, f.params, f.cost]
+}
+
+/** Whether a fit is a gradient with two interior stops. */
+function twoStops(f: FillFit): boolean {
+  return f.model.kind !== 'flat' && f.model.mids.length === 2
 }
 
 function brief(f: FillFit): RefBrief {
@@ -61,20 +74,27 @@ describe('parity with inkvec on the synthetic scenes', () => {
       const pure = ref.evidence
         ? fillEvidence(sc.rgb, sc.w, sc.h, sc.labels, sc.inks, sc.sigma)
         : null
-      const cands = fitPixels(
-        sc.rgb,
-        sc.w,
-        sc.h,
-        pixelsOf(sc.labels, ref.label),
-        (p) => sc.labels[p] === ref.label,
-        pure === null ? null : (p) => pure[p] === 1,
-        sc.sigma,
-        sc.lambda,
-      )
+      // inkvec's full stop search lists every candidate; the default one picks the same fit.
+      const fit = (stopGeometries: number): FillFit[] =>
+        fitPixels(
+          sc.rgb,
+          sc.w,
+          sc.h,
+          pixelsOf(sc.labels, ref.label),
+          (p) => sc.labels[p] === ref.label,
+          pure === null ? null : (p) => pure[p] === 1,
+          sc.sigma,
+          sc.lambda,
+          true,
+          MIN_GRADIENT_PIXELS,
+          stopGeometries,
+        )
+      const cands = fit(Infinity)
       expectSameList(cands, ref.candidates)
       const best = select(cands)
       expect(cands.indexOf(best)).toBe(ref.selected)
       expectSameFit(asRef(best), ref.best)
+      expectSameFit(asRef(select(fit(STOP_SEARCH_GEOMETRIES))), ref.best)
     })
   }
 })
@@ -108,20 +128,29 @@ describe('parity with inkvec on corpus gradient regions', () => {
   for (const ref of CORPUS_REFS) {
     it(`${ref.name}`, () => {
       const { rgb, labels } = decode(ref)
-      const cands = fitPixels(
-        rgb,
-        ref.w,
-        ref.h,
-        pixelsOf(labels, 1),
-        (p) => labels[p] === 1,
-        null,
-        ref.sigma,
-        ref.lambda,
-      )
+      // inkvec's full stop search lists every candidate; the default one picks the same fit.
+      const fit = (stopGeometries: number): FillFit[] =>
+        fitPixels(
+          rgb,
+          ref.w,
+          ref.h,
+          pixelsOf(labels, 1),
+          (p) => labels[p] === 1,
+          null,
+          ref.sigma,
+          ref.lambda,
+          true,
+          MIN_GRADIENT_PIXELS,
+          stopGeometries,
+        )
+      const cands = fit(Infinity)
       expectSameList(cands, ref.candidates)
       const best = select(cands)
       expect(cands.indexOf(best)).toBe(ref.selected)
       expectSameFit(asRef(best), ref.best)
+      const pruned = fit(STOP_SEARCH_GEOMETRIES)
+      expectSameFit(asRef(select(pruned)), ref.best)
+      expect(pruned.filter((f) => twoStops(f)).length).toBeLessThanOrEqual(STOP_SEARCH_GEOMETRIES)
     })
   }
   for (const ref of CORPUS_REFS.filter((r) => r.union !== undefined)) {

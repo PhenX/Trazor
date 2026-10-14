@@ -389,14 +389,82 @@ export function repartition(p: StopProblem, knots: number[]): void {
   }
 }
 
+/** One variant of a stop search: the candidate with its interior stops, and its predictions on the samples. */
+export interface StopVariant {
+  model: FillModel
+  preds: Predictions
+}
+
+/**
+ * The interior-stop search of one candidate, a round at a time: each
+ * {@link StopSearch.next} adds one more interior stop to the previous round's
+ * (up to {@link MAX_MID_STOPS}), or ends the search. A knot is added greedily by
+ * the binned scan; the search ends, keeping what was found, when no knot gives a
+ * solvable profile, a new knot lands within 5 % of the `t` span of an existing
+ * one, the IRLS refit ({@link IRLS_ROUNDS}) is singular, or the knot cuts off a
+ * misfit sliver. Two knots are re-placed against each other before the refit.
+ * Ended from the start below `4·MIN_GRADIENT_PIXELS` subsamples or under 0.1 of
+ * `t` span.
+ */
+export class StopSearch {
+  private readonly model: FillModel
+  private readonly space: Interp
+  private readonly p: StopProblem | null
+  private readonly knots: number[] = []
+  private ended: boolean
+
+  constructor(
+    model: FillModel,
+    s: Samples,
+    cols: Float64Array,
+    space: Interp,
+    parentPreds?: Predictions,
+  ) {
+    this.model = model
+    this.space = space
+    this.p = StopProblem.of(model, s, cols, space, parentPreds)
+    this.ended = this.p === null
+  }
+
+  /** Whether {@link StopSearch.next} may still find a variant. */
+  get open(): boolean {
+    return !this.ended && this.knots.length < MAX_MID_STOPS
+  }
+
+  /** The candidate with one more interior stop, or null once the search has ended. */
+  next(): StopVariant | null {
+    const p = this.p
+    if (!this.open || p === null) return null
+    const knots = this.knots
+    const k = p.bestKnot(knots)
+    if (k === null || knots.some((q) => Math.abs(q - k) < 0.05 * p.span)) return this.end()
+    knots.push(k)
+    knots.sort((a, b) => a - b)
+    if (knots.length === 2) repartition(p, knots)
+    const fit = fitPiecewise(p.c, p.t, knots, p.weight, p.delta, IRLS_ROUNDS)
+    if (fit === null) return this.end()
+    const x = fit.x
+    const m = x.length
+    const space = this.space
+    const mids: Stop[] = knots.map((offset, i) => ({ offset, color: fromSpace(x[i + 1], space) }))
+    const cand = withStops(this.model, fromSpace(x[0], space), mids, fromSpace(x[m - 1], space))
+    const moved = knots.length === 2 ? knots.slice() : [k]
+    // The sliver tests between them read every subsample's prediction, the
+    // ones the caller scores the variant on.
+    const preds = new Predictions(cand, p.s)
+    if (moved.some((q) => p.cutsAMisfitSliver(cand, knots, q, preds))) return this.end()
+    return { model: cand, preds }
+  }
+
+  private end(): null {
+    this.ended = true
+    return null
+  }
+}
+
 /**
  * The candidate `model` with one, then two, interior stops (in that order), its
- * geometry held. Knots are added greedily by the binned scan; a round stops the
- * search, keeping what was found, when no knot gives a solvable profile, a new
- * knot lands within 5 % of the `t` span of an existing one, the IRLS refit
- * ({@link IRLS_ROUNDS}) is singular, or the knot cuts off a misfit sliver. Two
- * knots are re-placed against each other before the refit. Empty below
- * `4·MIN_GRADIENT_PIXELS` subsamples or under 0.1 of `t` span.
+ * geometry held: every round of a {@link StopSearch}.
  */
 export function fitMidStops(
   model: FillModel,
@@ -406,30 +474,11 @@ export function fitMidStops(
   parentPreds?: Predictions,
   predsOut?: Predictions[],
 ): FillModel[] {
-  const p = StopProblem.of(model, s, cols, space, parentPreds)
-  if (p === null) return []
+  const search = new StopSearch(model, s, cols, space, parentPreds)
   const out: FillModel[] = []
-  const knots: number[] = []
-  for (let round = 0; round < MAX_MID_STOPS; round++) {
-    const k = p.bestKnot(knots)
-    if (k === null) break
-    if (knots.some((q) => Math.abs(q - k) < 0.05 * p.span)) break
-    knots.push(k)
-    knots.sort((a, b) => a - b)
-    if (knots.length === 2) repartition(p, knots)
-    const fit = fitPiecewise(p.c, p.t, knots, p.weight, p.delta, IRLS_ROUNDS)
-    if (fit === null) break
-    const x = fit.x
-    const m = x.length
-    const mids: Stop[] = knots.map((offset, i) => ({ offset, color: fromSpace(x[i + 1], space) }))
-    const cand = withStops(model, fromSpace(x[0], space), mids, fromSpace(x[m - 1], space))
-    const moved = knots.length === 2 ? knots.slice() : [k]
-    // The sliver tests between them read every subsample's prediction, the
-    // ones the caller scores the variant on.
-    const preds = new Predictions(cand, s)
-    if (moved.some((q) => p.cutsAMisfitSliver(cand, knots, q, preds))) break
-    out.push(cand)
-    predsOut?.push(preds)
+  for (let v = search.next(); v !== null; v = search.next()) {
+    out.push(v.model)
+    predsOut?.push(v.preds)
   }
   return out
 }

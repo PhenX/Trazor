@@ -242,7 +242,10 @@ uses. Each file names the inkvec files it follows.
   majorize–minimize (D. R. Hunter & K. Lange, “A tutorial on MM algorithms”, _Am. Stat._
   58(1), 2004) and Huber-weighted
   iteratively reweighted least squares (P. J. Huber, _Ann. Math. Statist._ 35(1), 1964; P. W.
-  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), the medians of its sliver test found by
+  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), a second stop searched on a beam of the
+  three geometries cheapest with at most one (B. T. Lowerre, _The HARPY speech recognition
+  system_, PhD thesis, Carnegie Mellon University, 1976) and on every geometry before the
+  ramp-or-step test drops them, the medians of its sliver test found by
   selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); the sRGB
   transfer curves' powers in single precision (`fill/power.ts`) from a table at the leading
   mantissa bits and a binomial series between them (P. T. P. Tang, “Table-driven implementation
