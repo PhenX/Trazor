@@ -623,6 +623,30 @@ describe('limits', () => {
     expect(fit.path.segments.every((s) => s.type === 'L')).toBe(true)
   })
 
+  it('keeps the pin a pinned ring is cut at through the post-fit passes', () => {
+    // The same step pinned at its middle and the slash just past it: the ring is
+    // cut at the step's pin, and its two halves are no chamfer to sharpen away.
+    const corners: [number, number][] = [
+      [20, 60],
+      [20, 100],
+      [140, 100],
+      [140, 96.4],
+      [240, 196.4],
+      [270, 166.4],
+      [163.6, 60],
+    ]
+    const pairs = ringPoints(corners)
+    const poly = uniformPolyline(flat(pairs), 0.05, true)
+    const stepPin = pairs.findIndex(([x, y]) => x === 140 && y < 99 && y > 97.5)
+    const slashPin = pairs.findIndex(([x, y]) => x > 142 && x < 144 && y > 98)
+    expect(stepPin).toBeGreaterThan(0)
+    expect(slashPin).toBeGreaterThan(stepPin)
+    const fit = optimalMultimodelForced(poly, fitConfig(512), Infinity, [stepPin, slashPin], {
+      postFit: shippingPostFit,
+    })
+    expect(pathMaxDeviation(poly, fit.path)).toBeLessThan(0.1)
+  })
+
   /** A wobbly open run and a lobed closed ring, the shapes the crossing repair refits. */
   function pinnedShapes(): Polyline[] {
     const open = Array.from({ length: 90 }, (_, k): [number, number] => [k, 6 * Math.sin(k * 0.11)])

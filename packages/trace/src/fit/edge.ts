@@ -43,7 +43,9 @@ import type { FitPath, Polyline } from './objective'
  * (`vertices[0]`, which is also its last vertex), its `n + 1` points running
  * from the cut round to it again, so every run of segments the path holds is a
  * run of ascending point indices; the path is marked closed while they run, so
- * the sharpening treats it as a ring. The input path is not modified.
+ * the sharpening treats it as a ring. A pin at the cut (a pinned refit is cut
+ * at its first pin) is kept at both ends of the opened run, so the sharpening,
+ * which may move a ring's start, never moves it. The input path is not modified.
  */
 export const shippingPostFit: PostFitPass = (path, poly, vertices, cfg, keep) => {
   const out: FitPath = {
@@ -59,8 +61,10 @@ export const shippingPostFit: PostFitPass = (path, poly, vertices, cfg, keep) =>
     const opened = openedAt(poly, cut)
     const verts = vertices.map((v, k) => (k === last ? n : (v - cut + n) % n))
     const kept = (keep ?? [])
-      .map((f) => (f - cut + n) % n)
-      .filter((f) => f > 0)
+      .flatMap((f) => {
+        const at = (f - cut + n) % n
+        return at === 0 ? [0, n] : [at]
+      })
       .toSorted((a, b) => a - b)
     runPostFitPasses(out, opened, verts, cfg, { keep: kept })
   } else {
