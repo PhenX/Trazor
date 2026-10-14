@@ -147,6 +147,9 @@ export function canonicalAngle(angle: number): number {
   return a
 }
 
+/** Weights and rows of {@link taubinEllipseWithResidual}, grown as needed. */
+let taubinScratch = new Float64Array(0)
+
 /**
  * Taubin's algebraic conic fit, weighted by `1/σ²`, when it is an ellipse, with
  * its minimized residual in px² summed over the samples (`μ·s²·Σw`, which
@@ -168,14 +171,19 @@ export function taubinEllipseWithResidual(
 ): { fit: EllipseFit; residual: number } | null {
   const n = pts.length >> 1
   if (n < 6) return null
-  const w = weights(sigma, n)
+  if (taubinScratch.length < 6 * n) taubinScratch = new Float64Array(6 * n)
+  // Weights first, then the rows `z` of the samples, five per sample.
+  const w = taubinScratch
+  const rows = taubinScratch.subarray(n, 6 * n)
   let sw = 0
   let mx = 0
   let my = 0
   for (let k = 0; k < n; k++) {
-    sw += w[k]
-    mx += pts[2 * k] * w[k]
-    my += pts[2 * k + 1] * w[k]
+    const wk = weightAt(sigma, k)
+    w[k] = wk
+    sw += wk
+    mx += pts[2 * k] * wk
+    my += pts[2 * k + 1] * wk
   }
   if (!(sw > 0)) return null
   mx /= sw
@@ -189,44 +197,114 @@ export function taubinEllipseWithResidual(
   const scale = Math.sqrt(variance / sw)
   if (!(scale > 1e-12)) return null
 
-  const rows = new Float64Array(5 * n)
-  const mean = new Float64Array(5)
+  let m0 = 0
+  let m1 = 0
+  let m2 = 0
+  let m3 = 0
+  let m4 = 0
   for (let k = 0; k < n; k++) {
     const u = (pts[2 * k] - mx) / scale
     const v = (pts[2 * k + 1] - my) / scale
     const o = 5 * k
-    rows[o] = u * u
-    rows[o + 1] = u * v
-    rows[o + 2] = v * v
+    const wk = w[k]
+    const z0 = u * u
+    const z1 = u * v
+    const z2 = v * v
+    rows[o] = z0
+    rows[o + 1] = z1
+    rows[o + 2] = z2
     rows[o + 3] = u
     rows[o + 4] = v
-    for (let a = 0; a < 5; a++) mean[a] += w[k] * rows[o + a]
+    m0 += wk * z0
+    m1 += wk * z1
+    m2 += wk * z2
+    m3 += wk * u
+    m4 += wk * v
   }
-  for (let a = 0; a < 5; a++) mean[a] /= sw
+  m0 /= sw
+  m1 /= sw
+  m2 /= sw
+  m3 /= sw
+  m4 /= sw
+  const mean = new Float64Array([m0, m1, m2, m3, m4])
+  // `C` sums `w·dₐ·d_b` as `(w·dₐ)·d_b`, every entry on its own. `N` is
+  // symmetric term by term: with `∂z/∂u = (2u, v, 0, 1, 0)` and
+  // `∂z/∂v = (0, u, 2v, 0, 1)` its entries are the nonzero products alone, and
+  // the six that vanish stay zero.
   const cov = new Float64Array(25)
-  const nrm = new Float64Array(25)
-  const d = new Float64Array(5)
-  const gx = new Float64Array(5)
-  const gy = new Float64Array(5)
+  let n00 = 0
+  let n01 = 0
+  let n03 = 0
+  let n11 = 0
+  let n12 = 0
+  let n13 = 0
+  let n14 = 0
+  let n22 = 0
+  let n24 = 0
+  let n33 = 0
+  let n44 = 0
   for (let k = 0; k < n; k++) {
     const o = 5 * k
     const u = rows[o + 3]
     const v = rows[o + 4]
-    gx[0] = 2 * u
-    gx[1] = v
-    gx[3] = 1
-    gy[1] = u
-    gy[2] = 2 * v
-    gy[4] = 1
-    for (let a = 0; a < 5; a++) d[a] = rows[o + a] - mean[a]
+    const d0 = rows[o] - m0
+    const d1 = rows[o + 1] - m1
+    const d2 = rows[o + 2] - m2
+    const d3 = u - m3
+    const d4 = v - m4
     const wk = w[k]
-    for (let a = 0; a < 5; a++) {
-      for (let b = 0; b < 5; b++) {
-        cov[a * 5 + b] += wk * d[a] * d[b]
-        nrm[a * 5 + b] += wk * (gx[a] * gx[b] + gy[a] * gy[b])
-      }
-    }
+    const e0 = wk * d0
+    const e1 = wk * d1
+    const e2 = wk * d2
+    const e3 = wk * d3
+    const e4 = wk * d4
+    cov[0] += e0 * d0
+    cov[1] += e0 * d1
+    cov[2] += e0 * d2
+    cov[3] += e0 * d3
+    cov[4] += e0 * d4
+    cov[5] += e1 * d0
+    cov[6] += e1 * d1
+    cov[7] += e1 * d2
+    cov[8] += e1 * d3
+    cov[9] += e1 * d4
+    cov[10] += e2 * d0
+    cov[11] += e2 * d1
+    cov[12] += e2 * d2
+    cov[13] += e2 * d3
+    cov[14] += e2 * d4
+    cov[15] += e3 * d0
+    cov[16] += e3 * d1
+    cov[17] += e3 * d2
+    cov[18] += e3 * d3
+    cov[19] += e3 * d4
+    cov[20] += e4 * d0
+    cov[21] += e4 * d1
+    cov[22] += e4 * d2
+    cov[23] += e4 * d3
+    cov[24] += e4 * d4
+    const gu = 2 * u
+    const gv = 2 * v
+    n00 += wk * (gu * gu)
+    n01 += wk * (gu * v)
+    n03 += wk * gu
+    n11 += wk * (v * v + u * u)
+    n12 += wk * (u * gv)
+    n13 += wk * v
+    n14 += wk * u
+    n22 += wk * (gv * gv)
+    n24 += wk * gv
+    n33 += wk
+    n44 += wk
   }
+  // prettier-ignore
+  const nrm = new Float64Array([
+    n00, n01, 0, n03, 0,
+    n01, n11, n12, n13, n14,
+    0, n12, n22, 0, n24,
+    n03, n13, 0, n33, 0,
+    0, n14, n24, 0, n44,
+  ])
   const eig = genEigen5(cov, nrm)
   if (eig === null) return null
   const th = eig.theta
