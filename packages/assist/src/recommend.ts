@@ -612,10 +612,12 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
 
 /**
  * The planar geometry chain, where the ground-truth gate measures it ahead of
- * the classic one: color or grayscale art on stacked layers not grouped by
- * color, from an intake left undenoised (photographic or compressed sources are
- * denoised and stay classic, as do the photo profile, pixel art, bw and
- * centerline, cutout and nested layering and grouped output). A cartoon takes
+ * the classic one: color, grayscale or black & white art on stacked layers not
+ * grouped by color, from an intake left undenoised (photographic or compressed
+ * sources are denoised and stay classic, as do the photo profile, pixel art,
+ * centerline, cutout and nested layering and grouped output). Black & white
+ * art changes only its geometry: its two-label ink mask has no front end to
+ * choose. A cartoon takes
  * it only up to `PLANAR_CARTOON_MAX_SIDE`, with the classic front end, whose
  * region growing it is routed to; other art takes the ink front end with
  * gradient fills, which paints a ramp as one gradient. An image traced at more
@@ -629,16 +631,26 @@ function planarChain(
   r: Rationale,
 ): void {
   const mode = patch.mode ?? DEFAULT_SETTINGS.mode
-  if (mode !== 'color' && mode !== 'grayscale') return
+  if (mode !== 'color' && mode !== 'grayscale' && mode !== 'bw') return
   if (profileId === 'photo' || profileId === 'pixel-art') return
   if ((patch.layering ?? DEFAULT_SETTINGS.layering) !== 'stacked') return
   if (patch.groupByColor ?? DEFAULT_SETTINGS.groupByColor) return
   if ((patch.denoise ?? DEFAULT_SETTINGS.denoise) !== 'none') return
-  if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
   const maxDimension =
     patch.maxDimension ?? getProfile(profileId).patch.maxDimension ?? DEFAULT_SETTINGS.maxDimension
   const fit = Math.min(1, maxDimension / Math.max(a.width, a.height))
   if (a.width * a.height * fit * fit > PLANAR_MAX_PIXELS) return
+  if (mode === 'bw') {
+    // The ink mask is two labels, so the front end does not apply: only the
+    // geometry changes.
+    patch.geometry = 'planar'
+    r.add(
+      'planarBw',
+      'Black & white art — the ink boundary is located to a fraction of a pixel and fitted once on the planar chain.',
+    )
+    return
+  }
+  if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
   patch.geometry = 'planar'
   if (cartoon) {
     patch.frontEnd = 'classic'

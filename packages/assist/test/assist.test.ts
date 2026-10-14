@@ -822,13 +822,31 @@ describe('recommendSettings — geometry chain', () => {
     expect(codes(large)).not.toContain('planarCartoon')
   })
 
-  it('keeps photos, pixel art, bw, nested and grayscale line art on the classic chain', () => {
+  it('traces black & white art on the planar chain without choosing a front end', () => {
+    const rec = recommendSettings(analyzeImage(inkOnWhite()))
+    expect(rec.patch.mode).toBe('bw')
+    expect(rec.patch.geometry).toBe('planar')
+    expect(rec.patch.frontEnd).toBeUndefined()
+    expect(rec.patch.gradients).toBeUndefined()
+    expect(codes(rec)).toContain('planarBw')
+    expect(codes(rec)).not.toContain('planarInk')
+    expect(codes(rec)).not.toContain('planarCartoon')
+  })
+
+  it('keeps black & white art past the planar pixel budget on the classic chain', () => {
+    const a = analyzeImage(inkOnWhite())
+    const large = recommendSettings({ ...a, width: 1400, height: 980, pixels: 1_372_000 })
+    expect(large.patch.mode).toBe('bw')
+    expect(large.patch.geometry).toBeUndefined()
+    expect(codes(large)).not.toContain('planarBw')
+  })
+
+  it('keeps photos, pixel art, nested and grayscale line art on the classic chain', () => {
     for (const img of [
       noisyPhoto(),
       grayPhoto(),
       compressedFlat(),
       sprite(),
-      inkOnWhite(),
       flatLogo(),
       inkDrawing(),
     ]) {
@@ -837,6 +855,7 @@ describe('recommendSettings — geometry chain', () => {
       expect(rec.patch.frontEnd).toBeUndefined()
       expect(codes(rec)).not.toContain('planarInk')
       expect(codes(rec)).not.toContain('planarCartoon')
+      expect(codes(rec)).not.toContain('planarBw')
     }
   })
 
