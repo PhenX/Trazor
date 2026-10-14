@@ -150,27 +150,93 @@ export function collectSamples(
     keep[n++] = p
   }
   // Pixel lists usually arrive ascending already, and sorting them changes nothing.
-  let ascending = true
-  for (let i = 1; i < n && ascending; i++) ascending = keep[i - 1] < keep[i]
-  const px = ascending ? keep.slice(0, n) : keep.subarray(0, n).toSorted()
+  const px = ascendingPixels(keep.subarray(0, n))
   const x = new Float64Array(n)
   const y = new Float64Array(n)
   const srgb = new Float32Array(3 * n)
-  const lin = new Float64Array(3 * n)
-  const srgbWide = new Float64Array(3 * n)
   for (let i = 0; i < n; i++) {
     const p = px[i]
     const xi = p % w
     x[i] = xi
     y[i] = (p - xi) / w
-    for (let k = 0; k < 3; k++) {
-      const v = rgb[3 * p + k]
-      srgb[3 * i + k] = v
-      srgbWide[3 * i + k] = v
-      lin[3 * i + k] = srgbToLinear32(v)
+    srgb[3 * i] = rgb[3 * p]
+    srgb[3 * i + 1] = rgb[3 * p + 1]
+    srgb[3 * i + 2] = rgb[3 * p + 2]
+  }
+  return new SampleSet(px, x, y, srgb)
+}
+
+/** Most ascending runs {@link ascendingPixels} merges; past it the library sort orders them. */
+const MAX_MERGED_RUNS = 64
+
+/**
+ * A copy of `v` in ascending order. A pixel list is a few ascending runs (each
+ * component's pixels in scan order, one after another), so the runs are merged
+ * pairwise (a natural merge sort, D. E. Knuth, The Art of Computer Programming
+ * vol. 3, §5.2.4) in O(n log runs).
+ */
+function ascendingPixels(v: Int32Array): Int32Array {
+  const n = v.length
+  let starts: number[] = [0]
+  for (let i = 1; i < n; i++) {
+    if (v[i] < v[i - 1]) {
+      starts.push(i)
+      if (starts.length > MAX_MERGED_RUNS) return v.toSorted()
     }
   }
-  return { n, px, x, y, srgb, lin, srgbWide }
+  let src = v.slice()
+  if (starts.length === 1) return src
+  let dst = new Int32Array(n)
+  while (starts.length > 1) {
+    const next: number[] = []
+    for (let r = 0; r < starts.length; r += 2) {
+      const lo = starts[r]
+      const mid = r + 1 < starts.length ? starts[r + 1] : n
+      const hi = r + 2 < starts.length ? starts[r + 2] : n
+      let i = lo
+      let j = mid
+      let k = lo
+      while (i < mid && j < hi) dst[k++] = src[i] <= src[j] ? src[i++] : src[j++]
+      while (i < mid) dst[k++] = src[i++]
+      while (j < hi) dst[k++] = src[j++]
+      next.push(lo)
+    }
+    starts = next
+    const t = src
+    src = dst
+    dst = t
+  }
+  return src
+}
+
+/** Samples whose linear-light and widened colors are worked out from `srgb` on first use. */
+class SampleSet implements Samples {
+  readonly n: number
+  private linear: Float64Array | null = null
+  private wide: Float64Array | null = null
+
+  constructor(
+    readonly px: Int32Array,
+    readonly x: Float64Array,
+    readonly y: Float64Array,
+    readonly srgb: Float32Array,
+  ) {
+    this.n = px.length
+  }
+
+  get lin(): Float64Array {
+    if (this.linear === null) {
+      const lin = new Float64Array(this.srgb.length)
+      for (let i = 0; i < lin.length; i++) lin[i] = srgbToLinear32(this.srgb[i])
+      this.linear = lin
+    }
+    return this.linear
+  }
+
+  get srgbWide(): Float64Array {
+    this.wide ??= Float64Array.from(this.srgb)
+    return this.wide
+  }
 }
 
 /** Samples from explicit arrays (positions in the fitting frame, colors sRGB): for tests and callers that build their own. */

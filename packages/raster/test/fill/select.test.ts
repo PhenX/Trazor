@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { colorAt, fillKind } from '../../src/fill/model'
+import { colorAt, fillKind, srgbToLinear32 } from '../../src/fill/model'
 import type { FillFit, FillModel, Rgb } from '../../src/fill/model'
 import { collectSamples, FIT_PIXELS_CAP, interiorCount, stridedUnion } from '../../src/fill/samples'
 import {
@@ -189,6 +189,25 @@ describe('samples', () => {
     const s = collectSamples(new Float32Array(75).fill(0.5), 5, 5, all, () => true, null, true)
     expect(Array.from(s.px)).toEqual([6, 7, 8, 11, 12, 13, 16, 17, 18])
     expect([s.x[4], s.y[4]]).toEqual([2, 2])
+  })
+
+  it('orders pixels given as ascending runs, few or many, and reads their colors', () => {
+    const w = 40
+    const h = 40
+    const rgb = Float32Array.from({ length: 3 * w * h }, (_, i) => Math.fround((i % 256) / 255))
+    const all = Array.from({ length: w * h }, (_, p) => p)
+    for (const runs of [1, 2, 3, 7, 64, 65, 200]) {
+      // Pixel p goes to run p mod runs: each run ascending, the runs one after another.
+      const pixels: number[] = []
+      for (let r = 0; r < runs; r++) for (const p of all) if (p % runs === r) pixels.push(p)
+      const s = collectSamples(rgb, w, h, Int32Array.from(pixels), () => true, null, false)
+      expect(Array.from(s.px)).toEqual(all)
+      for (const i of [0, 77, w * h - 1]) {
+        expect(s.srgb[3 * i + 1]).toBe(rgb[3 * all[i] + 1])
+        expect(s.srgbWide[3 * i + 1]).toBe(rgb[3 * all[i] + 1])
+        expect(s.lin[3 * i + 1]).toBe(srgbToLinear32(rgb[3 * all[i] + 1]))
+      }
+    }
   })
 
   it('fits a 1 px line flat from all its pixels', () => {
