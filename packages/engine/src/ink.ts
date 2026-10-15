@@ -76,17 +76,22 @@ export const SOFT_EDGE_RESIDUAL = 3.5 / 255
 const MIN_EDGE_SAMPLES = 256
 
 /**
- * The noise a raster's edges carry when it is enough to make it a soft intake, per channel
- * in encoded sRGB units (capped at `ink.MEASURED_SIGMA_CAP` levels), else undefined: the
- * raster as it arrives, over white, labelled with its clean palette, and the median distance
- * of its boundary pixels off the two-ink blend segments (`ink.boundaryResidual`), read on at
- * least 256 of them and compared with {@link SOFT_EDGE_RESIDUAL}. Edges damaged by
- * compression or resampling stray off the blends their inks allow even where the edge width
- * and the ringing read clean, and the clean palette's guards then keep each variant of an
- * ink as an ink of its own. Measured against the clean labels: against the soft palette the
- * same statistic rises to the cap.
+ * A raster's clean palette and labels, as its edge noise reads them ({@link edgeNoise}):
+ * the raster over white, its MDL palette under the clean guards and each pixel's nearest
+ * ink. They are what the opaque front end makes of the same pixels when it is neither soft
+ * nor enlarged, and it reuses them there ({@link inkFrontEnd}).
  */
-export function edgeNoise(image: RasterImage): number | undefined {
+export interface CleanLabels {
+  readonly width: number
+  readonly height: number
+  /** The pixels over white, encoded sRGB, three per pixel. */
+  readonly rgb: Float32Array
+  readonly palette: ink.Palette
+  readonly labels: Int32Array
+}
+
+/** The {@link CleanLabels} of a raster as it arrives. */
+export function cleanLabels(image: RasterImage): CleanLabels {
   const { width: w, height: h } = image
   const n = w * h
   const { rgb } = ink.intakePixels(image)
@@ -94,7 +99,7 @@ export function edgeNoise(image: RasterImage): number | undefined {
   for (let i = 0; i < n; i++)
     lum[i] = 0.2126 * rgb[3 * i] + 0.7152 * rgb[3 * i + 1] + 0.0722 * rgb[3 * i + 2]
   const ids = ink.colorIdsOfRgb(rgb)
-  const pal = ink.extractPaletteMdl(
+  const palette = ink.extractPaletteMdl(
     rgb,
     w,
     h,
@@ -103,8 +108,26 @@ export function edgeNoise(image: RasterImage): number | undefined {
     ink.paletteEvidence(estimateNoise(lum, w, h), n, false),
     ids,
   )
-  const labels = ink.labelImage(rgb, pal, ids)
-  const { level, samples } = ink.boundaryResidual(rgb, labels, w, h, pal.inkRgb)
+  return { width: w, height: h, rgb, palette, labels: ink.labelImage(rgb, palette, ids) }
+}
+
+/**
+ * The noise a raster's edges carry when it is enough to make it a soft intake, per channel
+ * in encoded sRGB units (capped at `ink.MEASURED_SIGMA_CAP` levels), else undefined: the
+ * raster as it arrives, over white, labelled with its clean palette (`clean`, the raster's
+ * {@link CleanLabels}), and the median distance of its boundary pixels off the two-ink blend
+ * segments (`ink.boundaryResidual`), read on at least 256 of them and compared with
+ * {@link SOFT_EDGE_RESIDUAL}. Edges damaged by compression or resampling stray off the blends
+ * their inks allow even where the edge width and the ringing read clean, and the clean
+ * palette's guards then keep each variant of an ink as an ink of its own. Measured against
+ * the clean labels: against the soft palette the same statistic rises to the cap.
+ */
+export function edgeNoise(
+  image: RasterImage,
+  clean: CleanLabels = cleanLabels(image),
+): number | undefined {
+  const { width: w, height: h, rgb, palette, labels } = clean
+  const { level, samples } = ink.boundaryResidual(rgb, labels, w, h, palette.inkRgb)
   if (samples < MIN_EDGE_SAMPLES || level < SOFT_EDGE_RESIDUAL) return undefined
   return Math.min(level, ink.MEASURED_SIGMA_CAP / 255)
 }
@@ -387,7 +410,9 @@ function paintLabels(
  * against the clean labels, {@link edgeNoise}), to that; `gradients` lets a
  * region take a gradient (and the bands of one ramp merge into one). Every
  * fill is fitted on this thread ({@link inkFrontEndSteps} hands the band
- * merge's fits out instead).
+ * merge's fits out instead). `clean`, the {@link CleanLabels} the edge noise
+ * read, stands for the palette and labels when it was read on these very
+ * pixels and the front end is neither soft nor enlarged: they are the same.
  */
 export function inkFrontEnd(
   image: RasterImage,
@@ -395,8 +420,9 @@ export function inkFrontEnd(
   soft: boolean,
   gradients: boolean,
   edgeSigma?: number,
+  clean?: CleanLabels,
 ): InkFrontEnd {
-  return ink.fitHere(inkFrontEndSteps(image, scale, soft, gradients, edgeSigma))
+  return ink.fitHere(inkFrontEndSteps(image, scale, soft, gradients, edgeSigma, clean))
 }
 
 /** {@link inkFrontEnd} as fit steps: the band merge's batches of fits are yielded to the driver. */
@@ -406,22 +432,30 @@ export function* inkFrontEndSteps(
   soft: boolean,
   gradients: boolean,
   edgeSigma?: number,
+  clean?: CleanLabels,
 ): ink.FitSteps<InkFrontEnd> {
   const { width: w, height: h } = image
   const n = w * h
   const { rgb, lum } = overWhite(image)
   let sigma = estimateNoise(lum, w, h)
-  const ids = ink.colorIdsOfRgb(rgb)
-  const pal = ink.extractPaletteMdl(
-    rgb,
-    w,
-    h,
-    ink.DEFAULT_MERGE_DISTANCE,
-    ink.DEFAULT_MAX_COLORS,
-    ink.paletteEvidence(sigma, n, soft, scale),
-    ids,
-  )
-  const raw = ink.labelImage(rgb, pal, ids)
+  let pal: ink.Palette
+  let raw: Int32Array
+  if (clean !== undefined && !soft && scale === 1 && readOn(clean, rgb, w, h)) {
+    pal = clean.palette
+    raw = clean.labels.slice()
+  } else {
+    const ids = ink.colorIdsOfRgb(rgb)
+    pal = ink.extractPaletteMdl(
+      rgb,
+      w,
+      h,
+      ink.DEFAULT_MERGE_DISTANCE,
+      ink.DEFAULT_MAX_COLORS,
+      ink.paletteEvidence(sigma, n, soft, scale),
+      ids,
+    )
+    raw = ink.labelImage(rgb, pal, ids)
+  }
   if (soft) {
     const measured =
       edgeSigma ??
@@ -503,6 +537,15 @@ export function* nativeInkFrontEndSteps(
     },
   )
   return paintLabels(raw, w, h, fe.palette, lf, fe.sigmaNoise, gradients, true)
+}
+
+/** Whether `clean` was read on exactly these pixels (`rgb`, over white, `w × h`), bit for bit. */
+function readOn(clean: CleanLabels, rgb: Float32Array, w: number, h: number): boolean {
+  if (clean.width !== w || clean.height !== h || clean.rgb.length !== rgb.length) return false
+  const a = new Uint32Array(clean.rgb.buffer, clean.rgb.byteOffset, clean.rgb.length)
+  const b = new Uint32Array(rgb.buffer, rgb.byteOffset, rgb.length)
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
 }
 
 /** The image's pixels as encoded sRGB in single precision, and their luma. */

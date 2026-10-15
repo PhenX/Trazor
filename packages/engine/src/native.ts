@@ -141,6 +141,7 @@ import {
 } from './planar'
 import type { PlanarFace, PlanarRegion } from './planar'
 import {
+  cleanLabels,
   edgeNoise,
   fitHere,
   inkFrontEndSteps,
@@ -148,7 +149,7 @@ import {
   nativeInkFrontEndSteps,
   softNoise,
 } from './ink'
-import type { BandFitSource, FillFit, FitSteps } from './ink'
+import type { BandFitSource, CleanLabels, FillFit, FitSteps } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -467,6 +468,8 @@ export interface StageCache {
   intakeSoft?: boolean
   /** The noise of the edges that made the intake soft (`edgeNoise`; ink front end). */
   intakeEdgeNoise?: number
+  /** The clean palette and labels the edge noise was read against (`cleanLabels`; ink front end). */
+  intakeClean?: CleanLabels
   /** What a supersampled planar run's geometry measures against (`PlanarRun.source`). */
   planarSource?: PlanarSource
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
@@ -594,6 +597,8 @@ interface PlanarRun {
   soft: boolean
   /** The residual of the edges against the clean labels, when it made the intake soft (`edgeNoise`). */
   edgeNoise?: number
+  /** The clean palette and labels those edges were read against, for the front end to reuse. */
+  clean?: CleanLabels
   /**
    * On a supersampled run, the image before the enlargement: the boundary
    * solve compares the coverage of its pixels, the box-filtered samples of the
@@ -808,6 +813,7 @@ export async function vectorize(
   // residual on a soft intake.
   let intakeSoft = false
   let intakeEdgeNoise: number | undefined
+  let intakeClean: CleanLabels | undefined
   let planarSource: PlanarSource | undefined
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
@@ -815,6 +821,7 @@ export async function vectorize(
     alpha = cache.alpha ?? null
     intakeSoft = cache.intakeSoft ?? false
     intakeEdgeNoise = cache.intakeEdgeNoise
+    intakeClean = cache.intakeClean
     planarSource = cache.planarSource
     cacheStats(cache).preHits++
     run.progress(1)
@@ -826,8 +833,11 @@ export async function vectorize(
       // The ink front end's palette keeps every variant of a damaged edge's inks apart
       // unless the intake is soft; edges that stray off their blends make it so.
       if (!intakeSoft && frontEnd === 'ink' && settings.mode === 'color') {
-        intakeEdgeNoise = edgeNoise(img)
+        const clean = cleanLabels(img)
+        intakeEdgeNoise = edgeNoise(img, clean)
         intakeSoft = intakeEdgeNoise !== undefined
+        // The front end of a soft intake reads its pixels under the soft guards.
+        if (!intakeSoft) intakeClean = clean
       }
     }
     run.progress(0.3)
@@ -868,6 +878,7 @@ export async function vectorize(
       cache.alpha = alpha
       cache.intakeSoft = intakeSoft
       cache.intakeEdgeNoise = intakeEdgeNoise
+      cache.intakeClean = intakeClean
       cache.planarSource = planarSource
       cache.palette = new Map()
       cache.ink = undefined
@@ -964,6 +975,7 @@ export async function vectorize(
             frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
+            clean: intakeClean,
             source: planarSource,
           }
         : undefined,
@@ -987,6 +999,7 @@ export async function vectorize(
             frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
+            clean: intakeClean,
             source: planarSource,
           }
         : undefined,
@@ -1205,7 +1218,14 @@ async function colorPipeline(
     const steps =
       alpha !== null
         ? nativeInkFrontEndSteps(image, alpha, settings.supersample, soft, settings.gradients, edge)
-        : inkFrontEndSteps(image, settings.supersample, soft, settings.gradients, edge)
+        : inkFrontEndSteps(
+            image,
+            settings.supersample,
+            soft,
+            settings.gradients,
+            edge,
+            planarRun?.clean,
+          )
     const front = helperCtx.helpers
       ? await fitStepsAcross(run, helperCtx.helpers, helperCtx.serial, steps)
       : fitHere(steps)

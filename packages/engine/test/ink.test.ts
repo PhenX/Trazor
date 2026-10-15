@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RasterImage } from '@trazor/core'
 import {
+  cleanLabels,
   edgeNoise,
   inkFrontEnd,
   intakeIsSoft,
@@ -32,6 +33,32 @@ const ramp = image(72, 40, (x, y) => {
 })
 
 describe('the ink front end', () => {
+  it('takes the clean labels the edge noise read on the same pixels as its own', () => {
+    for (const gradients of [false, true]) {
+      const plain = inkFrontEnd(ramp, 1, false, gradients)
+      expect(inkFrontEnd(ramp, 1, false, gradients, undefined, cleanLabels(ramp))).toStrictEqual(
+        plain,
+      )
+    }
+    // Clean labels with every pixel on the first ink show where they are taken.
+    const clean = cleanLabels(ramp)
+    const flat = { ...clean, labels: new Int32Array(clean.labels.length) }
+    const plain = inkFrontEnd(ramp, 1, false, false)
+    expect(inkFrontEnd(ramp, 1, false, false, undefined, flat).labels).not.toEqual(plain.labels)
+    // Not when they were read on other pixels (one channel of one pixel off),
+    // nor for a soft or enlarged front end.
+    const touched = { ...ramp, data: ramp.data.slice() }
+    touched.data[4 * (10 * 72 + 10)] ^= 1
+    const other = { ...cleanLabels(touched), labels: new Int32Array(72 * 40) }
+    expect(inkFrontEnd(ramp, 1, false, false, undefined, other)).toStrictEqual(plain)
+    expect(inkFrontEnd(ramp, 1, true, false, undefined, flat)).toStrictEqual(
+      inkFrontEnd(ramp, 1, true, false),
+    )
+    expect(inkFrontEnd(ramp, 2, false, false, undefined, flat)).toStrictEqual(
+      inkFrontEnd(ramp, 2, false, false),
+    )
+  })
+
   it('keeps every ink of a flat mosaic, with or without gradients', () => {
     // The classic palette budget would merge some; description length keeps them all.
     for (const gradients of [false, true]) {
