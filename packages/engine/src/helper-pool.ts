@@ -1,5 +1,6 @@
 import { CancelledError } from '@trazor/core'
 import type { GrayImage, PathCommand, RasterImage, TurnPolicy } from '@trazor/core'
+import type { ink } from '@trazor/raster'
 import type { ChainNetwork, EdgeFitInput, FitConfig, FittedEdge, FlatPoints } from '@trazor/trace'
 import type { ShapeOut } from '@trazor/svg'
 import { flatTransferables, packRuns, unpackCommands, unpackFit } from './flat'
@@ -60,7 +61,7 @@ export interface HelperDispatchSpec {
   total: number
   /** Key of the cached payload the units index into (as passed to the setter). */
   stateKey: string
-  /** Curve settings; omitted for `fit-edges`, whose objective travels with its edges. */
+  /** Curve settings; omitted for `fit-edges` and `fit-bands`, whose objective travels with their payload. */
   curve?: HelperCurveOptions
   /**
    * The helper each unit runs on, by unit index — the owners the payload was
@@ -114,6 +115,8 @@ export interface HelperUnitOutput {
   svg?: (ShapeOut | null)[]
   /** `fit-edges`: the edge's fit, whose segments are `shapes[0]`. */
   fit?: FittedEdge
+  /** `fit-bands`: the unit's fill (no shapes). */
+  fill?: ink.FillFit
 }
 
 /**
@@ -146,6 +149,7 @@ interface Slot {
   ringKey: string | null
   chainKey: string | null
   edgeKey: string | null
+  bandKey: string | null
 }
 
 /** A dispatch in flight: the units still owed, buffered results, and the waiters. */
@@ -195,6 +199,7 @@ export class HelperPool {
       ringKey: null,
       chainKey: null,
       edgeKey: null,
+      bandKey: null,
     }))
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i]
@@ -395,6 +400,60 @@ export class HelperPool {
   }
 
   /**
+   * Cache a band merge's fixed inputs on every helper that does not already hold
+   * `key`; each builds the merge's components from them (`ink.BandFits`).
+   */
+  setBands(key: string, source: ink.BandFitSource): void {
+    for (const slot of this.slots) {
+      if (slot.bandKey === key) continue
+      const labels = source.labels.slice().buffer
+      const rgb = source.rgb.slice().buffer
+      const inkRgb = source.inkRgb.slice().buffer
+      this.send(
+        slot,
+        {
+          type: 'helper-bands',
+          key,
+          width: source.w,
+          height: source.h,
+          labels,
+          rgb,
+          inkRgb,
+          sigmaNoise: source.sigmaNoise,
+          lambda: source.lambda,
+          regionRecovery: source.regionRecovery,
+          gradients: source.gradients,
+          scale: source.scale,
+          stopGeometries: source.search.stopGeometries,
+          radialsPerSpace: source.search.radialsPerSpace,
+        },
+        [labels, rgb, inkRgb],
+      )
+      slot.bandKey = key
+    }
+  }
+
+  /**
+   * Send one batch of the band merge cached under `bands` to every helper,
+   * under `key`: each applies the batch's merges, so its components stay the
+   * coordinator's whether or not it fits any of the batch's units.
+   */
+  setBandBatch(bands: string, key: string, batch: ink.FitBatch): void {
+    for (const slot of this.slots) {
+      const merges = batch.merges.slice().buffer
+      const a = batch.a.slice().buffer
+      const b = batch.b.slice().buffer
+      const inner = batch.inner.slice().buffer
+      this.send(slot, { type: 'helper-band-batch', bands, key, merges, a, b, inner }, [
+        merges,
+        a,
+        b,
+        inner,
+      ])
+    }
+  }
+
+  /**
    * Run `spec.total` units across the helpers, yielding each helper-owned unit's
    * output in unit-index order. The first step of the iteration posts every
    * helper's job. Abandoning the iteration (a `break`, a `CancelledError` thrown
@@ -504,7 +563,8 @@ export class HelperPool {
           const svg = msg.svg ? msg.svg.slice(part, part + parts) : undefined
           run += count
           part += parts
-          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg, fit })
+          const fill = msg.fills?.[u]
+          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg, fit, fill })
         }
         break
       }

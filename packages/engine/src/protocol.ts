@@ -6,6 +6,7 @@ import type {
   VectorizeResult,
   VectorizeSettings,
 } from '@trazor/core'
+import type { ink } from '@trazor/raster'
 import type { ShapeOut, SvgShape } from '@trazor/svg'
 import type { FlatRuns } from './flat'
 
@@ -244,6 +245,53 @@ export interface HelperEdgesMessage {
 }
 
 /**
+ * A band merge's fixed inputs for a helper, cached under `key` (the run's serial
+ * and the merge's index in it): the label map as the merge received it, the
+ * image over white and the pricing, from which the helper builds the merge's
+ * components and their evidence (`ink.BandFits`), as the coordinator did.
+ */
+export interface HelperBandsMessage {
+  type: 'helper-bands'
+  key: string
+  width: number
+  height: number
+  /** Int32 label per pixel, transferred. */
+  labels: ArrayBuffer
+  /** Float32 encoded sRGB over white, three per pixel, transferred. */
+  rgb: ArrayBuffer
+  /** Float64 palette, three encoded sRGB values per ink, transferred. */
+  inkRgb: ArrayBuffer
+  sigmaNoise: number
+  lambda: number
+  regionRecovery: boolean
+  gradients: boolean
+  scale: number
+  /** The ramp search (`ink.RampSearch`). */
+  stopGeometries: number
+  radialsPerSpace: boolean
+}
+
+/**
+ * One batch of a band merge's fits, sent to every helper under `key`: each
+ * applies the batch's merges to its components, whichever of its units it is
+ * then given, so its components stay the coordinator's.
+ */
+export interface HelperBandBatchMessage {
+  type: 'helper-band-batch'
+  /** The merge's key ({@link HelperBandsMessage}). */
+  bands: string
+  key: string
+  /** Int32 `into, from` component pairs merged since the previous batch, transferred. */
+  merges: ArrayBuffer
+  /** Int32 first component of each unit, transferred. */
+  a: ArrayBuffer
+  /** Int32 second component of each unit (the first again for a component on its own), transferred. */
+  b: ArrayBuffer
+  /** Uint8 per unit: blends whose partners all lie in the union testify too, transferred. */
+  inner: ArrayBuffer
+}
+
+/**
  * A unit of parallel work:
  *
  * - `trace-layers` — stacked layering: build the layer's union flood mask from
@@ -259,8 +307,17 @@ export interface HelperEdgesMessage {
  * - `fit-edges` — one edge of the planar map: its fit (`fitEdgeInput`), curve
  *   or whole primitive. The coordinator repairs crossings and emits from the
  *   fits, placed by edge index.
+ * - `fit-bands` — one fit of a band merge's batch: a component, or the union of
+ *   two, fitted on the helper's copy of the merge's components
+ *   (`ink.BandFits.fit`). The coordinator's merge goes on from the fits, placed
+ *   by unit index.
  */
-export type HelperJobKind = 'trace-layers' | 'trace-rings' | 'fit-chains' | 'fit-edges'
+export type HelperJobKind =
+  | 'trace-layers'
+  | 'trace-rings'
+  | 'fit-chains'
+  | 'fit-edges'
+  | 'fit-bands'
 
 /** Dispatch a list of units to one helper. */
 export interface HelperJobMessage {
@@ -276,7 +333,7 @@ export interface HelperJobMessage {
    * run instead of geometry traced from the wrong image.
    */
   stateKey: string
-  /** Curve settings; absent for `fit-edges`, whose objective travels with its edges. */
+  /** Curve settings; absent for `fit-edges` and `fit-bands`, whose objective travels with their payload. */
   curve?: HelperCurveOptions
   /**
    * Units per reply. The helper answers in `helper-batch` messages of this many
@@ -318,6 +375,8 @@ export type HelperInMessage =
   | HelperRingsMessage
   | HelperChainsMessage
   | HelperEdgesMessage
+  | HelperBandsMessage
+  | HelperBandBatchMessage
   | HelperJobMessage
   | HelperCancelMessage
 
@@ -348,6 +407,8 @@ export type HelperOutMessage =
        * per unit in `units` order (`packFits`), transferred.
        */
       fits?: ArrayBuffer
+      /** `fit-bands`: each unit's fill, in `units` order (no command runs). */
+      fills?: ink.FillFit[]
       /**
        * Serialized shapes in emission order; only `trace-layers`. One per
        * command run, or — for a unit with an underlay — the underlay copy of

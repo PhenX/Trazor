@@ -116,7 +116,12 @@ import type {
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { Primitive, ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import { balancedOwners } from './helper-pool'
-import type { HelperPool, HelperUnitOutput, StackPlanPayload } from './helper-pool'
+import type {
+  HelperDispatchSpec,
+  HelperPool,
+  HelperUnitOutput,
+  StackPlanPayload,
+} from './helper-pool'
 import type {
   HelperCurveOptions,
   HelperSerializeOptions,
@@ -135,7 +140,15 @@ import {
   tracePlanar,
 } from './planar'
 import type { PlanarFace, PlanarRegion } from './planar'
-import { edgeNoise, inkFrontEnd, intakeIsSoft, nativeInkFrontEnd, softNoise } from './ink'
+import {
+  edgeNoise,
+  fitHere,
+  inkFrontEndSteps,
+  intakeIsSoft,
+  nativeInkFrontEndSteps,
+  softNoise,
+} from './ink'
+import type { BandFitSource, FillFit, FitSteps } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
 
@@ -1189,10 +1202,13 @@ async function colorPipeline(
     if (canCachePal) cacheStats(cache!).palMisses++
     const soft = planarRun?.soft ?? false
     const edge = planarRun?.edgeNoise
-    const front =
+    const steps =
       alpha !== null
-        ? nativeInkFrontEnd(image, alpha, settings.supersample, soft, settings.gradients, edge)
-        : inkFrontEnd(image, settings.supersample, soft, settings.gradients, edge)
+        ? nativeInkFrontEndSteps(image, alpha, settings.supersample, soft, settings.gradients, edge)
+        : inkFrontEndSteps(image, settings.supersample, soft, settings.gradients, edge)
+    const front = helperCtx.helpers
+      ? await fitStepsAcross(run, helperCtx.helpers, helperCtx.serial, steps)
+      : fitHere(steps)
     ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients } = front)
     fillOpacity = front.fillOpacity
     inkHex = front.inkHex
@@ -2507,52 +2523,124 @@ function planarEdgeFitter(
     const owners = balancedOwners(weights, self + 1)
     helpers.setEdges(key, { width: map.width, height: map.height, cfg, edges }, owners)
     const fits: FittedEdge[] = new Array(total)
-    const stop = new AbortController()
-    const replies = helpers.dispatch({
-      kind: 'fit-edges',
-      total,
-      stateKey: key,
-      owners,
-      batch: EDGE_BATCH,
-      signal: stop.signal,
-    })
-    // Starting the placement posts the helpers' jobs, so they fit while this
-    // thread fits its own share.
-    const placed = placeEdgeFits(run, replies, fits)
-    // A rejection is rethrown by the await below, once this thread's share is fitted.
-    placed.catch(() => undefined)
-    try {
-      let sinceTick = 0
-      for (let k = 0; k < total; k++) {
-        if (owners[k] !== self) continue
-        fits[k] = fitEdgeInput(edges[k], map, cfg)
-        sinceTick += weights[k]
-        if (sinceTick >= EDGE_TICK_WEIGHT) {
-          sinceTick = 0
-          // oxlint-disable-next-line no-await-in-loop
-          await run.tick()
-        }
-      }
-    } catch (err) {
-      stop.abort()
-      throw err
-    }
-    await placed
+    await shareUnits(
+      run,
+      helpers,
+      { kind: 'fit-edges', total, stateKey: key, owners, batch: EDGE_BATCH },
+      (k) => (fits[k] = fitEdgeInput(edges[k], map, cfg)),
+      (out) => (fits[out.unit] = out.fit as FittedEdge),
+      weights,
+      EDGE_TICK_WEIGHT,
+    )
     return fits
   }
 }
 
-/** Place each helper's edge fit by edge index as it arrives, checking for a cancel as they come. */
-async function placeEdgeFits(
+/**
+ * Run fit steps (an ink front end's band merge, {@link FitSteps}) with each
+ * batch's fits shared between the helpers and this thread. Every helper is
+ * sent a merge's fixed inputs once and then every batch's merges, so its copy
+ * of the merge's components stays the merge's, and fits the units it is
+ * assigned by estimated cost (the batch's `work`; the heaviest unit stays on
+ * this thread, so a batch smaller than the pool keeps it busy); the fits go
+ * back to the merge in unit order, exactly as {@link fitHere} makes them. A
+ * merge's payloads are keyed by the run's serial.
+ */
+async function fitStepsAcross<T>(
+  run: Run,
+  helpers: HelperPool,
+  serial: number,
+  steps: FitSteps<T>,
+): Promise<T> {
+  const merges = new Map<BandFitSource, string>()
+  let batches = 0
+  for (let r = steps.next(); ;) {
+    if (r.done) return r.value
+    const batch = r.value
+    let bands = merges.get(batch.source)
+    if (bands === undefined) {
+      bands = `#${serial}|bands${merges.size}`
+      merges.set(batch.source, bands)
+      helpers.setBands(bands, batch.source)
+    }
+    const key = `${bands}#${batches++}`
+    helpers.setBandBatch(bands, key, batch)
+    const total = batch.a.length
+    const self = helpers.size
+    // The balance's first owner, which takes the heaviest unit, is this thread.
+    const owners = balancedOwners(Array.from(batch.work), self + 1).map((o) =>
+      o === 0 ? self : o - 1,
+    )
+    const fits: FillFit[] = new Array(total)
+    // oxlint-disable-next-line no-await-in-loop
+    await shareUnits(
+      run,
+      helpers,
+      { kind: 'fit-bands', total, stateKey: key, owners, batch: BAND_BATCH },
+      (u) => (fits[u] = batch.fit(u)),
+      (out) => (fits[out.unit] = out.fill as FillFit),
+      batch.work,
+      BAND_TICK_WORK,
+    )
+    r = steps.next(fits)
+  }
+}
+
+/**
+ * Run `spec.total` units over the helpers and this thread: a unit owned by
+ * `helpers.size` (`spec.owners`) runs here (`here`), the others in their
+ * helpers, whose outputs are handed to `place` as they arrive, whenever this
+ * thread yields. This thread checks for a cancel after every `tickWork` of
+ * estimated cost (`work`, per unit) of its own units, and a cancel stops the
+ * helpers' jobs too.
+ */
+async function shareUnits(
+  run: Run,
+  helpers: HelperPool,
+  spec: HelperDispatchSpec & { owners: ArrayLike<number> },
+  here: (unit: number) => void,
+  place: (out: HelperUnitOutput) => void,
+  work: ArrayLike<number>,
+  tickWork: number,
+): Promise<void> {
+  const self = helpers.size
+  const stop = new AbortController()
+  const replies = helpers.dispatch({ ...spec, signal: stop.signal })
+  // Starting the placement posts the helpers' jobs, so they run while this
+  // thread runs its own share.
+  const placed = placeReplies(run, replies, place)
+  // A rejection is rethrown by the await below, once this thread's share is done.
+  placed.catch(() => undefined)
+  try {
+    let sinceTick = 0
+    for (let u = 0; u < spec.total; u++) {
+      if (spec.owners[u] !== self) continue
+      here(u)
+      sinceTick += work[u]
+      if (sinceTick >= tickWork) {
+        sinceTick = 0
+        // oxlint-disable-next-line no-await-in-loop
+        await run.tick()
+      }
+    }
+  } catch (err) {
+    stop.abort()
+    throw err
+  }
+  await placed
+}
+
+/** Hand each helper output to `place` as it arrives, checking for a cancel as they come. */
+async function placeReplies(
   run: Run,
   replies: AsyncGenerator<HelperUnitOutput>,
-  fits: FittedEdge[],
+  place: (out: HelperUnitOutput) => void,
 ): Promise<void> {
   let done = 0
   for await (const out of replies) {
-    fits[out.unit] = out.fit as FittedEdge
+    place(out)
     done++
-    if ((done & EDGE_TICK_MASK) === 0) {
+    if ((done & PLACE_TICK_MASK) === 0) {
       // oxlint-disable-next-line no-await-in-loop
       await run.tick()
     }
@@ -2576,8 +2664,8 @@ function edgeFitWeight(edge: PlanarEdge): number {
 /** Point count past which an edge fit's cost per point stops growing ({@link edgeFitWeight}). */
 const EDGE_REACH = 32
 
-/** Helper edge fits placed between cancel checks (a power of two, minus one). */
-const EDGE_TICK_MASK = 63
+/** Helper outputs placed between cancel checks (a power of two, minus one). */
+const PLACE_TICK_MASK = 63
 
 /**
  * Estimated cost ({@link edgeFitWeight}) of the edges the coordinator fits
@@ -2592,6 +2680,15 @@ const EDGE_TICK_WEIGHT = 6000
  * one per edge.
  */
 const EDGE_BATCH = 16
+
+/** Band fits per helper reply: like an edge's, a fit takes from microseconds to half a second. */
+const BAND_BATCH = 16
+
+/**
+ * Estimated cost (`unionWork`, about 1000 units a millisecond) of the band fits
+ * the coordinator makes between cancel checks: about 50 ms of fitting.
+ */
+const BAND_TICK_WORK = 50_000
 
 /** The primitive a planar chain's face draws when its ring is one whole-primitive edge. */
 function primitiveOf(face: FaceShape): Primitive | null {

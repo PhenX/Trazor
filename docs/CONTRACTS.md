@@ -678,6 +678,33 @@ export namespace ink {
       search?: RampSearch // { stopGeometries: number; radialsPerSpace: boolean }
     },
   ): BandMerge // { fills: FillFit[]; ink: number[]; budget }
+  // The same merge as fit steps: it yields each batch of independent fits it needs (every
+  // component on its own, then each wave of unions and each stale refit) and goes on with their
+  // fits, in unit order; fitHere fits every batch on this thread (mergeGradientBands is
+  // fitHere(mergeGradientBandSteps(…))). Unit i of a batch is component a[i] alone (b[i] === a[i])
+  // or the union of a[i] and b[i]; batch.fit(i) fits it on the merge's own state. A BandFits
+  // built from batch.source that applies every batch's `merges` (into, from pairs) in turn fits
+  // any unit identically on another thread — what the engine's helpers do.
+  function mergeGradientBandSteps(/* as mergeGradientBands */): FitSteps<BandMerge>
+  type FitSteps<T> = Generator<FitBatch, T, FillFit[]>
+  interface FitBatch {
+    source: BandFitSource // the merge's fixed inputs, one object per merge
+    merges: Int32Array // since the previous batch
+    a: Int32Array
+    b: Int32Array
+    inner: Uint8Array // blends whose partners all lie in the union testify too
+    work: Float64Array // each unit's unionWork, for balancing
+    fit(unit: number): FillFit
+  }
+  function fitHere<T>(steps: FitSteps<T>): T
+  // { labels (as the merge received them), rgb, w, h, inkRgb: Float64Array, sigmaNoise, lambda,
+  //   regionRecovery, gradients, scale, search }
+  interface BandFitSource {}
+  class BandFits {
+    constructor(source: BandFitSource)
+    apply(merges: Int32Array): void
+    fit(a: number, b: number, inner: boolean): FillFit
+  }
   function carveResidualFeatures(
     labels,
     rgb,
@@ -1602,6 +1629,11 @@ export interface TraceChart {
 //                  (each helper only its own edges). The coordinator fits a share of the edges
 //                  itself while the helpers fit theirs, then repairs the crossings and emits every
 //                  layering from the fits, placed by edge index.
+//   fit-bands    — one fit of the ink front end's band merge (ink.mergeGradientBandSteps): a
+//                  component, or the union of two. Each helper is sent the merge's fixed inputs
+//                  once and every batch's merges, and rebuilds the merge's components
+//                  (ink.BandFits); the coordinator fits a share of each batch itself (the heaviest
+//                  unit first) and the merge goes on from the fits, placed by unit index.
 // Centerline stays on the coordinator: the skeleton graph walk is one indivisible pass.
 //
 // Units are partitioned round-robin by unit index — deterministic, so a re-run hands each unit to
@@ -1613,7 +1645,8 @@ export interface TraceChart {
 //
 // MEMORY: each helper holds its own copy of what it is sent — the working image (4·w·h bytes, 45 MB
 // at 4096×2731), plus for stacked the label map (4·w·h) and its pixel buckets, for bw its share of
-// the rings and the coverage field (4·w·h), and for cutout the Oklab buffer it derives (12·w·h) —
+// the rings and the coverage field (4·w·h), for cutout the Oklab buffer it derives (12·w·h), and
+// for the ink front end the band merge's image, labels, components and evidence (about 37·w·h) —
 // on top of its ring and polygon caches. Size the pool for the image, not only for the core count.
 export interface HelperEndpoint {
   // A DOM Worker, a MessagePort, and a Node worker_threads MessagePort all satisfy this (a Node

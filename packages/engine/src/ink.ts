@@ -22,6 +22,17 @@ import type { GradientPaint, LabelMap, RasterImage } from '@trazor/core'
 import { estimateNoise, hexToRgb, rgbToHex } from '@trazor/core'
 import { ink } from '@trazor/raster'
 
+/**
+ * A front end whose band merge hands its fits out in batches (`ink.FitSteps`),
+ * the merge's fixed inputs a batch carries, and the fills that go back.
+ */
+export type FitSteps<T> = ink.FitSteps<T>
+export type BandFitSource = ink.BandFitSource
+export type FillFit = ink.FillFit
+
+/** Run fit steps to their end, fitting every batch on this thread. */
+export const fitHere = ink.fitHere
+
 /** What the ink front end hands the planar chain. */
 export interface InkFrontEnd {
   /** One ink per label, every label in use. */
@@ -167,7 +178,7 @@ interface TwoGround {
  * carved paint is renamed from the clear ink to a visible one, and (with
  * gradients) the fades are fitted; a fade keeps its fill through the snap.
  */
-function labelFills(
+function* labelFills(
   labels: Int32Array,
   rgb: Float32Array,
   w: number,
@@ -178,9 +189,9 @@ function labelFills(
   scale: number,
   gradients: boolean,
   two: TwoGround | null,
-): LabelFills {
+): ink.FitSteps<LabelFills> {
   const lambda = ink.bicLambda(w * h, scale)
-  const { fills, ink: labelInk } = ink.mergeGradientBands(
+  const { fills, ink: labelInk } = yield* ink.mergeGradientBandSteps(
     labels,
     rgb,
     w,
@@ -374,7 +385,9 @@ function paintLabels(
  * the palette's guards and lets the noise rise to the residual against the
  * labels — or, when the edges decided it (`edgeSigma`, their residual
  * against the clean labels, {@link edgeNoise}), to that; `gradients` lets a
- * region take a gradient (and the bands of one ramp merge into one).
+ * region take a gradient (and the bands of one ramp merge into one). Every
+ * fill is fitted on this thread ({@link inkFrontEndSteps} hands the band
+ * merge's fits out instead).
  */
 export function inkFrontEnd(
   image: RasterImage,
@@ -383,6 +396,17 @@ export function inkFrontEnd(
   gradients: boolean,
   edgeSigma?: number,
 ): InkFrontEnd {
+  return ink.fitHere(inkFrontEndSteps(image, scale, soft, gradients, edgeSigma))
+}
+
+/** {@link inkFrontEnd} as fit steps: the band merge's batches of fits are yielded to the driver. */
+export function* inkFrontEndSteps(
+  image: RasterImage,
+  scale: number,
+  soft: boolean,
+  gradients: boolean,
+  edgeSigma?: number,
+): ink.FitSteps<InkFrontEnd> {
   const { width: w, height: h } = image
   const n = w * h
   const { rgb, lum } = overWhite(image)
@@ -415,7 +439,7 @@ export function inkFrontEnd(
   if (absorbed > 0 || moved > 0) ink.despeckle(raw, w, h, minRegion, colors)
   if (ink.findComponents(raw, w, h).count > ink.MAX_FACES)
     ink.capComponents(raw, w, h, ink.MAX_FACES)
-  const lf = labelFills(raw, rgb, w, h, pal, sigma, minRegion, scale, gradients, null)
+  const lf = yield* labelFills(raw, rgb, w, h, pal, sigma, minRegion, scale, gradients, null)
   return paintLabels(raw, w, h, pal, lf, sigma, gradients, false)
 }
 
@@ -423,7 +447,8 @@ export function inkFrontEnd(
  * The ink front end of a transparent working image: `image` composited over
  * white and `alpha` its straight alpha (bytes), traced `scale` working pixels
  * per source pixel, over two grounds (inkvec `native.rs`); `soft` and
- * `edgeSigma` as for {@link inkFrontEnd}.
+ * `edgeSigma` as for {@link inkFrontEnd}. Every fill is fitted on this thread
+ * ({@link nativeInkFrontEndSteps} hands the band merge's fits out instead).
  */
 export function nativeInkFrontEnd(
   image: RasterImage,
@@ -433,6 +458,18 @@ export function nativeInkFrontEnd(
   gradients: boolean,
   edgeSigma?: number,
 ): InkFrontEnd {
+  return ink.fitHere(nativeInkFrontEndSteps(image, alpha, scale, soft, gradients, edgeSigma))
+}
+
+/** {@link nativeInkFrontEnd} as fit steps: the band merge's batches of fits are yielded to the driver. */
+export function* nativeInkFrontEndSteps(
+  image: RasterImage,
+  alpha: Uint8Array,
+  scale: number,
+  soft: boolean,
+  gradients: boolean,
+  edgeSigma?: number,
+): ink.FitSteps<InkFrontEnd> {
   const { width: w, height: h } = image
   const n = w * h
   const { rgb, lum } = overWhite(image)
@@ -450,10 +487,21 @@ export function nativeInkFrontEnd(
   const raw = fe.labels
   if (ink.findComponents(raw, w, h).count > ink.MAX_FACES)
     ink.capComponents(raw, w, h, ink.MAX_FACES)
-  const lf = labelFills(raw, rgb, w, h, fe.palette, fe.sigmaNoise, minRegion, scale, gradients, {
-    alpha: a,
-    sameClass: fe.sameClass,
-  })
+  const lf = yield* labelFills(
+    raw,
+    rgb,
+    w,
+    h,
+    fe.palette,
+    fe.sigmaNoise,
+    minRegion,
+    scale,
+    gradients,
+    {
+      alpha: a,
+      sameClass: fe.sameClass,
+    },
+  )
   return paintLabels(raw, w, h, fe.palette, lf, fe.sigmaNoise, gradients, true)
 }
 

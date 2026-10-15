@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BandFits,
   gainWork,
   INKVEC_MERGE_WORK_FLOOR,
   MERGE_WORK_FLOOR,
   MergeBudget,
   mergeWorkCap,
   mergeGradientBands,
+  mergeGradientBandSteps,
   MODEL_WORK_PER_SAMPLE,
   unionWork,
 } from '../../src/fill/bands'
-import type { BandMerge, MergeOptions } from '../../src/fill/bands'
+import type { BandMerge, FitSteps, MergeOptions } from '../../src/fill/bands'
 import { FOREIGN, PURE } from '../../src/fill/evidence'
 import {
   flatOnly,
@@ -607,4 +609,72 @@ describe('parity with inkvec', () => {
       })
     }
   }
+})
+
+describe('band merge fit steps', () => {
+  /** What a driver saw of a merge's batches. */
+  interface Seen {
+    batches: number
+    units: number
+    merges: number
+    firstAlone: boolean
+  }
+
+  /**
+   * Run the steps with every batch fitted on a replica built from the batch's
+   * source and kept in step by its merges, as a helper fits them.
+   */
+  function onReplica<T>(steps: FitSteps<T>, seen: Seen): T {
+    let replica: BandFits | null = null
+    for (let r = steps.next(); ;) {
+      if (r.done) return r.value
+      const batch = r.value
+      if (replica === null) {
+        replica = new BandFits(batch.source)
+        seen.firstAlone = batch.a.every((c, i) => c === i && batch.b[i] === c)
+      }
+      replica.apply(batch.merges)
+      seen.batches++
+      seen.units += batch.a.length
+      seen.merges += batch.merges.length / 2
+      const fits = Array.from(batch.a, (a, i) =>
+        (replica as BandFits).fit(a, batch.b[i], batch.inner[i] === 1),
+      )
+      r = steps.next(fits)
+    }
+  }
+
+  it('fits every batch on a replica exactly as the merge fits it', () => {
+    const w = 40
+    const h = 20
+    const scene = bandedRamp(w, h, 2)
+    const options = (): MergeOptions => ({ budget: new MergeBudget(w, h, Infinity) })
+    const sigma = 0.5 / 255
+    const lambda = bicLambda(w * h)
+    const here = scene.labels.slice()
+    const local = mergeGradientBands(here, scene.rgb, w, h, scene.inks, sigma, lambda, options())
+    const there = scene.labels.slice()
+    const seen: Seen = { batches: 0, units: 0, merges: 0, firstAlone: false }
+    const steps = mergeGradientBandSteps(
+      there,
+      scene.rgb,
+      w,
+      h,
+      scene.inks,
+      sigma,
+      lambda,
+      options(),
+    )
+    const remote = onReplica(steps, seen)
+    // Every component on its own first; then the bands merge, so the later
+    // batches carry merges the replica has to replay.
+    expect(seen.firstAlone).toBe(true)
+    expect(seen.batches).toBeGreaterThan(2)
+    expect(seen.merges).toBeGreaterThan(0)
+    expect(gradientCount(here, local.fills)).toBeGreaterThan(0)
+    expect(remote.fills).toStrictEqual(local.fills)
+    expect(remote.ink).toEqual(local.ink)
+    expect(remote.budget.spent).toBe(local.budget.spent)
+    expect(there).toEqual(here)
+  })
 })

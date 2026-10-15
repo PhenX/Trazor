@@ -6,6 +6,8 @@ import type { HelperEndpoint, StageCache } from '@trazor/engine'
 import type { FittedEdge } from '@trazor/trace'
 import { packFits, unpackFit } from '../src/flat'
 import { balancedOwners } from '../src/helper-pool'
+import { inkFrontEndSteps } from '../src/ink'
+import type { FillFit } from '../src/ink'
 import { createNodeHelpers } from '../../../scripts/bench/node-helpers'
 import type { NodeHelpers } from '../../../scripts/bench/node-helpers'
 import { scenes } from './helpers/gradient-scenes'
@@ -267,6 +269,26 @@ const MODES: Mode[] = [
     name: 'color planar, ink front end',
     image: scene,
     patch: { mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true },
+  },
+  // The ink front end's band merge fits its components and each wave of
+  // unions across the helpers; on a ramp the bands merge, so every helper
+  // replays the merges between waves.
+  {
+    name: 'color planar, ink front end, merged bands',
+    image: ramp,
+    patch: { mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true },
+  },
+  {
+    name: 'color planar, ink front end over two grounds',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      geometry: 'planar',
+      frontEnd: 'ink',
+      gradients: true,
+      background: 'transparent',
+      alphaThreshold: 128,
+    },
   },
   {
     name: 'color planar cutout',
@@ -595,6 +617,106 @@ describe('planar edge fits across helpers', () => {
       expect(sequential.length).toBeGreaterThan(1)
       // Field for field, primitives included: a fit absent a primitive has no key for one.
       expect(parallel).toStrictEqual(sequential)
+    } finally {
+      await helpers.dispose()
+    }
+  }, 30000)
+})
+
+describe('band merge fits across helpers', () => {
+  it('fits every unit of every batch in a helper exactly as the merge fits it', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    const pool = new HelperPool([ends.pool])
+    const timer = setInterval(ends.flush, 0)
+    try {
+      // The ramp's bands merge, so the helper's copy of the components must
+      // follow every batch's merges for its later fits to be the merge's.
+      const steps = inkFrontEndSteps(ramp(), 1, false, true)
+      let merges = 0
+      let units = 0
+      for (let r = steps.next(), n = 0; !r.done; n++) {
+        const batch = r.value
+        if (n === 0) pool.setBands('bands', batch.source)
+        pool.setBandBatch('bands', `bands#${n}`, batch)
+        merges += batch.merges.length / 2
+        const total = batch.a.length
+        const fills: FillFit[] = new Array(total)
+        for await (const out of pool.dispatch({
+          kind: 'fit-bands',
+          total,
+          stateKey: `bands#${n}`,
+          owners: new Int32Array(total),
+          batch: 4,
+        })) {
+          fills[out.unit] = out.fill as FillFit
+        }
+        for (let i = 0; i < total; i++) expect(fills[i]).toStrictEqual(batch.fit(i))
+        units += total
+        r = steps.next(fills)
+      }
+      expect(merges).toBeGreaterThan(0)
+      expect(units).toBeGreaterThan(merges)
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('fits each union in the helper or on the coordinator and hands the fits back by unit', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    let batched = 0
+    let shipped = 0
+    let merges = 0
+    const watched: HelperEndpoint = {
+      postMessage: (message, transfer) => {
+        const m = message as { type: string; kind?: string; units?: number[] }
+        const batch = message as { a?: ArrayBuffer; merges?: ArrayBuffer }
+        if (m.type === 'helper-band-batch' && batch.a && batch.merges) {
+          batched += batch.a.byteLength / 4
+          merges += batch.merges.byteLength / 8
+        }
+        if (m.type === 'helper-job' && m.kind === 'fit-bands') shipped += m.units?.length ?? 0
+        ends.pool.postMessage(message, transfer)
+      },
+      addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
+    }
+    const pool = new HelperPool([watched])
+    const timer = setInterval(ends.flush, 0)
+    try {
+      const img = ramp()
+      const s = settings({ mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true })
+      const parallel = await vectorize(img, s, undefined, { helpers: pool, withDocument: true })
+      const sequential = await vectorize(img, s, undefined, { withDocument: true })
+      // The bands merge, and the coordinator keeps a share of the fits.
+      expect(merges).toBeGreaterThan(0)
+      expect(shipped).toBeGreaterThan(0)
+      expect(shipped).toBeLessThan(batched)
+      expect(digest(parallel)).toEqual(digest(sequential))
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('rejects a run cancelled in the ink front end and leaves the pool reusable', async () => {
+    const helpers = createNodeHelpers(2)
+    await helpers.ready
+    try {
+      const img = ramp()
+      const s = settings({ mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true })
+      let inPalette = false
+      const ctx = {
+        onProgress: (stage: string) => {
+          if (stage === 'palette') inPalette = true
+        },
+        shouldCancel: () => inPalette,
+      }
+      await expect(vectorize(img, s, ctx, { helpers: helpers.pool })).rejects.toBeInstanceOf(
+        CancelledError,
+      )
+      const after = await vectorize(img, s, undefined, { helpers: helpers.pool })
+      const sequential = await vectorize(img, s)
+      expect(after.svg).toBe(sequential.svg)
     } finally {
       await helpers.dispose()
     }

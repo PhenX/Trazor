@@ -37,6 +37,12 @@
  * pixels (`MergeOptions.scale`): a shared boundary is `scale` times longer and a
  * region `scale²` times larger in working pixels.
  *
+ * The fits of step 2 and of every wave are independent of each other, so the merge
+ * hands them out in batches ({@link mergeGradientBandSteps}) and goes on from their
+ * fits in unit order: a driver may make them on this thread ({@link fitHere}) or on
+ * others, each holding a replica of the merge's components ({@link BandFits}) kept
+ * in step by the merges every batch carries.
+ *
  * The loop is bounded by a deterministic work cap ({@link MergeBudget}): a wave is
  * charged before it is fitted, the sum of {@link unionWork} over its unions, and so
  * are a stale refit and the common-pixel gains a pick prices for the first time
@@ -236,7 +242,8 @@ export interface BandMerge {
  * `labels` in place: each gradient region and each flat region with an interior of
  * its own gets a fresh label past the palette. See the module comment for the
  * steps. `sigmaNoise` is the per-channel sRGB noise, `lambda` the price of one
- * editable number (`bicLambda` of the image's pixel count).
+ * editable number (`bicLambda` of the image's pixel count). Every fit is made on
+ * this thread ({@link mergeGradientBandSteps} hands them out instead).
  */
 export function mergeGradientBands(
   labels: Int32Array,
@@ -248,21 +255,50 @@ export function mergeGradientBands(
   lambda: number,
   options: MergeOptions = {},
 ): BandMerge {
+  return fitHere(mergeGradientBandSteps(labels, rgb, w, h, inkRgb, sigmaNoise, lambda, options))
+}
+
+/**
+ * {@link mergeGradientBands} as fit steps: it yields each batch of fits it needs
+ * (every component on its own, then each wave of unions and each stale refit)
+ * and goes on with their fits, so a driver may make them anywhere
+ * ({@link fitHere} on this thread). The result is the same whoever fits.
+ */
+export function* mergeGradientBandSteps(
+  labels: Int32Array,
+  rgb: Float32Array,
+  w: number,
+  h: number,
+  inkRgb: ArrayLike<number>,
+  sigmaNoise: number,
+  lambda: number,
+  options: MergeOptions = {},
+): FitSteps<BandMerge> {
   const innerBlends = options.regionRecovery ?? true
   const sameClass = options.sameClass ?? null
   const gradients = options.gradients ?? true
   const scale = options.scale ?? 1
   const budget = options.budget ?? new MergeBudget(w, h)
   const search = options.search ?? RAMP_SEARCH
-  const nInk = Math.floor(inkRgb.length / 3)
-  let nPal = nInk
-  for (let p = 0; p < labels.length; p++) if (labels[p] + 1 > nPal) nPal = labels[p] + 1
 
-  // 1. Connected components, and their seams.
-  const { comp, members, compLabel } = labelComponents(labels, w, h)
+  // 1. Connected components, and their seams; the fits' evidence (2) is read on
+  // the labels as they stand before any merge.
+  const parts = new BandFits({
+    labels: labels.slice(),
+    rgb,
+    w,
+    h,
+    inkRgb: Float64Array.from(inkRgb),
+    sigmaNoise,
+    lambda,
+    regionRecovery: innerBlends,
+    gradients,
+    scale,
+    search,
+  })
   const { adj, smooth, sharp } = componentAdjacency(
-    comp,
-    compLabel,
+    parts.group,
+    parts.compLabel,
     rgb,
     w,
     h,
@@ -270,17 +306,122 @@ export function mergeGradientBands(
     innerBlends,
   )
 
-  // The ink of every label (black past the palette), and which pixels may testify
-  // about a fill, computed on the labels as they stand before any merge.
-  const ink = new Float32Array(3 * nPal)
-  for (let i = 0; i < 3 * nInk; i++) ink[i] = inkRgb[i]
-  const partner = blendPartners(rgb, w, h, labels, ink, sigmaNoise, innerBlends)
-  const pure = new Uint8Array(w * h)
-  for (let p = 0; p < pure.length; p++) pure[p] = partner[3 * p] === PURE ? 1 : 0
-
   // 2. Per-component fits; 3. the greedy agglomeration; 4. the write-back.
   const merge = new Agglomeration(
-    {
+    parts,
+    adj,
+    smooth,
+    sharp,
+    innerBlends,
+    budget,
+    MIN_SHARED_BOUNDARY * scale,
+  )
+  yield* merge.fitComponents()
+  if (gradients) yield* merge.run()
+  const { fills, inks } = merge.writeBack(labels, parts.nInk, parts.nPal)
+  return { fills, ink: inks, budget }
+}
+
+/**
+ * A computation that hands out batches of independent fits and goes on with
+ * their fits, in unit order: the band merge ({@link mergeGradientBandSteps}) and
+ * the front ends built on it.
+ */
+export type FitSteps<T> = Generator<FitBatch, T, FillFit[]>
+
+/**
+ * Fits a band merge needs before it can go on, independent of each other. Unit
+ * `i` is component `a[i]` on its own when `b[i] === a[i]`, else the union of
+ * `a[i]` and `b[i]`; with `inner[i]` a blend whose partners all lie in it
+ * testifies too. `fit(i)` fits it on the merge's own state. A {@link BandFits}
+ * built from `source` that has applied every batch's `merges` in turn fits it
+ * identically, on any thread.
+ */
+export interface FitBatch {
+  /** The merge's fixed inputs, one object for every batch of a merge. */
+  readonly source: BandFitSource
+  /** The merges since the previous batch: component `merges[2k + 1]` absorbed into `merges[2k]`. */
+  readonly merges: Int32Array
+  readonly a: Int32Array
+  readonly b: Int32Array
+  readonly inner: Uint8Array
+  /** Each unit's estimated cost, its {@link unionWork}. */
+  readonly work: Float64Array
+  fit(unit: number): FillFit
+}
+
+/** Run fit steps to their end, fitting every batch on this thread. */
+export function fitHere<T>(steps: FitSteps<T>): T {
+  for (let r = steps.next(); ;) {
+    if (r.done) return r.value
+    const batch = r.value
+    const fits: FillFit[] = []
+    for (let i = 0; i < batch.a.length; i++) fits.push(batch.fit(i))
+    r = steps.next(fits)
+  }
+}
+
+const NO_PIXELS = new Int32Array(0)
+
+/** A band merge's fixed inputs: what its components and their evidence are derived from. */
+export interface BandFitSource {
+  /** The label map as the merge received it (a copy: the merge rewrites its own). */
+  readonly labels: Int32Array
+  readonly rgb: Float32Array
+  readonly w: number
+  readonly h: number
+  /** The palette, three encoded sRGB values per ink. */
+  readonly inkRgb: Float64Array
+  readonly sigmaNoise: number
+  readonly lambda: number
+  readonly regionRecovery: boolean
+  readonly gradients: boolean
+  readonly scale: number
+  readonly search: RampSearch
+}
+
+/**
+ * A band merge's components and what every fit of them reads: per pixel its
+ * component, each component's pixels (in the order the strided union fit reads
+ * them) and the fits' evidence, read on the labels before any merge (which
+ * pixels may testify about a fill, {@link blendPartners} over the inks as they
+ * stand). The merge holds one and absorbs into it as it merges; one built
+ * from the same {@link BandFitSource} that applies the same merges in order fits
+ * every component and union exactly as the merge's does.
+ */
+export class BandFits {
+  /** Current component of each pixel. */
+  readonly group: Int32Array
+  /** Palette label each component started from. */
+  readonly compLabel: readonly number[]
+  /** Encoded sRGB ink of each label (black past the palette), three per label. */
+  readonly ink: Float32Array
+  /** Inks in the palette, and labels in use (at least the inks). */
+  readonly nInk: number
+  readonly nPal: number
+  /** Pixel count of each component; its pixels are the first `size[c]` entries of `buf[c]`. */
+  readonly size: Int32Array
+  readonly fitter: UnionFitter
+  private readonly buf: Int32Array[]
+
+  constructor(readonly source: BandFitSource) {
+    const { labels, rgb, w, h, inkRgb, sigmaNoise, lambda, regionRecovery } = source
+    this.nInk = Math.floor(inkRgb.length / 3)
+    let nPal = this.nInk
+    for (let p = 0; p < labels.length; p++) if (labels[p] + 1 > nPal) nPal = labels[p] + 1
+    this.nPal = nPal
+    const { comp, members, compLabel } = labelComponents(labels, w, h)
+    this.group = comp
+    this.buf = members
+    this.size = Int32Array.from(members, (m) => m.length)
+    this.compLabel = compLabel
+    this.ink = new Float32Array(3 * nPal)
+    for (let i = 0; i < 3 * this.nInk; i++) this.ink[i] = inkRgb[i]
+    const partner = blendPartners(rgb, w, h, labels, this.ink, sigmaNoise, regionRecovery)
+    const pure = new Uint8Array(w * h)
+    for (let p = 0; p < pure.length; p++) pure[p] = partner[3 * p] === PURE ? 1 : 0
+    const scale = source.scale
+    this.fitter = {
       rgb,
       w,
       h,
@@ -288,24 +429,68 @@ export function mergeGradientBands(
       lambda,
       pure,
       partner,
-      gradients,
+      gradients: source.gradients,
       minPixels: MIN_GRADIENT_PIXELS * scale * scale,
-      minShared: MIN_SHARED_BOUNDARY * scale,
-      search,
-    },
-    comp,
-    members,
-    compLabel,
-    ink,
-    adj,
-    smooth,
-    sharp,
-    innerBlends,
-    budget,
-  )
-  if (gradients) merge.run()
-  const { fills, inks } = merge.writeBack(labels, nInk, nPal)
-  return { fills, ink: inks, budget }
+      search: source.search,
+    }
+  }
+
+  /** Number of components. */
+  get count(): number {
+    return this.buf.length
+  }
+
+  /** The pixels of component `c`, a view. */
+  members(c: number): Int32Array {
+    return this.buf[c].subarray(0, this.size[c])
+  }
+
+  /** Move component `b`'s pixels into `a`, after `a`'s own. */
+  absorb(a: number, b: number): void {
+    const taken = this.members(b)
+    for (let i = 0; i < taken.length; i++) this.group[taken[i]] = a
+    const need = this.size[a] + taken.length
+    if (need > this.buf[a].length) {
+      const grown = new Int32Array(Math.max(need, 2 * this.buf[a].length))
+      grown.set(this.members(a), 0)
+      this.buf[a] = grown
+    }
+    this.buf[a].set(taken, this.size[a])
+    this.size[a] = need
+    this.buf[b] = NO_PIXELS
+    this.size[b] = 0
+  }
+
+  /** Apply a batch's `merges` ({@link FitBatch}), in order. */
+  apply(merges: Int32Array): void {
+    for (let k = 0; k + 1 < merges.length; k += 2) this.absorb(merges[k], merges[k + 1])
+  }
+
+  /**
+   * The selected fill of components `a` and `b` (`a === b` for one), gathered from
+   * `a`'s pixels then `b`'s ({@link fitUnion}). With `inner`, a blend whose partners
+   * all lie in the union testifies too.
+   */
+  fit(a: number, b: number, inner: boolean): FillFit {
+    const { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients, minPixels } = this.fitter
+    const group = this.group
+    const member: PixelTest = (p) => group[p] === a || group[p] === b
+    const evidence: PixelTest = (p) => pure[p] === 1 || (inner && allInside(partner, p, member))
+    return fitUnion(
+      rgb,
+      w,
+      h,
+      this.members(a),
+      a === b ? NO_PIXELS : this.members(b),
+      member,
+      evidence,
+      sigmaNoise,
+      lambda,
+      gradients,
+      minPixels,
+      this.fitter.search,
+    )
+  }
 }
 
 /**
@@ -409,7 +594,7 @@ function bump(counts: SeamCounts, a: number, b: number): void {
 }
 
 /** The fixed inputs of every component and union fit: the image, the pricing and the evidence computed before any merge. */
-interface UnionFitter {
+export interface UnionFitter {
   readonly rgb: Float32Array
   readonly w: number
   readonly h: number
@@ -423,8 +608,6 @@ interface UnionFitter {
   readonly gradients: boolean
   /** Fewest pixels a gradient, or a component on an edge, needs (`MIN_GRADIENT_PIXELS`, scaled). */
   readonly minPixels: number
-  /** Fewest shared pixel pairs of a merge candidate (`MIN_SHARED_BOUNDARY`, scaled). */
-  readonly minShared: number
   /** How far each fit searches for ramps. */
   readonly search: RampSearch
 }
@@ -445,19 +628,19 @@ interface Pick {
   b: number
 }
 
-const NO_PIXELS = new Int32Array(0)
-
 /**
  * The state of the greedy agglomeration over connected components. Component ids
  * never change: merging `b` into `a` moves `b`'s pixels, seams and fit onto `a`
- * and marks `b` dead.
+ * and marks `b` dead. Its fits are handed out in batches ({@link FitBatch}), each
+ * carrying the merges made since the one before.
  */
 class Agglomeration {
   private readonly nComp: number
-  /** Pixels of each component, the first `size[c]` entries of `buf[c]`. */
-  private readonly buf: Int32Array[]
   private readonly size: Int32Array
-  private readonly fits: FillFit[]
+  private readonly group: Int32Array
+  private readonly compLabel: readonly number[]
+  private readonly ink: Float32Array
+  private fits: FillFit[] = []
   private readonly alive: Uint8Array
   /** Cached union fits, keyed `a · nComp + b` with `a < b`. */
   private readonly cache = new Map<number, CachedUnion>()
@@ -465,60 +648,62 @@ class Agglomeration {
   private readonly gains = new Map<number, number>()
   /** Whether the inks of two labels are one ramp step apart, keyed `la · nLabels + lb`, once measured. */
   private readonly rampSteps = new Map<number, boolean>()
+  /** The merges since the last batch, `into, from` pairs. */
+  private merged: number[] = []
 
   constructor(
-    private readonly fitter: UnionFitter,
-    /** Current component of each pixel. */
-    private readonly group: Int32Array,
-    members: Int32Array[],
-    /** Palette label each component started from. */
-    private readonly compLabel: readonly number[],
-    /** Encoded sRGB ink of each label, three per label. */
-    private readonly ink: Float32Array,
+    private readonly parts: BandFits,
     private readonly adj: SeamCounts,
     private readonly smooth: SeamCounts,
     private readonly sharp: SeamCounts,
     private readonly innerBlends: boolean,
     private readonly budget: MergeBudget,
+    /** Fewest shared pixel pairs of a merge candidate (`MIN_SHARED_BOUNDARY`, scaled). */
+    private readonly minShared: number,
   ) {
-    this.nComp = members.length
-    this.buf = members
-    this.size = Int32Array.from(members, (m) => m.length)
+    this.nComp = parts.count
+    this.size = parts.size
+    this.group = parts.group
+    this.compLabel = parts.compLabel
+    this.ink = parts.ink
     this.alive = new Uint8Array(this.nComp).fill(1)
-    this.fits = []
-    for (let c = 0; c < this.nComp; c++) {
-      this.fits.push(this.fit(this.members(c), NO_PIXELS, c, c, innerBlends))
-    }
   }
 
   /** The pixels of component `c`, a view. */
   private members(c: number): Int32Array {
-    return this.buf[c].subarray(0, this.size[c])
+    return this.parts.members(c)
   }
 
-  /**
-   * The selected fill of components `a` and `b` (`a === b` for one), gathered from
-   * `pa` then `pb` ({@link fitUnion}). With `inner`, a blend whose partners all lie
-   * in the union testifies too.
-   */
-  private fit(pa: Int32Array, pb: Int32Array, a: number, b: number, inner: boolean): FillFit {
-    const { rgb, w, h, sigmaNoise, lambda, pure, partner, gradients, minPixels } = this.fitter
-    const group = this.group
-    const member: PixelTest = (p) => group[p] === a || group[p] === b
-    const evidence: PixelTest = (p) => pure[p] === 1 || (inner && allInside(partner, p, member))
-    return fitUnion(
-      rgb,
-      w,
-      h,
-      pa,
-      pb,
-      member,
-      evidence,
-      sigmaNoise,
-      lambda,
-      gradients,
-      minPixels,
-      this.fitter.search,
+  /** The fits of `a[i]` with `b[i]` (`inner[i]` as for {@link BandFits.fit}), as one batch. */
+  private batch(a: number[], b: number[], inner: boolean[]): FitBatch {
+    const parts = this.parts
+    const ua = Int32Array.from(a)
+    const ub = Int32Array.from(b)
+    const ui = Uint8Array.from(inner, (x) => (x ? 1 : 0))
+    const work = new Float64Array(ua.length)
+    for (let i = 0; i < ua.length; i++) {
+      work[i] = unionWork(this.size[ua[i]] + (ub[i] === ua[i] ? 0 : this.size[ub[i]]))
+    }
+    const merges = Int32Array.from(this.merged)
+    this.merged = []
+    return {
+      source: parts.source,
+      merges,
+      a: ua,
+      b: ub,
+      inner: ui,
+      work,
+      fit: (i) => parts.fit(ua[i], ub[i], ui[i] === 1),
+    }
+  }
+
+  /** Fit every component on its own: the first batch. */
+  *fitComponents(): FitSteps<void> {
+    const ids = Array.from({ length: this.nComp }, (_, c) => c)
+    this.fits = yield this.batch(
+      ids,
+      ids,
+      ids.map(() => this.innerBlends),
     )
   }
 
@@ -566,10 +751,9 @@ class Agglomeration {
    * stay absorbable.
    */
   private acrossEdge(a: number, b: number): boolean {
+    const { minPixels } = this.parts.fitter
     return (
-      this.size[a] >= this.fitter.minPixels &&
-      this.size[b] >= this.fitter.minPixels &&
-      isEdge(this.adj, this.sharp, a, b)
+      this.size[a] >= minPixels && this.size[b] >= minPixels && isEdge(this.adj, this.sharp, a, b)
     )
   }
 
@@ -578,7 +762,7 @@ class Agglomeration {
    * pair with the largest positive gain and merges it, until no pair gains or the
    * work cap stops it.
    */
-  run(): void {
+  *run(): FitSteps<void> {
     for (;;) {
       const missing = this.missingUnions()
       if (missing.length > 0) {
@@ -588,9 +772,9 @@ class Agglomeration {
           work += unionWork(this.size[a] + this.size[k - a * this.nComp])
         }
         if (!this.budget.charge(work)) break
-        this.fitWave(missing)
+        yield* this.fitWave(missing)
       }
-      const best = this.pickMerge()
+      const best = yield* this.pickMerge()
       if (best === null) break
       this.applyMerge(best.a, best.b)
     }
@@ -605,7 +789,7 @@ class Agglomeration {
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < this.fitter.minShared) continue
+        if (b <= a || shared < this.minShared) continue
         if (!this.worthAUnion(a, b)) continue
         const k = this.key(a, b)
         if (!this.cache.has(k)) missing.push(k)
@@ -614,14 +798,19 @@ class Agglomeration {
     return missing.toSorted((x, y) => x - y)
   }
 
-  /** Fit the unions `missing` (keys, ascending) and cache them fresh, dropping any gain priced on an earlier fit. */
-  private fitWave(missing: readonly number[]): void {
-    for (const k of missing) {
-      const a = Math.floor(k / this.nComp)
-      const b = k - a * this.nComp
-      const fit = this.fit(this.members(a), this.members(b), a, b, this.smoothPair(a, b))
+  /** Fit the unions `missing` (keys, ascending) as one batch and cache them fresh, dropping any gain priced on an earlier fit. */
+  private *fitWave(missing: readonly number[]): FitSteps<void> {
+    const as = missing.map((k) => Math.floor(k / this.nComp))
+    const bs = missing.map((k, i) => k - as[i] * this.nComp)
+    const fits = yield this.batch(
+      as,
+      bs,
+      as.map((a, i) => this.smoothPair(a, bs[i])),
+    )
+    for (let i = 0; i < missing.length; i++) {
+      const k = missing[i]
       this.gains.delete(k)
-      this.cache.set(k, { a, b, fit, stale: false })
+      this.cache.set(k, { a: as[i], b: bs[i], fit: fits[i], stale: false })
     }
   }
 
@@ -630,7 +819,7 @@ class Agglomeration {
    * fresh fit. A winner whose cached union is stale is refitted and the choice
    * made again. Null when no pair gains or the work cap refuses a charge.
    */
-  private pickMerge(): Pick | null {
+  private *pickMerge(): FitSteps<Pick | null> {
     for (;;) {
       if (!this.budget.charge(this.pendingGainWork())) return null
       const best = this.bestGain()
@@ -640,7 +829,7 @@ class Agglomeration {
       const entry = this.cache.get(k)!
       if (!entry.stale) return best
       if (!this.budget.charge(unionWork(this.size[a] + this.size[b]))) return null
-      const fit = this.fit(this.members(a), this.members(b), a, b, this.smoothPair(a, b))
+      const [fit] = yield this.batch([a], [b], [this.smoothPair(a, b)])
       this.cache.set(k, { a, b, fit, stale: false })
       this.gains.delete(k)
     }
@@ -655,7 +844,7 @@ class Agglomeration {
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < this.fitter.minShared) continue
+        if (b <= a || shared < this.minShared) continue
         const k = this.key(a, b)
         if (!this.worthAUnion(a, b) || this.gains.has(k)) continue
         const entry = this.cache.get(k)
@@ -673,7 +862,7 @@ class Agglomeration {
     for (let a = 0; a < this.nComp; a++) {
       if (this.alive[a] === 0) continue
       for (const [b, shared] of this.adj[a]) {
-        if (b <= a || shared < this.fitter.minShared) continue
+        if (b <= a || shared < this.minShared) continue
         if (!this.worthAUnion(a, b)) continue
         const gain = this.pairGain(a, b)
         if (gain === null) continue
@@ -703,7 +892,7 @@ class Agglomeration {
     if (!this.smoothPair(a, b)) return this.fits[a].cost + this.fits[b].cost - union.cost
     const priced = this.gains.get(k)
     if (priced !== undefined) return priced
-    const { rgb, w, h, sigmaNoise, lambda, pure, partner } = this.fitter
+    const { rgb, w, h, sigmaNoise, lambda, pure, partner } = this.parts.fitter
     const group = this.group
     const pa = this.members(a)
     const pixels = new Int32Array(pa.length + this.size[b])
@@ -742,11 +931,8 @@ class Agglomeration {
     const k = this.key(a, b)
     this.fits[a] = this.cache.get(k)!.fit
     this.cache.delete(k)
-    const taken = this.members(b)
-    for (let i = 0; i < taken.length; i++) this.group[taken[i]] = a
-    this.append(a, taken)
-    this.buf[b] = NO_PIXELS
-    this.size[b] = 0
+    this.parts.absorb(a, b)
+    this.merged.push(a, b)
     this.alive[b] = 0
     absorbCounts(this.adj, a, b)
     absorbCounts(this.smooth, a, b)
@@ -769,18 +955,6 @@ class Agglomeration {
     }
   }
 
-  /** Append `pixels` to component `c`'s members, growing its buffer geometrically. */
-  private append(c: number, pixels: Int32Array): void {
-    const need = this.size[c] + pixels.length
-    if (need > this.buf[c].length) {
-      const grown = new Int32Array(Math.max(need, 2 * this.buf[c].length))
-      grown.set(this.members(c), 0)
-      this.buf[c] = grown
-    }
-    this.buf[c].set(pixels, this.size[c])
-    this.size[c] = need
-  }
-
   /**
    * Write the result back into `labels` and build one fill per label id: the
    * palette labels first, then a fresh label for every live component that is a
@@ -792,7 +966,7 @@ class Agglomeration {
    * that pooled flat fill.
    */
   writeBack(labels: Int32Array, nInk: number, nPal: number): { fills: FillFit[]; inks: number[] } {
-    const { rgb, w, h, sigmaNoise, lambda, pure } = this.fitter
+    const { rgb, w, h, sigmaNoise, lambda, pure, minPixels } = this.parts.fitter
     const group = this.group
     const fills: FillFit[] = []
     const inks: number[] = []
@@ -812,9 +986,7 @@ class Agglomeration {
       const gradient = isGradient(this.fits[c].model)
       const canMint = fills.length < MAX_FACES
       const ownColor =
-        !gradient &&
-        canMint &&
-        interiorCount(members, w, h, (p) => group[p] === c) >= this.fitter.minPixels
+        !gradient && canMint && interiorCount(members, w, h, (p) => group[p] === c) >= minPixels
       const minted = canMint && (gradient || ownColor)
       if (minted) {
         const id = fills.length

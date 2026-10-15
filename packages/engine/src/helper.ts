@@ -1,6 +1,6 @@
 import type { BinaryMask, GrayImage, PathCommand, RasterImage } from '@trazor/core'
 import { placePathCommands } from '@trazor/core'
-import { alphaCoverageField } from '@trazor/raster'
+import { alphaCoverageField, ink } from '@trazor/raster'
 import {
   decomposeMask,
   fitChain,
@@ -26,6 +26,8 @@ import { fitArcs, shapeOut } from '@trazor/svg'
 import type { ShapeOut } from '@trazor/svg'
 import { flatTransferables, packCommands, packFits, runAt, runCount } from './flat'
 import type {
+  HelperBandBatchMessage,
+  HelperBandsMessage,
   HelperChainsMessage,
   HelperCurveOptions,
   HelperEdgesMessage,
@@ -111,6 +113,16 @@ interface EdgeState {
 }
 
 /**
+ * A band merge's components as the coordinator's merge holds them, kept in step
+ * by each batch's merges, and the batch whose units the next job fits.
+ */
+interface BandState {
+  key: string
+  fits: ink.BandFits
+  batch: { key: string; a: Int32Array; b: Int32Array; inner: Uint8Array } | null
+}
+
+/**
  * Wire a helper worker to its scope. A helper is a stateful engine instance: it
  * receives the working image, the stacked plan, the bw rings or its share of
  * the cutout chain network once per key, keeps its own ring/polygon caches so a
@@ -130,6 +142,7 @@ export function installHelperHandler(scope: WorkerScope): void {
   let ringState: RingState | null = null
   let chainState: ChainState | null = null
   let edgeState: EdgeState | null = null
+  let bandState: BandState | null = null
   const cancelled = new Set<number>()
 
   const post = (msg: HelperOutMessage, transfer?: Transferable[]): void =>
@@ -153,6 +166,12 @@ export function installHelperHandler(scope: WorkerScope): void {
       case 'helper-edges':
         edgeState = takeEdges(msg)
         return
+      case 'helper-bands':
+        bandState = { key: msg.key, fits: new ink.BandFits(bandSource(msg)), batch: null }
+        return
+      case 'helper-band-batch':
+        takeBandBatch(msg)
+        return
       case 'helper-cancel':
         cancelled.add(msg.id)
         return
@@ -165,8 +184,12 @@ export function installHelperHandler(scope: WorkerScope): void {
   async function runJob(job: HelperJobMessage): Promise<void> {
     const size = Math.max(1, job.batch)
     const serialize =
-      job.kind !== 'fit-chains' && job.kind !== 'fit-edges' && job.serialize !== undefined
+      job.kind !== 'fit-chains' &&
+      job.kind !== 'fit-edges' &&
+      job.kind !== 'fit-bands' &&
+      job.serialize !== undefined
     const edgeJob = job.kind === 'fit-edges'
+    const bandJob = job.kind === 'fit-bands'
     try {
       // The option objects are the same for every unit of the job — a chain job
       // has hundreds of units, so they are built once, not per unit.
@@ -178,9 +201,17 @@ export function installHelperHandler(scope: WorkerScope): void {
         const svgCounts: number[] | undefined = serialize ? [] : undefined
         const runs: PathCommand[][] = []
         const fits: FittedEdge[] = []
+        const fills: ink.FillFit[] = []
         const svg: (ShapeOut | null)[] | undefined = serialize ? [] : undefined
         for (let i = at; i < Math.min(at + size, job.units.length); i++) {
           const unit = job.units[i]
+          if (bandJob) {
+            fills.push(fitOneBand(unit))
+            checkState(job)
+            units.push(unit)
+            counts.push(0)
+            continue
+          }
           if (edgeJob) {
             fits.push(fitOneEdge(unit))
             checkState(job)
@@ -211,6 +242,7 @@ export function installHelperHandler(scope: WorkerScope): void {
             commands,
             svg,
             fits: records ? (records.buffer as ArrayBuffer) : undefined,
+            fills: bandJob ? fills : undefined,
           },
           records
             ? [...flatTransferables(commands), records.buffer as ArrayBuffer]
@@ -246,7 +278,9 @@ export function installHelperHandler(scope: WorkerScope): void {
           ? ringState?.msg.key
           : job.kind === 'fit-edges'
             ? edgeState?.key
-            : chainState?.key
+            : job.kind === 'fit-bands'
+              ? bandState?.batch?.key
+              : chainState?.key
     if (held !== job.stateKey) {
       throw new Error(`helper: ${job.kind} payload ${job.stateKey} was replaced`)
     }
@@ -254,8 +288,8 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   /** The option objects every unit of one job shares. */
   function jobOptions(job: HelperJobMessage): JobOptions {
-    // An edge fit reads its objective from the cached edges.
-    if (job.kind === 'fit-edges') return {}
+    // An edge fit reads its objective from the cached edges, a band fit from the cached merge.
+    if (job.kind === 'fit-edges' || job.kind === 'fit-bands') return {}
     const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
     if (job.kind === 'fit-chains') {
       const arcPrecision = job.arcPrecision
@@ -436,6 +470,31 @@ export function installHelperHandler(scope: WorkerScope): void {
     const local = st.local.get(unit)
     if (local === undefined) throw new Error(`helper: edge ${unit} not held`)
     return fitEdgeInput(st.edges[local], st.frame, st.cfg)
+  }
+
+  /**
+   * Apply a band batch's merges to the merge it belongs to and hold its units;
+   * a batch of a merge this helper no longer holds is dropped, and its job
+   * fails the state check.
+   */
+  function takeBandBatch(msg: HelperBandBatchMessage): void {
+    const st = bandState
+    if (!st || st.key !== msg.bands) return
+    st.fits.apply(new Int32Array(msg.merges))
+    st.batch = {
+      key: msg.key,
+      a: new Int32Array(msg.a),
+      b: new Int32Array(msg.b),
+      inner: new Uint8Array(msg.inner),
+    }
+  }
+
+  /** One fit of the held band batch, on this helper's copy of the merge's components. */
+  function fitOneBand(unit: number): ink.FillFit {
+    const st = bandState
+    const batch = st?.batch
+    if (!st || !batch) throw new Error('helper: no band batch for fit-bands')
+    return st.fits.fit(batch.a[unit], batch.b[unit], batch.inner[unit] === 1)
   }
 
   /** The cached working image's RGBA bytes (the color field reads them directly). */
@@ -674,5 +733,22 @@ function takeEdges(msg: HelperEdgesMessage): EdgeState {
     cfg: { tau: msg.tau, lambda: msg.lambda },
     local,
     edges,
+  }
+}
+
+/** A band merge's fixed inputs as the coordinator's merge holds them. */
+function bandSource(msg: HelperBandsMessage): ink.BandFitSource {
+  return {
+    labels: new Int32Array(msg.labels),
+    rgb: new Float32Array(msg.rgb),
+    w: msg.width,
+    h: msg.height,
+    inkRgb: new Float64Array(msg.inkRgb),
+    sigmaNoise: msg.sigmaNoise,
+    lambda: msg.lambda,
+    regionRecovery: msg.regionRecovery,
+    gradients: msg.gradients,
+    scale: msg.scale,
+    search: { stopGeometries: msg.stopGeometries, radialsPerSpace: msg.radialsPerSpace },
   }
 }

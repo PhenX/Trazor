@@ -135,13 +135,13 @@ coordinator.
 
 The parallel unit is chosen per mode, always something whose result is a function of shared, immutable state:
 
-| Mode       | Unit                                               | Stays on the coordinator                                      |
-| ---------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| stacked    | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
-| bw         | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
-| cutout     | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
-| planar     | one edge's fit (curve or whole primitive)          | front end, map, sub-pixel, solve, crossing repair, emission   |
-| centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
+| Mode       | Unit                                                    | Stays on the coordinator                                           |
+| ---------- | ------------------------------------------------------- | ------------------------------------------------------------------ |
+| stacked    | one cut layer (union flood → rings → curves → SVG)      | the layering plan (order, lifted islands), document assembly       |
+| bw         | one ring of the mask (polygon + curve stages)           | threshold, despeckle, ring decomposition, shape assembly, SVG      |
+| cutout     | one boundary chain's fit                                | the crack walk, region assembly, serialization                     |
+| planar     | one edge's fit; one band-merge fit of the ink front end | the rest of the front end, map, sub-pixel, solve, repair, emission |
+| centerline | —                                                       | everything (the skeleton graph walk is one indivisible pass)       |
 
 The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
 routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it. A
@@ -158,6 +158,9 @@ The planar chain's edges are the exception to round-robin: one edge's fit costs 
 are assigned by estimated cost (heaviest first, each to the least-loaded owner) — still a function of the map alone,
 and the fits still land by edge index. The coordinator is one of the owners, weighted like a helper: it fits its share
 while the helpers fit theirs, checking for a cancel between its own edges.
+The ink front end's band merge shares its fits the same way: it hands them out in batches of independent fits (every
+component on its own, then each wave of unions), each helper rebuilds the merge's components from its inputs and
+replays every batch's merges, and the merge goes on from the fits in unit order.
 Each helper holds its own copy of the image and label map, so a consumer sizes the pool for the image, not only for the
 core count.
 
