@@ -836,8 +836,9 @@ export async function vectorize(
         const clean = cleanLabels(img)
         intakeEdgeNoise = edgeNoise(img, clean)
         intakeSoft = intakeEdgeNoise !== undefined
-        // The front end of a soft intake reads its pixels under the soft guards.
-        if (!intakeSoft) intakeClean = clean
+        // Kept for the opaque front end, which takes it on these very pixels: not on a
+        // soft intake (read under the soft guards) nor on an enlarged one.
+        if (!intakeSoft && scale === 1) intakeClean = clean
       }
     }
     run.progress(0.3)
@@ -855,6 +856,8 @@ export async function vectorize(
     img = flat.image
     opaque = flat.opaque
     alpha = flat.alpha
+    // A transparent working image takes the two-ground front end, which reads no clean labels.
+    if (alpha !== null) intakeClean = undefined
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
     if (geometry === 'planar' && scale > 1) {
