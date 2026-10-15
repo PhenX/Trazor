@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { FitConfig, FittedEdge, PlanarMap } from '../../src/planar/types'
 import { fitConfig, OUTSIDE, syncNodes } from '../../src/planar/types'
 import { costFloor, descriptionCost, primitiveOffer } from '../../src/fit/choice'
-import { fitEdge, fitEdges, fitRun, shippingPostFit } from '../../src/fit/edge'
+import {
+  edgeFitInput,
+  fitEdge,
+  fitEdgeInput,
+  fitEdges,
+  fitRun,
+  shippingPostFit,
+} from '../../src/fit/edge'
 import type { FitSegment } from '../../src/fit/curves'
 import { fitPolyline, optimalMultimodel } from '../../src/fit/multimodel'
 import { polyline } from '../../src/fit/objective'
@@ -416,6 +423,40 @@ describe('fitEdges', () => {
     const a = fitEdges(build(), CFG)
     const b = fitEdges(build(), CFG)
     expect(JSON.stringify(a)).toBe(JSON.stringify(b))
+  })
+})
+
+describe('fitEdgeInput', () => {
+  it('fits an edge from copies of its inputs exactly as fitEdge fits it on the map', () => {
+    const map = mapOfLabels(
+      labelsFrom(30, 22, (x, y) => {
+        if (Math.hypot(x + 0.5 - 8, y + 0.5 - 11) < 5) return 1
+        if (x > 19 && y > 3 && y < 17) return 2
+        return x < 15 ? 0 : 3
+      }),
+    )
+    // An open edge whose stored ends lag its nodes: its inputs end at the nodes.
+    const open = map.edges.findIndex((e) => !e.closed)
+    expect(open).toBeGreaterThanOrEqual(0)
+    map.nodes[map.edges[open].start].x += 0.25
+    expect(map.edges.some((e) => e.closed)).toBe(true)
+    for (let k = 0; k < map.edges.length; k++) {
+      const input = edgeFitInput(map, k)
+      const copy = {
+        points: input.points.slice(),
+        sigma: input.sigma.slice(),
+        closed: input.closed,
+      }
+      const frame = { width: map.width, height: map.height }
+      expect(fitEdgeInput(copy, frame, CFG)).toStrictEqual(fitEdge(map, k, CFG))
+      // The fit reads its inputs and never writes them.
+      expect(copy.points).toEqual(input.points)
+      expect(copy.sigma).toEqual(input.sigma)
+    }
+    const e = map.edges[open]
+    const p = edgeFitInput(map, open).points
+    expect([p[0], p[1]]).toEqual([map.nodes[e.start].x, map.nodes[e.start].y])
+    expect([p[p.length - 2], p[p.length - 1]]).toEqual([map.nodes[e.end].x, map.nodes[e.end].y])
   })
 })
 

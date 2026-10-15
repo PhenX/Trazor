@@ -1068,6 +1068,13 @@ export function postFitPasses(edge: FittedEdge, points, sigma, cfg: FitConfig, o
 // vertices (no primitive then); lambdaScale prices this edge's parameters. The map is not written.
 export function fitEdge(map: PlanarMap, edgeIndex: number, cfg: FitConfig, opts?: { forced?: readonly number[]; lambdaScale?: number }): FittedEdge
 export function fitEdges(map: PlanarMap, cfg: FitConfig, opts?: { lambdaScales?: readonly number[] }): FittedEdge[]
+// fitEdge split at the map: an edge's fit reads only its points (an open edge's ends at its
+// nodes), their σ and its closed flag, plus the frame's size and cfg — so a fit made from copies
+// of these elsewhere (a helper worker) equals fitEdge's. fitEdge(map, k, cfg, opts) is
+// fitEdgeInput(edgeFitInput(map, k), map, cfg, opts). The inputs are not written.
+export interface EdgeFitInput { points: Float64Array; sigma: Float64Array; closed: boolean }
+export function edgeFitInput(map: PlanarMap, edgeIndex: number): EdgeFitInput
+export function fitEdgeInput(input: EdgeFitInput, frame: { width: number; height: number }, cfg: FitConfig, opts?: { forced?: readonly number[]; lambdaScale?: number }): FittedEdge
 // An open run (interleaved points, per-point σ) fitted with both ends pinned, no primitive.
 export function fitRun(points: Float64Array, sigma: Float64Array, cfg: FitConfig): FittedEdge
 // Ring crossings between independent edge fits repaired by refitting only the guilty edges

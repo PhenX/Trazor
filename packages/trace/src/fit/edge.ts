@@ -126,6 +126,51 @@ function scaled(cfg: FitConfig, scale: number): FitConfig {
 }
 
 /**
+ * Everything an edge's fit reads besides the image frame's size and the
+ * objective: its points (an open edge's ends at its nodes' positions,
+ * {@link pointsAtNodes}), their σ, and whether it is closed. An edge's fit is a
+ * function of these alone, so a fit computed from them anywhere (another
+ * thread) is the fit {@link fitEdge} makes on the map.
+ */
+export interface EdgeFitInput {
+  points: Float64Array
+  sigma: Float64Array
+  closed: boolean
+}
+
+/** Edge `edgeIndex` of `map` as the inputs its fit reads ({@link EdgeFitInput}). */
+export function edgeFitInput(map: PlanarMap, edgeIndex: number): EdgeFitInput {
+  const e = map.edges[edgeIndex]
+  return { points: e.closed ? e.points : pointsAtNodes(map, e), sigma: e.sigma, closed: e.closed }
+}
+
+/**
+ * Fit one edge from its inputs ({@link edgeFitInput}) in an image frame of
+ * `frame`'s size: the dynamic program's curve (with the shipping post-fit
+ * passes), or the primitive search's offer when that is strictly cheaper
+ * (`describe`), the frame's rectangle tried first for a closed edge lying on
+ * it. With `forced` the program keeps those vertices and no primitive is
+ * considered. The inputs are not written.
+ */
+export function fitEdgeInput(
+  input: EdgeFitInput,
+  frame: { readonly width: number; readonly height: number },
+  cfg: FitConfig,
+  opts: FitEdgeOptions = {},
+): FittedEdge {
+  const { points, sigma, closed } = input
+  const cfgK = scaled(cfg, opts.lambdaScale ?? 1)
+  const forced = opts.forced ?? []
+  const fit = (): FittedEdge =>
+    fitPolyline(points, sigma, closed, cfgK, { forced, postFit: shippingPostFit })
+  if (Limits.pinned(points.length >> 1, closed, Infinity, forced).forced.length > 0) {
+    return fit()
+  }
+  const onFrame = closed && liesOnFrame(points, frame.width, frame.height)
+  return describe(points, sigma, closed, cfgK, onFrame, fit)
+}
+
+/**
  * Fit edge `edgeIndex` of `map`: the dynamic program's curve (with the
  * shipping post-fit passes), or the primitive search's offer when that is
  * strictly cheaper (`describe`), the image frame's rectangle tried first. An
@@ -141,17 +186,7 @@ export function fitEdge(
   cfg: FitConfig,
   opts: FitEdgeOptions = {},
 ): FittedEdge {
-  const e = map.edges[edgeIndex]
-  const cfgK = scaled(cfg, opts.lambdaScale ?? 1)
-  const points = e.closed ? e.points : pointsAtNodes(map, e)
-  const forced = opts.forced ?? []
-  const fit = (): FittedEdge =>
-    fitPolyline(points, e.sigma, e.closed, cfgK, { forced, postFit: shippingPostFit })
-  if (Limits.pinned(points.length >> 1, e.closed, Infinity, forced).forced.length > 0) {
-    return fit()
-  }
-  const frame = e.closed && liesOnFrame(points, map.width, map.height)
-  return describe(points, e.sigma, e.closed, cfgK, frame, fit)
+  return fitEdgeInput(edgeFitInput(map, edgeIndex), map, cfg, opts)
 }
 
 /** Options of {@link fitEdges}. */
