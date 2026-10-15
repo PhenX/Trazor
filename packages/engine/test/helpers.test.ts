@@ -97,6 +97,28 @@ function translucentScene(): RasterImage {
   return img
 }
 
+/** A grid of small discs in three colors: a planar map of a hundred edges. */
+function dots(): RasterImage {
+  const img = createRaster(120, 120)
+  fillRaster(img, 250, 250, 250)
+  const colors: [number, number, number][] = [
+    [200, 40, 40],
+    [40, 120, 200],
+    [40, 160, 80],
+  ]
+  for (let y = 0; y < 120; y++) {
+    for (let x = 0; x < 120; x++) {
+      const i = Math.floor(x / 12)
+      const j = Math.floor(y / 12)
+      if (Math.hypot(x + 0.5 - (i * 12 + 6), y + 0.5 - (j * 12 + 6)) < 3.6) {
+        const [r, g, b] = colors[(i + 2 * j) % 3]
+        setPixel(img, x, y, r, g, b)
+      }
+    }
+  }
+  return img
+}
+
 /** Ink art with a hole and a few specks — enough boundary work for bw mode. */
 function inkArt(): RasterImage {
   const img = createRaster(72, 72)
@@ -387,6 +409,30 @@ describe('helper pool parallel tracing', () => {
     await expect(vectorize(img, s, ctx, { helpers: helpers.pool })).rejects.toBeInstanceOf(
       CancelledError,
     )
+    const after = await vectorize(img, s, undefined, { helpers: helpers.pool })
+    const sequential = await vectorize(img, s)
+    expect(after.svg).toBe(sequential.svg)
+  })
+
+  it('rejects a planar run cancelled while its edges fit and leaves the pool reusable', async () => {
+    const img = dots()
+    const s = settings({ mode: 'color', paletteSize: 4, geometry: 'planar' })
+    const stages: string[] = []
+    let edges = 0
+    // Cancels once the boundary is solved, so the abort lands among the edge fits.
+    const ctx = { shouldCancel: () => stages.includes('solve') }
+    await expect(
+      vectorize(img, s, ctx, {
+        helpers: helpers.pool,
+        onPlanarStage: (stage, map) => {
+          stages.push(stage)
+          edges = map.edges.length
+        },
+      }),
+    ).rejects.toBeInstanceOf(CancelledError)
+    // Enough edges that the coordinator checks for a cancel before the fits are in.
+    expect(edges).toBeGreaterThan(64)
+    expect(stages).not.toContain('fit')
     const after = await vectorize(img, s, undefined, { helpers: helpers.pool })
     const sequential = await vectorize(img, s)
     expect(after.svg).toBe(sequential.svg)
