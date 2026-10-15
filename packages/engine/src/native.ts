@@ -93,6 +93,7 @@ import {
   edgeFitInput,
   extractChains,
   fitChains,
+  fitEdgeInput,
   layerField,
   OUTSIDE,
   ringPolygon,
@@ -115,7 +116,7 @@ import type {
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { Primitive, ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
 import { balancedOwners } from './helper-pool'
-import type { HelperPool, StackPlanPayload } from './helper-pool'
+import type { HelperPool, HelperUnitOutput, StackPlanPayload } from './helper-pool'
 import type {
   HelperCurveOptions,
   HelperSerializeOptions,
@@ -2480,13 +2481,15 @@ async function fitChainsInHelpers(
 }
 
 /**
- * The planar chain's edge fitter with a helper pool: each edge fitted once, in
- * the helper it is assigned to, from the inputs its fit reads (`edgeFitInput`),
- * and the fits placed by edge index — what `fitEdges` returns on this thread.
- * Edges are assigned by their estimated cost ({@link edgeFitWeight}), so the
- * helpers finish together. Undefined without helpers: the chain fits its edges
- * itself. The map is built afresh every run, so its edges are keyed by the
- * run's serial.
+ * The planar chain's edge fitter with a helper pool: each edge fitted once,
+ * from the inputs its fit reads (`edgeFitInput`), in the helper it is assigned
+ * to or on this thread, and the fits placed by edge index — what `fitEdges`
+ * returns on this thread. Edges are assigned by their estimated cost
+ * ({@link edgeFitWeight}) over the helpers and this thread, weighted alike, so
+ * all finish together: this thread fits its share while the helpers fit
+ * theirs, and places their fits as they arrive, whenever it yields. Undefined
+ * without helpers: the chain fits its edges itself. The map is built afresh
+ * every run, so its edges are keyed by the run's serial.
  */
 function planarEdgeFitter(
   run: Run,
@@ -2498,34 +2501,71 @@ function planarEdgeFitter(
   return async (map, cfg) => {
     const total = map.edges.length
     const edges = map.edges.map((_, k) => edgeFitInput(map, k))
-    const owners = balancedOwners(map.edges.map(edgeFitWeight), helpers.size)
+    const weights = map.edges.map(edgeFitWeight)
+    // This thread is the last owner, one past the helpers.
+    const self = helpers.size
+    const owners = balancedOwners(weights, self + 1)
     helpers.setEdges(key, { width: map.width, height: map.height, cfg, edges }, owners)
     const fits: FittedEdge[] = new Array(total)
-    let done = 0
-    for await (const out of helpers.dispatch({
+    const stop = new AbortController()
+    const replies = helpers.dispatch({
       kind: 'fit-edges',
       total,
       stateKey: key,
       owners,
       batch: EDGE_BATCH,
-    })) {
-      fits[out.unit] = out.fit as FittedEdge
-      done++
-      if ((done & EDGE_TICK_MASK) === 0) {
-        // oxlint-disable-next-line no-await-in-loop
-        await run.tick()
+      signal: stop.signal,
+    })
+    // Starting the placement posts the helpers' jobs, so they fit while this
+    // thread fits its own share.
+    const placed = placeEdgeFits(run, replies, fits)
+    // A rejection is rethrown by the await below, once this thread's share is fitted.
+    placed.catch(() => undefined)
+    try {
+      let sinceTick = 0
+      for (let k = 0; k < total; k++) {
+        if (owners[k] !== self) continue
+        fits[k] = fitEdgeInput(edges[k], map, cfg)
+        sinceTick += weights[k]
+        if (sinceTick >= EDGE_TICK_WEIGHT) {
+          sinceTick = 0
+          // oxlint-disable-next-line no-await-in-loop
+          await run.tick()
+        }
       }
+    } catch (err) {
+      stop.abort()
+      throw err
     }
+    await placed
     return fits
   }
 }
 
+/** Place each helper's edge fit by edge index as it arrives, checking for a cancel as they come. */
+async function placeEdgeFits(
+  run: Run,
+  replies: AsyncGenerator<HelperUnitOutput>,
+  fits: FittedEdge[],
+): Promise<void> {
+  let done = 0
+  for await (const out of replies) {
+    fits[out.unit] = out.fit as FittedEdge
+    done++
+    if ((done & EDGE_TICK_MASK) === 0) {
+      // oxlint-disable-next-line no-await-in-loop
+      await run.tick()
+    }
+  }
+}
+
 /**
- * An edge fit's estimated cost, for balancing helpers: its work per point
- * grows with the point count up to {@link EDGE_REACH} points and is level
- * beyond, where the program's spans reach no further; a closed edge runs the
- * program from two cuts and the primitive search. An edge against the image
- * frame lies along it, a few lines whose cost is linear in its points.
+ * An edge fit's estimated cost, for balancing the helpers and the coordinator:
+ * its work per point grows with the point count up to {@link EDGE_REACH}
+ * points and is level beyond, where the program's spans reach no further; a
+ * closed edge runs the program from two cuts and the primitive search. An edge
+ * against the image frame lies along it, a few lines whose cost is linear in
+ * its points.
  */
 function edgeFitWeight(edge: PlanarEdge): number {
   const n = edge.points.length >> 1
@@ -2536,8 +2576,15 @@ function edgeFitWeight(edge: PlanarEdge): number {
 /** Point count past which an edge fit's cost per point stops growing ({@link edgeFitWeight}). */
 const EDGE_REACH = 32
 
-/** Edges between cancel checks while helpers fit (a power of two, minus one). */
+/** Helper edge fits placed between cancel checks (a power of two, minus one). */
 const EDGE_TICK_MASK = 63
+
+/**
+ * Estimated cost ({@link edgeFitWeight}) of the edges the coordinator fits
+ * between cancel checks: about 50 ms of fitting, a few edges where they are
+ * long, a few hundred where they are short.
+ */
+const EDGE_TICK_WEIGHT = 6000
 
 /**
  * Edges per helper reply. Edge fits run from microseconds to a second, so a

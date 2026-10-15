@@ -64,9 +64,17 @@ export interface HelperDispatchSpec {
   curve?: HelperCurveOptions
   /**
    * The helper each unit runs on, by unit index — the owners the payload was
-   * shipped under ({@link HelperPool.setEdges}); round-robin when omitted.
+   * shipped under ({@link HelperPool.setEdges}); round-robin when omitted. A
+   * unit owned by {@link HelperPool.size} (one past the last helper) is the
+   * caller's to run: it is neither sent nor yielded.
    */
   owners?: ArrayLike<number>
+  /**
+   * Abandons the dispatch when aborted, also while it waits on a helper: the
+   * iteration rejects with `CancelledError` and the job is cancelled on every
+   * helper.
+   */
+  signal?: AbortSignal
   /** Paint of the shapes a unit produces; omit to fit without serializing. */
   meta?: (unit: number) => HelperUnitPaint
   /** Serialization settings; omit to fit without serializing. */
@@ -109,21 +117,21 @@ export interface HelperUnitOutput {
 }
 
 /**
- * Assign units to `helpers` helpers so their summed weights come out even:
- * heaviest unit first, each to the helper with the least weight so far
- * (Graham 1969, "Bounds on multiprocessing timing anomalies", SIAM J. Appl.
- * Math. 17(2) — the LPT rule, within 4/3 of the best makespan). Ties go to the
- * lower unit and the lower helper, so the assignment is a function of the
- * weights alone.
+ * Assign units to `count` owners (the helpers, and the caller when it runs a
+ * share) so their summed weights come out even: heaviest unit first, each to
+ * the owner with the least weight so far (Graham 1969, "Bounds on
+ * multiprocessing timing anomalies", SIAM J. Appl. Math. 17(2) — the LPT rule,
+ * within 4/3 of the best makespan). Ties go to the lower unit and the lower
+ * owner, so the assignment is a function of the weights alone.
  */
-export function balancedOwners(weights: readonly number[], helpers: number): Int32Array {
+export function balancedOwners(weights: readonly number[], count: number): Int32Array {
   const owners = new Int32Array(weights.length)
-  if (helpers <= 1) return owners
+  if (count <= 1) return owners
   const order = weights.map((_, i) => i).toSorted((a, b) => weights[b] - weights[a] || a - b)
-  const load = new Float64Array(helpers)
+  const load = new Float64Array(count)
   for (const unit of order) {
     let h = 0
-    for (let k = 1; k < helpers; k++) if (load[k] < load[h]) h = k
+    for (let k = 1; k < count; k++) if (load[k] < load[h]) h = k
     owners[unit] = h
     load[h] += weights[unit]
   }
@@ -161,7 +169,8 @@ interface Job {
  * Units are partitioned round-robin by unit index, which is deterministic: a
  * re-run hands each unit to the helper that already holds its cache. Planar
  * edges, whose fits vary in cost by orders of magnitude, go to the owners the
- * caller balanced them over ({@link balancedOwners}). Results are handed back
+ * caller balanced them over ({@link balancedOwners}), the caller itself among
+ * them: it runs its own share while the helpers run theirs. Results are handed back
  * strictly in unit order whatever order the helpers finish in, so the shapes
  * array and the SVG text match a sequential run byte for byte.
  *
@@ -386,20 +395,24 @@ export class HelperPool {
   }
 
   /**
-   * Run `spec.total` units across the helpers, yielding each unit's output in
-   * unit-index order. Abandoning the iteration (a `break`, or a `CancelledError`
-   * thrown by the consumer) cancels the job on every helper.
+   * Run `spec.total` units across the helpers, yielding each helper-owned unit's
+   * output in unit-index order. The first step of the iteration posts every
+   * helper's job. Abandoning the iteration (a `break`, a `CancelledError` thrown
+   * by the consumer, or `spec.signal` aborted) cancels the job on every helper.
    */
   async *dispatch(spec: HelperDispatchSpec): AsyncGenerator<HelperUnitOutput> {
     if (this.slots.length === 0) throw new Error('helper pool is empty')
     const id = this.nextJobId++
     const job: Job = { id, pending: new Set(), results: new Map(), error: null, wake: null }
     this.jobs.set(id, job)
+    const abort = (): void => this.abort(job)
+    spec.signal?.addEventListener('abort', abort)
     try {
       const buckets: number[][] = this.slots.map(() => [])
       const owners = spec.owners
+      const helperOwned = (unit: number): boolean => !owners || owners[unit] < this.slots.length
       for (let unit = 0; unit < spec.total; unit++) {
-        buckets[owners ? owners[unit] : this.helperOf(unit)].push(unit)
+        if (helperOwned(unit)) buckets[owners ? owners[unit] : this.helperOf(unit)].push(unit)
       }
       for (let h = 0; h < this.slots.length; h++) {
         const units = buckets[h]
@@ -426,6 +439,7 @@ export class HelperPool {
         )
       }
       for (let unit = 0; unit < spec.total; unit++) {
+        if (!helperOwned(unit)) continue
         while (!job.results.has(unit)) {
           if (job.error) throw job.error
           if (job.pending.size === 0) {
@@ -439,6 +453,7 @@ export class HelperPool {
         yield out
       }
     } finally {
+      spec.signal?.removeEventListener('abort', abort)
       this.jobs.delete(id)
       if (job.pending.size > 0) {
         for (const h of job.pending) {
@@ -450,15 +465,18 @@ export class HelperPool {
 
   /** Cancel every dispatch in flight; each rejects with `CancelledError`. */
   cancel(): void {
-    for (const job of this.jobs.values()) {
-      job.error = new CancelledError()
-      for (const h of job.pending) this.send(this.slots[h], { type: 'helper-cancel', id: job.id })
-      job.wake?.()
-      job.wake = null
-    }
+    for (const job of this.jobs.values()) this.abort(job)
   }
 
   // ------------------------------ internals ------------------------------
+
+  /** Fail `job` with `CancelledError`, cancel it on its helpers and wake its waiter. */
+  private abort(job: Job): void {
+    job.error = new CancelledError()
+    for (const h of job.pending) this.send(this.slots[h], { type: 'helper-cancel', id: job.id })
+    job.wake?.()
+    job.wake = null
+  }
 
   private send(slot: Slot, msg: HelperInMessage, transfer?: Transferable[]): void {
     slot.endpoint.postMessage(msg, transfer)

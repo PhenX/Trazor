@@ -493,16 +493,18 @@ describe('helper results are placed by unit index', () => {
 })
 
 describe('planar edge fits across helpers', () => {
-  it('fits every edge in a helper and places the fits by edge index', async () => {
+  it('fits each edge in the helper or on the coordinator and places the fits by edge index', async () => {
     const ends = channel()
     installHelperHandler(ends.helper)
     // Two endpoints onto one in-process helper would share its single edge
     // payload, so the pool gets one helper and the replies are reordered.
     const jobs: string[] = []
+    let shipped = 0
     const watched: HelperEndpoint = {
       postMessage: (message, transfer) => {
-        const m = message as { type: string; kind?: string }
+        const m = message as { type: string; kind?: string; units?: ArrayBuffer }
         if (m.type === 'helper-job' && m.kind) jobs.push(m.kind)
+        if (m.type === 'helper-edges' && m.units) shipped += m.units.byteLength / 4
         ends.pool.postMessage(message, transfer)
       },
       addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
@@ -523,7 +525,44 @@ describe('planar edge fits across helpers', () => {
       const sequential = await vectorize(img, s, undefined, { withDocument: true })
       expect(edges).toBeGreaterThan(1)
       expect(jobs).toContain('fit-edges')
+      // The coordinator keeps a share of the edges; the helper is sent the rest.
+      expect(shipped).toBeGreaterThan(0)
+      expect(shipped).toBeLessThan(edges)
       expect(digest(parallel)).toEqual(digest(sequential))
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('rejects a cancel among the edges the coordinator fits before any helper answers', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    const cancels: unknown[] = []
+    const watched: HelperEndpoint = {
+      postMessage: (message, transfer) => {
+        if ((message as { type: string }).type === 'helper-cancel') cancels.push(message)
+        ends.pool.postMessage(message, transfer)
+      },
+      addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
+    }
+    const pool = new HelperPool([watched])
+    const img = dots()
+    const s = settings({ mode: 'color', paletteSize: 4, geometry: 'planar' })
+    const stages: string[] = []
+    // The helper's replies are held back, so only the coordinator's checks
+    // between its own edges can see the cancel.
+    const ctx = { shouldCancel: () => stages.includes('solve') }
+    await expect(
+      vectorize(img, s, ctx, { helpers: pool, onPlanarStage: (stage) => stages.push(stage) }),
+    ).rejects.toBeInstanceOf(CancelledError)
+    expect(stages).not.toContain('fit')
+    // The helper's job is cancelled at once, not when its next reply lands.
+    expect(cancels.length).toBeGreaterThan(0)
+    const timer = setInterval(ends.flush, 0)
+    try {
+      const after = await vectorize(img, s, undefined, { helpers: pool })
+      const sequential = await vectorize(img, s)
+      expect(after.svg).toBe(sequential.svg)
     } finally {
       clearInterval(timer)
     }

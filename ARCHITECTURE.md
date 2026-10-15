@@ -155,8 +155,9 @@ reaches the same helper's caches — and results are placed strictly **by unit i
 and the SVG text are byte-identical to a sequential run. Geometry crosses as transferred `Float64Array` runs, never as
 structured-cloned arrays of arrays; helpers answer in batches and yield between them, so cancellation still interleaves.
 The planar chain's edges are the exception to round-robin: one edge's fit costs from microseconds to a second, so they
-are assigned by estimated cost (heaviest first, each to the least-loaded helper) — still a function of the map alone,
-and the fits still land by edge index.
+are assigned by estimated cost (heaviest first, each to the least-loaded owner) — still a function of the map alone,
+and the fits still land by edge index. The coordinator is one of the owners, weighted like a helper: it fits its share
+while the helpers fit theirs, checking for a cancel between its own edges.
 Each helper holds its own copy of the image and label map, so a consumer sizes the pool for the image, not only for the
 core count.
 

@@ -1599,14 +1599,15 @@ export interface TraceChart {
 //                  the shared fits, which is what keeps the partition seam-free.
 //   fit-edges    — one edge of the planar chain's map: its fit (fitEdgeInput), curve or whole
 //                  primitive, from the points, σ and objective the coordinator ships once per run
-//                  (each helper only its own edges). The coordinator repairs the crossings and
-//                  emits every layering from the fits, placed by edge index.
+//                  (each helper only its own edges). The coordinator fits a share of the edges
+//                  itself while the helpers fit theirs, then repairs the crossings and emits every
+//                  layering from the fits, placed by edge index.
 // Centerline stays on the coordinator: the skeleton graph walk is one indivisible pass.
 //
 // Units are partitioned round-robin by unit index — deterministic, so a re-run hands each unit to
 // the helper that already holds its cache — except planar edges, whose fits cost from microseconds
-// to a second: they go to helpers by estimated cost (heaviest first to the least-loaded helper), a
-// function of the map alone. Results are handed back strictly in unit order whatever order the
+// to a second: they go by estimated cost (heaviest first to the least-loaded owner) to the helpers
+// and the coordinator, which takes a share like one more helper — a function of the map alone. Results are handed back strictly in unit order whatever order the
 // helpers finish in. A helper answers in batches of `batch` units and yields its
 // event loop once per batch, so a cancel interleaves with a running job.
 //
