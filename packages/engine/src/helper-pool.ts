@@ -1,8 +1,8 @@
 import { CancelledError } from '@trazor/core'
 import type { GrayImage, PathCommand, RasterImage, TurnPolicy } from '@trazor/core'
-import type { ChainNetwork, FlatPoints } from '@trazor/trace'
+import type { ChainNetwork, EdgeFitInput, FitConfig, FittedEdge, FlatPoints } from '@trazor/trace'
 import type { ShapeOut } from '@trazor/svg'
-import { flatTransferables, packRuns, unpackCommands } from './flat'
+import { flatTransferables, packRuns, unpackCommands, unpackFit } from './flat'
 import type {
   HelperCurveOptions,
   HelperEndpoint,
@@ -43,6 +43,16 @@ export interface RingUnitsPayload {
   coverage?: GrayImage
 }
 
+/** The planar map's edges as their fits read them, and the objective they are fitted under. */
+export interface EdgeUnitsPayload {
+  /** The image frame's size. */
+  width: number
+  height: number
+  cfg: FitConfig
+  /** Every edge's fit inputs, by edge index. */
+  edges: readonly EdgeFitInput[]
+}
+
 /** What a dispatch asks the helpers to do. */
 export interface HelperDispatchSpec {
   kind: HelperJobKind
@@ -50,7 +60,13 @@ export interface HelperDispatchSpec {
   total: number
   /** Key of the cached payload the units index into (as passed to the setter). */
   stateKey: string
-  curve: HelperCurveOptions
+  /** Curve settings; omitted for `fit-edges`, whose objective travels with its edges. */
+  curve?: HelperCurveOptions
+  /**
+   * The helper each unit runs on, by unit index — the owners the payload was
+   * shipped under ({@link HelperPool.setEdges}); round-robin when omitted.
+   */
+  owners?: ArrayLike<number>
   /** Paint of the shapes a unit produces; omit to fit without serializing. */
   meta?: (unit: number) => HelperUnitPaint
   /** Serialization settings; omit to fit without serializing. */
@@ -88,6 +104,30 @@ export interface HelperUnitOutput {
    * entry followed by the entry's own copy.
    */
   svg?: (ShapeOut | null)[]
+  /** `fit-edges`: the edge's fit, whose segments are `shapes[0]`. */
+  fit?: FittedEdge
+}
+
+/**
+ * Assign units to `helpers` helpers so their summed weights come out even:
+ * heaviest unit first, each to the helper with the least weight so far
+ * (Graham 1969, "Bounds on multiprocessing timing anomalies", SIAM J. Appl.
+ * Math. 17(2) — the LPT rule, within 4/3 of the best makespan). Ties go to the
+ * lower unit and the lower helper, so the assignment is a function of the
+ * weights alone.
+ */
+export function balancedOwners(weights: readonly number[], helpers: number): Int32Array {
+  const owners = new Int32Array(weights.length)
+  if (helpers <= 1) return owners
+  const order = weights.map((_, i) => i).toSorted((a, b) => weights[b] - weights[a] || a - b)
+  const load = new Float64Array(helpers)
+  for (const unit of order) {
+    let h = 0
+    for (let k = 1; k < helpers; k++) if (load[k] < load[h]) h = k
+    owners[unit] = h
+    load[h] += weights[unit]
+  }
+  return owners
 }
 
 /** Per-helper bookkeeping: which cached payloads it already holds. */
@@ -97,6 +137,7 @@ interface Slot {
   stackKey: string | null
   ringKey: string | null
   chainKey: string | null
+  edgeKey: string | null
 }
 
 /** A dispatch in flight: the units still owed, buffered results, and the waiters. */
@@ -111,22 +152,25 @@ interface Job {
 
 /**
  * A set of helper workers the vectorization pipeline farms parallel units out
- * to: stacked layers, bw rings, or cutout boundary chains. Every helper is a
- * stateful engine instance ({@link installHelperHandler}) that caches the
- * working image, the label/ring/chain payload it was given and the rings and
- * polygons it derived — so a warm curve tweak re-fits in the helper without
- * shipping or recomputing geometry.
+ * to: stacked layers, bw rings, cutout boundary chains, or planar edge fits.
+ * Every helper is a stateful engine instance ({@link installHelperHandler})
+ * that caches the working image, the label/ring/chain/edge payload it was
+ * given and the rings and polygons it derived — so a warm curve tweak re-fits
+ * in the helper without shipping or recomputing geometry.
  *
  * Units are partitioned round-robin by unit index, which is deterministic: a
- * re-run hands each unit to the helper that already holds its cache. Results
- * are handed back strictly in unit order whatever order the helpers finish in,
- * so the shapes array and the SVG text match a sequential run byte for byte.
+ * re-run hands each unit to the helper that already holds its cache. Planar
+ * edges, whose fits vary in cost by orders of magnitude, go to the owners the
+ * caller balanced them over ({@link balancedOwners}). Results are handed back
+ * strictly in unit order whatever order the helpers finish in, so the shapes
+ * array and the SVG text match a sequential run byte for byte.
  *
  * **Memory.** Each helper holds its own copy of what it is sent: the working
  * image (4·w·h bytes — 45 MB for 4096×2731) plus, for stacked, the label map
  * (4·w·h) and its pixel buckets, for bw its share of the rings and the coverage
- * field (4·w·h), and for cutout the chains it owns. Ring and polygon caches add
- * to that. A consumer sizes the pool for the image it is tracing rather than for
+ * field (4·w·h), for cutout the chains it owns, and for planar the points and
+ * σ of the edges it fits (24 bytes a point). Ring and polygon caches add to
+ * that. A consumer sizes the pool for the image it is tracing rather than for
  * the core count alone.
  */
 export class HelperPool {
@@ -141,6 +185,7 @@ export class HelperPool {
       stackKey: null,
       ringKey: null,
       chainKey: null,
+      edgeKey: null,
     }))
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i]
@@ -296,6 +341,51 @@ export class HelperPool {
   }
 
   /**
+   * Cache each helper's own share of the planar map's edges under `key`: helper
+   * `owners[k]` gets edge `k`, so the whole set crosses once. A key names one
+   * map and one assignment; the dispatch that fits them passes the same owners.
+   */
+  setEdges(key: string, payload: EdgeUnitsPayload, owners: ArrayLike<number>): void {
+    for (let h = 0; h < this.slots.length; h++) {
+      const slot = this.slots[h]
+      if (slot.edgeKey === key) continue
+      const units: number[] = []
+      const closed: number[] = []
+      const points: Float64Array[] = []
+      const sigma: Float64Array[] = []
+      for (let k = 0; k < payload.edges.length; k++) {
+        if (owners[k] !== h) continue
+        const edge = payload.edges[k]
+        units.push(k)
+        closed.push(edge.closed ? 1 : 0)
+        points.push(edge.points)
+        sigma.push(edge.sigma)
+      }
+      const packedPoints = packRuns(points)
+      const packedSigma = packRuns(sigma)
+      const unitBuf = new Int32Array(units).buffer
+      const closedBuf = new Uint8Array(closed).buffer
+      this.send(
+        slot,
+        {
+          type: 'helper-edges',
+          key,
+          width: payload.width,
+          height: payload.height,
+          tau: payload.cfg.tau,
+          lambda: payload.cfg.lambda,
+          units: unitBuf,
+          closed: closedBuf,
+          points: packedPoints,
+          sigma: packedSigma,
+        },
+        [unitBuf, closedBuf, ...flatTransferables(packedPoints), ...flatTransferables(packedSigma)],
+      )
+      slot.edgeKey = key
+    }
+  }
+
+  /**
    * Run `spec.total` units across the helpers, yielding each unit's output in
    * unit-index order. Abandoning the iteration (a `break`, or a `CancelledError`
    * thrown by the consumer) cancels the job on every helper.
@@ -307,7 +397,10 @@ export class HelperPool {
     this.jobs.set(id, job)
     try {
       const buckets: number[][] = this.slots.map(() => [])
-      for (let unit = 0; unit < spec.total; unit++) buckets[this.helperOf(unit)].push(unit)
+      const owners = spec.owners
+      for (let unit = 0; unit < spec.total; unit++) {
+        buckets[owners ? owners[unit] : this.helperOf(unit)].push(unit)
+      }
       for (let h = 0; h < this.slots.length; h++) {
         const units = buckets[h]
         if (units.length === 0) continue
@@ -378,17 +471,22 @@ export class HelperPool {
       case 'helper-batch': {
         // Geometry and serialized shapes advance separately: a unit with an
         // underlay serializes its geometry once per paint.
+        const records = msg.fits ? new Float64Array(msg.fits) : undefined
         let run = 0
         let part = 0
         for (let u = 0; u < msg.units.length; u++) {
           const count = msg.counts[u]
           const parts = msg.svgCounts?.[u] ?? count
+          // A fit-edges unit is one run, its edge's segments, plus one fit record.
+          const fit = records ? unpackFit(msg.commands, records, run) : undefined
           const shapes: PathCommand[][] = new Array(count)
-          for (let i = 0; i < count; i++) shapes[i] = unpackCommands(msg.commands, run + i)
+          for (let i = 0; i < count; i++) {
+            shapes[i] = fit && i === 0 ? fit.segments : unpackCommands(msg.commands, run + i)
+          }
           const svg = msg.svg ? msg.svg.slice(part, part + parts) : undefined
           run += count
           part += parts
-          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg })
+          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg, fit })
         }
         break
       }

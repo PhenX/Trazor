@@ -1597,11 +1597,17 @@ export interface TraceChart {
 //   fit-chains   — one cutout boundary chain: fit it once, with the junction endpoints both
 //                  neighbours reuse. No serialization — the coordinator assembles the regions from
 //                  the shared fits, which is what keeps the partition seam-free.
+//   fit-edges    — one edge of the planar chain's map: its fit (fitEdgeInput), curve or whole
+//                  primitive, from the points, σ and objective the coordinator ships once per run
+//                  (each helper only its own edges). The coordinator repairs the crossings and
+//                  emits every layering from the fits, placed by edge index.
 // Centerline stays on the coordinator: the skeleton graph walk is one indivisible pass.
 //
 // Units are partitioned round-robin by unit index — deterministic, so a re-run hands each unit to
-// the helper that already holds its cache — and results are handed back strictly in unit order
-// whatever order the helpers finish in. A helper answers in batches of `batch` units and yields its
+// the helper that already holds its cache — except planar edges, whose fits cost from microseconds
+// to a second: they go to helpers by estimated cost (heaviest first to the least-loaded helper), a
+// function of the map alone. Results are handed back strictly in unit order whatever order the
+// helpers finish in. A helper answers in batches of `batch` units and yields its
 // event loop once per batch, so a cancel interleaves with a running job.
 //
 // MEMORY: each helper holds its own copy of what it is sent — the working image (4·w·h bytes, 45 MB

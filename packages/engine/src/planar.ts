@@ -453,6 +453,12 @@ export interface PlanarTraceInput {
   sigmaNoise?: number
   /** Called with the map after each stage, and with the fits after the fit. */
   onStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+  /**
+   * Fits every edge of the solved map under `cfg`, by edge index, exactly as
+   * `fitEdges` does — elsewhere, such as across helper workers; `fitEdges` on
+   * this thread when absent.
+   */
+  fitEdges?: (map: PlanarMap, cfg: FitConfig) => Promise<FittedEdge[]>
 }
 
 /** The fit's output precision, in source pixels (inkvec's default). */
@@ -479,10 +485,10 @@ export function contentFitConfig(width: number, height: number, scale: number): 
  * edge described once, as curves or a whole primitive, the edges of
  * a ring whose fits cross refitted until none does. Each stage is reported to `onStage`.
  */
-export function tracePlanar(input: PlanarTraceInput): {
+export async function tracePlanar(input: PlanarTraceInput): Promise<{
   geo: PlanarGeometry
   fits: FittedEdge[]
-} {
+}> {
   const geo = planarGeometry(input.labels)
   const { map } = geo
   input.onStage?.('lattice', map)
@@ -507,7 +513,7 @@ export function tracePlanar(input: PlanarTraceInput): {
   // From here on σ is in content units (source pixels), as the fit's prices are.
   if (s !== 1) for (const e of map.edges) e.sigma = e.sigma.map((v) => v * s)
   const cfg = contentFitConfig(map.width, map.height, s)
-  const fitted = fitEdges(map, cfg)
+  const fitted = input.fitEdges ? await input.fitEdges(map, cfg) : fitEdges(map, cfg)
   input.onStage?.('fit', map, fitted)
   const { fits } = repairCrossings(map, geo.rings, fitted, cfg)
   input.onStage?.('repair', map, fits)

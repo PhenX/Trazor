@@ -219,6 +219,31 @@ export interface HelperChainsMessage {
 }
 
 /**
+ * The planar map's edges for one helper, as their fits read them, cached under
+ * `key` (the run's serial: the map is built afresh every run). Edge `units[k]`
+ * of the coordinator's map is the local edge `k`: its points (an open edge's
+ * ends at its nodes), their σ and its closed flag — `EdgeFitInput`.
+ */
+export interface HelperEdgesMessage {
+  type: 'helper-edges'
+  key: string
+  /** The image frame's size: a closed edge on it tries the frame's rectangle. */
+  width: number
+  height: number
+  /** The fit's objective (`FitConfig`), in the units the σ are in. */
+  tau: number
+  lambda: number
+  /** Int32 global edge index per local edge, ascending, transferred. */
+  units: ArrayBuffer
+  /** Uint8 closed flag per local edge, transferred. */
+  closed: ArrayBuffer
+  /** Edge points (x, y interleaved), one run per local edge. */
+  points: FlatRuns
+  /** Each point's σ, one run per local edge. */
+  sigma: FlatRuns
+}
+
+/**
  * A unit of parallel work:
  *
  * - `trace-layers` — stacked layering: build the layer's union flood mask from
@@ -231,8 +256,11 @@ export interface HelperChainsMessage {
  * - `fit-chains` — one boundary chain (cutout): fit it once, with the pinned
  *   junction endpoints both neighbors reuse. No serialization — the coordinator
  *   assembles the regions from the shared fits.
+ * - `fit-edges` — one edge of the planar map: its fit (`fitEdgeInput`), curve
+ *   or whole primitive. The coordinator repairs crossings and emits from the
+ *   fits, placed by edge index.
  */
-export type HelperJobKind = 'trace-layers' | 'trace-rings' | 'fit-chains'
+export type HelperJobKind = 'trace-layers' | 'trace-rings' | 'fit-chains' | 'fit-edges'
 
 /** Dispatch a list of units to one helper. */
 export interface HelperJobMessage {
@@ -248,7 +276,8 @@ export interface HelperJobMessage {
    * run instead of geometry traced from the wrong image.
    */
   stateKey: string
-  curve: HelperCurveOptions
+  /** Curve settings; absent for `fit-edges`, whose objective travels with its edges. */
+  curve?: HelperCurveOptions
   /**
    * Units per reply. The helper answers in `helper-batch` messages of this many
    * units and yields its event loop once per batch, so a job of many small units
@@ -288,6 +317,7 @@ export type HelperInMessage =
   | HelperStackMessage
   | HelperRingsMessage
   | HelperChainsMessage
+  | HelperEdgesMessage
   | HelperJobMessage
   | HelperCancelMessage
 
@@ -308,11 +338,16 @@ export type HelperOutMessage =
       svgCounts?: number[]
       /**
        * Encoded commands: one run per shape for `trace-layers`, one per ring for
-       * `trace-rings`, and per chain fit for `fit-chains` (the open run, then the
-       * closed ring when the chain closes on its own start corner). Runs are in
-       * `units` order.
+       * `trace-rings`, per chain fit for `fit-chains` (the open run, then the
+       * closed ring when the chain closes on its own start corner), and one per
+       * edge for `fit-edges` (its segments). Runs are in `units` order.
        */
       commands: FlatRuns
+      /**
+       * `fit-edges`: each edge's fit apart from its segments, one Float64 record
+       * per unit in `units` order (`packFits`), transferred.
+       */
+      fits?: ArrayBuffer
       /**
        * Serialized shapes in emission order; only `trace-layers`. One per
        * command run, or — for a unit with an underlay — the underlay copy of

@@ -121,11 +121,11 @@ describe('the planar chain against its image', () => {
     }
   }
 
-  it('runs every stage in order and lands the boundary on the drawn circle', () => {
+  it('runs every stage in order and lands the boundary on the drawn circle', async () => {
     const { image, labels } = diskImage(32, 32, 15.3, 16.1, 9.4)
     const stages: string[] = []
     const err: Record<string, number> = {}
-    const { fits } = tracePlanar({
+    const { fits } = await tracePlanar({
       labels,
       image,
       alpha: null,
@@ -151,14 +151,14 @@ describe('the planar chain against its image', () => {
     expect(err.solve).toBeLessThan(0.05)
   })
 
-  it('solves a trace on an enlarged copy against the source pixels', () => {
+  it('solves a trace on an enlarged copy against the source pixels', async () => {
     // The labels and the map on the 2× grid, the circle measured on the 32 px source:
     // solved against the enlargement's interpolated ramps the boundary would zigzag back
     // to the lattice.
     const source = diskImage(32, 32, 15.3, 16.1, 9.4)
     const work = diskImage(64, 64, 30.6, 32.2, 18.8)
     const err: Record<string, number> = {}
-    tracePlanar({
+    await tracePlanar({
       labels: work.labels,
       image: upscaleImage(source.image, 2, true),
       alpha: null,

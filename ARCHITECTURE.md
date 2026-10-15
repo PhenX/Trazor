@@ -140,6 +140,7 @@ The parallel unit is chosen per mode, always something whose result is a functio
 | stacked    | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
 | bw         | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
 | cutout     | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
+| planar     | one edge's fit (curve or whole primitive)          | front end, map, sub-pixel, solve, crossing repair, emission   |
 | centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
 
 The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
@@ -153,6 +154,9 @@ without shipping or recomputing geometry. Units are partitioned round-robin by u
 reaches the same helper's caches — and results are placed strictly **by unit index**, so the shapes array, `document`
 and the SVG text are byte-identical to a sequential run. Geometry crosses as transferred `Float64Array` runs, never as
 structured-cloned arrays of arrays; helpers answer in batches and yield between them, so cancellation still interleaves.
+The planar chain's edges are the exception to round-robin: one edge's fit costs from microseconds to a second, so they
+are assigned by estimated cost (heaviest first, each to the least-loaded helper) — still a function of the map alone,
+and the fits still land by edge index.
 Each helper holds its own copy of the image and label map, so a consumer sizes the pool for the image, not only for the
 core count.
 

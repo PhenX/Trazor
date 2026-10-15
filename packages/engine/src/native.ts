@@ -90,9 +90,11 @@ import {
   assembleFaces,
   assembleRegions,
   decomposeMask,
+  edgeFitInput,
   extractChains,
   fitChains,
   layerField,
+  OUTSIDE,
   ringPolygon,
   shapesFromPaths,
   traceCenterline,
@@ -102,7 +104,9 @@ import type {
   ChainNetwork,
   CrackPath,
   FaceShape,
+  FitConfig,
   FittedEdge,
+  PlanarEdge,
   PlanarMap,
   RingFit,
   SignedField,
@@ -110,6 +114,7 @@ import type {
 } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
 import type { Primitive, ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
+import { balancedOwners } from './helper-pool'
 import type { HelperPool, StackPlanPayload } from './helper-pool'
 import type {
   HelperCurveOptions,
@@ -1556,7 +1561,7 @@ async function colorPipeline(
   // layering walks, fitted once.
   const planarTrace =
     planarRun && settings.curveMode !== 'pixel'
-      ? tracePlanar({
+      ? await tracePlanar({
           labels,
           image,
           alpha,
@@ -1572,6 +1577,7 @@ async function colorPipeline(
           sigmaNoise:
             sigmaNoise ?? (planarRun.soft ? softNoise(image, labels, paletteRgb) : undefined),
           onStage: planarRun.onStage,
+          fitEdges: planarEdgeFitter(run, helperCtx),
         })
       : undefined
   const planar = planarTrace?.geo
@@ -2473,6 +2479,73 @@ async function fitChainsInHelpers(
   return { network, fits }
 }
 
+/**
+ * The planar chain's edge fitter with a helper pool: each edge fitted once, in
+ * the helper it is assigned to, from the inputs its fit reads (`edgeFitInput`),
+ * and the fits placed by edge index — what `fitEdges` returns on this thread.
+ * Edges are assigned by their estimated cost ({@link edgeFitWeight}), so the
+ * helpers finish together. Undefined without helpers: the chain fits its edges
+ * itself. The map is built afresh every run, so its edges are keyed by the
+ * run's serial.
+ */
+function planarEdgeFitter(
+  run: Run,
+  helperCtx: HelperContext,
+): ((map: PlanarMap, cfg: FitConfig) => Promise<FittedEdge[]>) | undefined {
+  const helpers = helperCtx.helpers
+  if (!helpers) return undefined
+  const key = `#${helperCtx.serial}|edges`
+  return async (map, cfg) => {
+    const total = map.edges.length
+    const edges = map.edges.map((_, k) => edgeFitInput(map, k))
+    const owners = balancedOwners(map.edges.map(edgeFitWeight), helpers.size)
+    helpers.setEdges(key, { width: map.width, height: map.height, cfg, edges }, owners)
+    const fits: FittedEdge[] = new Array(total)
+    let done = 0
+    for await (const out of helpers.dispatch({
+      kind: 'fit-edges',
+      total,
+      stateKey: key,
+      owners,
+      batch: EDGE_BATCH,
+    })) {
+      fits[out.unit] = out.fit as FittedEdge
+      done++
+      if ((done & EDGE_TICK_MASK) === 0) {
+        // oxlint-disable-next-line no-await-in-loop
+        await run.tick()
+      }
+    }
+    return fits
+  }
+}
+
+/**
+ * An edge fit's estimated cost, for balancing helpers: its work per point
+ * grows with the point count up to {@link EDGE_REACH} points and is level
+ * beyond, where the program's spans reach no further; a closed edge runs the
+ * program from two cuts and the primitive search. An edge against the image
+ * frame lies along it, a few lines whose cost is linear in its points.
+ */
+function edgeFitWeight(edge: PlanarEdge): number {
+  const n = edge.points.length >> 1
+  if (edge.left === OUTSIDE || edge.right === OUTSIDE) return 2 * n
+  return n * Math.min(n, EDGE_REACH) * (edge.closed ? 2 : 1)
+}
+
+/** Point count past which an edge fit's cost per point stops growing ({@link edgeFitWeight}). */
+const EDGE_REACH = 32
+
+/** Edges between cancel checks while helpers fit (a power of two, minus one). */
+const EDGE_TICK_MASK = 63
+
+/**
+ * Edges per helper reply. Edge fits run from microseconds to a second, so a
+ * small batch keeps cancellation prompt at a message count still well under
+ * one per edge.
+ */
+const EDGE_BATCH = 16
+
 /** The primitive a planar chain's face draws when its ring is one whole-primitive edge. */
 function primitiveOf(face: FaceShape): Primitive | null {
   return 'primitive' in face ? (face as PlanarFace).primitive : null
@@ -2698,7 +2771,7 @@ async function inkPipeline(
     const labels: LabelMap = { width: w, height: h, data, count: 2 }
     const means = interiorMeans(image, data, 2)
     const meanRgb = Uint8Array.from(means.flatMap((hex) => hexToRgb(hex) ?? [255, 255, 255]))
-    const { geo, fits } = tracePlanar({
+    const { geo, fits } = await tracePlanar({
       labels,
       image,
       alpha,
@@ -2707,6 +2780,7 @@ async function inkPipeline(
       source: planarRun.source,
       sigmaNoise: planarRun.soft ? softNoise(image, labels, meanRgb) : undefined,
       onStage: planarRun.onStage,
+      fitEdges: planarEdgeFitter(run, helperCtx),
     })
     const { faces } = geo.map
     const inkFaces: number[] = []

@@ -4,6 +4,7 @@ import { alphaCoverageField } from '@trazor/raster'
 import {
   decomposeMask,
   fitChain,
+  fitEdgeInput,
   layerField,
   polygonToCommands,
   ringPolygon,
@@ -13,6 +14,9 @@ import type {
   BoundaryChain,
   ChainNetwork,
   CrackPath,
+  EdgeFitInput,
+  FitConfig,
+  FittedEdge,
   RingFit,
   SignedField,
   TraceCurveOptions,
@@ -20,10 +24,11 @@ import type {
 } from '@trazor/trace'
 import { fitArcs, shapeOut } from '@trazor/svg'
 import type { ShapeOut } from '@trazor/svg'
-import { flatTransferables, packCommands, runAt, runCount } from './flat'
+import { flatTransferables, packCommands, packFits, runAt, runCount } from './flat'
 import type {
   HelperChainsMessage,
   HelperCurveOptions,
+  HelperEdgesMessage,
   HelperImageMessage,
   HelperInMessage,
   HelperJobMessage,
@@ -95,6 +100,16 @@ interface ChainState {
   local: Map<number, number>
 }
 
+/** One helper's share of the planar map's edges, as their fits read them. */
+interface EdgeState {
+  key: string
+  frame: { width: number; height: number }
+  cfg: FitConfig
+  /** Global edge index ⇒ local edge index. */
+  local: Map<number, number>
+  edges: EdgeFitInput[]
+}
+
 /**
  * Wire a helper worker to its scope. A helper is a stateful engine instance: it
  * receives the working image, the stacked plan, the bw rings or its share of
@@ -114,6 +129,7 @@ export function installHelperHandler(scope: WorkerScope): void {
   let stackState: StackState | null = null
   let ringState: RingState | null = null
   let chainState: ChainState | null = null
+  let edgeState: EdgeState | null = null
   const cancelled = new Set<number>()
 
   const post = (msg: HelperOutMessage, transfer?: Transferable[]): void =>
@@ -134,6 +150,9 @@ export function installHelperHandler(scope: WorkerScope): void {
       case 'helper-chains':
         chainState = takeChains(msg)
         return
+      case 'helper-edges':
+        edgeState = takeEdges(msg)
+        return
       case 'helper-cancel':
         cancelled.add(msg.id)
         return
@@ -145,7 +164,9 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   async function runJob(job: HelperJobMessage): Promise<void> {
     const size = Math.max(1, job.batch)
-    const serialize = job.kind !== 'fit-chains' && job.serialize !== undefined
+    const serialize =
+      job.kind !== 'fit-chains' && job.kind !== 'fit-edges' && job.serialize !== undefined
+    const edgeJob = job.kind === 'fit-edges'
     try {
       // The option objects are the same for every unit of the job — a chain job
       // has hundreds of units, so they are built once, not per unit.
@@ -156,9 +177,17 @@ export function installHelperHandler(scope: WorkerScope): void {
         const counts: number[] = []
         const svgCounts: number[] | undefined = serialize ? [] : undefined
         const runs: PathCommand[][] = []
+        const fits: FittedEdge[] = []
         const svg: (ShapeOut | null)[] | undefined = serialize ? [] : undefined
         for (let i = at; i < Math.min(at + size, job.units.length); i++) {
           const unit = job.units[i]
+          if (edgeJob) {
+            fits.push(fitOneEdge(unit))
+            checkState(job)
+            units.push(unit)
+            counts.push(1)
+            continue
+          }
           const out = traceUnit(job, opts, unit, i)
           checkState(job)
           units.push(unit)
@@ -169,10 +198,23 @@ export function installHelperHandler(scope: WorkerScope): void {
             svgCounts?.push(out.svg.length)
           }
         }
-        const commands = packCommands(runs)
+        // An edge's fit crosses as its segments plus one record of its other fields.
+        const packed = edgeJob ? packFits(fits) : { commands: packCommands(runs), records: null }
+        const { commands, records } = packed
         post(
-          { type: 'helper-batch', id: job.id, units, counts, svgCounts, commands, svg },
-          flatTransferables(commands),
+          {
+            type: 'helper-batch',
+            id: job.id,
+            units,
+            counts,
+            svgCounts,
+            commands,
+            svg,
+            fits: records ? (records.buffer as ArrayBuffer) : undefined,
+          },
+          records
+            ? [...flatTransferables(commands), records.buffer as ArrayBuffer]
+            : flatTransferables(commands),
         )
         // Yields the helper's event loop once per batch, so a cancel message can
         // land mid-job and the coordinator can place results as they arrive.
@@ -202,7 +244,9 @@ export function installHelperHandler(scope: WorkerScope): void {
         ? stackState?.msg.key
         : job.kind === 'trace-rings'
           ? ringState?.msg.key
-          : chainState?.key
+          : job.kind === 'fit-edges'
+            ? edgeState?.key
+            : chainState?.key
     if (held !== job.stateKey) {
       throw new Error(`helper: ${job.kind} payload ${job.stateKey} was replaced`)
     }
@@ -210,6 +254,8 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   /** The option objects every unit of one job shares. */
   function jobOptions(job: HelperJobMessage): JobOptions {
+    // An edge fit reads its objective from the cached edges.
+    if (job.kind === 'fit-edges') return {}
     const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
     if (job.kind === 'fit-chains') {
       const arcPrecision = job.arcPrecision
@@ -383,6 +429,15 @@ export function installHelperHandler(scope: WorkerScope): void {
     return fit.closed ? [fit.open, fit.closed] : [fit.open]
   }
 
+  /** One planar edge's fit, from the inputs this helper holds for it. */
+  function fitOneEdge(unit: number): FittedEdge {
+    const st = edgeState
+    if (!st) throw new Error('helper: no edges for fit-edges')
+    const local = st.local.get(unit)
+    if (local === undefined) throw new Error(`helper: edge ${unit} not held`)
+    return fitEdgeInput(st.edges[local], st.frame, st.cfg)
+  }
+
   /** The cached working image's RGBA bytes (the color field reads them directly). */
   function workingPixels(): Uint8ClampedArray {
     const st = imageState
@@ -495,7 +550,11 @@ interface JobOptions {
 }
 
 /** Curve settings as the tracer's own option shape, with an optional sub-pixel field. */
-function curveOptions(curve: HelperCurveOptions, coverage?: GrayImage): TraceCurveOptions {
+function curveOptions(
+  curve: HelperCurveOptions | undefined,
+  coverage?: GrayImage,
+): TraceCurveOptions {
+  if (!curve) throw new Error('helper: job carries no curve settings')
   return { ...curve, coverage }
 }
 
@@ -589,5 +648,31 @@ function takeChains(msg: HelperChainsMessage): ChainState {
     key: msg.key,
     network: { width: msg.width, height: msg.height, chains, areas: new Map() },
     local,
+  }
+}
+
+function takeEdges(msg: HelperEdgesMessage): EdgeState {
+  const units = new Int32Array(msg.units)
+  const closed = new Uint8Array(msg.closed)
+  const n = units.length
+  if (n !== runCount(msg.points) || n !== runCount(msg.sigma)) {
+    throw new Error('helper: edge count mismatch')
+  }
+  const local = new Map<number, number>()
+  const edges: EdgeFitInput[] = []
+  for (let i = 0; i < n; i++) {
+    local.set(units[i], i)
+    edges.push({
+      points: msg.points.data.subarray(msg.points.offsets[i], msg.points.offsets[i + 1]),
+      sigma: msg.sigma.data.subarray(msg.sigma.offsets[i], msg.sigma.offsets[i + 1]),
+      closed: closed[i] !== 0,
+    })
+  }
+  return {
+    key: msg.key,
+    frame: { width: msg.width, height: msg.height },
+    cfg: { tau: msg.tau, lambda: msg.lambda },
+    local,
+    edges,
   }
 }
