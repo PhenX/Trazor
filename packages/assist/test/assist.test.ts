@@ -789,12 +789,13 @@ describe('recommendSettings — geometry chain', () => {
     expect(codes(rec)).not.toContain('planarCartoon')
   })
 
-  it('traces a cartoon on the planar chain with the classic front end', () => {
+  it('traces a cartoon on the planar chain with the ink front end', () => {
     for (const img of [antialiasedField(), noisyCartoon()]) {
       const rec = recommendSettings(analyzeImage(img))
       expect(rec.patch.segmentation).toBe('regions')
       expect(rec.patch.geometry).toBe('planar')
-      expect(rec.patch.frontEnd).toBe('classic')
+      expect(rec.patch.frontEnd).toBe('ink')
+      expect(rec.patch.gradients).toBe(true)
       expect(codes(rec)).toContain('planarCartoon')
       expect(codes(rec)).not.toContain('planarInk')
     }

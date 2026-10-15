@@ -1795,8 +1795,8 @@ export function recommendSettings(
 // The geometry chain: color, grayscale or bw art on stacked layers not grouped by color, from an
 // undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
 // geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation
-// 'regions') whose longest side is at most 512 px with frontEnd 'classic' (reason `planarCartoon`;
-// a larger cartoon stays classic), other art with frontEnd 'ink' and gradients on (reason
+// 'regions') whose longest side is at most 512 px with frontEnd 'ink' and gradients on (reason
+// `planarCartoon`; a larger cartoon stays classic), other art the same (reason
 // `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within them).
 // Black & white art traced at more than 640 × 640 pixels, centerline, cutout, nested and grouped
 // output keep the classic chain.

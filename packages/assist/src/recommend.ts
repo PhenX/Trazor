@@ -163,7 +163,12 @@ const GRADIENT_DETECT_CAP = 512
  * chain. The ground-truth gate measures the chain ahead of the classic one on
  * icon-sized cartoons (128 px: GMSD −20%; 512 px: ΔE00 −8%, extra ink −65%),
  * and level or behind on full-size cartoon illustrations (735–1680 px) at seven
- * to ten times the time, so a larger cartoon keeps the classic chain.
+ * to ten times the time, so a larger cartoon keeps the classic chain. On the
+ * planar chain a cartoon takes the ink front end: against region growing the
+ * gate measures, on the 128 and 512 px icon tiers, ΔE00 −69% and GMSD −10 to
+ * −23% (flat fills −87 to −93%, missed and extra edges −22 to −36%), level
+ * with inkvec in color, for 15–38% more path parameters, more extra ink at
+ * 512 px and a quarter more time.
  */
 const PLANAR_CARTOON_MAX_SIDE = 512
 
@@ -624,11 +629,9 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
  * sources are denoised and stay classic, as do the photo profile, pixel art,
  * centerline, cutout and nested layering and grouped output). Black & white
  * art changes only its geometry: its two-label ink mask has no front end to
- * choose. A cartoon takes
- * it only up to `PLANAR_CARTOON_MAX_SIDE`, with the classic front end, whose
- * region growing it is routed to; other art takes the ink front end with
- * gradient fills, which paints a ramp as one gradient, traced at a
- * `maxDimension` that keeps it within `PLANAR_MAX_PIXELS`. Black & white art
+ * choose. Color art takes the ink front end with gradient fills, which paints
+ * a ramp as one gradient, traced at a `maxDimension` that keeps it within
+ * `PLANAR_MAX_PIXELS`; a cartoon takes it only up to `PLANAR_CARTOON_MAX_SIDE`. Black & white art
  * traced at more than `PLANAR_MAX_PIXELS` keeps the classic chain, which is far
  * faster there.
  */
@@ -667,16 +670,15 @@ function planarChain(
     )
   }
   patch.geometry = 'planar'
+  patch.frontEnd = 'ink'
+  patch.gradients = true
   if (cartoon) {
-    patch.frontEnd = 'classic'
     r.add(
       'planarCartoon',
       'Cartoon-style layers — each boundary between two fills is traced and fitted once, so neighboring shapes meet exactly.',
     )
     return
   }
-  patch.frontEnd = 'ink'
-  patch.gradients = true
   r.add(
     'planarInk',
     'Clean layered art — inks measured from the drawing and each boundary between two colors fitted once; smooth ramps become gradient fills.',
