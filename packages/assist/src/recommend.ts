@@ -168,15 +168,19 @@ const GRADIENT_DETECT_CAP = 512
 const PLANAR_CARTOON_MAX_SIDE = 512
 
 /**
- * Most traced pixels (at the traced size, before supersampling) an image
- * takes the planar chain with by default: 640 × 640. Up to it a shaded emoji
- * traces in 20–40 s (2–5 s classic) for its GMSD gain, a flat illustration of
- * 640 × 448 in under 40 s (5 s classic), a black & white icon in 6–16 s and a
- * plain one in a few seconds. Past it the chain's geometry steps grow faster
- * than the image — the illustration at 768 px and the emoji at 768 px both
- * past 40 s, at 918 px 58 s and 52 s against 4–7 s classic — so a larger
- * image keeps the classic chain until the planar chain is made faster; the
- * Geometry setting still selects it.
+ * Most traced pixels (at the traced size, before supersampling) the planar
+ * chain takes by default: 640 × 640. Up to it a shaded emoji traces in 20–40 s
+ * (2–5 s classic) for its GMSD gain, a flat illustration of 640 × 448 in under
+ * 40 s (5 s classic), a black & white icon in 6–16 s and a plain one in a few
+ * seconds. Past it the chain's geometry steps grow faster than the image (the
+ * illustration and the emoji at 768 px both past 40 s), so larger art on the
+ * ink front end is traced at this budget's size instead: the ground-truth gate
+ * measures that ahead of the classic chain at full size on ten 768–1500 px
+ * illustrations and emoji (ΔE00 −49%, GMSD −46%, edges missed level, 13–38 s
+ * against 2–9 s), where the classic chain posterizes a gradient behind cut-out
+ * shapes into bands whose edges fray along the shapes. Larger black & white
+ * art keeps the classic chain at full size; the Geometry setting still selects
+ * the planar chain.
  */
 const PLANAR_MAX_PIXELS = 640 * 640
 
@@ -623,8 +627,10 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
  * choose. A cartoon takes
  * it only up to `PLANAR_CARTOON_MAX_SIDE`, with the classic front end, whose
  * region growing it is routed to; other art takes the ink front end with
- * gradient fills, which paints a ramp as one gradient. An image traced at more
- * than `PLANAR_MAX_PIXELS` keeps the classic chain, which is far faster there.
+ * gradient fills, which paints a ramp as one gradient, traced at a
+ * `maxDimension` that keeps it within `PLANAR_MAX_PIXELS`. Black & white art
+ * traced at more than `PLANAR_MAX_PIXELS` keeps the classic chain, which is far
+ * faster there.
  */
 function planarChain(
   a: ImageAnalysis,
@@ -642,7 +648,8 @@ function planarChain(
   const maxDimension =
     patch.maxDimension ?? getProfile(profileId).patch.maxDimension ?? DEFAULT_SETTINGS.maxDimension
   const fit = Math.min(1, maxDimension / Math.max(a.width, a.height))
-  if (a.width * a.height * fit * fit > PLANAR_MAX_PIXELS) return
+  const over = a.width * a.height * fit * fit > PLANAR_MAX_PIXELS
+  if (over && mode === 'bw') return
   if (mode === 'bw') {
     // The ink mask is two labels, so the front end does not apply: only the
     // geometry changes.
@@ -654,6 +661,11 @@ function planarChain(
     return
   }
   if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
+  if (over) {
+    patch.maxDimension = Math.floor(
+      Math.max(a.width, a.height) * Math.sqrt(PLANAR_MAX_PIXELS / (a.width * a.height)),
+    )
+  }
   patch.geometry = 'planar'
   if (cartoon) {
     patch.frontEnd = 'classic'

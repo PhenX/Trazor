@@ -1797,8 +1797,9 @@ export function recommendSettings(
 // geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation
 // 'regions') whose longest side is at most 512 px with frontEnd 'classic' (reason `planarCartoon`;
 // a larger cartoon stays classic), other art with frontEnd 'ink' and gradients on (reason
-// `planarInk`). An image traced at more than 640 × 640 pixels, centerline, cutout, nested and
-// grouped output keep the classic chain.
+// `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within them).
+// Black & white art traced at more than 640 × 640 pixels, centerline, cutout, nested and grouped
+// output keep the classic chain.
 export interface PaletteSuggestion {
   id: string
   label: string

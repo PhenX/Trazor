@@ -800,16 +800,34 @@ describe('recommendSettings — geometry chain', () => {
     }
   })
 
-  it('keeps an image traced past the planar pixel budget on the classic chain', () => {
+  it('traces ink-front-end art past the planar pixel budget at the budget size', () => {
     const a = analyzeImage(inkWithSoftShadow())
     const small = recommendSettings({ ...a, width: 640, height: 640, pixels: 409_600 })
     expect(small.patch.geometry).toBe('planar')
-    const wide = recommendSettings({ ...a, width: 768, height: 538, pixels: 413_184 })
-    expect(wide.patch.geometry).toBeUndefined()
+    expect(small.patch.maxDimension).toBeUndefined()
+    for (const [width, height] of [
+      [768, 538],
+      [918, 643],
+      [1500, 1500],
+    ]) {
+      const rec = recommendSettings({ ...a, width, height, pixels: width * height })
+      expect(rec.patch.geometry).toBe('planar')
+      expect(rec.patch.frontEnd).toBe('ink')
+      expect(codes(rec)).toContain('planarInk')
+      // The traced size as the engine rounds it: within the budget, give or take a row.
+      const side = rec.patch.maxDimension as number
+      const fit = side / Math.max(width, height)
+      expect(Math.round(width * fit) * Math.round(height * fit)).toBeLessThanOrEqual(409_600 + side)
+      expect(width * height * ((side + 1) / Math.max(width, height)) ** 2).toBeGreaterThan(409_600)
+    }
+  })
+
+  it('keeps black & white art past the planar pixel budget on the classic chain', () => {
+    const a = analyzeImage(inkOnWhite())
     const large = recommendSettings({ ...a, width: 918, height: 643, pixels: 590_274 })
+    expect(large.patch.mode).toBe('bw')
     expect(large.patch.geometry).toBeUndefined()
-    expect(large.patch.frontEnd).toBeUndefined()
-    expect(codes(large)).not.toContain('planarInk')
+    expect(codes(large)).not.toContain('planarBw')
   })
 
   it('keeps a cartoon larger than an icon on the classic chain', () => {
