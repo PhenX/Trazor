@@ -1248,12 +1248,20 @@ function layerRingCommands(
 
 /**
  * The stacked sheets: layer `k` (`order[k]`, base first) is the union of the
- * faces of its own label and the faces painted above it that its own faces
- * reach through faces painted at or above it, so each sheet extends beneath
- * the sheets over it and no edge can crack. Its outline is walked over the
- * shared fitted edges ({@link regionRings}). `paintLabel` is each face's label
- * as the base layers paint it (an island lifted onto its own top layer takes
- * its surround's label); `islands` are the faces painted on top, by layer. A
+ * faces of its own label and the faces painted above it that those reach,
+ * carried on only through faces that border nothing painted below the sheet,
+ * plus every pocket the union encloses whose faces are all painted above it.
+ * Every face painted above that the sheet's own faces border is in it, so
+ * along any edge the lower face's sheet lies beneath the upper face and no
+ * edge can crack. A face painted above that borders a face painted below the
+ * sheet does not carry it on: reaching through it would take in faces whose
+ * edges with the faces below are then drawn once more, set back, by every sheet
+ * between the two — an edge drawn as many times as the paint positions it
+ * spans. An enclosed pocket joins, so a sheet carries no hole beneath faces
+ * painted over it. Its outline is walked over the shared fitted edges
+ * ({@link regionRings}). `paintLabel` is each face's label as the base layers
+ * paint it (an island lifted onto its own top layer takes its surround's
+ * label); `islands` are the faces painted on top, by layer. A
  * label `alone` names (a translucent paint) is never reached by another layer:
  * the sheets beneath end at its edge, so it composites over what lies there.
  */
@@ -1297,26 +1305,60 @@ export function stackedLayers(
       adj[fill[e.right]++] = e.left
     }
   }
+  // Faces on the frame: a pocket holding one is not enclosed by any sheet.
+  const onFrame = new Uint8Array(faces.count)
+  for (const e of edges) {
+    if (e.left < 0 && e.right >= 0) onFrame[e.right] = 1
+    if (e.right < 0 && e.left >= 0) onFrame[e.left] = 1
+  }
   const out: { label: number; shapes: StackedShape[] }[] = []
   const inRegion = new Uint8Array(faces.count)
+  const seen = new Uint8Array(faces.count)
   const stack: number[] = []
   for (let k = 0; k < order.length; k++) {
+    // Whether a face borders a face painted below the sheet, or transparency.
+    const bordersBelow = (f: number): boolean => {
+      for (let a = adjStart[f]; a < adjStart[f + 1]; a++) if (posOf(adj[a]) < k) return true
+      return false
+    }
     inRegion.fill(0)
     for (let f = 0; f < faces.count; f++) {
-      if (posOf(f) === k && inRegion[f] === 0) {
+      if (posOf(f) === k) {
         inRegion[f] = 1
         stack.push(f)
       }
     }
     while (stack.length > 0) {
       const f = stack.pop() as number
+      // Only the sheet's own faces and faces clear of everything below it carry it on.
+      if (posOf(f) !== k && bordersBelow(f)) continue
       for (let a = adjStart[f]; a < adjStart[f + 1]; a++) {
         const g = adj[a]
-        if (inRegion[g] === 0 && posOf(g) >= k && (lone[g] === 0 || posOf(g) === k)) {
+        if (inRegion[g] === 0 && posOf(g) > k && lone[g] === 0) {
           inRegion[g] = 1
           stack.push(g)
         }
       }
+    }
+    // The pockets the sheet encloses whose faces are all painted above it.
+    seen.fill(0)
+    for (let f0 = 0; f0 < faces.count; f0++) {
+      if (inRegion[f0] === 1 || seen[f0] === 1) continue
+      const pocket = [f0]
+      seen[f0] = 1
+      let enclosed = true
+      for (let i = 0; i < pocket.length; i++) {
+        const f = pocket[i]
+        if (posOf(f) <= k || lone[f] === 1 || onFrame[f] === 1) enclosed = false
+        for (let a = adjStart[f]; a < adjStart[f + 1]; a++) {
+          const g = adj[a]
+          if (inRegion[g] === 0 && seen[g] === 0) {
+            seen[g] = 1
+            pocket.push(g)
+          }
+        }
+      }
+      if (enclosed) for (const f of pocket) inRegion[f] = 1
     }
     const own = order[k]
     const rings = regionRings(map, inRegion).map((r) => ({

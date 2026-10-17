@@ -95,7 +95,10 @@ decode (consumer)
   paint color. A face (or a stacked sheet) whose outline and one hole are whole-edge primitives offset by one width — a
   frame, a rim, an outline icon's square or circle — is written for screen output as one stroked `<rect>` or
   `<circle>` on its midline (`@trazor/svg` `annulusStroke`, after inkvec), which is how the artist drew it; a
-  millimetre document keeps the filled ring, since a cutter or a laser reads a stroke as a line to cut along.
+  millimetre document keeps the filled ring, since a cutter or a laser reads a stroke as a line to cut along. A planar
+  stacked sheet reaches under every face painted above it that its own faces touch, and carries on only through faces
+  that border nothing painted below it (plus any pocket it encloses): reaching through a face that does would draw that
+  face's edges with the faces below once more in every sheet between the two.
 
 ## Package responsibilities
 

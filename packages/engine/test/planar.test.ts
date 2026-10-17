@@ -86,7 +86,7 @@ describe('planar layerings over shared fitted edges', () => {
     expect(faces[three.parent].label).toBe(1)
   })
 
-  it('stacks each layer over everything above it that it reaches', () => {
+  it('stacks each layer over the faces above it that it touches, holes and all', () => {
     const paintLabel = new Int32Array(geo.map.faces.count)
     for (let p = 0; p < labels.data.length; p++) paintLabel[geo.map.faces.ids[p]] = labels.data[p]
     const layers = stackedLayers(geo, fits, paintLabel, [0, 1, 2, 3], [])
@@ -96,6 +96,38 @@ describe('planar layerings over shared fitted edges', () => {
     expect(area(0)).toBeCloseTo(labels.data.length - 1, 9)
     expect(area(1)).toBeCloseTo(pixels(1) + pixels(2) + pixels(3), 9)
     expect(area(3)).toBeCloseTo(pixels(3), 9)
+  })
+
+  it('carries a sheet on only through faces that border nothing painted below it', () => {
+    // Label 3's sheet reaches under label 1, which it touches; label 1 borders label 0,
+    // painted below the sheet, so the sheet goes no further — reaching on to label 2, it
+    // would draw the edge between labels 0 and 1 once more for every sheet in between.
+    const grid = labelsOf(['0012', '3312'])
+    const g = planarGeometry(grid)
+    const f = g.map.edges.map(polylineFit)
+    const paint = new Int32Array(g.map.faces.count)
+    for (let p = 0; p < grid.data.length; p++) paint[g.map.faces.ids[p]] = grid.data[p]
+    const layers = stackedLayers(g, f, paint, [0, 3, 1, 2], [])
+    const area = (k: number): number =>
+      layers[k].shapes.reduce((sum, sh) => sum + paintedArea(sh.commands), 0)
+    // The base reaches everything through faces with nothing below them.
+    expect([0, 1, 2, 3].map(area)).toEqual([8, 4, 4, 2])
+  })
+
+  it('takes in a pocket it encloses whose faces are all painted above it', () => {
+    // The ring (1) borders label 3, painted below the outer field's sheet, so it does not
+    // carry that sheet on to the centre (2); the centre is enclosed all the same and joins
+    // rather than leaving a hole beneath the faces painted over it.
+    const nest = labelsOf(['00000', '01113', '01210', '01110', '00000'])
+    const g = planarGeometry(nest)
+    const f = g.map.edges.map(polylineFit)
+    const paint = new Int32Array(g.map.faces.count)
+    for (let p = 0; p < nest.data.length; p++) paint[g.map.faces.ids[p]] = nest.data[p]
+    const field = stackedLayers(g, f, paint, [3, 0, 1, 2], [])[1]
+    expect(field.label).toBe(0)
+    expect(field.shapes.length).toBe(1)
+    expect(field.shapes[0].commands.filter((c) => c.type === 'M').length).toBe(1)
+    expect(paintedArea(field.shapes[0].commands)).toBeCloseTo(24, 9)
   })
 })
 
@@ -481,10 +513,10 @@ describe('the planar chain against its image', () => {
 
   it('joins two hidden edges set back on either side of a node halfway between them', () => {
     // White (0) in the top-left corner; grey (2) right of it and blue (3) below
-    // it, both above the black field (1). The black sheet's outline runs
-    // beneath grey down to the node (5, 5), then beneath blue: each run is set
-    // back a pixel along its own normal, to (6, 5) and (5, 6), and the two
-    // meet halfway, at (5.5, 5.5), instead of the outline hooking across.
+    // it, both above the black field (1), which both touch. The black sheet's
+    // outline runs beneath grey down to the node (5, 5), then beneath blue: each
+    // run is set back a pixel along its own normal, to (6, 5) and (5, 6), and
+    // the two meet halfway, at (5.5, 5.5), instead of the outline hooking across.
     const labels = labelsOf([
       '0000022222',
       '0000022222',
@@ -492,8 +524,8 @@ describe('the planar chain against its image', () => {
       '0000022222',
       '0000022222',
       '3333322222',
-      '3333333333',
-      '3333333333',
+      '3333333332',
+      '3333333332',
       '1111111111',
       '1111111111',
     ])
