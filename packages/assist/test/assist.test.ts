@@ -72,6 +72,23 @@ function grayFillBlackOutline() {
   return img
 }
 
+/**
+ * Thin black strokes on white with soft anti-aliased sides: across each stroke a
+ * pixel of 24, three of black and one of 12, so a quarter of the darkest
+ * tone's pixels are rim — still within its coarse bin, but not the ink.
+ */
+function thinStrokesWithSoftRims() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 255, 255, 255)
+  for (let x0 = 10; x0 + 5 <= 150; x0 += 14) {
+    for (let y = 10; y < 150; y++) {
+      const ramp = [24, 0, 0, 0, 12]
+      for (let i = 0; i < ramp.length; i++) setPixel(img, x0 + i, y, ramp[i], ramp[i], ramp[i])
+    }
+  }
+  return img
+}
+
 /** A black glyph on a transparent canvas casting a wide half-transparent shadow. */
 function inkWithSoftShadow() {
   const img = inkOnTransparent()
@@ -428,6 +445,12 @@ describe('analyzeImage', () => {
     expect(a.inkHex).toBe('#000000')
     expect(a.paperHex).toBe('#ffffff')
     expect(recommendSettings(a).profileId).toBe('bw-sketch')
+  })
+
+  it("reads a tone's color off its interior, not its anti-aliased rim", () => {
+    const a = analyzeImage(thinStrokesWithSoftRims())
+    expect(a.inkHex).toBe('#000000')
+    expect(a.paperHex).toBe('#ffffff')
   })
 
   it('counts a flat third tone, which anti-aliasing never produces', () => {

@@ -83,9 +83,13 @@ export interface ImageAnalysis {
    * flat. Tells genuinely two-tone art from art carrying a minor third tone.
    */
   minorTonesArea: number
-  /** Mean color of the darker of the two dominant tones: the ink of two-tone art. */
+  /**
+   * Color of the darker of the two dominant tones: the ink of two-tone art. The
+   * mean of the tone's exactly-flat samples (its interior), or of all its
+   * samples when none is flat.
+   */
   inkHex: string
-  /** Mean color of the lighter of the two dominant tones: its paper or ground. */
+  /** Color of the lighter of the two dominant tones, read as {@link inkHex}: its paper or ground. */
   paperHex: string
   /**
    * Box-filter-equivalent width, in pixels, of the image's plateau-to-plateau
@@ -160,11 +164,13 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const flatColorSet = new Set<number>()
   const hist = new Float64Array(4096)
   // Coarse tone bins: sample count, RGB + lightness sums (for the tone's mean
-  // color) and the count of exactly-flat samples, plus the keys in first-seen
-  // order so the dominant-tone ranking is stable.
+  // color), the count and RGB sums of exactly-flat samples (for its interior
+  // color), plus the keys in first-seen order so the dominant-tone ranking is
+  // stable.
   const coarseN = new Uint32Array(COARSE_BINS)
   const coarseSum = new Float64Array(COARSE_BINS * 4)
   const flatCoarse = new Uint32Array(COARSE_BINS)
+  const flatCoarseSum = new Float64Array(COARSE_BINS * 3)
   const coarseKeys: number[] = []
   // Per sample: 1 when opaque and within `SMOOTH_MAX_GRAD` of its right and
   // down neighbors — the pixels the smooth-area flood below may connect.
@@ -236,6 +242,9 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
         else if (grad === 0) {
           flatCount++
           flatCoarse[coarseKey]++
+          flatCoarseSum[coarseKey * 3] += r
+          flatCoarseSum[coarseKey * 3 + 1] += g
+          flatCoarseSum[coarseKey * 3 + 2] += b
           if (flatColorSet.size < 65536) flatColorSet.add(colorKey)
         }
       }
@@ -271,15 +280,27 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const topFlat = (key: number | undefined): number => (key === undefined ? 0 : flatCoarse[key])
   const minorTonesArea =
     sampleCount === 0 ? 0 : (flatCount - topFlat(top1) - topFlat(top2)) / sampleCount
+  // A tone's color is its interior's: the bin also holds the anti-aliased rim
+  // pixels that blend it into its neighbors (a black ink's bin reaches 31), and
+  // their mean pulls the ink off the color the artist filled with.
   const toneOf = (key: number): { hex: string; lightness: number } => {
     const n = coarseN[key]
     const o = key * 4
+    const nf = flatCoarse[key]
+    const f = key * 3
     return {
-      hex: rgbToHex(
-        Math.round(coarseSum[o] / n),
-        Math.round(coarseSum[o + 1] / n),
-        Math.round(coarseSum[o + 2] / n),
-      ),
+      hex:
+        nf > 0
+          ? rgbToHex(
+              Math.round(flatCoarseSum[f] / nf),
+              Math.round(flatCoarseSum[f + 1] / nf),
+              Math.round(flatCoarseSum[f + 2] / nf),
+            )
+          : rgbToHex(
+              Math.round(coarseSum[o] / n),
+              Math.round(coarseSum[o + 1] / n),
+              Math.round(coarseSum[o + 2] / n),
+            ),
       lightness: coarseSum[o + 3] / n,
     }
   }
