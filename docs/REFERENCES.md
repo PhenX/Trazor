@@ -321,7 +321,8 @@ follows.
   Each junction goes to the weighted least-squares meeting point of its edges' end tangents
   (lines, or quadratics where an end bends) and, where they meet tangentially, to where a
   taper vanishes: a Kåsa circle (1976) held tangent to the through boundary.
-- **The boundary solve** (`solve/band.ts`, `solve/folds.ts`, `solve/boundary.ts`, after
+- **The boundary solve** (`solve/band.ts`, `solve/folds.ts`, `solve/boundary.ts`, and the descent's
+  WebAssembly port `crates/solve/src/{band,lbfgs,linesearch}.rs` behind `solve/kernel.ts`, after
   inkvec's `inkvec-trace/src/boundary_opt.rs` and `boundary_opt/band.rs`, cross-checked
   against an inkvec build to 10⁻⁸ px): every boundary point moved at once so that the map's
   exact rendered coverage matches the image — the region term of T. F. Chan & L. A. Vese,
@@ -341,7 +342,8 @@ follows.
 - **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
   optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
   search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The
-  boundary solve's optimizer (`solve/lbfgs.ts`, `solve/linesearch.ts`, after inkvec's
+  boundary solve's optimizer (`solve/lbfgs.ts`, `solve/linesearch.ts`, their WebAssembly port
+  `crates/solve/src/{lbfgs,linesearch}.rs`, after inkvec's
   `boundary_opt/{lbfgs,linesearch}.rs`): L-BFGS with three pairs along the projected path
   of R. H. Byrd, P. Lu, J. Nocedal & C. Zhu, “A limited memory algorithm for bound
   constrained optimization”, _SIAM J. Sci. Comput._ 16(5), 1995, each point held to a disc

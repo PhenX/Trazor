@@ -44,6 +44,7 @@ import { syncNodes } from '../planar/types'
 import type { FaceFill, PlanarMap, PremultipliedImage } from '../planar/types'
 import { BandProblem, buildUnknowns, pinFrame, tableBudget } from './band'
 import { foldGuard } from './folds'
+import type { BandKernel } from './kernel'
 import { lbfgsDescend, MAX_STEP, MAX_TOTAL } from './lbfgs'
 import type { LbfgsStep } from './lbfgs'
 
@@ -79,6 +80,13 @@ export interface SolveOptions {
   tableBudget?: number
   /** Called after each accepted step, for diagnostics. */
   onStep?: (step: LbfgsStep) => void
+  /**
+   * Run the descent in this WebAssembly kernel (`loadBandKernel`) instead
+   * of in TypeScript. The kernel computes the same positions; the band, the
+   * parts and the fold guard stay here. A descent the kernel cannot run (its
+   * memory refused, a trap) runs in TypeScript. Default: the TypeScript descent.
+   */
+  kernel?: BandKernel
 }
 
 /**
@@ -220,23 +228,26 @@ function solveAt(
   prob.wKink = (K_KINK * data0) / kink0
   prob.wAnchor = (K_ANCHOR * data0 * unit * unit) / n
   const parts = prob.components()
-  const result = lbfgsDescend(
-    (x, grad, part) => {
-      prob.active = part < 0 ? null : parts[part]
-      return prob.energy(x, grad)
-    },
-    u.start,
-    {
-      parts: parts.map((p) => p.vars),
-      pin: u.pin,
-      maxStep: MAX_STEP / unit,
-      maxTotal: MAX_TOTAL / unit,
-      maxIters: opts.maxIterations,
-      iterationBudget: opts.iterationBudget,
-      fixedEnergy: prob.restResidual,
-      onStep: opts.onStep,
-    },
-  )
+  const descent = {
+    maxStep: MAX_STEP / unit,
+    maxTotal: MAX_TOTAL / unit,
+    maxIters: opts.maxIterations,
+    iterationBudget: opts.iterationBudget,
+    fixedEnergy: prob.restResidual,
+    onStep: opts.onStep,
+  }
+  const viaKernel = opts.kernel !== undefined ? opts.kernel.descend(prob, parts, descent) : null
+  const result =
+    viaKernel !== null
+      ? viaKernel
+      : lbfgsDescend(
+          (x, grad, part) => {
+            prob.active = part < 0 ? null : parts[part]
+            return prob.energy(x, grad)
+          },
+          u.start,
+          { ...descent, parts: parts.map((p) => p.vars), pin: u.pin },
+        )
   prob.active = null
   if (result === undefined) {
     report.outcome = 'no-gain'

@@ -1086,9 +1086,23 @@ export function refineJunctions(map: PlanarMap): void
 // backed off. On 'solved' points and nodes are overwritten (sigmas kept); otherwise untouched.
 // source: a map built on a copy enlarged `scale` times is solved against the source's own pixels
 // (each one's exact coverage), the steps, the 1 px reach and the anchor in the map's pixels.
-export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep?; source?: { image: PremultipliedImage; scale: number } }
+// kernel: run the descent in the WebAssembly kernel instead of TypeScript; the same positions,
+// bit for bit (the band, the parts and the fold guard stay in TypeScript). A descent the kernel
+// cannot run (its memory refused, a trap) runs in TypeScript.
+export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep?; source?: { image: PremultipliedImage; scale: number }; kernel?: BandKernel }
 export interface SolveReport { outcome: 'solved' | 'degenerate' | 'over-budget' | 'no-residual' | 'no-gain'; before; after; iters; moved; scale; parts; evals }
 export function solveBoundaries(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SolveReport
+// The boundary solve's descent compiled to WebAssembly (crates/solve, built by `npm run build:wasm`
+// into packages/trace/wasm/solve.wasm, exported as `@trazor/trace/solve.wasm`): the module's bytes or
+// a compiled WebAssembly.Module in, a kernel for SolveOptions.kernel out. It imports only its memory;
+// each solve runs in a fresh instance over a memory sized for it (solveBytes), which never grows (a
+// grown memory detaches a buffer, which in V8 slows the thread's typed arrays). Node and Web Workers
+// alike; one solve at a time. `measure` records `timings` of the last solve (ms; bytes copied in;
+// bytes the memory had to grow by, 0 when sized right).
+export class BandKernel { measure: boolean; readonly timings: KernelTimings /* descend(…): solveBoundaries' own call */ }
+export interface KernelDescentOptions { maxStep?; maxTotal?; maxIters?; iterationBudget?; fixedEnergy?; onStep? }
+export interface KernelTimings { instantiate: number; copyIn: number; solve: number; copyOut: number; bytes: number; grown: number }
+export function loadBandKernel(source: BufferSource | WebAssembly.Module): Promise<BandKernel>
 // One boundary (interleaved points, per-point σ, px) fitted by the multimodel DP: absolute L/C/A
 // segments, an open run ending exactly at its last point, a closed one back at (x0, y0); forced
 // point indices are vertices, maxSpan caps a segment's points, postFit runs the post-fit passes.
