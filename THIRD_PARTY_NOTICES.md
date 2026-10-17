@@ -15,12 +15,14 @@ works, under their own licenses.
 <https://github.com/logolabs/inkvec>, licensed under the Apache License, Version 2.0 (a copy is in
 [`licenses/inkvec-Apache-2.0.txt`](licenses/inkvec-Apache-2.0.txt)).
 
-Files derived from inkvec's source are modified ports to TypeScript; each says so in its header
-(“After inkvec (Apache-2.0): …”), naming the inkvec files it follows. They are, at the time of
-writing:
+Files derived from inkvec's source are modified ports to TypeScript (and, for the boundary solve's
+WebAssembly kernel, from that TypeScript to Rust); each says so in its header (“After inkvec
+(Apache-2.0): …”), naming the inkvec files it follows. They are, at the time of writing:
 
 - the planar-map geometry core: `packages/trace/src/planar/*`, `packages/trace/src/solve/*` and
   the curve fitter under `packages/trace/src/fit/*`;
+- the boundary solve's descent in Rust, compiled to WebAssembly: `crates/solve/src/*` (and the
+  module built from it, `packages/trace/wasm/solve.wasm`);
 - parts of the classic tracer that follow inkvec's stages and name them in their comments:
   `packages/trace/src/potrace/runfit.ts`, `packages/trace/src/refine.ts`,
   `packages/trace/src/coverage.ts`;

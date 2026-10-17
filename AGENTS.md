@@ -47,6 +47,8 @@ packages/                  Algorithm packages, consumed by name (@trazor/*). Pur
   assist/                  @trazor/assist — image statistics → recommended settings & suggested palettes.
   tune/                    @trazor/tune — automatic settings search: weighted objectives + adaptive
                            parameter descent. Pure, DOM-free; a consumer pairs it with the engine worker pool.
+crates/solve/              Rust: the boundary solve's descent (band energy, L-BFGS, Moré–Thuente) compiled to
+                           WebAssembly, an opt-in kernel for @trazor/trace (`npm run build:wasm`).
 docs/                      CONTRACTS.md (package APIs), REFERENCES.md (sources), ML strategy/roadmap.
 scripts/                   dataset generation, corpus fetch, tracer-evaluation tooling (scripts/eval/README.md)
                            and the performance bench (scripts/bench/README.md).
@@ -57,6 +59,12 @@ shared configs             .oxlintrc.json, .oxfmtrc.json, tsconfig.base.json, ts
 
 - `packages/*` — an algorithm package consumed _by name_ (`@trazor/*`), pure and testable in Node. No DOM APIs
   except `@trazor/ml` (which guards all browser access behind functions so it still imports in Node).
+- `crates/*` — a Rust crate compiled to WebAssembly for one package's opt-in kernel: plain `extern "C"` exports
+  over linear memory (no generated bindings; it imports at most its memory), its toolchain pinned by its
+  `rust-toolchain.toml`, its built module committed where the package reads it and rebuilt by `npm run build:wasm`.
+  The TypeScript stays the reference and the default path; the kernel's tests compare the two. Size a kernel's
+  memory up front so it never grows: a grown memory detaches its old `ArrayBuffer`, and in V8 one detached buffer
+  slows every typed-array access of the thread for good.
 
 Every workspace is listed in the root [`package.json`](package.json) `workspaces` array (`packages/*`). Packages
 resolve each other through the workspace symlink and export TypeScript source directly (`"exports": "./src/index.ts"`) —
@@ -77,15 +85,16 @@ The packages are pure and run in Node; there is no database, server or configura
 
 From the repo root:
 
-| Command                                 | Purpose                                                               |
-| --------------------------------------- | --------------------------------------------------------------------- |
-| `npm test` / `test:watch`               | Unit tests (Vitest) across all packages                               |
-| `npm run typecheck`                     | `tsc` over the packages                                               |
-| `npm run lint` / `lint:fix`             | oxlint                                                                |
-| `npm run fmt` / `fmt:check`             | oxfmt                                                                 |
-| `npm run check`                         | lint + fmt:check + typecheck + test (the CI gate)                     |
-| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation                   |
-| `npm run bench`                         | per-stage timing + SVG hash over a corpus (`scripts/bench/README.md`) |
+| Command                                 | Purpose                                                                |
+| --------------------------------------- | ---------------------------------------------------------------------- |
+| `npm test` / `test:watch`               | Unit tests (Vitest) across all packages                                |
+| `npm run typecheck`                     | `tsc` over the packages                                                |
+| `npm run lint` / `lint:fix`             | oxlint                                                                 |
+| `npm run fmt` / `fmt:check`             | oxfmt                                                                  |
+| `npm run check`                         | lint + fmt:check + typecheck + test (the CI gate)                      |
+| `npm run dataset` / `corpus` / `eval:*` | dataset generation, corpus fetch, tracer evaluation                    |
+| `npm run bench`                         | per-stage timing + SVG hash over a corpus (`scripts/bench/README.md`)  |
+| `npm run build:wasm` (`-- --check`)     | build `crates/solve` into `packages/trace/wasm/solve.wasm` (or verify) |
 
 Run a single package's tests with `npx vitest run packages/<name>`.
 

@@ -26,6 +26,7 @@
     "eval:ab": "node scripts/eval/ab.mjs",
     "bench": "tsx scripts/bench/trace-bench.ts",
     "bench:tune": "tsx scripts/bench/tune-bench.ts",
+    "build:wasm": "node scripts/wasm/build.mjs",
     "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run test"
   },
   "devDependencies": {

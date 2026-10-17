@@ -183,3 +183,7 @@ __pycache__/
 # ML data
 data/
 prof*/
+
+# Rust build output of the WebAssembly crates (crates/*); the built module the
+# packages load is committed where its package reads it.
+/crates/*/target/

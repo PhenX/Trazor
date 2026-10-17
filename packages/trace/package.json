@@ -6,7 +6,8 @@
   "type": "module",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./solve.wasm": "./wasm/solve.wasm"
   },
   "dependencies": {
     "@trazor/core": "*"
