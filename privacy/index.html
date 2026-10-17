@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy — Trazor</title>
+    <meta
+      name="description"
+      content="Trazor privacy policy: everything runs in your browser; nothing is uploaded."
+    />
+    <link rel="canonical" href="https://trazor.studio/privacy/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="robots" content="index, follow" />
+    <meta name="color-scheme" content="dark light" />
+    <style>
+      :root {
+        color-scheme: dark light;
+        --bg: #0f1115;
+        --fg: #e8eaf0;
+        --muted: #9aa3b2;
+        --accent: #8894ff;
+        --border: #2a2f3a;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f6fa;
+          --fg: #1b2130;
+          --muted: #5a6474;
+          --accent: #4a57d6;
+          --border: #d7dce6;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.6 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 56px 24px 80px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 20px;
+        font-weight: 650;
+        margin-bottom: 8px;
+      }
+      .brand img {
+        width: 28px;
+        height: 28px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 16px 0 4px;
+      }
+      .updated {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 0 0 28px;
+      }
+      h2 {
+        font-size: 19px;
+        margin: 32px 0 8px;
+      }
+      p,
+      li {
+        color: var(--fg);
+      }
+      .lead {
+        font-size: 18px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      a {
+        color: var(--accent);
+      }
+      ul {
+        padding-left: 22px;
+      }
+      li {
+        margin: 6px 0;
+      }
+      footer {
+        margin-top: 40px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <img src="/favicon.svg" alt="" />
+        <span>Trazor</span>
+      </div>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: 2026-09-01</p>
+
+      <p class="lead">
+        Trazor is built to need no trust: your images are converted entirely on your own device.
+        <strong>Nothing you open is uploaded to any server</strong>, and Trazor has no accounts, no
+        analytics, and no advertising or tracking.
+      </p>
+
+      <h2>The studio (trazor.studio)</h2>
+      <ul>
+        <li>
+          Every image you drop, paste, open, or receive is decoded, quantized, and traced in your
+          browser. The image data never leaves your device.
+        </li>
+        <li>
+          Your settings and preferences are stored locally in your browser (localStorage). Recently
+          opened images may be kept on your device (in IndexedDB) so you can reopen them; they are
+          never sent anywhere, and a “Clear” action removes them.
+        </li>
+        <li>
+          Optional on-device machine-learning features may download model files (static assets).
+          These are ordinary file downloads; no image or personal data is sent as part of them.
+        </li>
+        <li>Trazor sets no advertising or tracking cookies and uses no third-party analytics.</li>
+      </ul>
+
+      <h2>The browser extension</h2>
+      <ul>
+        <li>
+          The “Convert to SVG with Trazor” extension reads an image
+          <strong>only when you right-click it and choose to convert</strong>. It uses that access
+          solely to find the image you clicked (an image, a CSS background, an inline SVG, or a
+          canvas).
+        </li>
+        <li>
+          It then hands those image bytes to the Trazor studio tab it opens, where they are traced
+          on your device. The extension does not collect, store off your device, sell, or transmit
+          any personal or usage data, and it contains no analytics or tracking.
+        </li>
+      </ul>
+
+      <h2>Data we collect</h2>
+      <p>
+        None. Trazor does not collect or receive personal information or the contents of your
+        images. Because processing is entirely client-side, there is no server that could see them.
+      </p>
+
+      <h2>Changes</h2>
+      <p class="muted">
+        If this policy changes, the “last updated” date above will change. Material changes will be
+        reflected here.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Questions? Open an issue at
+        <a href="https://github.com/PhenX/Trazor" rel="noopener">github.com/PhenX/Trazor</a>.
+      </p>
+
+      <footer>
+        <a href="/">← Back to Trazor</a>
+      </footer>
+    </main>
+  </body>
+</html>
