@@ -3,7 +3,7 @@
 Authoritative API surface each package must export. `@trazor/core` (already
 implemented — read it first) defines the shared vocabulary: `RasterImage`,
 `GrayImage`, `BinaryMask`, `LabelMap`, `PathCommand`, `VectorizeSettings`,
-`VectorizeResult`, `TrazorEngine`, color/geometry helpers, `mulberry32`.
+`VectorizeResult`, `EngineContext`, color/geometry helpers, `mulberry32`.
 
 Rules that apply to every package:
 
@@ -63,6 +63,90 @@ export function serializeSettings(
 export function parseSettingsImport(input: string): ImportedSettings
 ```
 
+## @trazor/core — pixel noise
+
+```ts
+// noise.ts — the per-channel noise σ (encoded sRGB units) of one gray channel in [0, 1]: the 10th
+// percentile of the absolute 4-neighbor Laplacian over the half-normal quantile and the kernel
+// gain, floored at NOISE_FLOOR (half an 8-bit step); 1/255 under 3×3 or for a short buffer.
+export const NOISE_FLOOR: number
+export function estimateNoise(gray: ArrayLike<number>, w: number, h: number): number
+```
+
+## @trazor/core — geometry chain
+
+```ts
+// settings.ts — VectorizeSettings.geometry: the geometry chain. 'classic' (DEFAULT_SETTINGS) traces
+// each layer's rings; 'planar' is the planar-map core whose shared fitted edges every layering
+// walks (see vectorize's opts below). normalizeSettings maps anything else to 'classic'.
+export type GeometryChain = 'classic' | 'planar'
+geometry: GeometryChain
+// VectorizeSettings.frontEnd: the planar chain's front end for color images — 'classic'
+// (DEFAULT_SETTINGS, the segmentation every chain shares) or 'ink' (the MDL palette and region
+// passes; a transparent image runs them over two grounds). Read only with geometry 'planar' and
+// mode 'color'; the classic chain ignores it. normalizeSettings maps anything else to 'classic'.
+export type FrontEnd = 'classic' | 'ink'
+frontEnd: FrontEnd
+// Both round-trip through the settings export (parseSettingsImport / serializeSettings). The
+// recommender picks geometry 'planar' for stacked color/grayscale/bw art not grouped by color (frontEnd
+// 'ink' with gradients, 'classic' for cartoons, none for bw, whose ink mask has no front end); see
+// @trazor/assist's recommendSettings.
+```
+
+## @trazor/core — supersampling
+
+```ts
+// settings.ts — VectorizeSettings.supersample: trace at this integer multiple of the working size
+// (1 = off, the default; clamped to 1..4). The engine enlarges the preprocessed image with
+// raster `upscaleImage`, segments and traces it with every pixel-size setting (minRegionArea,
+// gradientMinArea ×s²; adaptiveRadius, pruneLength, fitTolerance, simplifyTolerance, strokeWidth
+// ×s) and every size rule read on that grid, and scales the geometry back by 1/s, so the SVG keeps
+// the working size (a cutout trap, `gapFill`, is sized there too). Made for anti-aliased art under
+// region growing and for bw: global quantization sees an enlarged rim as more pixels and may keep
+// it as a ring of its own. At 1 the output is byte-identical to a run without the field. The engine
+// lowers the factor until the enlarged working image stays within 4096² pixels (a large source is not
+// enlarged) and then reports an info warning `supersample-limited` (params requested, applied, side).
+// The recommender asks 2× for cartoon-style art (region growing) when the whole enlargement fits.
+supersample: number
+// The working-pixel budget, shared by the engine and the recommender: the side of the square
+// whose pixel count bounds a supersampled working image, and the factor a `width × height` source
+// fitted to `maxDimension` (0: not fitted) is traced at for a requested one.
+export const SUPERSAMPLE_BUDGET_SIDE = 4096
+export function supersampleWithinBudget(
+  width: number,
+  height: number,
+  maxDimension: number,
+  requested: number,
+): number
+// path.ts — the same path scaled by `s` about the origin: coordinates and arc radii multiplied,
+// an arc's rotation and flags kept.
+export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[]
+// The same path scaled by `s` about the origin, then moved by (dx, dy); arc radii scale.
+export function placePathCommands(
+  commands: readonly PathCommand[],
+  s: number,
+  dx: number,
+  dy: number,
+): PathCommand[]
+```
+
+## @trazor/core — color (CIEDE2000)
+
+```ts
+// color.ts — sRGB→CIELAB (D65) and the CIEDE2000 difference (Sharma, Wu & Dalal
+// 2005), alongside the existing Oklab helpers. Components r,g,b in [0,1]; Lab
+// L* in [0,100]. The palette's "same ink" floor is stated in these units.
+export function rgbToLab(r: number, g: number, b: number): [number, number, number]
+export function ciede2000(
+  L1: number,
+  a1: number,
+  b1: number,
+  L2: number,
+  a2: number,
+  b2: number,
+): number
+```
+
 ## @trazor/core — gradient paint model
 
 ```ts
@@ -87,6 +171,11 @@ export interface RadialGradientPaint {
   cx: number
   cy: number
   r: number
+  // Elliptical: the last stop at semi-axis r along `angle` (radians, +x towards +y) and r / aspect
+  // across it; serialized as gradientTransform="translate(c) rotate(angle) scale(1 1/aspect)
+  // translate(−c)". Absent (or 1) ⇒ a circle.
+  aspect?: number
+  angle?: number
   stops: GradientStop[]
 }
 export type GradientPaint = LinearGradientPaint | RadialGradientPaint
@@ -98,6 +187,21 @@ export type GradientPaint = LinearGradientPaint | RadialGradientPaint
 // resize.ts — area-averaged box downscale. Returns input object unchanged when
 // maxDimension is 0 or the image already fits. Never upscales.
 export function resizeToFit(image: RasterImage, maxDimension: number): RasterImage
+// Integer enlargement (supersampling) by bicubic Catmull-Rom interpolation (Keys 1981, a = −½),
+// pixel-center aligned and edge-clamped; colors interpolated premultiplied by alpha, un-premultiplied
+// by the interpolated alpha and clamped. `bounded` (default true) holds each separable pass between
+// the two samples it lies between, so a hard edge rings no new color (the engine bounds color and
+// grayscale runs; bw and centerline threshold the plain cubic). Returns the input object at factor ≤ 1.
+export function upscaleImage(image: RasterImage, factor: number, bounded?: boolean): RasterImage
+// border.ts — art touching the canvas edge (after inkvec's border.rs). touchesBorder: some pixel is not
+// fully opaque and some pixel of the outermost ring has alpha > 0. padImage: the image embedded at
+// (pad, pad) in a canvas `pad` px larger on every side, the new pixels fully transparent. The planar
+// chain traces such art on a BORDER_PAD (2 px) margin — unless the background is custom,
+// omitBackground is set or an edge hint is given — and moves the geometry back by the margin, so the
+// output keeps the source canvas and the hard edge the canvas cuts is measured as an edge.
+export const BORDER_PAD: number // 2
+export function touchesBorder(image: RasterImage): boolean
+export function padImage(image: RasterImage, pad: number): RasterImage
 // Bilinear single-channel resize (e.g. an edge hint → the working resolution).
 export function resizeGray(image: GrayImage, width: number, height: number): GrayImage
 
@@ -115,21 +219,104 @@ export function bilateralFilter(
 // background.ts
 export interface FlattenResult {
   image: RasterImage // RGB composited over white (transparent) or backgroundColor (custom)
-  opaque: BinaryMask | null // null when fully opaque handling; else 1 = alpha >= alphaThreshold
+  opaque: BinaryMask | null // null when fully opaque handling; else the pixels that produce a shape
   alpha: Uint8Array | null // source alpha per pixel (0-255) whenever `opaque` is set; else null
 }
 // background 'auto': behaves as 'transparent' if any pixel alpha < 250, else fully opaque.
 // 'custom': composite over settings.backgroundColor, opaque = null.
+// transparent/auto `opaque`: 1 where alpha >= alphaThreshold, OR — when flat-translucent pixels cover at
+// least 5 % of the image — where the pixel itself is flat-translucent: partly transparent
+// (TRANSLUCENT_MIN_ALPHA..TRANSLUCENT_MAX_ALPHA) with a 4-neighbor within TRANSLUCENT_FLAT_DELTA of its alpha
+// on one axis while the other axis does not ramp through it (one neighbor that much above, the other that
+// much below). A see-through region (shadow, glass, steam) is a partial-alpha plateau or wisp, so it
+// survives a half-coverage cut at any thickness; an anti-aliased opaque rim ramps from clear to solid
+// across the edge, so even a straight rim whose level runs along it stays cut.
+// `scale` (default 1) is the working pixels per source pixel of an enlarged image: the neighbor compared
+// is that many pixels away, so an enlarged rim still climbs too steeply to match.
 export function flattenImage(
   image: RasterImage,
   settings: Pick<VectorizeSettings, 'background' | 'backgroundColor' | 'alphaThreshold'>,
+  scale?: number,
 ): FlattenResult
+// Alpha bounds for a translucent-face pixel: clear below MIN (no shape), solid at/above MAX (opaque content).
+export const TRANSLUCENT_MIN_ALPHA: number // 8
+export const TRANSLUCENT_MAX_ALPHA: number // 250
 // Most common color among the 1px border frame (for omitBackground detection).
 export function borderDominantColor(image: RasterImage): [number, number, number]
+// Signed transparency coverage at the cut level, in [-0.5, 0.5]: positive where alpha ≥ alphaThreshold,
+// each side normalized to ±0.5 like signedThresholdField. The exterior edge the tracer refines onto — at
+// half coverage (128) the true outline of an anti-aliased edge, whose coverage a rasterizer writes to alpha.
+export function alphaCoverageField(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  alphaThreshold: number,
+): GrayImage
+
+// palette.ts
+export interface InteriorPalette {
+  paletteRgb: Uint8Array
+  paletteHex: string[]
+}
+// Per-label color read from the region interiors: the per-channel median of the pixels whose four
+// neighbors share the label (the median of every pixel when fewer than 16 do; the given color for an
+// empty label), so an anti-aliased rim never tints a fill. Runs after the cleanup that settles the labels.
+export function interiorPaletteColors(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): InteriorPalette
+
+// mixture.ts — dissolve labels that are anti-aliased blends of their two dominant
+// neighbors (a rim color k-means gave its own centroid), splitting each pixel to
+// the neighbor its sRGB coverage favors. Only a low-interior band that genuinely
+// straddles both neighbors is dissolved (a chosen tint that fills area is kept).
+// Mutates and returns `labels`; the palette keeps its length. `paletteRgb` is the
+// RGB bytes per label (labels.count*3). No-op below three labels.
+export function absorbMixtureLabels(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+): LabelMap
+// A seam a third region captured, handed back: a run of at most two pixels of label C across which
+// the labels are A and B (different, neither C), every pixel on the A–B blend segment and far from
+// C's color, while C's own color is off that segment, goes to A and B by summed coverage (the pixels
+// from the A side first). Mutates `labels`; returns the pixels moved. segmentRegions runs it after the merge.
+// `scale` (default 1): working pixels per source pixel — the run allowed is two source pixels.
+export function returnSeamPixels(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+  scale?: number,
+): number
+// A thin band of blend colors (a region grown along a soft edge) handed back to the two regions it runs
+// between: a 4-connected region component of mean width ≤ 6 px whose two chief neighbors A and B hold 70 %
+// of its border (the lesser a quarter of that), whose mean color lies inside the A–B sRGB blend segment
+// (within 20 levels) and whose pixels are blends too (70 % within a fifth of the A–B distance — a
+// compressed edge smears its chroma). A hair (nowhere 3 px thick) goes on that; a thicker band must also
+// spread its coverage like a ramp (P80 − P20 ≥ 0.2) and hold no flat core (`gradient` < `flatThreshold`
+// on ≤ 5 % of it), so a stroke in an intermediate color stays. Each pixel goes to A where its coverage
+// of A is ≥ ½, else to B; two passes. Mutates `labels`; returns the pixels moved. segmentRegions runs it
+// last, with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel —
+// the width and the hair test are read in source pixels.
+export function dissolveBlendBands(
+  image: RasterImage,
+  labels: LabelMap,
+  paletteRgb: Uint8Array,
+  gradient: Float32Array, // per-pixel gradient magnitude, w*h
+  flatThreshold: number,
+  scale?: number,
+): number
 
 // convert.ts
 export function toOklabBuffer(image: RasterImage): Float32Array // length w*h*3
 export function toGrayscale(image: RasterImage): GrayImage // Oklab L, [0,1]
+// Rec. 709 luma of the gamma-encoded channels, [0,1]: linear in an anti-aliased two-tone edge's
+// coverage (a rasterizer blends in the encoded values), where lightness is not.
+export function toEncodedLuma(image: RasterImage): GrayImage
+// The encoded value of the neutral gray at Oklab lightness `lightness` (clamped to [0,1]): the level in
+// toEncodedLuma's domain that a lightness threshold stands for.
+export function encodedOfLightness(lightness: number): number
 
 // quantize.ts
 export interface QuantizeOptions {
@@ -170,8 +357,11 @@ export function quantize(image: RasterImage, opts: QuantizeOptions): QuantizeRes
   early exit when max centroid movement < 1e-4. Distances in `colorSpace`
   (oklab: convert via core; rgb: normalized [0,1] channels).
 - Final pass labels every in-mask pixel by nearest centroid.
-- `autoK`: after convergence, greedily merge centroid pairs with Oklab distance
-  < 0.03 (weighted average), relabel.
+- `autoK`: after convergence, greedily merge near-duplicate centroids (weighted
+  average), relabel — in two phases: first the closest pair within 0.03 in Oklab
+  (unchanged), then any remaining pair within CIEDE2000 1.5 (the perceptually
+  even "same ink" floor that catches near-black/near-neutral duplicates Oklab
+  holds apart). The ΔE₀₀ phase only ever adds merges.
 - Palette ordered by pixel count descending. Hex via core `rgbToHex`.
 
 ```ts
@@ -181,8 +371,10 @@ export interface SegmentOptions {
   mergeThreshold?: number // fold regions whose mean Oklab ΔE is under this; default 0.1
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
-  maxRegions?: number // hard cap: fold pairs by least added squared color error (Ward) until met; 0 = none
+  maxRegions?: number // cap: fold pairs by least added squared color error (Ward) until met; 0 = none
+  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions (≤ 64) remain; the count may stay above maxRegions. Off = hard cap (default)
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
+  scale?: number // working pixels per source pixel (supersampling, default 1): gradient read a source pixel apart; sizes/widths in source pixels
 }
 export interface SegmentResult {
   labels: LabelMap // compact 0..count-1; -1 masked-out (mirrors QuantizeResult)
@@ -230,19 +422,71 @@ export function fitRegionGradients(
 
 `segmentRegions` requirements (marker-controlled watershed; Meyer 1991):
 
-- Oklab gradient = max ΔE to any 4-neighbor. Markers are 4-connected components
-  of in-mask pixels with gradient < `flatThreshold`, each seeded with its mean.
+- Oklab gradient = max ΔE to any 4-neighbor (`scale` pixels away on an enlarged
+  image). Markers are 4-connected components of in-mask pixels with gradient <
+  `flatThreshold`, each seeded with its mean.
 - A priority flood (binary min-heap keyed by Oklab distance to the claiming
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
   no third color is ever created on a boundary.
+- A region takes its color from its flat core when the core speaks for it (≥ 4
+  source pixels and ≥ 5 % of the region). A thin region without one (mean width
+  ≤ 6 source pixels) takes the ink its anti-aliased rim blends toward
+  (`unmix.ts`; Levin et al. 2008's compositing model c = α·ink + (1 − α)·field in
+  encoded sRGB, each pixel's field the nearest region of another color, the ink the
+  mean of the most covered quarter of its pixels) when that two-color fit explains
+  its pixels within 10 % of the ink's contrast, the ink is no mixture or overshoot of
+  the regions around it (0.025 sRGB, as `represent.ts`) — by more than its standard
+  error (the RMS spread of the most covered quarter's own residuals over √n) where
+  the median pixel's coverage by the ink is under ½, the region mostly its field's
+  rim — and it stands ≥ 0.25 Oklab from each side it runs along (0.125 within one
+  field); otherwise its mean over every pixel. A thin region whose pixels are
+  blends of two sides of different colors, centered inside the chord between them
+  and spread across it, is a marker seeded inside a ramp: its pixels are flooded
+  again from the regions around it.
 - A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
-  regions under `minRegionArea` (closest first), then consolidates non-adjacent
-  near-duplicates globally; `maxRegions` is a hard cap — pairs fold by least
+  regions under `minRegionArea` (closest first) — a pair judged on its means over
+  every pixel, rims included, except that an unmixed ink stands for its region
+  against any region that is not rim material (a coreless region with no unmixed
+  ink), and a union without a speaking core is painted the size-weighted mean of
+  its parts' inks. Each round ranks and judges its pairs on their distances as it
+  began; a union that would repaint the larger side by ≥ 1.5 ΔE00 must also pass
+  on the regions as they are when it is reached (a line never takes the color of a
+  fill one of its rim fragments sat beside), while a rim folding into the region it
+  borders keeps the round's distance — then consolidates non-adjacent
+  near-duplicates globally (means within the merge's near-duplicate floor in Oklab,
+  or rendered colors under 1.5 ΔE00 — Oklab spreads the darkest values, so a
+  dithered black and a flat one are one color); `maxRegions` caps the count — pairs fold by least
   added squared color error (Ward 1963: |A|·|B|/(|A|+|B|)·ΔE²) until it is met,
-  so a budget spends its damage on the smallest, closest regions first. With
+  so a budget spends its damage on the smallest, closest regions first; with
+  `keepVisibleColors` the cap stops at the first fold that would join a pair
+  ≥ 10 ΔE00 apart, neither a speck (< 16 source pixels), once the count is
+  within twice the budget (and 64), and the count stays above it — its folds a
+  prefix of the hard cap's (the engine sets it from `autoPaletteSize` on stacked
+  layers not grouped by color; grouped, cutout and nested output keep the hard
+  cap). With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
-  close-but-distinct colors stay apart while small regions still fold.
+  close-but-distinct colors stay apart while small regions still fold — unless the
+  smaller is a rare ink: a region the size term alone could fold whose own pixels
+  (within 0.05 sRGB of its color) no mixture of the regions around them explains
+  (≥ max(8, 8/16384 of the image) source pixels with a residual over 0.025 sRGB to the
+  nearest two- or three-color mixture of the 4 most frequent regions within two pixels,
+  and not their resampling overshoot) stays apart from a neighbor whose color is
+  ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017)
+  — or, when its votes reach only half its own pixels (a claw on a large image), from
+  a neighbor ≥ 10 ΔE00 from that mean —
+  and joins a non-adjacent region of that same ink. A pupil or a star a few pixels
+  across keeps its color.
+- After the merge, a seam a third region captured goes back to the two regions
+  it separates (`returnSeamPixels`), and a thin band of blend colors grown along
+  a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
+  region those passes empty is dropped and the labels renumbered in order, so
+  they stay compact.
+- On an image enlarged `scale` times (supersampling), every size and width is
+  read in source pixels — a flat core's minimum, the size-aware merge bound,
+  the rescue's reach and rim allowance, a seam run, a blend band — so an
+  enlarged image segments as its source would, on a finer grid. At `scale` 1
+  (the default) the result is unchanged.
 - Fully deterministic (fixed scan/neighbor order, index tie-break, sorted merge
   candidates). Result mirrors `QuantizeResult` so the engine consumes it
   identically. Selected by `VectorizeSettings.segmentation === 'regions'`.
@@ -328,16 +572,11 @@ export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 // edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
 // (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
 // sampleMask so rim mixtures stay out of the palette. Deterministic.
-export function detectEdges(image: RasterImage, threshold: number): BinaryMask
+export function detectEdges(image: RasterImage, threshold: number, step?: number): BinaryMask // neighbors `step` px apart (default 1; a source pixel of an enlarged image)
 
-// morphology.ts — square structuring element, radius in px.
-export function dilate(mask: BinaryMask, radius: number): BinaryMask
-export function erode(mask: BinaryMask, radius: number): BinaryMask
-// Remove 8-connected foreground specks < minArea AND fill 4-connected background
-// holes < minArea (holes = background components not touching the border).
-export function despeckleMask(mask: BinaryMask, minArea: number): BinaryMask
-// As despeckleMask, but a component overlapping `protect` (1 = protected) is kept
-// even below minArea; `protect` null reproduces despeckleMask byte-for-byte.
+// morphology.ts — remove 8-connected foreground specks < minArea AND fill 4-connected
+// background holes < minArea (holes = background components not touching the border);
+// a component overlapping `protect` (1 = protected; null for none) is kept even below minArea.
 export function despeckleMaskGuided(
   mask: BinaryMask,
   minArea: number,
@@ -357,6 +596,185 @@ bimodal histogram lands between the modes; `zhangSuenThin` reduces a 5px-thick
 line to a connected 1px path; `mergeSmallRegions` removes single-pixel speckles;
 `resizeToFit` halves cleanly and preserves mean color within 1/255.
 
+### The ink front end (`ink` namespace)
+
+```ts
+// inkvec's front end, ported (packages/raster/src/ink): the MDL palette and its labels, the region
+// passes and the residual noise. rgb: Float32Array, 3 per pixel, encoded sRGB over white.
+export namespace ink {
+  function extractPaletteMdl(
+    rgb,
+    w,
+    h,
+    mergeDistance?,
+    maxColors?,
+    ev?: PaletteEvidence,
+    ids?,
+  ): Palette
+  function labelImage(rgb, palette: Palette, ids?): Int32Array // nearest ink per pixel
+  // scale: working pixels per source pixel of an enlarged raster; λ priced over the source's pixels.
+  function paletteEvidence(
+    sigmaNoise: number,
+    pixels: number,
+    soft: boolean,
+    scale?: number,
+  ): PaletteEvidence
+  function isSoftIntake(
+    edgeWidth: number,
+    ringing: number,
+    lossy: boolean,
+    w: number,
+    h: number,
+  ): boolean
+  // Folds components under minSize into a touching label: by most shared edges (inkvec's rule), or with
+  // colors by a contrast-sensitive Potts energy, Σ|c − μ_l|² − 0.5·Σ exp(−|c_p − c_q|²) in encoded sRGB.
+  function despeckle(
+    labels: Int32Array,
+    w,
+    h,
+    minSize,
+    colors?: { px: ArrayLike<number>; inks: Float64Array; channels: number } | null,
+  ): void
+  function absorbBlendSlivers(
+    labels,
+    rgb,
+    alpha: Float32Array | null,
+    w,
+    h,
+    inkRgb: Float64Array,
+    sigma,
+    scale?: number, // thinness read at the source's pixel size on an enlarged raster
+  ): number
+  function reassignBlendPixels(labels, rgb, alpha, w, h, inkRgb, sigma): number
+  function residualSigma(rgb, labels, w, h, inkRgb): number // the noise against the labels
+  // Its boundary population alone: median distance off the two-ink blend segments, uncapped.
+  function boundaryResidual(rgb, labels, w, h, inkRgb): { level: number; samples: number }
+  function splitComponents(
+    labels,
+    w,
+    h,
+  ): { faces: Int32Array; faceLabel: Int32Array; count: number }
+  // The intake: pixels over white and the evidence (edge width, ringing, `soft`) read off them.
+  function intakePixels(image: RasterImage): IntakePixels
+  function intakeEvidence(rgb, w, h, lossy: boolean): IntakeEvidence
+  // Fills (packages/raster/src/fill). The band merge rewrites `labels` in place (a gradient region,
+  // or a flat region with an interior of its own, gets a fresh label past the palette) and returns
+  // one fill per label and the palette entry each came from; the carve cuts swallowed features out
+  // as further labels (pushing onto `fills`/`ink`, refitting their parents) and returns how many.
+  function mergeGradientBands(
+    labels: Int32Array,
+    rgb,
+    w,
+    h,
+    inkRgb,
+    sigmaNoise,
+    lambda,
+    // gradients: false fits every region flat on its own evidence and merges nothing.
+    options?: {
+      regionRecovery?: boolean
+      sameClass?: (a, b) => boolean
+      // The work cap: by default max(MERGE_WORK_FLOOR = 2^24, 32·w·h) units (mergeWorkCap);
+      // inkvec's floor is INKVEC_MERGE_WORK_FLOOR = 2^28.
+      budget?: MergeBudget
+      gradients?: boolean
+      scale?: number // pixel counts (gradient size, shared seam) in source pixels
+      // How far each fit searches for ramps: RAMP_SEARCH (default; a second interior stop on the
+      // three geometries cheapest with one, the radial centers searched once, in linear light)
+      // or INKVEC_SEARCH (inkvec's exhaustive search: every geometry's stops, the centers per space).
+      search?: RampSearch // { stopGeometries: number; radialsPerSpace: boolean }
+    },
+  ): BandMerge // { fills: FillFit[]; ink: number[]; budget }
+  // The same merge as fit steps: it yields each batch of independent fits it needs (every
+  // component on its own, then each wave of unions and each stale refit) and goes on with their
+  // fits, in unit order; fitHere fits every batch on this thread (mergeGradientBands is
+  // fitHere(mergeGradientBandSteps(…))). Unit i of a batch is component a[i] alone (b[i] === a[i])
+  // or the union of a[i] and b[i]; batch.fit(i) fits it on the merge's own state. A BandFits
+  // built from batch.source that applies every batch's `merges` (into, from pairs) in turn fits
+  // any unit identically on another thread — what the engine's helpers do.
+  function mergeGradientBandSteps(/* as mergeGradientBands */): FitSteps<BandMerge>
+  type FitSteps<T> = Generator<FitBatch, T, FillFit[]>
+  interface FitBatch {
+    source: BandFitSource // the merge's fixed inputs, one object per merge
+    merges: Int32Array // since the previous batch
+    a: Int32Array
+    b: Int32Array
+    inner: Uint8Array // blends whose partners all lie in the union testify too
+    work: Float64Array // each unit's unionWork, for balancing
+    fit(unit: number): FillFit
+  }
+  function fitHere<T>(steps: FitSteps<T>): T
+  // { labels (as the merge received them), rgb, w, h, inkRgb: Float64Array, sigmaNoise, lambda,
+  //   regionRecovery, gradients, scale, search }
+  interface BandFitSource {}
+  class BandFits {
+    constructor(source: BandFitSource)
+    apply(merges: Int32Array): void
+    fit(a: number, b: number, inner: boolean): FillFit
+  }
+  function carveResidualFeatures(
+    labels,
+    rgb,
+    w,
+    h,
+    inkRgb,
+    fills: FillFit[],
+    ink: number[],
+    sigmaNoise,
+    lambda,
+    minSize,
+    detailSigma?: number | null,
+    gradients?: boolean, // false: parents refitted flat
+    scale?: number, // a parent's gradient needs MIN_GRADIENT_PIXELS · scale² samples
+  ): number
+  // Flat faces of one ink within sight (CIEDE2000 0.5) of its best-evidenced face take its color.
+  function snapFlatFills(faces, w, h, fills: FillFit[], faceInk, palette: Palette, skip?): number
+  // ½·ln n, the price of one parameter; on a raster enlarged `scale` times, scale²·½·ln(n/scale²)
+  function bicLambda(n: number, scale?: number): number
+  const RAMP_SEARCH: RampSearch // the band merge's default ramp search (see `search` above)
+  const INKVEC_SEARCH: RampSearch // inkvec's exhaustive ramp search
+  function representative(model: FillModel): Rgb // a flat color, or a gradient's mid color
+  function fillToPaint(model: FillModel, tolerance?): GradientPaint | null // null for a flat fill
+  // A fade (opacity and color profiles on one geometry) as one gradient whose stops carry opacities;
+  // null for a flat opacity.
+  function fadeToPaint(alpha: FillModel, color: FillModel, tolerance?): GradientPaint | null
+  function toHex(c: Rgb): string
+  // Transparency carried natively (an ink is a color and an opacity; the clear ground is an ink).
+  // rgb is over white, alpha per pixel in [0,1]; Palette.alpha holds each ink's opacity.
+  function needsNativeAlpha(alpha: Float32Array | null, n: number): boolean // some pixel below OPAQUE
+  function nativeFrontEnd(
+    rgb,
+    alpha: Float32Array,
+    w,
+    h,
+    // edgeNoise: on an intake its edges made soft, the noise they measured against the clean labels.
+    intake: { sigmaNoise: number; soft: boolean; edgeNoise?: number },
+    options?: { mergeDistance?; maxColors?; minRegion?; absorbBlends?; colorFold?; scale? },
+  ): NativeFrontEnd // { palette, labels, sigmaNoise, lambda, sameClass, absorbed, moved }
+  function extractPaletteNative(rgb, alpha, w, h, merge?, maxColors?, ev?, ids?): Palette
+  function labelImageNative(rgb, alpha, palette: Palette, ids?): Int32Array
+  function sameOpacity(palette: Palette): (a: number, b: number) => boolean // the merge's veto
+  // After the carve: a minted feature named by the clear ink whose pixels are mostly paint is renamed
+  // to the nearest visible ink (labelInk edited in place, `from` = label count before the carve).
+  function nameCarvedPaint(labels, rgb, alpha, palette, labelInk: number[], from: number): void
+  // Fades: per label a color and an opacity profile (null: none); relabels each accepted fade and
+  // rewrites its fill as seen over white.
+  function mergeFades(
+    labels,
+    fills,
+    labelInk,
+    rgb,
+    alpha,
+    w,
+    h,
+    palette,
+    sigma,
+    lambda,
+  ): (Fade | null)[]
+  function faceOpacity(fade: Fade | null, palette: Palette, ink: number): number
+  function fadeOverWhite(fade: Fade): FillModel
+}
+```
+
 ## @trazor/trace (for reference — implemented by the main agent)
 
 Labels/masks in, `PathCommand[]` out: the tracer never reads pixel colors and never emits SVG text. The complete export
@@ -372,6 +790,7 @@ export interface TraceCurveOptions {
   optTolerance: number
   cornerThreshold?: number // interior angle (deg) below which a vertex is pinned as a corner
   coverage?: GrayImage // signed boundary field; refines ring vertices onto its zero level (ignored in pixel mode)
+  scale?: number // working pixels per source pixel (supersampling, default 1): the run fit reads its tolerances in source pixels, so a ring is fitted scaled down by this and its curves scaled back up
 }
 export interface TraceMaskOptions extends TraceCurveOptions {
   turnPolicy: TurnPolicy
@@ -400,7 +819,7 @@ export function decomposeMask(
 export function shapesFromPaths(
   paths: CrackPath[],
   opts: TraceCurveOptions,
-  polygons?: readonly (FlatPoints | null)[],
+  polygons?: readonly (RingFit | null)[],
 ): TracedShape[]
 
 // The curve chain for one ring, split at the point where the curve settings first matter.
@@ -411,16 +830,143 @@ export function closedPathToCommands(
   opts: TraceCurveOptions,
   field?: SignedField, // per-chain color field (cutout); takes precedence over opts.coverage
 ): PathCommand[]
-// Optimal polygon + least-squares vertex adjustment (Selinger §2.2, §2.3.1), the first vertex
-// repeated as the last; null when the ring is too short to carry a polygon. Depends on the ring and
-// the field only — never on smoothing, curve optimization or the corner threshold — so a caller may
-// compute it once and re-fit it many times.
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null
-// Corner analysis, smoothing and curve optimization over an adjusted polygon (Selinger §2.3.2, §2.4).
-// `pixel` curveMode and a null polygon emit the exact rectilinear ring instead.
+// The polygon half of the chain, held so the curve half re-fits without re-running the straightness
+// DP. `polygon` is the adjusted optimal polygon (Selinger §2.2, §2.3.1, first vertex repeated as
+// last) that `polygon` curveMode emits and that decides the corners; `geom` is the refined ring
+// geometry the multi-model run fitter samples; `vertices` are the optimal polygon's ascending sample
+// indices into `geom`; `sigma` is the per-point positional uncertainty (px, parallel to `geom`) the
+// fitter weights χ² by — 0.1 for a point refined off the lattice, 0.06 for a lattice point on an
+// axis-aligned stretch of a refined ring's polygon (a hard edge on the grid), 0.5 elsewhere on the
+// lattice; against a field that measures its uncertainty (SignedField.uncertainty) a refined point is
+// held to its own measured σ where that is looser (up to 2 px; a staircase corner read across the
+// diagonal takes the looser of its neighbours'), and a point the field refused to move stays on the
+// lattice at its own σ, from 0.5 to 1; `refined` is whether `geom` was snapped to a sub-pixel field;
+// `extent` is the field's longer side (px, 0 when unknown) for the fitter's description-length weight
+// λ; `coverage` is the observed coverage around a refined ring at most 64 px across, which a
+// whole-ring circle or ellipse must render no worse than the fitted outline it replaces.
+export interface RingFit {
+  polygon: FlatPoints
+  geom: FlatPoints
+  vertices: number[]
+  sigma: number[]
+  refined: boolean
+  extent: number
+  coverage?: CoveragePatch
+}
+// The field read as the coverage of what a ring encloses (its sign taken from the ring's own edges, so a
+// hole's patch is the hole's coverage), over the ring's lattice box plus 2 px: `data[(y − y0)·w + x − x0]`
+// in [0, 1]; `weight` is 1 within 1.5 px of a sample the field moved off the lattice (a measured edge) and
+// 0 elsewhere.
+export interface CoveragePatch {
+  x0: number
+  y0: number
+  w: number
+  h: number
+  data: Float32Array
+  weight: Uint8Array
+  unit?: number // patch pixels per unit of the paths compared with it (a supersampled ring's scale); 1 when absent
+}
+// Optimal polygon + least-squares vertex adjustment + the refined ring geometry (Selinger §2.2,
+// §2.3.1); null when the ring is too short to carry a polygon, or a pixel wide, so that its adjusted
+// polygon would enclose under three quarters of the ring's area, read on the lattice or on the
+// refined ring whichever is less (the caller then emits the exact lattice ring). Depends on the
+// ring, the field and the set-back only — never on smoothing, curve optimization or the corner
+// threshold — so a caller may compute it once and re-fit it many times.
+// `setback` (per ring point, with a field; see refineRingToField) sets an edge hidden under a sheet
+// painted above it back beneath the sheet; such a point is fitted no tighter than a lattice point and
+// stays out of the coverage patch.
+export function ringPolygon(
+  ring: FlatPoints,
+  field?: GrayImage | SignedField,
+  setback?: ArrayLike<number>,
+): RingFit | null
+// Move each lattice boundary point onto the field's coverage = ½ level set by a search along the local
+// normal (inkvec `refine_subpixel`), a clean step inverted through the exact half-plane coverage of a
+// pixel. The normal is the optimal-polygon edge's (`vertices`: ascending indices into `ring`), turning
+// towards each end vertex's own direction; without `vertices` it is read from the point's two
+// neighbours. A point stays put on the image border, with no partial probe (a hard edge), or where the
+// profile never crosses ½; against a field with `uncertainty`, also where the two pixels nearest it
+// across the boundary are both measured, both partial and on the same side of ½ (a ramp the label
+// boundary cut away from its ½ level) and neither a measured probe past them nor the pixel past the
+// nearer one (`along`) crosses ½. `setback`, per ring point, is a signed distance then added along
+// the same normal (positive towards the pixel on the right of the walk, y down). `sigma`, filled per
+// ring point with such a field, is the point's positional uncertainty from those two pixels (their
+// coverage noise over the coverage step between them, in quadrature with a 0.05 px model error,
+// ≤ 2 px; a refused point's adds its distance to the ½ level the ramp extrapolates to, ≤ 1 px, the
+// search's reach), `NaN` where they are not both measured. Returns a new array, parallel to `ring`.
+export function refineRingToField(
+  ring: FlatPoints,
+  field: GrayImage | SignedField,
+  vertices?: readonly number[],
+  setback?: ArrayLike<number>,
+  sigma?: number[],
+): FlatPoints
+// A signed field over the pixel grid in [-0.5, 0.5] (positive on one side, 0 at the edge, ±0.5
+// saturated); `at` reads integer pixels (callers clamp). `uncertainty`, where present, is the
+// coverage noise of a value (image noise over the contrast of the colors it was unmixed between),
+// `NaN` for a value the field fills in rather than reads from the image; `along(x, y, rx, ry)`, where
+// present, reads pixel (x, y) between the two colors the field reads pixel (rx, ry) between (`NaN`
+// where (rx, ry) is not read from the image).
+export interface SignedField {
+  width: number
+  height: number
+  at(x: number, y: number): number
+  uncertainty?(x: number, y: number): number
+  along?(x: number, y: number, rx: number, ry: number): number
+}
+// Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
+// reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
+// 4-neighbor on the other side: left, right, up, down) — a translucent paint included, whose alpha is
+// its opacity, not an edge; an edge against a pixel cut away as transparent reads the transparency
+// coverage (`alpha`) where the source is not solid; ±0.5 deep inside/outside; identical palette colors
+// read as a hard edge. `label` is the color painted inside the mask (a lifted island's label; −1 for a
+// base layer: each inside pixel's own). Its `uncertainty` is the image noise (Immerkær's Laplacian
+// estimate of the working image's luma) over the contrast of the projected pair, the noise alone for
+// an alpha reading, and `NaN` for a pixel with no neighbour across the mask or two coincident colors;
+// its `along` reads any pixel between the pair a rim pixel is read between.
+export interface LayerFieldSource {
+  width: number
+  height: number
+  mask: Uint8Array // 1 inside the layer
+  labels: Int32Array // −1 = unlabeled (transparent)
+  pixels: Uint8ClampedArray // working image RGBA
+  paletteRgb: Uint8Array // per-label RGB
+  label: number
+  alpha?: GrayImage // alphaCoverageField
+}
+export function layerField(src: LayerFieldSource): SignedField
+// Coverage of pixel `pi` (byte offset into RGBA) by palette color `ai` against `bi` (byte offsets):
+// the least-squares blend weight (P − b)·(a − b)/|a − b|² in the encoded sRGB values a rasterizer
+// blends in, clamped to [0, 1]; −1 when the two colors coincide.
+export function coverageOf(
+  pixels: Uint8ClampedArray,
+  pi: number,
+  palette: Uint8Array,
+  ai: number,
+  bi: number,
+): number
+// Signed color-boundary field between two region colors (cutout chain refinement), in [-0.5, 0.5]:
+// −0.5 deep in `left`, +0.5 deep in `right`, 0 at the 50% mix, inverted in encoded sRGB with
+// `coverageOf`. `pixels` is the working image RGBA; `palette` the per-label RGB; `left`/`right` are
+// label ids. A hard edge (no intermediate sample) reads ±0.5, so it stays on the lattice.
+export function pairwiseField(
+  pixels: Uint8ClampedArray,
+  palette: Uint8Array,
+  width: number,
+  height: number,
+  left: number,
+  right: number,
+): SignedField
+export function signedFieldOf(field: GrayImage | SignedField): SignedField // a gray field as a SignedField
+export function negatedField(field: GrayImage | SignedField): SignedField // the same edge, sign flipped
+// The curve half of the chain from a RingFit. In `spline` mode each smooth run (the refined ring
+// points between two corners) is fitted directly to those points — line / circular arc / G1 cubic,
+// merged by description length (Selinger 2003 §2.2 for the segmentation, inkvec's multi-model fit for
+// the per-run curve) — carrying none of Selinger's chord-adjustment bias. `polygon` curveMode emits
+// the adjusted polygon; `pixel` curveMode and a null fit emit the exact rectilinear ring.
 export function polygonToCommands(
   ring: FlatPoints,
-  polygon: FlatPoints | null,
+  fit: RingFit | null,
   opts: TraceCurveOptions,
 ): PathCommand[]
 ```
@@ -460,11 +1006,128 @@ export interface ChainFit {
 export function extractChains(labels: LabelMap): ChainNetwork
 // Fit chain `index`. Every chain is independent, so a caller may fit them in any order or in
 // parallel (the engine's helper pool does) and place the results by index.
+// `opts.colorField.alpha` (an alphaCoverageField) refines a chain with an unlabeled side onto the
+// transparency coverage's zero contour; without it such a chain stays on the lattice.
 export function fitChain(network: ChainNetwork, index: number, opts: TraceCutoutOptions): ChainFit
 export function fitChains(network: ChainNetwork, opts: TraceCutoutOptions): ChainFit[]
 // Regions from the fitted chains: each ring walks the chain instances around it, reusing the
 // identical fit (reversed for the left-hand instance). `fits` is parallel to `network.chains`.
 export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]): RegionShape[]
+// Planar faces from the same fitted chains, for `nested` layering. Each connected region contributes
+// one face per outer ring, carrying that ring plus only the holes that border transparency (a labeled
+// hole is dropped — the child face painted over it in containment order repaints its area); `parent`
+// indexes the containing face (−1 for a root). Painted parents-first with children on top, the faces
+// tile exactly, and a boundary between nested faces is drawn once (as the child's outline).
+export interface FaceShape {
+  label: number
+  commands: PathCommand[] // the face's outer ring (+ transparent holes), one or more M…Z subpaths
+  area: number // enclosed area of the outer ring, px²
+  parent: number // index of the containing face, or −1
+}
+export function assembleFaces(network: ChainNetwork, fits: readonly ChainFit[]): FaceShape[]
+```
+
+## @trazor/trace — planar-map core
+
+The geometry chain every color mode will share (`packages/trace/src/planar`, `solve`, `fit`):
+faces → planar map → sub-pixel → junctions → boundary solve → fit → repair → rings. Its data
+model is `planar/types.ts`. Coordinates are y down with lattice corners on integers; colors are
+premultiplied encoded sRGB in [0, 1]. Exported so far:
+
+```ts
+export const OUTSIDE: -1 // the virtual face beyond the image frame
+export const CLEAR: -1 // the label of a transparent face
+// A face is one 4-connected component of one label (transparency included, as CLEAR).
+export interface Faces { width; height; ids: Int32Array; count; label: Int32Array; area: Uint32Array }
+// A boundary between exactly two faces, stored once: interleaved points, per-point sigma (px) and
+// fixed (1 on the frame and at an open edge's ends, which move only with their node), the faces on
+// its left/right (screen view, stored direction), its start/end nodes (-1 for a closed loop).
+export interface PlanarEdge { points; sigma; fixed: Uint8Array; left; right; start; end; closed }
+// A lattice corner where three or more faces meet; `ends` = 2·edge (start) / 2·edge+1 (end),
+// counter-clockwise on screen.
+export interface PlanarNode { x; y; ends: number[] }
+export interface PlanarMap { width; height; faces: Faces; edges: PlanarEdge[]; nodes: PlanarNode[] }
+// The core's image: premultiplied encoded sRGB RGBA in [0, 1], four floats per pixel.
+export interface PremultipliedImage { width; height; data: Float32Array }
+// A face's paint: premultiplied r, g, b and alpha; `at` evaluates a gradient at a point.
+export interface FaceFill { r; g; b; a; at?: (x, y, out: Float64Array) => void }
+// The fit's objective 0.5·χ² + λ·params, λ = ln(max(e, extent / precision)).
+export interface FitConfig { tau; lambda }
+export function fitConfig(extent: number, precision?: number, tau?: number): FitConfig
+// One edge's description: absolute L/C/A segments from (x0, y0), its params and χ².
+export interface FittedEdge { x0; y0; segments: PathCommand[]; closed; params; chi2; primitive? }
+export type EdgePrimitive = circle | ellipse | rect (with corner radius and rotation, radians)
+// A closed walk over edges with the face on its left on every ring (outer anticlockwise on
+// screen, holes clockwise); a face lists its outer ring first.
+export interface FaceRing { edges: number[]; reversed: boolean[]; outer: boolean }
+export function syncNodes(map: PlanarMap): void // open edges' end points from their nodes
+export function splitFaces(labels: LabelMap): Faces
+export function buildPlanarMap(faces: Faces): PlanarMap
+export function faceRings(map: PlanarMap): FaceRing[][] // per face
+// parent: smallest containing face (-1 for a root); ringDepth: 2·depth outer, 2·depth+1 hole.
+export function faceNesting(map: PlanarMap, rings: FaceRing[][]): FaceNesting
+export function faceRingPolygon(map: PlanarMap, ring: FaceRing): Float64Array
+// The rings of the union of the faces with inRegion[face] = 1, the union on their left.
+export function regionRings(map: PlanarMap, inRegion: Uint8Array): FaceRing[]
+export function innerFaces(map: PlanarMap, ring: FaceRing): number[]
+// Sub-pixel: each non-fixed point moved ≤ 1 px along its normal to the ½ level of its two faces'
+// coverage (unmixed over premultiplied RGBA against fills[face]), with its σ; an edge against
+// OUTSIDE or a face without a fill is left as is. sigmaNoise defaults to imageNoise(image).
+export interface SubpixelOptions { sigmaNoise?; simplifyFaint? }
+export function measureSubpixel(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SubpixelMeasurement
+export function applySubpixel(map: PlanarMap, measured: SubpixelMeasurement): void
+export function refineSubpixel(map, image, fills, opts?): void // measure, then apply
+export function imageNoise(image: PremultipliedImage): number // per-channel σ, encoded sRGB units
+// Each node to where its edges' end tangents meet (or a taper vanishes), within 1.5 px and the
+// image; every incident edge end takes that one position and σ.
+export function refineJunctions(map: PlanarMap): void
+// Every point and node moved at once (≤ 1 px, frame points along the frame) so the map's exact
+// box coverage of fills matches image, by L-BFGS over independent parts; folds it made are
+// backed off. On 'solved' points and nodes are overwritten (sigmas kept); otherwise untouched.
+// source: a map built on a copy enlarged `scale` times is solved against the source's own pixels
+// (each one's exact coverage), the steps, the 1 px reach and the anchor in the map's pixels.
+// kernel: run the descent in the WebAssembly kernel instead of TypeScript; the same positions,
+// bit for bit (the band, the parts and the fold guard stay in TypeScript). A descent the kernel
+// cannot run (its memory refused, a trap) runs in TypeScript.
+export interface SolveOptions { maxIterations?; iterationBudget?; tableBudget?; onStep?; source?: { image: PremultipliedImage; scale: number }; kernel?: BandKernel }
+export interface SolveReport { outcome: 'solved' | 'degenerate' | 'over-budget' | 'no-residual' | 'no-gain'; before; after; iters; moved; scale; parts; evals }
+export function solveBoundaries(map, image: PremultipliedImage, fills: readonly FaceFill[], opts?): SolveReport
+// The boundary solve's descent compiled to WebAssembly (crates/solve, built by `npm run build:wasm`
+// into packages/trace/wasm/solve.wasm, exported as `@trazor/trace/solve.wasm`): the module's bytes or
+// a compiled WebAssembly.Module in, a kernel for SolveOptions.kernel out. It imports only its memory;
+// each solve runs in a fresh instance over a memory sized for it (solveBytes), which never grows (a
+// grown memory detaches a buffer, which in V8 slows the thread's typed arrays). Node and Web Workers
+// alike; one solve at a time. `measure` records `timings` of the last solve (ms; bytes copied in;
+// bytes the memory had to grow by, 0 when sized right).
+export class BandKernel { measure: boolean; readonly timings: KernelTimings /* descend(…): solveBoundaries' own call */ }
+export interface KernelDescentOptions { maxStep?; maxTotal?; maxIters?; iterationBudget?; fixedEnergy?; onStep? }
+export interface KernelTimings { instantiate: number; copyIn: number; solve: number; copyOut: number; bytes: number; grown: number }
+export function loadBandKernel(source: BufferSource | WebAssembly.Module): Promise<BandKernel>
+// One boundary (interleaved points, per-point σ, px) fitted by the multimodel DP: absolute L/C/A
+// segments, an open run ending exactly at its last point, a closed one back at (x0, y0); forced
+// point indices are vertices, maxSpan caps a segment's points, postFit runs the post-fit passes.
+export function fitPolyline(points: Float64Array, sigma: Float64Array, closed: boolean, cfg: FitConfig, opts?: FitPolylineOptions): FittedEdge
+// The post-fit passes on one fitted edge (free-cubic merge, corner sharpening; research snaps
+// on request): the same object back when nothing changes; an open edge's ends never move.
+export function postFitPasses(edge: FittedEdge, points, sigma, cfg: FitConfig, opts?: PostFitOptions): FittedEdge
+// One planar edge described: the program's curve (post-fit passes included) or a whole primitive
+// when strictly cheaper; an open edge ends exactly on its nodes; forced point indices pin
+// vertices (no primitive then); lambdaScale prices this edge's parameters. The map is not written.
+export function fitEdge(map: PlanarMap, edgeIndex: number, cfg: FitConfig, opts?: { forced?: readonly number[]; lambdaScale?: number }): FittedEdge
+export function fitEdges(map: PlanarMap, cfg: FitConfig, opts?: { lambdaScales?: readonly number[] }): FittedEdge[]
+// fitEdge split at the map: an edge's fit reads only its points (an open edge's ends at its
+// nodes), their σ and its closed flag, plus the frame's size and cfg — so a fit made from copies
+// of these elsewhere (a helper worker) equals fitEdge's. fitEdge(map, k, cfg, opts) is
+// fitEdgeInput(edgeFitInput(map, k), map, cfg, opts). The inputs are not written.
+export interface EdgeFitInput { points: Float64Array; sigma: Float64Array; closed: boolean }
+export function edgeFitInput(map: PlanarMap, edgeIndex: number): EdgeFitInput
+export function fitEdgeInput(input: EdgeFitInput, frame: { width: number; height: number }, cfg: FitConfig, opts?: { forced?: readonly number[]; lambdaScale?: number }): FittedEdge
+// An open run (interleaved points, per-point σ) fitted with both ends pinned, no primitive.
+export function fitRun(points: Float64Array, sigma: Float64Array, cfg: FitConfig): FittedEdge
+// Ring crossings between independent edge fits repaired by refitting only the guilty edges
+// (pinned at the crossing or span-capped, by cost), up to 10 rounds; an untouched edge keeps its
+// fit object. rings: faceRings(map); same cfg as fitEdges. Neither map nor fits is modified.
+export function repairCrossings(map: PlanarMap, rings: readonly FaceRing[][], fits: readonly FittedEdge[], cfg: FitConfig): { fits: FittedEdge[]; report: RepairReport }
 ```
 
 ## @trazor/svg
@@ -472,8 +1135,17 @@ export function assembleRegions(network: ChainNetwork, fits: readonly ChainFit[]
 ```ts
 export interface SvgShape {
   commands: PathCommand[] // may contain several M…Z subpaths
+  // The exact whole-shape primitive the commands draw (one closed loop, no holes), when the
+  // tracer knows it: written as <circle>/<ellipse>/<rect> when optimizing, even with
+  // roundPrimitives off (nothing is approximated).
+  primitive?: Primitive
+  // The one stroked primitive that paints exactly the ring the commands draw (an outline and
+  // its one hole, of one width; annulusStroke): written as that element, unfilled and stroked
+  // in the fill color, when optimizing and the fill is one opaque color.
+  strokedPrimitive?: StrokedPrimitive
   fill?: string // '#rrggbb' | 'none' | 'url(#id)' (a doc.defs gradient)
   fillRule?: 'nonzero' | 'evenodd'
+  fillOpacity?: number // [0,1]; emitted as fill-opacity when < 1 (a translucent face's ink at its alpha)
   stroke?: string
   strokeWidth?: number
   strokeLinecap?: 'butt' | 'round' | 'square'
@@ -518,6 +1190,11 @@ export interface SerializeOptions {
   // relative/H/V `d`, collinear-point removal, exact <rect> detection, and
   // merging consecutive same-paint paths (never larger, same geometry); default false
   optimizePaths?: boolean
+  // when optimizing, write `d` in the compact spelling: no space around command letters, a
+  // repeated letter dropped (never after M/m), fractions without their leading zero (`.5`), no
+  // separator before a fraction that follows a number holding a decimal point (`.5.5`); arc flags
+  // stay set off by spaces. Same geometry; the engine sets it for px documents. Default false.
+  compactPaths?: boolean
   // also emit <circle>/<ellipse> for near-round loops and collapse near-circular
   // Bézier runs to `A` arcs (both sub-pixel); keep off for cutout mode, where a
   // neighbor still traces the Bézier edge; default false
@@ -532,7 +1209,7 @@ export interface SerializeOptions {
 }
 // `parts` (optional) supplies already-serialized shapes by shape index — see shapeOut. Any index it
 // does not cover is serialized here, so serializeSvg(doc, opts) and
-// serializeSvg(doc, opts, doc.shapes.map((s) => shapeOut(s, opts.precision, optimize, round)))
+// serializeSvg(doc, opts, doc.shapes.map((s) => shapeOut(s, opts.precision, optimize, round, compact)))
 // are byte-identical.
 export function serializeSvg(
   doc: SvgDocument,
@@ -552,11 +1229,17 @@ export function shapeOut(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact?: boolean, // the compact spelling (SerializeOptions.compactPaths); default false
 ): ShapeOut | null
 export function buildPathData(commands: readonly PathCommand[], precision: number): string
 // Shortest `d` for the same geometry as buildPathData: per-command absolute vs
-// relative vs H/V selection, quantized on the output grid (drift-free deltas).
-export function optimizePathData(commands: readonly PathCommand[], precision: number): string
+// relative vs H/V selection, quantized on the output grid (drift-free deltas); `compact` selects the
+// compact spelling (see SerializeOptions.compactPaths).
+export function optimizePathData(
+  commands: readonly PathCommand[],
+  precision: number,
+  compact?: boolean,
+): string
 // Lossless geometry cleanup: exact collinear-vertex removal on the output grid.
 export function cleanCommands(commands: readonly PathCommand[], precision: number): PathCommand[]
 // Collapse every run of ≥2 consecutive cubics that lie on one circle or ellipse
@@ -569,6 +1252,20 @@ export type Primitive =
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; angle?: number } // angle (deg) ⇒ rotated, emitted as <ellipse> + rotate transform
   | { kind: 'polygon'; points: { x: number; y: number }[] } // regularized regular polygon / star → <polygon>
+export interface StrokedPrimitive {
+  primitive: Primitive
+  width: number
+} // midline + stroke width (px)
+// Displacement (px) within which a ring of one width is one stroke of its two outlines.
+export const STROKE_TOL = 0.1
+// The one stroked primitive painting exactly the ring between `outer` and `inner` (concentric
+// circles, or a rectangle — square or rounded — and its offset hole), or null: circles and
+// rounded rectangles are offsets of their own kind, an ellipse's offset is not an ellipse.
+export function annulusStroke(
+  outer: Primitive,
+  inner: Primitive,
+  tol?: number,
+): StrokedPrimitive | null
 // The primitive a single closed subpath represents, or null. `allowRound` gates
 // the sub-pixel circle/ellipse and regular-polygon/star matches; rectangles are always exact.
 export function detectPrimitive(
@@ -707,18 +1404,6 @@ export class CleanupEnhancer {
   run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ image: RasterImage }>
   dispose(): void
 }
-
-export class FieldEnhancer {
-  // Optional signed-coverage pre-pass (docs/SIGNED_FIELD_PREPASS.md). Tier-1-touching
-  // (feeds sub-pixel refinement); preferBackend 'wasm' pins reproducible mode.
-  static create(opts?: {
-    preferBackend?: MlBackend
-    onProgress?: MlProgressFn
-  }): Promise<FieldEnhancer>
-  // Coverage field ([0,1] GrayImage, 0.5 = boundary) at the input resolution; large images are tiled.
-  run(image: RasterImage, opts?: { onProgress?: MlProgressFn }): Promise<{ field: GrayImage }>
-  dispose(): void
-}
 ```
 
 Implementation notes:
@@ -773,7 +1458,6 @@ export type WorkerInMessage =
       buffer: ArrayBuffer
       settings: VectorizeSettings
       edgeHint?: ArrayBuffer // optional Float32 plane, width×height, transferred
-      coverageHint?: ArrayBuffer // optional learned coverage field ([0,1]), Float32 plane, transferred
       imageId?: number // stable per working-image identity; lets the worker reuse cached preprocess/palette work
       trace?: boolean // opt into per-stage tracing, streamed back as `trace-step`
     }
@@ -782,6 +1466,10 @@ export type WorkerInMessage =
   // installHelperHandler). The worker builds a HelperPool from them and traces in parallel from the
   // next run on; an empty list returns it to the sequential path.
   | { type: 'helpers'; ports: HelperEndpoint[] }
+  // Hand the worker the boundary solve's WebAssembly kernel, compiled (WebAssembly.compile of
+  // @trazor/trace/solve.wasm); later runs solve the planar chain's boundary in it (same output).
+  // null returns to the TypeScript descent; a module that fails to instantiate is ignored.
+  | { type: 'solve-kernel'; module: WebAssembly.Module | null }
 export type WorkerOutMessage =
   | { type: 'progress'; id: number; stage: StageId; overall: number }
   | { type: 'trace-step'; id: number; step: TraceStep } // one recorded pipeline step (raster snapshots transferred)
@@ -801,19 +1489,16 @@ export class TrazorClient {
     settings: VectorizeSettings,
     onProgress?: (stage: StageId, overall: number) => void,
     edgeHint?: GrayImage, // optional boundary hint, same dimensions as `image`
-    coverageHint?: GrayImage, // optional learned coverage field (bw sub-pixel refinement), same dimensions
     onTrace?: (step: TraceStep) => void, // opt-in step tracer; presence requests tracing from the worker
   ): Promise<VectorizeResult>
   dispose(): void
 }
-export function createNativeEngine(): TrazorEngine
 export function vectorize(
   image: RasterImage,
   settings: VectorizeSettings,
   // ctx.edgeHint (GrayImage, optional) is an on-device boundary hint honored in
-  // bw/color modes to protect detail; ctx.coverageHint (GrayImage [0,1], optional)
-  // is a learned signed-coverage field used as the bw sub-pixel `coverage`
-  // (Tier-1-touching). Absent, tracing is byte-identical to the classical path.
+  // bw/color modes to protect detail. Absent, tracing is byte-identical to the
+  // classical path.
   ctx?: EngineContext,
   // Optional worker-side reuse of preprocess/palette intermediates across runs.
   // The worker owns a single StageCache and passes a stable imageId; reuse is
@@ -826,7 +1511,34 @@ export function vectorize(
   // helpers (optional) farms the trace and the per-shape serialization out to a HelperPool. Absent or
   // empty, the whole pipeline runs on this thread — the default. Results are placed by unit index,
   // so the SVG text, the shapes and `document` are byte-identical to a sequential run.
-  opts?: { imageId?: number; cache?: StageCache; withDocument?: boolean; helpers?: HelperPool },
+  // geometry overrides settings.geometry for this run when set (a probe's choice; unset, the
+  // settings choose): 'classic' or 'planar', the planar-map core whose shared fitted edges every
+  // layering walks — cutout as one compound path per label, nested as faces over their parents,
+  // stacked as unions of faces (packages/engine/src/planar.ts). The stage cache keys the chain and
+  // its front end.
+  opts?: {
+    imageId?: number
+    cache?: StageCache
+    withDocument?: boolean
+    helpers?: HelperPool
+    geometry?: 'classic' | 'planar'
+    // Overrides settings.frontEnd when set (read only on the planar chain). The planar chain's
+    // front end for color images: 'classic' or 'ink', inkvec's MDL
+    // palette and region passes (packages/engine/src/ink.ts, @trazor/raster's `ink`), then each
+    // region's fill from its own pixels (with `settings.gradients` a gradient where one pays, and
+    // a ramp's bands merged), the carve and the flat-fill snap, each label one paint (a flat color
+    // or a gradient). A transparent image runs it over two grounds: the clear ink is transparent,
+    // a wash paints its straight color at a fill opacity, a fade is a gradient whose stops carry
+    // opacities; the stacked sheets beneath a translucent face end at its edge. In development.
+    frontEnd?: 'classic' | 'ink'
+    // Called with the planar map after each geometry stage of the planar chain (`lattice`,
+    // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a hook for
+    // stage-by-stage inspection tools. The map is live; copy what you keep.
+    onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+    // Runs the planar chain's boundary solve descent in this WebAssembly kernel (loadBandKernel of
+    // @trazor/trace); the same SVG. Absent, the TypeScript descent runs — the default.
+    solveKernel?: BandKernel
+  },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a
 // small LRU of palette/label entries (keyed internally by imageId + settings
@@ -890,6 +1602,7 @@ export interface VectorShape {
   commands: PathCommand[]
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
+  fillOpacity?: number // [0,1], present only on a translucent face (absent ⇒ 1)
   stroke?: string
   strokeWidth?: number
   layerId?: number
@@ -956,16 +1669,29 @@ export interface TraceChart {
 //   fit-chains   — one cutout boundary chain: fit it once, with the junction endpoints both
 //                  neighbours reuse. No serialization — the coordinator assembles the regions from
 //                  the shared fits, which is what keeps the partition seam-free.
+//   fit-edges    — one edge of the planar chain's map: its fit (fitEdgeInput), curve or whole
+//                  primitive, from the points, σ and objective the coordinator ships once per run
+//                  (each helper only its own edges). The coordinator fits a share of the edges
+//                  itself while the helpers fit theirs, then repairs the crossings and emits every
+//                  layering from the fits, placed by edge index.
+//   fit-bands    — one fit of the ink front end's band merge (ink.mergeGradientBandSteps): a
+//                  component, or the union of two. Each helper is sent the merge's fixed inputs
+//                  once and every batch's merges, and rebuilds the merge's components
+//                  (ink.BandFits); the coordinator fits a share of each batch itself (the heaviest
+//                  unit first) and the merge goes on from the fits, placed by unit index.
 // Centerline stays on the coordinator: the skeleton graph walk is one indivisible pass.
 //
 // Units are partitioned round-robin by unit index — deterministic, so a re-run hands each unit to
-// the helper that already holds its cache — and results are handed back strictly in unit order
-// whatever order the helpers finish in. A helper answers in batches of `batch` units and yields its
+// the helper that already holds its cache — except planar edges, whose fits cost from microseconds
+// to a second: they go by estimated cost (heaviest first to the least-loaded owner) to the helpers
+// and the coordinator, which takes a share like one more helper — a function of the map alone. Results are handed back strictly in unit order whatever order the
+// helpers finish in. A helper answers in batches of `batch` units and yields its
 // event loop once per batch, so a cancel interleaves with a running job.
 //
 // MEMORY: each helper holds its own copy of what it is sent — the working image (4·w·h bytes, 45 MB
 // at 4096×2731), plus for stacked the label map (4·w·h) and its pixel buckets, for bw its share of
-// the rings and the coverage field (4·w·h), and for cutout the Oklab buffer it derives (12·w·h) —
+// the rings and the coverage field (4·w·h), for cutout the Oklab buffer it derives (12·w·h), and
+// for the ink front end the band merge's image, labels, components and evidence (about 37·w·h) —
 // on top of its ring and polygon caches. Size the pool for the image, not only for the core count.
 export interface HelperEndpoint {
   // A DOM Worker, a MessagePort, and a Node worker_threads MessagePort all satisfy this (a Node
@@ -996,7 +1722,6 @@ export interface PoolJobOptions {
   affinityKey?: string
   onProgress?: (stage: StageId, overall: number) => void
   edgeHint?: GrayImage
-  coverageHint?: GrayImage
 }
 export class TrazorPool {
   constructor(createWorker: () => Worker, size: number)
@@ -1086,7 +1811,6 @@ export interface ParamSpec {
 export type TunableKey = /* keyof VectorizeSettings minus identity/cosmetic fields */
 export const TUNABLE_PARAMS: readonly ParamSpec[]
 export const DEFAULT_FREE: readonly TunableKey[] // the non-opt-in keys
-export function specFor(key: TunableKey): ParamSpec
 export function applicableParams(keys: readonly TunableKey[], mode: VectorizeMode, s: VectorizeSettings): ParamSpec[]
 export function toUnit(spec: ParamSpec, value: number): number // value → [0,1] search coord
 export function fromUnit(spec: ParamSpec, unit: number): number // [0,1] → valid value
@@ -1160,6 +1884,14 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
+// The geometry chain: color, grayscale or bw art on stacked layers not grouped by color, from an
+// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
+// geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation
+// 'regions') whose longest side is at most 512 px with frontEnd 'ink' and gradients on (reason
+// `planarCartoon`; a larger cartoon stays classic), other art the same (reason
+// `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within them).
+// Black & white art traced at more than 640 × 640 pixels, centerline, cutout, nested and grouped
+// output keep the classic chain.
 export interface PaletteSuggestion {
   id: string
   label: string

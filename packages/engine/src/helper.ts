@@ -1,8 +1,11 @@
 import type { BinaryMask, GrayImage, PathCommand, RasterImage } from '@trazor/core'
-import { toOklabBuffer } from '@trazor/raster'
+import { placePathCommands } from '@trazor/core'
+import { alphaCoverageField, ink } from '@trazor/raster'
 import {
   decomposeMask,
   fitChain,
+  fitEdgeInput,
+  layerField,
   polygonToCommands,
   ringPolygon,
   shapesFromPaths,
@@ -11,16 +14,23 @@ import type {
   BoundaryChain,
   ChainNetwork,
   CrackPath,
-  FlatPoints,
+  EdgeFitInput,
+  FitConfig,
+  FittedEdge,
+  RingFit,
+  SignedField,
   TraceCurveOptions,
   TraceCutoutOptions,
 } from '@trazor/trace'
 import { fitArcs, shapeOut } from '@trazor/svg'
 import type { ShapeOut } from '@trazor/svg'
-import { flatTransferables, packCommands, runAt, runCount } from './flat'
+import { flatTransferables, packCommands, packFits, runAt, runCount } from './flat'
 import type {
+  HelperBandBatchMessage,
+  HelperBandsMessage,
   HelperChainsMessage,
   HelperCurveOptions,
+  HelperEdgesMessage,
   HelperImageMessage,
   HelperInMessage,
   HelperJobMessage,
@@ -29,11 +39,24 @@ import type {
   HelperStackMessage,
   WorkerScope,
 } from './protocol'
+import { sheetSetback } from './setback'
 
-/** The working image plus the Oklab buffer cutout chain fitting reads from it. */
+/**
+ * The working image whose RGBA bytes boundary refinement reads directly, and,
+ * under transparent handling, the source alpha with the coverage field built
+ * from it at the job's cut level.
+ */
 interface ImageState {
   image: RasterImage
-  oklab?: Float32Array
+  alpha?: Uint8Array
+  alphaField?: GrayImage
+  alphaLevel?: number
+}
+
+/** What a stacked layer's rings are refined against: its color edges and, if any, the transparency coverage. */
+interface LayerRefine {
+  paletteRgb: Uint8Array
+  alpha?: GrayImage
 }
 
 /**
@@ -58,7 +81,7 @@ interface StackState {
   mask: BinaryMask
   flood: Int32Array
   /** Per layer index: its decomposed rings and their adjusted polygons. */
-  layers: Map<number, { paths: CrackPath[]; polygons?: (FlatPoints | null)[] }>
+  layers: Map<number, { paths: CrackPath[]; polygons?: (RingFit | null)[] }>
 }
 
 /** The bw mask's rings, with each one's adjusted polygon once built. */
@@ -68,7 +91,7 @@ interface RingState {
   local: Map<number, number>
   coverage?: GrayImage
   /** Local ring index ⇒ its adjusted polygon (`null` for a ring too short). */
-  polygons: (FlatPoints | null | undefined)[]
+  polygons: (RingFit | null | undefined)[]
 }
 
 /** One helper's share of the boundary chain network (cutout). */
@@ -77,6 +100,26 @@ interface ChainState {
   network: ChainNetwork
   /** Global chain index ⇒ local chain index. */
   local: Map<number, number>
+}
+
+/** One helper's share of the planar map's edges, as their fits read them. */
+interface EdgeState {
+  key: string
+  frame: { width: number; height: number }
+  cfg: FitConfig
+  /** Global edge index ⇒ local edge index. */
+  local: Map<number, number>
+  edges: EdgeFitInput[]
+}
+
+/**
+ * A band merge's components as the coordinator's merge holds them, kept in step
+ * by each batch's merges, and the batch whose units the next job fits.
+ */
+interface BandState {
+  key: string
+  fits: ink.BandFits
+  batch: { key: string; a: Int32Array; b: Int32Array; inner: Uint8Array } | null
 }
 
 /**
@@ -98,6 +141,8 @@ export function installHelperHandler(scope: WorkerScope): void {
   let stackState: StackState | null = null
   let ringState: RingState | null = null
   let chainState: ChainState | null = null
+  let edgeState: EdgeState | null = null
+  let bandState: BandState | null = null
   const cancelled = new Set<number>()
 
   const post = (msg: HelperOutMessage, transfer?: Transferable[]): void =>
@@ -118,6 +163,15 @@ export function installHelperHandler(scope: WorkerScope): void {
       case 'helper-chains':
         chainState = takeChains(msg)
         return
+      case 'helper-edges':
+        edgeState = takeEdges(msg)
+        return
+      case 'helper-bands':
+        bandState = { key: msg.key, fits: new ink.BandFits(bandSource(msg)), batch: null }
+        return
+      case 'helper-band-batch':
+        takeBandBatch(msg)
+        return
       case 'helper-cancel':
         cancelled.add(msg.id)
         return
@@ -129,7 +183,13 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   async function runJob(job: HelperJobMessage): Promise<void> {
     const size = Math.max(1, job.batch)
-    const serialize = job.kind !== 'fit-chains' && job.serialize !== undefined
+    const serialize =
+      job.kind !== 'fit-chains' &&
+      job.kind !== 'fit-edges' &&
+      job.kind !== 'fit-bands' &&
+      job.serialize !== undefined
+    const edgeJob = job.kind === 'fit-edges'
+    const bandJob = job.kind === 'fit-bands'
     try {
       // The option objects are the same for every unit of the job — a chain job
       // has hundreds of units, so they are built once, not per unit.
@@ -140,9 +200,25 @@ export function installHelperHandler(scope: WorkerScope): void {
         const counts: number[] = []
         const svgCounts: number[] | undefined = serialize ? [] : undefined
         const runs: PathCommand[][] = []
+        const fits: FittedEdge[] = []
+        const fills: ink.FillFit[] = []
         const svg: (ShapeOut | null)[] | undefined = serialize ? [] : undefined
         for (let i = at; i < Math.min(at + size, job.units.length); i++) {
           const unit = job.units[i]
+          if (bandJob) {
+            fills.push(fitOneBand(unit))
+            checkState(job)
+            units.push(unit)
+            counts.push(0)
+            continue
+          }
+          if (edgeJob) {
+            fits.push(fitOneEdge(unit))
+            checkState(job)
+            units.push(unit)
+            counts.push(1)
+            continue
+          }
           const out = traceUnit(job, opts, unit, i)
           checkState(job)
           units.push(unit)
@@ -153,10 +229,24 @@ export function installHelperHandler(scope: WorkerScope): void {
             svgCounts?.push(out.svg.length)
           }
         }
-        const commands = packCommands(runs)
+        // An edge's fit crosses as its segments plus one record of its other fields.
+        const packed = edgeJob ? packFits(fits) : { commands: packCommands(runs), records: null }
+        const { commands, records } = packed
         post(
-          { type: 'helper-batch', id: job.id, units, counts, svgCounts, commands, svg },
-          flatTransferables(commands),
+          {
+            type: 'helper-batch',
+            id: job.id,
+            units,
+            counts,
+            svgCounts,
+            commands,
+            svg,
+            fits: records ? (records.buffer as ArrayBuffer) : undefined,
+            fills: bandJob ? fills : undefined,
+          },
+          records
+            ? [...flatTransferables(commands), records.buffer as ArrayBuffer]
+            : flatTransferables(commands),
         )
         // Yields the helper's event loop once per batch, so a cancel message can
         // land mid-job and the coordinator can place results as they arrive.
@@ -186,7 +276,11 @@ export function installHelperHandler(scope: WorkerScope): void {
         ? stackState?.msg.key
         : job.kind === 'trace-rings'
           ? ringState?.msg.key
-          : chainState?.key
+          : job.kind === 'fit-edges'
+            ? edgeState?.key
+            : job.kind === 'fit-bands'
+              ? bandState?.batch?.key
+              : chainState?.key
     if (held !== job.stateKey) {
       throw new Error(`helper: ${job.kind} payload ${job.stateKey} was replaced`)
     }
@@ -194,19 +288,29 @@ export function installHelperHandler(scope: WorkerScope): void {
 
   /** The option objects every unit of one job shares. */
   function jobOptions(job: HelperJobMessage): JobOptions {
+    // An edge fit reads its objective from the cached edges, a band fit from the cached merge.
+    if (job.kind === 'fit-edges' || job.kind === 'fit-bands') return {}
+    const paletteRgb = job.paletteRgb ? new Uint8Array(job.paletteRgb) : undefined
     if (job.kind === 'fit-chains') {
-      const paletteOklab = job.paletteOklab ? new Float32Array(job.paletteOklab) : undefined
       const arcPrecision = job.arcPrecision
       return {
         cutout: {
           ...curveOptions(job.curve),
-          colorField: paletteOklab ? { oklab: oklabBuffer(), paletteOklab } : undefined,
+          colorField: paletteRgb
+            ? { pixels: workingPixels(), paletteRgb, alpha: alphaFieldAt(job.alphaThreshold) }
+            : undefined,
           refineChain:
             arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
         },
       }
     }
-    return { curve: curveOptions(job.curve, job.kind === 'trace-rings' ? coverage() : undefined) }
+    if (job.kind === 'trace-layers') {
+      return {
+        curve: curveOptions(job.curve),
+        layer: paletteRgb ? { paletteRgb, alpha: alphaFieldAt(job.alphaThreshold) } : undefined,
+      }
+    }
+    return { curve: curveOptions(job.curve, coverage()) }
   }
 
   /** One unit's shapes: their commands and, unless fitting only, their SVG form. */
@@ -221,8 +325,13 @@ export function installHelperHandler(scope: WorkerScope): void {
     }
     const curve = opts.curve
     if (!curve) throw new Error(`helper: no curve options for ${job.kind}`)
+    // A translucent layer takes no alpha exterior field — the same rule the
+    // coordinator applies — so its refined polygons match the sequential run.
+    const translucent = job.meta?.[at]?.translucent === true
     const shapes =
-      job.kind === 'trace-layers' ? traceLayer(curve, unit) : traceRingUnit(curve, unit)
+      job.kind === 'trace-layers'
+        ? traceLayer(curve, unit, opts.layer, translucent)
+        : traceRingUnit(curve, unit)
     const out = job.serialize
     if (!out) return { shapes }
     const paint = job.meta?.[at]
@@ -230,29 +339,96 @@ export function installHelperHandler(scope: WorkerScope): void {
     // paint over the same geometry, in the order the coordinator places them.
     const variants = paint?.under ? [paint.under, paint.own] : [paint?.own ?? {}]
     const svg: (ShapeOut | null)[] = []
+    // A supersampled run's geometry is serialized at the source size.
+    const placed =
+      out.scale === 1 && out.offset === 0
+        ? shapes
+        : shapes.map((c) => placePathCommands(c, out.scale, out.offset, out.offset))
     for (const meta of variants) {
-      for (const commands of shapes) {
-        svg.push(shapeOut({ ...meta, commands }, out.precision, out.optimize, out.roundPrimitives))
+      for (const commands of placed) {
+        svg.push(
+          shapeOut(
+            { ...meta, commands },
+            out.precision,
+            out.optimize,
+            out.roundPrimitives,
+            out.compact,
+          ),
+        )
       }
     }
     return { shapes, svg }
   }
 
-  /** Stacked layer `unit`: union flood mask → rings → curve chain. */
-  function traceLayer(curve: TraceCurveOptions, unit: number): PathCommand[][] {
+  /**
+   * Stacked layer `unit`: union flood mask → rings → curve chain. The rings and,
+   * when the run wants them, their polygons are built together, while `st.mask`
+   * still holds the layer's mask the boundary field reads; a layer whose rings
+   * were kept by a `pixel` run is decomposed again for its polygons.
+   */
+  function traceLayer(
+    curve: TraceCurveOptions,
+    unit: number,
+    refine: LayerRefine | undefined,
+    translucent: boolean,
+  ): PathCommand[][] {
     const st = stackState
     if (!st) throw new Error('helper: no stacked plan for trace-layers')
-    let entry = st.layers.get(unit)
-    if (!entry) {
-      entry = { paths: decomposeLayer(st, unit) }
-      st.layers.set(unit, entry)
-    }
     const wantPolygons = curve.curveMode !== 'pixel'
-    if (wantPolygons && !entry.polygons) {
-      entry.polygons = entry.paths.map((p) => ringPolygon(p.points))
+    let entry = st.layers.get(unit)
+    if (!entry || (wantPolygons && !entry.polygons)) {
+      const paths = decomposeLayer(st, unit)
+      entry = { paths }
+      if (wantPolygons) {
+        const field = refine ? layerFieldOf(st, unit, refine, translucent) : undefined
+        // A base layer's edge under a sheet above it is set back beneath the
+        // sheet (the coordinator's `layerPolygons`); an island hides nothing.
+        const base = field !== undefined && unit < st.order.length
+        entry.polygons = paths.map((p) =>
+          ringPolygon(
+            p.points,
+            field,
+            base
+              ? sheetSetback(
+                  p.points,
+                  st.mask.data,
+                  st.labels,
+                  st.position,
+                  unit,
+                  st.msg.width,
+                  st.msg.height,
+                  curve.scale,
+                )
+              : undefined,
+          ),
+        )
+      }
+      st.layers.set(unit, entry)
     }
     const traced = shapesFromPaths(entry.paths, curve, wantPolygons ? entry.polygons : undefined)
     return traced.map((s) => s.commands)
+  }
+
+  /** The boundary field of layer `unit`, read from the mask `decomposeLayer` just left in `st.mask`. */
+  function layerFieldOf(
+    st: StackState,
+    unit: number,
+    refine: LayerRefine,
+    translucent: boolean,
+  ): SignedField {
+    const island = unit - st.order.length
+    const st2 = imageState
+    if (!st2) throw new Error('helper: no working image')
+    return layerField({
+      width: st.msg.width,
+      height: st.msg.height,
+      mask: st.mask.data,
+      labels: st.labels,
+      pixels: st2.image.data,
+      paletteRgb: refine.paletteRgb,
+      label: island >= 0 ? st.islandLabels[island] : -1,
+      alpha: translucent ? undefined : refine.alpha,
+    })
   }
 
   /** One bw ring: its polygon stages (cached) followed by its curve stages. */
@@ -261,7 +437,7 @@ export function installHelperHandler(scope: WorkerScope): void {
     if (!st) throw new Error('helper: no rings for trace-rings')
     const local = st.local.get(unit)
     if (local === undefined) throw new Error(`helper: ring ${unit} not held`)
-    let polygon: FlatPoints | null = null
+    let polygon: RingFit | null = null
     if (curve.curveMode !== 'pixel') {
       const held = st.polygons[local]
       polygon = held === undefined ? ringPolygon(runAt(st.msg.rings, local), st.coverage) : held
@@ -287,16 +463,64 @@ export function installHelperHandler(scope: WorkerScope): void {
     return fit.closed ? [fit.open, fit.closed] : [fit.open]
   }
 
-  /** The cached working image's Oklab buffer, built once. */
-  function oklabBuffer(): Float32Array {
+  /** One planar edge's fit, from the inputs this helper holds for it. */
+  function fitOneEdge(unit: number): FittedEdge {
+    const st = edgeState
+    if (!st) throw new Error('helper: no edges for fit-edges')
+    const local = st.local.get(unit)
+    if (local === undefined) throw new Error(`helper: edge ${unit} not held`)
+    return fitEdgeInput(st.edges[local], st.frame, st.cfg)
+  }
+
+  /**
+   * Apply a band batch's merges to the merge it belongs to and hold its units;
+   * a batch of a merge this helper no longer holds is dropped, and its job
+   * fails the state check.
+   */
+  function takeBandBatch(msg: HelperBandBatchMessage): void {
+    const st = bandState
+    if (!st || st.key !== msg.bands) return
+    st.fits.apply(new Int32Array(msg.merges))
+    st.batch = {
+      key: msg.key,
+      a: new Int32Array(msg.a),
+      b: new Int32Array(msg.b),
+      inner: new Uint8Array(msg.inner),
+    }
+  }
+
+  /** One fit of the held band batch, on this helper's copy of the merge's components. */
+  function fitOneBand(unit: number): ink.FillFit {
+    const st = bandState
+    const batch = st?.batch
+    if (!st || !batch) throw new Error('helper: no band batch for fit-bands')
+    return st.fits.fit(batch.a[unit], batch.b[unit], batch.inner[unit] === 1)
+  }
+
+  /** The cached working image's RGBA bytes (the color field reads them directly). */
+  function workingPixels(): Uint8ClampedArray {
     const st = imageState
     if (!st) throw new Error('helper: no working image')
-    return (st.oklab ??= toOklabBuffer(st.image))
+    return st.image.data
   }
 
   /** The cached bw coverage field, if this helper was given one. */
   function coverage(): GrayImage | undefined {
     return ringState?.coverage
+  }
+
+  /**
+   * The transparency coverage field at `level`, built once per level from the
+   * cached source alpha; undefined without a level or under opaque handling.
+   */
+  function alphaFieldAt(level: number | undefined): GrayImage | undefined {
+    const st = imageState
+    if (level === undefined || !st?.alpha) return undefined
+    if (st.alphaField === undefined || st.alphaLevel !== level) {
+      st.alphaField = alphaCoverageField(st.alpha, st.image.width, st.image.height, level)
+      st.alphaLevel = level
+    }
+    return st.alphaField
   }
 
   /**
@@ -377,20 +601,26 @@ function advanceUnion(st: StackState, layer: number): void {
   st.unionLayer = layer
 }
 
-/** Options shared by every unit of one job: `cutout` for chain fitting, else `curve`. */
+/** Options shared by every unit of one job: `cutout` for chain fitting, else `curve` (plus `layer` for stacked layers). */
 interface JobOptions {
   curve?: TraceCurveOptions
   cutout?: TraceCutoutOptions
+  layer?: LayerRefine
 }
 
 /** Curve settings as the tracer's own option shape, with an optional sub-pixel field. */
-function curveOptions(curve: HelperCurveOptions, coverage?: GrayImage): TraceCurveOptions {
+function curveOptions(
+  curve: HelperCurveOptions | undefined,
+  coverage?: GrayImage,
+): TraceCurveOptions {
+  if (!curve) throw new Error('helper: job carries no curve settings')
   return { ...curve, coverage }
 }
 
 function takeImage(msg: HelperImageMessage): ImageState {
   return {
     image: { width: msg.width, height: msg.height, data: new Uint8ClampedArray(msg.buffer) },
+    alpha: msg.alpha ? new Uint8Array(msg.alpha) : undefined,
   }
 }
 
@@ -477,5 +707,48 @@ function takeChains(msg: HelperChainsMessage): ChainState {
     key: msg.key,
     network: { width: msg.width, height: msg.height, chains, areas: new Map() },
     local,
+  }
+}
+
+function takeEdges(msg: HelperEdgesMessage): EdgeState {
+  const units = new Int32Array(msg.units)
+  const closed = new Uint8Array(msg.closed)
+  const n = units.length
+  if (n !== runCount(msg.points) || n !== runCount(msg.sigma)) {
+    throw new Error('helper: edge count mismatch')
+  }
+  const local = new Map<number, number>()
+  const edges: EdgeFitInput[] = []
+  for (let i = 0; i < n; i++) {
+    local.set(units[i], i)
+    edges.push({
+      points: msg.points.data.subarray(msg.points.offsets[i], msg.points.offsets[i + 1]),
+      sigma: msg.sigma.data.subarray(msg.sigma.offsets[i], msg.sigma.offsets[i + 1]),
+      closed: closed[i] !== 0,
+    })
+  }
+  return {
+    key: msg.key,
+    frame: { width: msg.width, height: msg.height },
+    cfg: { tau: msg.tau, lambda: msg.lambda },
+    local,
+    edges,
+  }
+}
+
+/** A band merge's fixed inputs as the coordinator's merge holds them. */
+function bandSource(msg: HelperBandsMessage): ink.BandFitSource {
+  return {
+    labels: new Int32Array(msg.labels),
+    rgb: new Float32Array(msg.rgb),
+    w: msg.width,
+    h: msg.height,
+    inkRgb: new Float64Array(msg.inkRgb),
+    sigmaNoise: msg.sigmaNoise,
+    lambda: msg.lambda,
+    regionRecovery: msg.regionRecovery,
+    gradients: msg.gradients,
+    scale: msg.scale,
+    search: { stopGeometries: msg.stopGeometries, radialsPerSpace: msg.radialsPerSpace },
   }
 }

@@ -41,6 +41,83 @@ function sprite() {
   return img
 }
 
+/**
+ * A black disk on a fully transparent canvas with an anti-aliased rim: the ink
+ * color under partial alpha, the empty pixels stored as (0, 0, 0, 0).
+ */
+function inkOnTransparent() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 160; x++) {
+      const d = Math.hypot(x + 0.5 - 80, y + 0.5 - 80)
+      const coverage = Math.max(0, Math.min(1, 40.5 - d))
+      if (coverage > 0) setPixel(img, x, y, 0, 0, 0, Math.round(coverage * 255))
+    }
+  }
+  return img
+}
+
+/** A dark-gray square with a black outline on a transparent canvas: three tones, not two. */
+function grayFillBlackOutline() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 30; y < 130; y++) {
+    for (let x = 30; x < 130; x++) {
+      const edge = x < 42 || x >= 118 || y < 42 || y >= 118
+      if (edge) setPixel(img, x, y, 0, 0, 0)
+      else setPixel(img, x, y, 63, 63, 63)
+    }
+  }
+  return img
+}
+
+/**
+ * Thin black strokes on white with soft anti-aliased sides: across each stroke a
+ * pixel of 24, three of black and one of 12, so a quarter of the darkest
+ * tone's pixels are rim — still within its coarse bin, but not the ink.
+ */
+function thinStrokesWithSoftRims() {
+  const img = createRaster(160, 160)
+  fillRaster(img, 255, 255, 255)
+  for (let x0 = 10; x0 + 5 <= 150; x0 += 14) {
+    for (let y = 10; y < 150; y++) {
+      const ramp = [24, 0, 0, 0, 12]
+      for (let i = 0; i < ramp.length; i++) setPixel(img, x0 + i, y, ramp[i], ramp[i], ramp[i])
+    }
+  }
+  return img
+}
+
+/**
+ * A dark glyph with a pale gray stripe across it (twemoji's skunk: #292f33 and
+ * #e1e8ed), on a transparent canvas or on white: the stripe shares the white
+ * ground's coarse bin, but it is a third ink.
+ */
+function darkGlyphWithPaleStripe(onWhite: boolean) {
+  const img = createRaster(160, 160)
+  if (onWhite) fillRaster(img, 255, 255, 255)
+  else fillRaster(img, 0, 0, 0, 0)
+  for (let y = 30; y < 130; y++) {
+    for (let x = 30; x < 130; x++) {
+      if (y >= 70 && y < 90) setPixel(img, x, y, 0xe1, 0xe8, 0xed)
+      else setPixel(img, x, y, 0x29, 0x2f, 0x33)
+    }
+  }
+  return img
+}
+
+/** A black glyph on a transparent canvas casting a wide half-transparent shadow. */
+function inkWithSoftShadow() {
+  const img = inkOnTransparent()
+  for (let y = 100; y < 150; y++) {
+    for (let x = 20; x < 140; x++) {
+      if (img.data[(y * 160 + x) * 4 + 3] === 0) setPixel(img, x, y, 0, 0, 0, 96)
+    }
+  }
+  return img
+}
+
 /** Grayscale gradient with luminance noise (R=G=B) — a photographic gray scene. */
 function grayPhoto() {
   const img = createRaster(200, 200)
@@ -59,7 +136,13 @@ function grayPhoto() {
  *  two-tone), crisp strokes: line art a grayscale-photo rule must not catch. */
 function inkDrawing() {
   const img = createRaster(200, 200)
-  fillRaster(img, 245, 245, 245)
+  // Scanned paper: never perfectly flat.
+  for (let y = 0; y < 200; y++) {
+    for (let x = 0; x < 200; x++) {
+      const g = 243 + ((x * 13 + y * 7 + ((x * y) % 5)) % 5)
+      setPixel(img, x, y, g, g, g)
+    }
+  }
   for (let y = 40; y < 160; y++) {
     for (let x = 20; x < 180; x++) {
       const hatch = (x + y) % 6 < 2
@@ -332,7 +415,74 @@ describe('analyzeImage', () => {
   it('flags a tiny transparent sprite as pixel art with alpha', () => {
     const a = analyzeImage(sprite())
     expect(a.pixelArtScore).toBeGreaterThanOrEqual(0.7)
+    expect(a.rimColors).toBe(0)
     expect(a.hasAlpha).toBe(true)
+  })
+
+  it('does not take a small anti-aliased icon for pixel art', () => {
+    // A 96-px canvas, but hundreds of rim colors: an icon, not a sprite. (Off
+    // the lattice, so the rim takes many distinct coverage values.)
+    const img = createRaster(96, 96)
+    fillRaster(img, 0, 0, 0, 0)
+    for (let y = 0; y < 96; y++) {
+      for (let x = 0; x < 96; x++) {
+        const d = Math.hypot(x + 0.5 - 48.31, y + 0.5 - 47.77)
+        const coverage = Math.max(0, Math.min(1, 24.37 - d))
+        if (coverage > 0) setPixel(img, x, y, 0, 0, 0, Math.round(coverage * 255))
+      }
+    }
+    const a = analyzeImage(img)
+    expect(a.pixelArtScore).toBeLessThan(0.7)
+    expect(recommendSettings(a).profileId).not.toBe('pixel-art')
+    // The same icon rendered small enough to hold few colors: still not a hard
+    // palette, because nearly every color it has is a rim color.
+    const small = createRaster(64, 64)
+    fillRaster(small, 0, 0, 0, 0)
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const d = Math.hypot(x + 0.5 - 32, y + 0.5 - 32)
+        const coverage = Math.max(0, Math.min(1, 16.5 - d))
+        if (coverage > 0) setPixel(small, x, y, 0, 0, 0, Math.round(coverage * 255))
+      }
+    }
+    const b = analyzeImage(small)
+    expect(b.distinctColors).toBeLessThanOrEqual(32)
+    expect(b.rimColors * 2).toBeGreaterThan(b.distinctColors)
+    expect(b.pixelArtScore).toBeLessThan(0.7)
+  })
+
+  it('reads a transparent canvas as the white ground it is flattened onto', () => {
+    // Read raw, the empty (0, 0, 0, 0) pixels would make this a black field.
+    const a = analyzeImage(inkOnTransparent())
+    expect(a.hasAlpha).toBe(true)
+    expect(a.meanLightness).toBeGreaterThan(0.7)
+    expect(a.twoToneCoverage).toBeGreaterThan(0.9)
+    expect(a.colorfulness).toBeLessThan(0.03)
+    expect(a.distinctColors).toBeGreaterThan(2) // the rim's grays
+    expect(a.minorTonesArea).toBe(0)
+    expect(a.inkHex).toBe('#000000')
+    expect(a.paperHex).toBe('#ffffff')
+    expect(recommendSettings(a).profileId).toBe('bw-sketch')
+  })
+
+  it("reads a tone's color off its interior, not its anti-aliased rim", () => {
+    const a = analyzeImage(thinStrokesWithSoftRims())
+    expect(a.inkHex).toBe('#000000')
+    expect(a.paperHex).toBe('#ffffff')
+  })
+
+  it("counts a pale ink sharing the ground's coarse bin as a third tone", () => {
+    for (const onWhite of [false, true]) {
+      const a = analyzeImage(darkGlyphWithPaleStripe(onWhite))
+      expect(a.minorTonesArea).toBeGreaterThan(0.05)
+      expect(recommendSettings(a).profileId).not.toBe('bw-sketch')
+    }
+  })
+
+  it('counts a flat third tone, which anti-aliasing never produces', () => {
+    const a = analyzeImage(grayFillBlackOutline())
+    expect(a.minorTonesArea).toBeGreaterThan(0.02)
+    expect(a.inkHex).toBe('#3f3f3f')
   })
 })
 
@@ -372,6 +522,82 @@ describe('recommendSettings', () => {
     const rec = recommendSettings(analyzeImage(inkOnWhite()))
     expect(rec.profileId).toBe('bw-sketch')
     expect(rec.patch.mode).toBe('bw')
+  })
+
+  it('thresholds clean two-tone art at half coverage between its tones and paints its measured ink', () => {
+    const rec = recommendSettings(analyzeImage(inkOnTransparent()))
+    expect(rec.profileId).toBe('bw-sketch')
+    expect(rec.patch.thresholdMode).toBe('fixed')
+    // Black on white blends linearly in encoded values: half coverage is the
+    // gray at encoded luma ½, lightness ≈ 0.6 — not the lightness midpoint 0.5,
+    // which cuts every anti-aliased edge at 61 % coverage and insets the outline.
+    expect(rec.patch.threshold).toBeGreaterThanOrEqual(150)
+    expect(rec.patch.threshold).toBeLessThanOrEqual(155)
+    expect(rec.patch.fillColor).toBe('#000000')
+    // Its edges are measured finer than a tenth of a pixel: two decimals keep them.
+    expect(rec.patch.precision).toBe(2)
+    // Anti-aliased transparency: the cut sits at half coverage.
+    expect(rec.patch.alphaThreshold).toBe(128)
+    // Ink that is not black is painted as measured.
+    expect(recommendSettings(analyzeImage(inkOnWhite())).patch.fillColor).toBe('#0c0c0c')
+  })
+
+  it('keeps art with a flat third tone out of B&W, which could keep only one ink', () => {
+    const rec = recommendSettings(analyzeImage(grayFillBlackOutline()))
+    expect(rec.profileId).not.toBe('bw-sketch')
+    expect(rec.patch.mode).not.toBe('bw')
+  })
+
+  it('cuts at half coverage even with translucent content (kept as faces with opacity)', () => {
+    // The engine emits translucent interiors as faces with opacity, so the
+    // half-coverage cut serves opaque and translucent alpha alike — no guard.
+    const rec = recommendSettings(analyzeImage(inkWithSoftShadow()))
+    expect(rec.patch.background).toBe('transparent')
+    expect(rec.patch.alphaThreshold).toBe(128)
+    expect(rec.rationaleKeys.some((k) => k.code === 'alphaEdge')).toBe(true)
+  })
+
+  it('keeps a clean gray icon in its own flat inks, not grayscale tonal layers', () => {
+    // A gray printer icon: an outlined body and two paper sheets in flat grays
+    // with anti-aliased rims, on a transparent ground and flattened onto white.
+    const icon = (opaque: boolean) => {
+      const img = createRaster(128, 128)
+      if (opaque) fillRaster(img, 255, 255, 255)
+      else fillRaster(img, 0, 0, 0, 0)
+      for (let y = 0; y < 128; y++) {
+        for (let x = 0; x < 128; x++) {
+          const box = (x0: number, y0: number, x1: number, y1: number) =>
+            Math.max(
+              0,
+              Math.min(1, Math.min(x + 0.5 - x0, x1 - x - 0.5, y + 0.5 - y0, y1 - y - 0.5) + 0.5),
+            )
+          const outer = Math.max(
+            box(14.3, 50.6, 113.7, 96.2),
+            box(34.4, 18.3, 93.6, 51),
+            box(34.4, 80.2, 93.6, 112.7),
+          )
+          if (outer <= 0) continue
+          const inner = Math.max(
+            box(17.3, 53.6, 110.7, 93.2),
+            box(37.4, 21.3, 90.6, 48),
+            box(37.4, 83.2, 90.6, 109.7),
+          )
+          const g = 70 * (1 - inner) + (y > 80 ? 235 : 160) * inner
+          if (opaque) {
+            const v = Math.round(g * outer + 255 * (1 - outer))
+            setPixel(img, x, y, v, v, v)
+          } else {
+            const v = Math.round(g)
+            setPixel(img, x, y, v, v, v, Math.round(outer * 255))
+          }
+        }
+      }
+      return img
+    }
+    for (const opaque of [false, true]) {
+      const rec = recommendSettings(analyzeImage(icon(opaque)))
+      expect(rec.patch.mode, `opaque ${opaque}`).not.toBe('grayscale')
+    }
   })
 
   it('traces a shaded achromatic line drawing (not two-tone) as grayscale, not over-inked B&W', () => {
@@ -437,6 +663,19 @@ describe('recommendSettings', () => {
     expect(rec.patch.blurRadius ?? 0).toBe(0)
   })
 
+  it('traces a cartoon on a 2× enlarged copy when the enlargement fits the budget', () => {
+    const a = analyzeImage(noisyCartoon())
+    const rec = recommendSettings(a)
+    expect(rec.patch.supersample).toBe(2)
+    expect(rec.rationaleKeys.map((k) => k.code)).toContain('cartoonSupersample')
+    // A large poster is fitted to 1600 px first, which leaves room for the enlargement.
+    const poster = recommendSettings({ ...a, width: 1680, height: 2500, pixels: 4_200_000 })
+    expect(poster.patch.maxDimension).toBe(1600)
+    expect(poster.patch.supersample).toBe(2)
+    // Edges spread wider than a native render's carry no detail to recover.
+    expect(recommendSettings({ ...a, edgeWidth: 2.1 }).patch.supersample).toBeUndefined()
+  })
+
   it('does not route a gradient-on-flat-background to region growing (single-color collapse)', () => {
     const a = analyzeImage(gradientOnFlat())
     // The flat white margin clears the flat-art density threshold on its own...
@@ -475,6 +714,7 @@ describe('recommendSettings — region-growing gates', () => {
     pixels: 480_000,
     hasAlpha: false,
     distinctColors: 8000,
+    rimColors: 7900,
     entropyBits: 9,
     edgeDensity: 0.08,
     microGradientDensity: 0.18,
@@ -490,7 +730,44 @@ describe('recommendSettings — region-growing gates', () => {
     contrast: 0.2,
     colorfulness: 0.1,
     coloredFraction: 0.5,
+    minorTonesArea: 0,
+    inkHex: '#000000',
+    paperHex: '#ffffff',
+    edgeWidth: 1,
     ...over,
+  })
+
+  it('traces a source only slightly above the default size at its own size', () => {
+    // Under the default trace size nothing changes; just above it, a mild
+    // shrink would thin strokes below the segmentation's core size, so the
+    // source keeps its size; well past it, the speed cap applies.
+    expect(recommendSettings(flatArt()).patch.maxDimension).toBeUndefined()
+    const mild = recommendSettings(flatArt({ width: 1800, height: 1120, pixels: 2_016_000 }))
+    expect(mild.patch.maxDimension).toBe(1800)
+    expect(mild.rationaleKeys.some((k) => k.code === 'nativeSize')).toBe(true)
+    const tall = recommendSettings(flatArt({ width: 900, height: 2048, pixels: 1_843_200 }))
+    expect(tall.patch.maxDimension).toBe(2048)
+    const large = recommendSettings(flatArt({ width: 3000, height: 2000, pixels: 6_000_000 }))
+    expect(large.patch.maxDimension).toBe(1600)
+    expect(large.rationaleKeys.some((k) => k.code === 'largeSource')).toBe(true)
+    expect(large.rationaleKeys.some((k) => k.code === 'nativeSize')).toBe(false)
+    const wide = recommendSettings(flatArt({ width: 2600, height: 1000, pixels: 2_600_000 }))
+    expect(wide.patch.maxDimension).toBeUndefined()
+  })
+
+  it('gives noise-free flat art a palette entry for every flat color it fills', () => {
+    // A vector render: every fill is exact, so the colors that fill a flat run
+    // are the drawing's own. A budget below their count would merge fills.
+    const mosaic = flatArt({ flatDensity: 0.95, distinctColors: 900, rimColors: 860 })
+    expect(recommendSettings(mosaic).patch.paletteSize).toBe(40)
+    // A two-color shape's rim blends get no entries of their own either: a band
+    // of them around the shape would hold its edge off the anti-aliased boundary.
+    const shape = flatArt({ flatDensity: 0.97, distinctColors: 13, rimColors: 11 })
+    expect(recommendSettings(shape).patch.paletteSize).toBe(2)
+    // Noisy art gets no such count: its flat runs are few and meaningless.
+    expect(
+      recommendSettings(flatArt({ distinctColors: 900, rimColors: 860 })).patch.paletteSize,
+    ).toBe(24)
   })
 
   it('grows regions for many-color, gradient-free flat art', () => {
@@ -545,6 +822,118 @@ describe('recommendSettings — region-growing gates', () => {
     // Smooth, but never exactly flat: sensor noise leaves no identical neighbors.
     const a = flatArt({ flatDensity: 0.05, flatArea: 0.6, rampArea: 0.1, photoScore: 1 })
     expect(recommendSettings(a).patch.segmentation).not.toBe('regions')
+  })
+})
+
+describe('recommendSettings — geometry chain', () => {
+  const codes = (rec: { rationaleKeys: { code: string }[] }) => rec.rationaleKeys.map((k) => k.code)
+
+  it('traces stacked non-cartoon color art on the planar chain with the ink front end and gradients', () => {
+    const rec = recommendSettings(analyzeImage(inkWithSoftShadow()))
+    expect(rec.patch.layering).toBe('stacked')
+    expect(rec.patch.geometry).toBe('planar')
+    expect(rec.patch.frontEnd).toBe('ink')
+    expect(rec.patch.gradients).toBe(true)
+    expect(codes(rec)).toContain('planarInk')
+    expect(codes(rec)).not.toContain('planarCartoon')
+  })
+
+  it('traces a cartoon on the planar chain with the ink front end', () => {
+    for (const img of [antialiasedField(), noisyCartoon()]) {
+      const rec = recommendSettings(analyzeImage(img))
+      expect(rec.patch.segmentation).toBe('regions')
+      expect(rec.patch.geometry).toBe('planar')
+      expect(rec.patch.frontEnd).toBe('ink')
+      expect(rec.patch.gradients).toBe(true)
+      expect(codes(rec)).toContain('planarCartoon')
+      expect(codes(rec)).not.toContain('planarInk')
+    }
+  })
+
+  it('traces ink-front-end art past the planar pixel budget at the budget size', () => {
+    const a = analyzeImage(inkWithSoftShadow())
+    const small = recommendSettings({ ...a, width: 640, height: 640, pixels: 409_600 })
+    expect(small.patch.geometry).toBe('planar')
+    expect(small.patch.maxDimension).toBeUndefined()
+    for (const [width, height] of [
+      [768, 538],
+      [918, 643],
+      [1500, 1500],
+    ]) {
+      const rec = recommendSettings({ ...a, width, height, pixels: width * height })
+      expect(rec.patch.geometry).toBe('planar')
+      expect(rec.patch.frontEnd).toBe('ink')
+      expect(codes(rec)).toContain('planarInk')
+      // The traced size as the engine rounds it: within the budget, give or take a row.
+      const side = rec.patch.maxDimension as number
+      const fit = side / Math.max(width, height)
+      expect(Math.round(width * fit) * Math.round(height * fit)).toBeLessThanOrEqual(409_600 + side)
+      expect(width * height * ((side + 1) / Math.max(width, height)) ** 2).toBeGreaterThan(409_600)
+    }
+  })
+
+  it('keeps black & white art past the planar pixel budget on the classic chain', () => {
+    const a = analyzeImage(inkOnWhite())
+    const large = recommendSettings({ ...a, width: 918, height: 643, pixels: 590_274 })
+    expect(large.patch.mode).toBe('bw')
+    expect(large.patch.geometry).toBeUndefined()
+    expect(codes(large)).not.toContain('planarBw')
+  })
+
+  it('keeps a cartoon larger than an icon on the classic chain', () => {
+    const a = analyzeImage(noisyCartoon())
+    expect(Math.max(a.width, a.height)).toBeLessThanOrEqual(512)
+    const icon = recommendSettings({ ...a, width: 512, height: 400, pixels: 204_800 })
+    expect(icon.patch.geometry).toBe('planar')
+    const large = recommendSettings({ ...a, width: 750, height: 1000, pixels: 750_000 })
+    expect(large.patch.segmentation).toBe('regions')
+    expect(large.patch.geometry).toBeUndefined()
+    expect(large.patch.frontEnd).toBeUndefined()
+    expect(codes(large)).not.toContain('planarCartoon')
+  })
+
+  it('traces black & white art on the planar chain without choosing a front end', () => {
+    const rec = recommendSettings(analyzeImage(inkOnWhite()))
+    expect(rec.patch.mode).toBe('bw')
+    expect(rec.patch.geometry).toBe('planar')
+    expect(rec.patch.frontEnd).toBeUndefined()
+    expect(rec.patch.gradients).toBeUndefined()
+    expect(codes(rec)).toContain('planarBw')
+    expect(codes(rec)).not.toContain('planarInk')
+    expect(codes(rec)).not.toContain('planarCartoon')
+  })
+
+  it('keeps black & white art past the planar pixel budget on the classic chain', () => {
+    const a = analyzeImage(inkOnWhite())
+    const large = recommendSettings({ ...a, width: 1400, height: 980, pixels: 1_372_000 })
+    expect(large.patch.mode).toBe('bw')
+    expect(large.patch.geometry).toBeUndefined()
+    expect(codes(large)).not.toContain('planarBw')
+  })
+
+  it('keeps photos, pixel art, nested and grayscale line art on the classic chain', () => {
+    for (const img of [
+      noisyPhoto(),
+      grayPhoto(),
+      compressedFlat(),
+      sprite(),
+      flatLogo(),
+      inkDrawing(),
+    ]) {
+      const rec = recommendSettings(analyzeImage(img))
+      expect(rec.patch.geometry).toBeUndefined()
+      expect(rec.patch.frontEnd).toBeUndefined()
+      expect(codes(rec)).not.toContain('planarInk')
+      expect(codes(rec)).not.toContain('planarCartoon')
+      expect(codes(rec)).not.toContain('planarBw')
+    }
+  })
+
+  it('keeps output grouped by color on the classic chain', () => {
+    for (const goal of ['vinyl-cut', 'poster'] as const) {
+      const rec = recommendSettings(analyzeImage(inkWithSoftShadow()), goal)
+      expect(rec.patch.geometry).toBeUndefined()
+    }
   })
 })
 

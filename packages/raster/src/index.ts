@@ -4,14 +4,24 @@
  * color-space conversion, quantization, thresholding, region cleanup,
  * morphology and skeletonization.
  */
-export { resizeGray, resizeToFit } from './resize'
+export { resizeGray, resizeToFit, upscaleImage } from './resize'
+export { BORDER_PAD, padImage, touchesBorder } from './border'
 export { bilateralFilter, gaussianBlur, medianFilter } from './filters'
-export { borderDominantColor, flattenImage } from './background'
+export {
+  alphaCoverageField,
+  borderDominantColor,
+  flattenImage,
+  TRANSLUCENT_MAX_ALPHA,
+  TRANSLUCENT_MIN_ALPHA,
+} from './background'
 export type { FlattenResult } from './background'
-export { toGrayscale, toOklabBuffer } from './convert'
+export { encodedOfLightness, toEncodedLuma, toGrayscale, toOklabBuffer } from './convert'
 export { detectEdges } from './edges'
 export { fitRegionGradients } from './gradient'
 export type { GradientOptions, GradientResult } from './gradient'
+export { absorbMixtureLabels, dissolveBlendBands, returnSeamPixels } from './mixture'
+export { interiorPaletteColors } from './palette'
+export type { InteriorPalette } from './palette'
 export { quantize } from './quantize'
 export type { QuantizeOptions, QuantizeResult } from './quantize'
 export { segmentRegions } from './segment'
@@ -33,5 +43,6 @@ export {
   smoothLabelsSpatial,
 } from './regions'
 export type { EnclosedComponent, MergeOptions } from './regions'
-export { despeckleMask, despeckleMaskGuided, dilate, erode } from './morphology'
+export { despeckleMaskGuided } from './morphology'
 export { chamferDistance, estimateStrokeWidth, zhangSuenThin } from './thin'
+export * as ink from './ink/index'

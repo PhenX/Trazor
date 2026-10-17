@@ -10,8 +10,21 @@ export type VectorizeMode = 'color' | 'grayscale' | 'bw' | 'centerline'
  *   shared boundary graph so adjacent shapes reuse mathematically identical
  *   edges — no hairline gaps, no overlaps. Best for cutting machines and
  *   editing in vector tools.
+ * - `nested`: the same shared boundary graph as `cutout`, but each planar face
+ *   is painted once as its outer ring only, in containment order (parents
+ *   first, children over them), and same-color sibling faces merge into one
+ *   even-odd path. A boundary between nested faces is drawn once — the child's
+ *   outline supplies the parent's hole — so the file carries far fewer
+ *   coordinates than `cutout` while rendering identically (the shared curve is
+ *   bit-identical, so no seam appears). Best for compact multi-color art.
  */
-export type LayeringMode = 'stacked' | 'cutout'
+export type LayeringMode = 'stacked' | 'cutout' | 'nested'
+
+/** The geometry chain (`VectorizeSettings.geometry`). */
+export type GeometryChain = 'classic' | 'planar'
+
+/** The planar chain's front end (`VectorizeSettings.frontEnd`). */
+export type FrontEnd = 'classic' | 'ink'
 
 /**
  * - `spline`: full curve chain (optimal polygon → corner analysis → cubic
@@ -53,6 +66,18 @@ export interface VectorizeSettings {
   // ---- Preprocessing ----
   /** Longest side is downscaled to this many pixels before tracing. 0 keeps the original size. */
   maxDimension: number
+  /**
+   * Trace at this integer multiple of the working size (1 = off, up to 4): the
+   * preprocessed image is enlarged by bicubic interpolation before it is
+   * segmented and traced, and the geometry is scaled back, so the SVG keeps
+   * the working size. Every pixel is still given one color, but on a finer
+   * grid — a line a pixel or two wide, or a dot a few pixels across, keeps
+   * its shape instead of being cut to the pixel staircase. Made for
+   * anti-aliased art under region-growing segmentation and for bw; global
+   * quantization sees the enlarged rims as more pixels and may keep them as
+   * rings of their own. Costs about `supersample²` in time and memory.
+   */
+  supersample: number
   denoise: DenoiseMode
   /** Gaussian pre-blur radius in px (0 disables). Helps noisy photos, hurts crisp art. */
   blurRadius: number
@@ -70,12 +95,20 @@ export interface VectorizeSettings {
    */
   segmentation: SegmentationMode
   /**
-   * Upper bound on output colors (2-64). `quantize` clusters to exactly this
-   * many unless `autoPaletteSize` merges near-duplicates; `regions` lets the
-   * region merge decide the count and caps it here.
+   * Output color budget (2-64). `quantize` clusters to exactly this many unless
+   * `autoPaletteSize` merges near-duplicates; `regions` lets the region merge
+   * decide the count and caps it here — a hard cap, except that on stacked
+   * layers not grouped by color, under `autoPaletteSize`, the cap stops before
+   * a fold that would repaint a visibly distinct feature, which keeps its color
+   * past it (up to twice the budget). Gradient fills add their stops to the
+   * output palette on top of this.
    */
   paletteSize: number
-  /** Let the engine lower `paletteSize` when the image needs fewer colors. */
+  /**
+   * Let the engine lower `paletteSize` when the image needs fewer colors (and,
+   * under `regions` on stacked layers not grouped by color, keep a visibly
+   * distinct color past it, up to twice the budget).
+   */
   autoPaletteSize: boolean
   /** Clustering space. Oklab is perceptual and almost always better. */
   colorSpace: 'oklab' | 'rgb'
@@ -88,6 +121,21 @@ export interface VectorizeSettings {
    */
   palette: string[] | null
   layering: LayeringMode
+  /**
+   * Which geometry chain traces the image: `classic`, the per-layer ring
+   * tracer, or `planar`, the planar-map core (one shared edge between every
+   * two areas, fitted once, which every layering reads). Explicit settings
+   * default to `classic`; the recommender picks `planar` where it measures
+   * better (see `@trazor/assist`).
+   */
+  geometry: GeometryChain
+  /**
+   * The planar chain's front end for color images: `classic`, the
+   * segmentation every chain shares, or `ink`, the MDL palette and region
+   * passes (a transparent image runs them over two grounds). Read only with
+   * `geometry` `planar` (ignored by the classic chain), for `color` mode.
+   */
+  frontEnd: FrontEnd
   /** Regions smaller than this many pixels are merged into their surroundings. */
   minRegionArea: number
   /**
@@ -223,10 +271,39 @@ export interface VectorizeSettings {
   detectIslands: boolean
 }
 
+/**
+ * Side of the square whose pixel count bounds a supersampled working image: the
+ * enlargement stops where it would pass that many pixels, so a large source is
+ * not enlarged at all. The engine applies it; the recommender asks for no more.
+ */
+export const SUPERSAMPLE_BUDGET_SIDE = 4096
+
+/**
+ * The supersampling factor a trace of a `width × height` source applies: the
+ * requested one, lowered until the working image (the source fitted to
+ * `maxDimension`, enlarged by the factor) stays within
+ * {@link SUPERSAMPLE_BUDGET_SIDE}².
+ */
+export function supersampleWithinBudget(
+  width: number,
+  height: number,
+  maxDimension: number,
+  requested: number,
+): number {
+  const long = Math.max(width, height)
+  const fit = maxDimension > 0 && long > maxDimension ? maxDimension / long : 1
+  const pixels = Math.max(1, Math.round(width * fit)) * Math.max(1, Math.round(height * fit))
+  let factor = requested
+  while (factor > 1 && pixels * factor * factor > SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE)
+    factor--
+  return factor
+}
+
 export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   mode: 'color',
 
   maxDimension: 1600,
+  supersample: 1,
   denoise: 'none',
   blurRadius: 0,
   background: 'auto',
@@ -240,6 +317,8 @@ export const DEFAULT_SETTINGS: Readonly<VectorizeSettings> = Object.freeze({
   quantizeQuality: 5,
   palette: null,
   layering: 'stacked',
+  geometry: 'classic',
+  frontEnd: 'classic',
   minRegionArea: 6,
   preserveDetails: false,
   dissolveBands: 0,
@@ -289,6 +368,7 @@ export function normalizeSettings(
 ): VectorizeSettings {
   const s: VectorizeSettings = { ...base, ...patch }
   s.maxDimension = s.maxDimension === 0 ? 0 : clampInt(s.maxDimension, 64, 8192)
+  s.supersample = clampInt(s.supersample, 1, 4)
   s.blurRadius = clamp(s.blurRadius, 0, 10)
   s.alphaThreshold = clampInt(s.alphaThreshold, 0, 255)
   s.paletteSize = clampInt(s.paletteSize, 2, 64)
@@ -309,6 +389,8 @@ export function normalizeSettings(
     s.palette = valid.length > 0 ? valid : null
   }
   s.segmentation = s.segmentation === 'regions' ? 'regions' : 'quantize'
+  s.geometry = s.geometry === 'planar' ? 'planar' : 'classic'
+  s.frontEnd = s.frontEnd === 'ink' ? 'ink' : 'classic'
   s.minRegionArea = clampInt(s.minRegionArea, 0, 4096)
   s.dissolveBands = clampInt(s.dissolveBands, 0, 4)
   s.colorCoherence = clamp(s.colorCoherence, 0, 1)

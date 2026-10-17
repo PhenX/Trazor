@@ -49,8 +49,6 @@ export class TrazorClient {
     onProgress?: (stage: StageId, overall: number) => void,
     // Optional boundary hint (from EdgeEnhancer), same dimensions as `image`.
     edgeHint?: GrayImage,
-    // Optional learned coverage field (from FieldEnhancer), same dimensions as `image`.
-    coverageHint?: GrayImage,
     // Optional step tracer: receives a `TraceStep` per pipeline stage as it completes.
     onTrace?: (step: TraceStep) => void,
   ): Promise<VectorizeResult> {
@@ -68,11 +66,6 @@ export class TrazorClient {
         hint = edgeHint.data.slice().buffer
         transfer.push(hint)
       }
-      let cov: ArrayBuffer | undefined
-      if (coverageHint) {
-        cov = coverageHint.data.slice().buffer
-        transfer.push(cov)
-      }
       const msg: WorkerInMessage = {
         type: 'vectorize',
         id,
@@ -81,7 +74,6 @@ export class TrazorClient {
         buffer,
         settings,
         edgeHint: hint,
-        coverageHint: cov,
         imageId: this.idFor(image),
         trace: onTrace !== undefined,
         // The interactive client always wants the raw document available for

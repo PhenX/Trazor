@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
+import { signedAreaFlat } from '@trazor/core'
 import {
   closedPathToCommands,
   decomposeMask,
@@ -51,6 +52,41 @@ function anchors(commands: PathCommand[]): [number, number][] {
   const out: [number, number][] = []
   for (const c of commands) {
     if (c.type !== 'Z') out.push([c.x, c.y])
+  }
+  return out
+}
+
+/** Each anchor of a closed ring with the turn angle (deg) between its pieces. */
+function tangentJoins(commands: PathCommand[]): { x: number; y: number; turn: number }[] {
+  const start = commands[0]
+  if (start.type !== 'M') return []
+  let cx = start.x
+  let cy = start.y
+  const dir = (ax: number, ay: number, bx: number, by: number): [number, number] => {
+    const l = Math.hypot(bx - ax, by - ay) || 1
+    return [(bx - ax) / l, (by - ay) / l]
+  }
+  // Per drawing command: the tangent leaving its start and arriving at its end.
+  const segs: { ex: number; ey: number; tOut: [number, number]; tIn: [number, number] }[] = []
+  for (const c of commands) {
+    if (c.type === 'L') {
+      segs.push({ ex: c.x, ey: c.y, tOut: dir(cx, cy, c.x, c.y), tIn: dir(cx, cy, c.x, c.y) })
+      cx = c.x
+      cy = c.y
+    } else if (c.type === 'C') {
+      segs.push({ ex: c.x, ey: c.y, tOut: dir(cx, cy, c.x1, c.y1), tIn: dir(c.x2, c.y2, c.x, c.y) })
+      cx = c.x
+      cy = c.y
+    }
+  }
+  const out: { x: number; y: number; turn: number }[] = []
+  for (let i = 0; i < segs.length; i++) {
+    const next = segs[(i + 1) % segs.length]
+    const dot = Math.max(
+      -1,
+      Math.min(1, segs[i].tIn[0] * next.tOut[0] + segs[i].tIn[1] * next.tOut[1]),
+    )
+    out.push({ x: segs[i].ex, y: segs[i].ey, turn: (Math.acos(dot) * 180) / Math.PI })
   }
   return out
 }
@@ -229,11 +265,48 @@ describe('curve chain split', () => {
   it('refines the polygon onto the field, so the field is not ignored', () => {
     const mask = circleMask(60, 22)
     const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
-    const lattice = ringPolygon(ring) as number[]
-    const refined = ringPolygon(ring, diskField(60, 22)) as number[]
+    const lattice = ringPolygon(ring)?.polygon as number[]
+    const refined = ringPolygon(ring, diskField(60, 22))?.polygon as number[]
     expect(refined).not.toEqual(lattice)
     // Same polygon, moved off the lattice: vertex count is unchanged.
     expect(refined.length).toBe(lattice.length)
+  })
+
+  it('fits a band its field measures thinner than its pixels', () => {
+    // Three label rows, of which the field puts only the middle one and three
+    // tenths of each outer row inside: a 1.6 px band drawn three pixels wide.
+    const w = 50
+    const h = 24
+    const mask: BinaryMask = { width: w, height: h, data: new Uint8Array(w * h) }
+    const data = new Float32Array(w * h).fill(-0.5)
+    const cover = [0.3, 1, 0.3]
+    for (let y = 10; y < 13; y++) {
+      for (let x = 5; x < 45; x++) {
+        mask.data[y * w + x] = 1
+        data[y * w + x] = cover[y - 10] - 0.5
+      }
+    }
+    const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
+    const fit = ringPolygon(ring, { width: w, height: h, data })
+    expect(fit).not.toBeNull()
+    // The polygon follows the measured band (40 × 1.6 px), well under three
+    // quarters of the 120 px² of lattice.
+    const area = Math.abs(signedAreaFlat(fit?.polygon ?? []))
+    expect(area).toBeLessThan(0.75 * Math.abs(signedAreaFlat(ring)))
+    expect(Math.abs(area - 64)).toBeLessThan(12)
+    expect(
+      closedPathToCommands(ring, { ...OPTS, coverage: { width: w, height: h, data } }),
+    ).not.toEqual(closedPathToCommands(ring, { ...OPTS, curveMode: 'pixel' }))
+  })
+
+  it('keeps the lattice outline of a hairline whose polygon draws its sides together', () => {
+    // A one-pixel line climbing one row every two columns: both of its sides
+    // lie in the straightness tube of the same lines, and nothing refines them.
+    const w = 60
+    const mask: BinaryMask = { width: w, height: 40, data: new Uint8Array(w * 40) }
+    for (let x = 2; x < 58; x++) mask.data[Math.floor(5 + x / 2) * w + x] = 1
+    const ring = decomposeMask(mask, OPTS.turnPolicy, 1)[0].points
+    expect(ringPolygon(ring)).toBeNull()
   })
 
   it('feeds shapesFromPaths the same shapes as its own polygon stages', () => {
@@ -258,11 +331,13 @@ describe('adaptive corners', () => {
   // A 6 px square: at default smoothing the α metric rounds corners this small.
   const smallSquare = (): BinaryMask => rectMask(16, 16, 4, 4, 10, 10)
 
+  // A corner is "sharp" when the path turns discontinuously (a tangent jump)
+  // at an anchor near it; a rounded corner joins its two pieces G1-continuously.
   function sharpCornerCount(commands: PathCommand[], corners: [number, number][]): number {
-    const pts = anchors(commands)
+    const joins = tangentJoins(commands)
     let hit = 0
     for (const [cx, cy] of corners) {
-      if (pts.some(([x, y]) => Math.abs(x - cx) < 0.6 && Math.abs(y - cy) < 0.6)) hit++
+      if (joins.some((j) => Math.abs(j.x - cx) < 1 && Math.abs(j.y - cy) < 1 && j.turn > 45)) hit++
     }
     return hit
   }

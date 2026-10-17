@@ -42,6 +42,7 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
       smoothing: 0.8,
       minRegionArea: 4,
       colorCoherence: 0.5,
+      precision: 2,
     },
   },
   {
@@ -69,18 +70,19 @@ export const TARGET_PROFILES: readonly TargetProfile[] = [
     label: 'Logo / Flat design',
     tagline: 'Few colors, clean geometry, minimal nodes',
     notes: [
-      'Seam-free cutout partition: shapes share exact boundaries, ideal for editing.',
+      'Seam-free nested faces: shapes share exact boundaries and each is drawn once, so the file stays small and edits cleanly.',
       'Increase smoothing if corners look nicked; lower it for technical marks.',
     ],
     patch: {
       mode: 'color',
       paletteSize: 8,
       autoPaletteSize: true,
-      layering: 'cutout',
+      layering: 'nested',
       smoothing: 0.8,
       minRegionArea: 12,
       curveOptimize: true,
       optTolerance: 0.4,
+      precision: 2,
     },
   },
   {

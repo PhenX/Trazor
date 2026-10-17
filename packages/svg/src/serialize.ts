@@ -9,15 +9,35 @@ import { buildPathData, clampPrecision, formatNumber } from './pathdata'
 import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
 import { fitArcs } from './arc'
-import { detectPrimitive } from './primitive'
-import type { Primitive } from './primitive'
+import { detectPrimitive, negligibleTilt } from './primitive'
+import type { Primitive, StrokedPrimitive } from './primitive'
 
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
   commands: PathCommand[]
+  /**
+   * The exact whole-shape primitive the commands draw (one closed loop, no
+   * holes), when the tracer knows it: written as its element when optimizing,
+   * whatever `roundPrimitives` says, since nothing is approximated.
+   */
+  primitive?: Primitive
+  /**
+   * The one stroked primitive that paints exactly the ring the commands draw
+   * (an outline and its one hole, of one width; `annulusStroke`): written as
+   * that element, unfilled and stroked in the fill color, when optimizing and
+   * the fill is one opaque color.
+   */
+  strokedPrimitive?: StrokedPrimitive
   /** `'#rrggbb'` or `'none'`. Undefined ⇒ `fill="none"` when stroked, else the shape is skipped. */
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
+  /**
+   * Fill opacity in [0, 1], emitted as `fill-opacity` when below 1 — a
+   * translucent face (a soft shadow, glass, steam) whose `fill` is its ink color
+   * and whose alpha is carried here, so it composites over what it covers. Absent
+   * (or 1) ⇒ a fully opaque fill.
+   */
+  fillOpacity?: number
   stroke?: string
   strokeWidth?: number
   strokeLinecap?: 'butt' | 'round' | 'square'
@@ -101,6 +121,13 @@ export interface SerializeOptions {
    */
   optimizePaths?: boolean
   /**
+   * When optimizing, write path data in the compact spelling (no space around
+   * command letters, repeated letters and fractions' leading zeros dropped —
+   * see `optimizePathData`). Same geometry; for consumers with a full SVG path
+   * parser. Default false.
+   */
+  compactPaths?: boolean
+  /**
    * When optimizing, also emit `<circle>`/`<ellipse>` for near-circular loops
    * (a sub-pixel change). Leave off for cutout mode, where a neighbor still
    * traces the Bézier boundary and must match exactly. Default false.
@@ -156,6 +183,9 @@ function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean
   let attrs = ''
   const fill = shape.fill === undefined ? 'none' : assertAttrSafe(shape.fill, 'fill')
   attrs += ` fill="${fill}"`
+  if (shape.fillOpacity !== undefined && shape.fillOpacity < 1) {
+    attrs += ` fill-opacity="${formatNumber(shape.fillOpacity, 3)}"`
+  }
   if (includeFillRule && shape.fillRule !== undefined) attrs += ` fill-rule="${shape.fillRule}"`
   if (shape.stroke !== undefined) attrs += ` stroke="${assertAttrSafe(shape.stroke, 'stroke')}"`
   if (shape.strokeWidth !== undefined) {
@@ -167,20 +197,48 @@ function paintAttrs(shape: SvgShape, precision: number, includeFillRule: boolean
   return attrs
 }
 
+/**
+ * A rectangle's position and size as written: its four edges rounded to the
+ * output grid and the size their difference, so the far edges land on the grid
+ * as a path's vertices would (rounding `width` on its own puts `x + width` up to
+ * two steps off).
+ */
+function rectBox(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  precision: number,
+): [string, string, string, string] {
+  const q = (v: number): number => Number(formatNumber(v, precision))
+  const x0 = q(x)
+  const y0 = q(y)
+  return [
+    formatNumber(x0, precision),
+    formatNumber(y0, precision),
+    formatNumber(q(x + width) - x0, precision),
+    formatNumber(q(y + height) - y0, precision),
+  ]
+}
+
 /** A detected primitive as its SVG element (fill-rule dropped — a single region). */
 function primitiveElement(prim: Primitive, shape: SvgShape, precision: number): string {
   const paint = paintAttrs(shape, precision, false)
   const n = (v: number): string => formatNumber(v, precision)
   switch (prim.kind) {
-    case 'rect':
-      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}"${paint}/>`
-    case 'rrect':
-      return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.width)}" height="${n(prim.height)}" rx="${n(prim.r)}"${paint}/>`
+    case 'rect': {
+      const [x, y, w, h] = rectBox(prim.x, prim.y, prim.width, prim.height, precision)
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}"${paint}/>`
+    }
+    case 'rrect': {
+      const [x, y, w, h] = rectBox(prim.x, prim.y, prim.width, prim.height, precision)
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${n(prim.r)}"${paint}/>`
+    }
     case 'circle':
       return `<circle cx="${n(prim.cx)}" cy="${n(prim.cy)}" r="${n(prim.r)}"${paint}/>`
     case 'ellipse': {
       const transform =
-        prim.angle !== undefined && Math.abs(prim.angle) > 0.05
+        prim.angle !== undefined && !negligibleTilt(prim.rx, prim.ry, prim.angle)
           ? ` transform="rotate(${n(prim.angle)} ${n(prim.cx)} ${n(prim.cy)})"`
           : ''
       return `<ellipse cx="${n(prim.cx)}" cy="${n(prim.cy)}" rx="${n(prim.rx)}" ry="${n(prim.ry)}"${transform}${paint}/>`
@@ -239,8 +297,15 @@ function gradientElement(g: SvgGradient, precision: number): string {
       ` x1="${n(g.x1)}" y1="${n(g.y1)}" x2="${n(g.x2)}" y2="${n(g.y2)}">${stops}</linearGradient>`
     )
   }
+  // An ellipse is the circle of radius r squashed by 1/aspect across its major
+  // axis and turned by angle, about the center.
+  const transform =
+    g.aspect !== undefined && g.aspect !== 1
+      ? ` gradientTransform="translate(${n(g.cx)} ${n(g.cy)}) rotate(${formatNumber(((g.angle ?? 0) * 180) / Math.PI, 2)})` +
+        ` scale(1 ${formatNumber(1 / g.aspect, 4)}) translate(${n(-g.cx)} ${n(-g.cy)})"`
+      : ''
   return (
-    `<radialGradient id="${id}" gradientUnits="userSpaceOnUse"` +
+    `<radialGradient id="${id}" gradientUnits="userSpaceOnUse"${transform}` +
     ` cx="${n(g.cx)}" cy="${n(g.cy)}" r="${n(g.r)}">${stops}</radialGradient>`
   )
 }
@@ -265,11 +330,32 @@ export function shapeOut(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact = false,
 ): ShapeOut | null {
   if (shape.commands.length === 0) return null
   if (shape.fill === undefined && shape.stroke === undefined) return null
 
   if (optimize) {
+    const ring = shape.strokedPrimitive
+    if (
+      ring !== undefined &&
+      shape.stroke === undefined &&
+      shape.fill !== undefined &&
+      shape.fill.startsWith('#') &&
+      (shape.fillOpacity === undefined || shape.fillOpacity >= 1)
+    ) {
+      const stroked: SvgShape = {
+        commands: shape.commands,
+        fill: 'none',
+        stroke: shape.fill,
+        strokeWidth: ring.width,
+        ...(shape.id !== undefined ? { id: shape.id } : {}),
+      }
+      return { kind: 'element', svg: primitiveElement(ring.primitive, stroked, precision) }
+    }
+    if (shape.primitive !== undefined && shape.stroke === undefined) {
+      return { kind: 'element', svg: primitiveElement(shape.primitive, shape, precision) }
+    }
     const cleaned = cleanCommands(shape.commands, precision)
     const prim = detectPrimitive(cleaned, precision, roundPrimitives)
     if (prim !== null) return { kind: 'element', svg: primitiveElement(prim, shape, precision) }
@@ -277,7 +363,7 @@ export function shapeOut(
     // circle/ellipse detection); off for cutout so a neighbor's Bézier boundary
     // still matches exactly and the classical path stays byte-identical.
     const arced = roundPrimitives ? fitArcs(cleaned, precision) : cleaned
-    const d = assertAttrSafe(optimizePathData(arced, precision), 'path data')
+    const d = assertAttrSafe(optimizePathData(arced, precision, compact), 'path data')
     if (d === '') return null
     return { kind: 'path', d, paint: paintAttrs(shape, precision, true) }
   }
@@ -300,6 +386,7 @@ export function serializeSvg(
   const precision = clampPrecision(opts.precision)
   const optimize = opts.optimizePaths === true
   const roundPrimitives = opts.roundPrimitives === true
+  const compact = optimize && opts.compactPaths === true
   const w = formatNumber(doc.width, precision)
   const h = formatNumber(doc.height, precision)
 
@@ -349,6 +436,7 @@ export function serializeSvg(
         precision,
         optimize,
         roundPrimitives,
+        compact,
         parts,
       )
       if (body.length === 0) continue
@@ -362,7 +450,15 @@ export function serializeSvg(
     }
   } else {
     const all = doc.shapes.map((_, i) => i)
-    for (const child of foldShapes(doc.shapes, all, precision, optimize, roundPrimitives, parts)) {
+    for (const child of foldShapes(
+      doc.shapes,
+      all,
+      precision,
+      optimize,
+      roundPrimitives,
+      compact,
+      parts,
+    )) {
       children.push(child)
     }
   }
@@ -397,6 +493,7 @@ function foldShapes(
   precision: number,
   optimize: boolean,
   roundPrimitives: boolean,
+  compact: boolean,
   parts?: readonly (ShapeOut | null)[],
 ): string[] {
   const out: string[] = []
@@ -411,7 +508,7 @@ function foldShapes(
     const so =
       parts !== undefined && index < parts.length
         ? parts[index]
-        : shapeOut(shapes[index], precision, optimize, roundPrimitives)
+        : shapeOut(shapes[index], precision, optimize, roundPrimitives, compact)
     if (so === null) continue
     if (so.kind === 'element') {
       flush()
@@ -420,7 +517,7 @@ function foldShapes(
       flush()
       out.push(`<path d="${so.d}"${so.paint}/>`)
     } else if (pending !== null && pending.paint === so.paint) {
-      pending.d += ` ${so.d}`
+      pending.d += compact ? so.d : ` ${so.d}`
     } else {
       flush()
       pending = { d: so.d, paint: so.paint }

@@ -11,8 +11,9 @@
  * never reaches that shape's fit.
  */
 
-import type { PathCommand } from '@trazor/core'
-import { fitCircle, fitEllipse } from './fit'
+import { arcToCenter, type PathCommand } from '@trazor/core'
+import { conicDistance } from './arc'
+import { fitCircle, fitEllipse, fitRoundedRect, roundedRectSdf } from './fit'
 import { clampPrecision } from './pathdata'
 
 export type Primitive =
@@ -108,9 +109,44 @@ function detectRect(start: Pt, ops: readonly LineOp[], scale: number): Primitive
  * relative: it bounds how far the emitted `<circle>`/`<ellipse>` can render from
  * the traced boundary at every radius, so a large, only-roughly-round shape is
  * not accepted as an idealized element that renders visibly off (which a
- * radius-scaled tolerance allowed, non-deterministically across platforms).
+ * radius-scaled tolerance allowed, non-deterministically across platforms). The
+ * budget is the traced boundary's own accuracy: refined edges sit within about
+ * a tenth of a pixel of the drawing, and a primitive that moves them further
+ * trades a true edge for a rounder one — on a hard edge, a visible band.
  */
-const ROUND_TOL_PX = 0.6
+const ROUND_TOL_PX = 0.15
+
+/**
+ * Rounded-rect acceptance tolerance in pixels: how far apart the loop, sampled
+ * about a pixel apart, and the rounded rect fitted to it may lie, both ways (a
+ * two-sided Hausdorff distance). On the reasoning of `ROUND_TOL_PX`, with room
+ * for the corners: a trace draws each as one or two free cubics, which leave
+ * the one circular arc all four corners share by a few tenths of a pixel.
+ */
+const RRECT_TOL_PX = 0.3
+
+/** Spacing in pixels of the rounded-rect outline points held to the loop. */
+const RRECT_OUTLINE_STEP = 0.5
+
+/**
+ * Regular-polygon acceptance tolerance in pixels: every outline sample within
+ * this of the ideal figure. A figure whose traced corners are visibly rounded
+ * stays a path, since snapping them sharp moves the edge by more than the trace
+ * measured it to.
+ */
+const POLYGON_TOL_PX = 0.3
+
+/** Spacing in pixels of the samples a round primitive is checked against. */
+const ROUND_SAMPLE_STEP = 1
+
+/**
+ * True when an ellipse's tilt (degrees) moves its outline by no more than a
+ * quarter of {@link ROUND_TOL_PX}, so dropping it leaves the shape where it was:
+ * rotating an ellipse by θ moves its outline by up to `(rmax − rmin)·|sin θ|`.
+ */
+export function negligibleTilt(rx: number, ry: number, deg: number): boolean {
+  return Math.abs(rx - ry) * Math.abs(Math.sin((deg * Math.PI) / 180)) <= 0.25 * ROUND_TOL_PX
+}
 
 /**
  * Recognize a circle or ellipse (axis-aligned or rotated) from a densely sampled
@@ -121,11 +157,17 @@ const ROUND_TOL_PX = 0.6
  * non-round shape is rejected.
  */
 function detectRound(start: Pt, ops: readonly CurveOp[], precision: number): Primitive | null {
-  // Dense boundary samples: each anchor plus three interior points per cubic.
+  // Dense boundary samples, about a pixel apart along each cubic (four per
+  // cubic at least), so the shape is held to the curve along its whole length.
   const samples: Pt[] = [start]
   let prev = start
   for (const op of ops) {
-    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    const hull =
+      Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+      Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+      Math.hypot(op.x - op.x2, op.y - op.y2)
+    const parts = Math.max(4, Math.ceil(hull / ROUND_SAMPLE_STEP))
+    for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, op, k / parts))
     samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
@@ -144,20 +186,14 @@ function detectRound(start: Pt, ops: readonly CurveOp[], precision: number): Pri
   // Ellipse: the direct conic fit recovers a rotation too.
   const e = fitEllipse(samples)
   if (e && e.rx > 0 && e.ry > 0) {
-    const tol = ROUND_TOL_PX
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
-    const onEllipse = samples.every((p) => {
-      const dx = p.x - e.cx
-      const dy = p.y - e.cy
-      const nx = (dx * co + dy * si) / e.rx
-      const ny = (-dx * si + dy * co) / e.ry
-      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
-    })
+    const onEllipse = samples.every(
+      (p) => conicDistance(p.x - e.cx, p.y - e.cy, e.rx, e.ry, co, si) <= ROUND_TOL_PX,
+    )
     if (onEllipse) {
-      // A sub-half-degree tilt is noise — emit an axis-aligned ellipse (no transform).
       const deg = (e.angle * 180) / Math.PI
-      const angle = Math.abs(deg) < 0.5 ? undefined : deg
+      const angle = negligibleTilt(e.rx, e.ry, deg) ? undefined : deg
       return round(
         {
           kind: 'ellipse',
@@ -187,170 +223,211 @@ function cubicPoint(p0: Pt, c: CurveOp, t: number): Pt {
   }
 }
 
-/** Signed distance from a point to an axis-aligned rounded rectangle (circular corners). */
-function roundedRectSdf(
-  px: number,
-  py: number,
-  cx: number,
-  cy: number,
-  hx: number,
-  hy: number,
-  r: number,
-): number {
-  const qx = Math.abs(px - cx) - (hx - r)
-  const qy = Math.abs(py - cy) - (hy - r)
-  const ax = Math.max(qx, 0)
-  const ay = Math.max(qy, 0)
-  // Distance out to the corner arc's center, `hypot(ax, ay)`; alongside a
-  // straight edge one term is zero and the other is that distance already.
-  const outside = ay === 0 ? ax : ax === 0 ? ay : Math.hypot(ax, ay)
-  return outside + Math.min(Math.max(qx, qy), 0) - r
-}
-
 /**
  * How far inside its bounding box a rounded rect's boundary reaches, per unit of
  * corner radius: the corner arc's midpoint, `1 − 1/√2` of the radius from each of
- * its two sides. Rounded up, so the reject below never fires on a shape the SDF
+ * its two sides. Rounded up, so the reject below never fires on a shape the full
  * test would accept.
  */
 const CORNER_INSET_RATIO = 0.3
 
 /**
+ * Samples of a closed loop of straight and cubic edges, at most `step` apart
+ * along each edge (a cubic at least four times, a line at least at its
+ * midpoint), the start first and every anchor included; a loop whose last
+ * anchor is not its start is closed by the straight edge `Z` draws.
+ */
+function sampleEdgeLoop(
+  start: Pt,
+  ops: readonly (LineOp | CurveOp)[],
+  step: number,
+): { sx: Float64Array; sy: Float64Array } {
+  const xs: number[] = [start.x]
+  const ys: number[] = [start.y]
+  const line = (ax: number, ay: number, bx: number, by: number): void => {
+    const parts = Math.max(2, Math.ceil(Math.hypot(bx - ax, by - ay) / step))
+    for (let k = 1; k <= parts; k++) {
+      xs.push(ax + ((bx - ax) * k) / parts)
+      ys.push(ay + ((by - ay) * k) / parts)
+    }
+  }
+  let prev = start
+  for (const op of ops) {
+    if (op.type === 'C') {
+      const hull =
+        Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+        Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+        Math.hypot(op.x - op.x2, op.y - op.y2)
+      const parts = Math.max(4, Math.ceil(hull / step))
+      for (let k = 1; k < parts; k++) {
+        const p = cubicPoint(prev, op, k / parts)
+        xs.push(p.x)
+        ys.push(p.y)
+      }
+      xs.push(op.x)
+      ys.push(op.y)
+    } else line(prev.x, prev.y, op.x, op.y)
+    prev = { x: op.x, y: op.y }
+  }
+  if (prev.x !== start.x || prev.y !== start.y) {
+    line(prev.x, prev.y, start.x, start.y)
+    xs.pop() // the start, already first
+    ys.pop()
+  }
+  return { sx: Float64Array.from(xs), sy: Float64Array.from(ys) }
+}
+
+/**
+ * The corner radius of the rounded rect with half-extents `hx`, `hy` whose
+ * area matches the closed polyline's: the four corners cut `(4 − π)·r²` off
+ * the box. Clamped to `[0, min(hx, hy)]`.
+ */
+function areaRadius(sx: Float64Array, sy: Float64Array, hx: number, hy: number): number {
+  const n = sx.length
+  let twice = 0
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 === n ? 0 : i + 1
+    twice += sx[i] * sy[j] - sx[j] * sy[i]
+  }
+  const cut = 4 * hx * hy - Math.abs(twice) / 2
+  return Math.min(Math.sqrt(Math.max(cut, 0) / (4 - Math.PI)), hx, hy)
+}
+
+/**
+ * Whether every point of the rounded rect's outline, sampled at most `step`
+ * apart (its four extreme sides included), lies within `tol` of the closed
+ * polyline through the loop's samples: the second half of the two-sided
+ * (Hausdorff) test, which catches a loop that stays on the outline but covers
+ * only part of it. The samples run in order along the loop, so each outline
+ * point starts its search for a near segment where the previous one found it,
+ * widening both ways.
+ */
+function outlineNearLoop(
+  sx: Float64Array,
+  sy: Float64Array,
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  r: number,
+  tol: number,
+  step: number,
+): boolean {
+  const n = sx.length
+  let hit = 0
+  const near = (px: number, py: number): boolean => {
+    for (let k = 0; k < n; k++) {
+      // hit, hit + 1, hit − 1, hit + 2, … around the loop
+      const off = k % 2 === 1 ? (k + 1) / 2 : -k / 2
+      const i = (((hit + off) % n) + n) % n
+      const j = i + 1 === n ? 0 : i + 1
+      if (pointSegDist(px, py, sx[i], sy[i], sx[j], sy[j]) <= tol) {
+        hit = i
+        return true
+      }
+    }
+    return false
+  }
+  // Four quarter arcs and four straight sides (possibly empty), in turn.
+  const ax = hx - r
+  const ay = hy - r
+  const corners: [number, number, number][] = [
+    [cx + ax, cy - ay, -Math.PI / 2],
+    [cx + ax, cy + ay, 0],
+    [cx - ax, cy + ay, Math.PI / 2],
+    [cx - ax, cy - ay, Math.PI],
+  ]
+  const arcParts = Math.max(2, Math.ceil((0.5 * Math.PI * r) / step))
+  for (let c = 0; c < 4; c++) {
+    const [ox, oy, a0] = corners[c]
+    for (let k = 0; k < arcParts; k++) {
+      const a = a0 + (0.5 * Math.PI * k) / arcParts
+      if (!near(ox + r * Math.cos(a), oy + r * Math.sin(a))) return false
+    }
+    // The side from this arc's end to the next arc's start.
+    const a1 = a0 + 0.5 * Math.PI
+    const bx = ox + r * Math.cos(a1)
+    const by = oy + r * Math.sin(a1)
+    const [nx, ny, na] = corners[(c + 1) % 4]
+    const ex = nx + r * Math.cos(na)
+    const ey = ny + r * Math.sin(na)
+    const parts = Math.max(1, Math.ceil(Math.hypot(ex - bx, ey - by) / step))
+    for (let k = 0; k < parts; k++) {
+      if (!near(bx + ((ex - bx) * k) / parts, by + ((ey - by) * k) / parts)) return false
+    }
+  }
+  return true
+}
+
+/**
  * Recognize an axis-aligned rounded rectangle (straight edges + circular corner
- * arcs) and emit `<rect rx>`. Structure-agnostic: it fits one corner radius by a
- * coarse scan refined with a golden-section search (sub-pixel), and accepts only
- * if every densely sampled boundary point lies on that rounded rect within
- * tolerance, so a shape that is not really one is rejected. `ops` are the loop's
- * four or more straight and curved edges, at least one of them a corner arc.
+ * arcs) and emit `<rect rx>`. Structure-agnostic: the loop is sampled about a
+ * pixel apart along its whole length, the box and one corner radius are fitted
+ * to those samples by geometric least squares (`fitRoundedRect`, started from
+ * the samples' bounding box and the radius that matches their area), and the
+ * shape is accepted only when the two outlines lie within `RRECT_TOL_PX` of
+ * each other both ways (a two-sided Hausdorff test). A bowl, a spindle or an
+ * ellipse whose anchors and segment midpoints happen to lie on its box
+ * therefore stays a path, and a cubic that overshoots a straight side by a
+ * fraction of a pixel does not drag that whole side with it. `ops` are the
+ * loop's four or more straight and curved edges, at least one of them a corner
+ * arc.
  */
 function detectRoundedRect(
   start: Pt,
   ops: readonly (LineOp | CurveOp)[],
   precision: number,
 ): Primitive | null {
-  // Dense samples: anchors plus each segment's midpoint (a non-axis-aligned edge
-  // or a wrong corner then fails the fit).
-  const count = 1 + 2 * ops.length
-  const sx = new Float64Array(count)
-  const sy = new Float64Array(count)
-  sx[0] = start.x
-  sy[0] = start.y
-  let prevX = start.x
-  let prevY = start.y
-  let k = 1
-  for (const op of ops) {
-    if (op.type === 'C') {
-      sx[k] = 0.125 * prevX + 0.375 * op.x1 + 0.375 * op.x2 + 0.125 * op.x
-      sy[k] = 0.125 * prevY + 0.375 * op.y1 + 0.375 * op.y2 + 0.125 * op.y
-    } else {
-      sx[k] = (prevX + op.x) / 2
-      sy[k] = (prevY + op.y) / 2
-    }
-    sx[k + 1] = op.x
-    sy[k + 1] = op.y
-    k += 2
-    prevX = op.x
-    prevY = op.y
-  }
-
+  const { sx, sy } = sampleEdgeLoop(start, ops, ROUND_SAMPLE_STEP)
+  const count = sx.length
   let minX = Infinity
   let maxX = -Infinity
   let minY = Infinity
   let maxY = -Infinity
   for (let i = 0; i < count; i++) {
-    minX = Math.min(minX, sx[i])
-    maxX = Math.max(maxX, sx[i])
-    minY = Math.min(minY, sy[i])
-    maxY = Math.max(maxY, sy[i])
+    if (sx[i] < minX) minX = sx[i]
+    if (sx[i] > maxX) maxX = sx[i]
+    if (sy[i] < minY) minY = sy[i]
+    if (sy[i] > maxY) maxY = sy[i]
   }
   const cx = (minX + maxX) / 2
   const cy = (minY + maxY) / 2
   const hx = (maxX - minX) / 2
   const hy = (maxY - minY) / 2
   if (hx <= 0 || hy <= 0) return null
+  const tol = RRECT_TOL_PX
 
-  const maxR = Math.min(hx, hy)
-  const tol = Math.max(0.75, maxR * 0.03)
-
-  // Every point of a rounded rect with corner radius r lies within
-  // `(1 − 1/√2)·r + tol` of its bounding box, and the radius search cannot
-  // return more than `maxR`: a sample deeper inside than that fails the SDF
-  // test at every candidate radius, so there is nothing to search for.
-  const band = CORNER_INSET_RATIO * maxR + tol
+  // An accepted rounded rect has each side within `tol` of the samples' box
+  // (every sample lies within `tol` of it, and each of its sides within `tol`
+  // of the samples), so its radius is at most `min(hx, hy) + tol` and every
+  // sample lies within `(1 − 1/√2)·r + tol` of its box, `2·tol` of the
+  // samples': a sample deeper inside than that rejects the loop outright.
+  const band = CORNER_INSET_RATIO * (Math.min(hx, hy) + tol) + 2 * tol
   for (let i = 0; i < count; i++) {
     const inset = Math.min(hx - Math.abs(sx[i] - cx), hy - Math.abs(sy[i] - cy))
     if (inset > band) return null
   }
 
-  // Largest |SDF| over all samples for a candidate corner radius — minimized at
-  // the true radius (V-shaped: too small clips the corners, too large bulges).
-  // A candidate already past `cutoff` cannot win, so it stops there.
-  const maxErr = (r: number, cutoff: number): number => {
-    let err = 0
-    for (let i = 0; i < count; i++) {
-      const d = Math.abs(roundedRectSdf(sx[i], sy[i], cx, cy, hx, hy, r))
-      if (d > err) {
-        err = d
-        if (err >= cutoff) return err
-      }
-    }
-    return err
-  }
-  // Coarse scan to bracket the minimum, then a golden-section search refines the
-  // radius to sub-pixel — the scan step (maxR/64) would otherwise cap accuracy.
-  const steps = 64
-  const step = maxR / steps
-  let bestR = step
-  let bestErr = Infinity
-  for (let i = 1; i <= steps; i++) {
-    const err = maxErr(step * i, bestErr)
-    if (err < bestErr) {
-      bestErr = err
-      bestR = step * i
+  const fit = fitRoundedRect(sx, sy, { cx, cy, hx, hy, r: areaRadius(sx, sy, hx, hy) })
+  for (let i = 0; i < count; i++) {
+    if (Math.abs(roundedRectSdf(sx[i], sy[i], fit.cx, fit.cy, fit.hx, fit.hy, fit.r)) > tol) {
+      return null
     }
   }
-  // The SDF moves by at most `dr` when the radius moves by `dr`, so `maxErr` is
-  // 1-Lipschitz and no radius in the bracket below can beat the scan's best by
-  // more than one step: once that best is a step past tolerance, refining it
-  // cannot bring it back under.
-  if (bestErr - step > tol) return null
-  bestR = goldenMin(
-    (r) => maxErr(r, Infinity),
-    Math.max(0, bestR - step),
-    Math.min(maxR, bestR + step),
-  )
-  bestErr = maxErr(bestR, Infinity)
-  if (bestErr > tol) return null
-  if (bestR < tol) return null // square corners — a plain rect (handled elsewhere)
+  if (fit.r < tol) return null // square corners — a plain rect (handled elsewhere)
+  if (!outlineNearLoop(sx, sy, fit.cx, fit.cy, fit.hx, fit.hy, fit.r, tol, RRECT_OUTLINE_STEP))
+    return null
   return round(
-    { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
+    {
+      kind: 'rrect',
+      x: fit.cx - fit.hx,
+      y: fit.cy - fit.hy,
+      width: 2 * fit.hx,
+      height: 2 * fit.hy,
+      r: fit.r,
+    },
     precision,
   )
-}
-
-/** Golden-section search: the minimizer of a unimodal `f` on `[a, b]`. */
-function goldenMin(f: (x: number) => number, a: number, b: number): number {
-  const gr = (Math.sqrt(5) - 1) / 2 // 0.618…
-  let c = b - gr * (b - a)
-  let d = a + gr * (b - a)
-  let fc = f(c)
-  let fd = f(d)
-  for (let i = 0; i < 40; i++) {
-    if (fc < fd) {
-      b = d
-      d = c
-      fd = fc
-      c = b - gr * (b - a)
-      fc = f(c)
-    } else {
-      a = c
-      c = d
-      fc = fd
-      d = a + gr * (b - a)
-      fd = f(d)
-    }
-  }
-  return (a + b) / 2
 }
 
 /** Signed smallest angle a − b in (−π, π]. */
@@ -361,14 +438,42 @@ function angleDiff(a: number, b: number): number {
   return d
 }
 
+/** Spacing in pixels of the samples {@link denseOutline} takes along an elliptical arc. */
+const ARC_SAMPLE_STEP = 1
+
 /**
- * Dense point samples along the outline (curves sampled too), one loop, in
- * order, appended to `px`/`py` as parallel coordinate lists.
+ * Dense point samples along the outline (curves and elliptical arcs sampled too),
+ * one loop, in order, appended to `px`/`py` as parallel coordinate lists. An arc
+ * is sampled on its own ellipse (`arcToCenter`, W3C SVG 1.1 F.6.5) about
+ * {@link ARC_SAMPLE_STEP} apart, so a loop of arcs reads as the curve it is and
+ * not as the polygon of its endpoints.
  */
 function denseOutline(start: Pt, ops: readonly PathCommand[], px: number[], py: number[]): void {
   let prevX = start.x
   let prevY = start.y
   for (const op of ops) {
+    if (op.type === 'A') {
+      const arc = arcToCenter(prevX, prevY, op)
+      if (arc === null) {
+        px.push(prevX)
+        py.push(prevY)
+      } else {
+        const cos = Math.cos(arc.phi)
+        const sin = Math.sin(arc.phi)
+        const length = Math.abs(arc.dTheta) * Math.max(arc.rx, arc.ry)
+        const steps = Math.max(2, Math.ceil(length / ARC_SAMPLE_STEP))
+        for (let s = 0; s < steps; s++) {
+          const t = arc.theta1 + (arc.dTheta * s) / steps
+          const ex = arc.rx * Math.cos(t)
+          const ey = arc.ry * Math.sin(t)
+          px.push(arc.cx + cos * ex - sin * ey)
+          py.push(arc.cy + sin * ex + cos * ey)
+        }
+      }
+      prevX = op.x
+      prevY = op.y
+      continue
+    }
     if (op.type === 'C') {
       // Bernstein form, eight samples per segment.
       for (let s = 0; s < 8; s++) {
@@ -462,14 +567,27 @@ function detectRegularPolygon(
   const m = px.length
   if (m < 24) return null
 
+  // The polar anchor is the outline's area centroid (shoelace), which is the
+  // exact center of any regular figure. The mean of the samples is not: the
+  // outline is sampled per segment, so long edges and tight corners weight it
+  // unevenly, and a star's anchor drifts toward its denser side.
   let sumX = 0
   let sumY = 0
+  let cross = 0
+  let momentX = 0
+  let momentY = 0
   for (let i = 0; i < m; i++) {
+    const j = i + 1 < m ? i + 1 : 0
+    const c = px[i] * py[j] - px[j] * py[i]
+    cross += c
+    momentX += (px[i] + px[j]) * c
+    momentY += (py[i] + py[j]) * c
     sumX += px[i]
     sumY += py[i]
   }
-  const cx = sumX / m
-  const cy = sumY / m
+  const degenerate = Math.abs(cross) < 1e-6
+  const cx = degenerate ? sumX / m : momentX / (3 * cross)
+  const cy = degenerate ? sumY / m : momentY / (3 * cross)
 
   // Polar coordinates about the centroid, plus the outline's own bounding box.
   const rad = new Float64Array(m)
@@ -489,7 +607,7 @@ function detectRegularPolygon(
     by1 = Math.max(by1, py[i])
   }
   if (rMax < 3) return null
-  const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
+  const tol = POLYGON_TOL_PX
 
   // A genuine regular figure spans the same bounding box as the outline it was
   // fit to. Reject a candidate whose extent diverges — the polar corner search
@@ -754,4 +872,100 @@ export function detectPrimitive(
   }
   if (ops.length < 3) return null
   return detectRegularPolygon(loop.start, ops, precision)
+}
+
+/**
+ * How far, in px, a stroke's two edges may land from the two fitted outlines of
+ * a ring drawn as that one stroke ({@link annulusStroke}): a few times the
+ * 0.02–0.06 px the fitted boundaries are good to, and far below the pixel or
+ * more by which a ring that is not of one width misses (inkvec `STROKE_TOL`).
+ */
+export const STROKE_TOL = 0.1
+
+/** A primitive drawn as a stroke: its midline and the stroke's width, in px. */
+export interface StrokedPrimitive {
+  primitive: Primitive
+  width: number
+}
+
+/**
+ * The one stroked primitive that paints exactly the ring between `outer` and
+ * `inner` — an outline and its one hole, of one width — as its midline and
+ * width, when there is one within `tol` px; null otherwise (inkvec
+ * `annulus_stroke`). A ring of one width is a stroke, which is how an artist
+ * draws a frame or a rim, and it leaves its inside empty, so the hole stays a
+ * hole in a handful of numbers. Circles are offsets of circles and rounded
+ * rectangles of rounded rectangles (outer corner `r + t/2`, inner
+ * `max(r − t/2, 0)`, square under a mitred join at `r = 0`); an ellipse's offset
+ * is not an ellipse, so it never is one.
+ *
+ * - Circles: width `t = r_o − r_i`, midline the circle of radius
+ *   `(r_o + r_i)/2` about the centers' midpoint, which moves each outline by
+ *   half the centers' distance.
+ * - Rectangles (rounded or square, on the axes): the four side gaps must all be
+ *   positive; `t` is their mean, and each side moves by `|s − t|/2`. A corner of
+ *   radius `ρ` has its apex `(√2 − 1)·ρ` in from its square's corner, so a radius
+ *   changed by `Δρ` moves the outline there by `(√2 − 1)·|Δρ|`. The stroke's
+ *   radius is the two radii's mean where the inner corner is visibly round, else
+ *   `r_o − t/2` so the outer corner is exact; both outlines under
+ *   `tol/(√2 − 1)` make square corners.
+ */
+export function annulusStroke(
+  outer: Primitive,
+  inner: Primitive,
+  tol = STROKE_TOL,
+): StrokedPrimitive | null {
+  if (outer.kind === 'circle' && inner.kind === 'circle') {
+    const t = outer.r - inner.r
+    if (t <= 0 || Math.hypot(outer.cx - inner.cx, outer.cy - inner.cy) / 2 > tol) return null
+    return {
+      primitive: {
+        kind: 'circle',
+        cx: (outer.cx + inner.cx) / 2,
+        cy: (outer.cy + inner.cy) / 2,
+        r: (outer.r + inner.r) / 2,
+      },
+      width: t,
+    }
+  }
+  const o = boxOf(outer)
+  const i = boxOf(inner)
+  if (o === null || i === null) return null
+  const sides = [
+    i.x - o.x,
+    i.y - o.y,
+    o.x + o.width - (i.x + i.width),
+    o.y + o.height - (i.y + i.height),
+  ]
+  if (sides.some((s) => s <= 0)) return null
+  const t = (sides[0] + sides[1] + sides[2] + sides[3]) / 4
+  let worst = Math.max(...sides.map((s) => Math.abs(s - t) / 2))
+  const corner = Math.SQRT2 - 1
+  const ro = Math.max(o.r, 0)
+  const ri = Math.max(i.r, 0)
+  let r = 0
+  if (ro < tol / corner && ri < tol / corner) worst = Math.max(worst, Math.max(ro, ri) * corner)
+  else {
+    r = ri > tol / corner ? (ro + ri) / 2 : ro - t / 2
+    if (r <= 0) return null
+    const po = r + t / 2
+    const pi = Math.max(r - t / 2, 0)
+    worst = Math.max(worst, Math.max(Math.abs(po - ro), Math.abs(pi - ri)) * corner)
+  }
+  const x0 = (o.x + i.x) / 2
+  const y0 = (o.y + i.y) / 2
+  const x1 = (o.x + o.width + i.x + i.width) / 2
+  const y1 = (o.y + o.height + i.y + i.height) / 2
+  if (worst > tol || 2 * r > Math.min(x1 - x0, y1 - y0)) return null
+  const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  return { primitive: r > 0 ? { kind: 'rrect', ...box, r } : { kind: 'rect', ...box }, width: t }
+}
+
+/** A rectangle primitive as a box with its corner radius (0 when square); null for any other kind. */
+function boxOf(
+  p: Primitive,
+): { x: number; y: number; width: number; height: number; r: number } | null {
+  if (p.kind === 'rect') return { x: p.x, y: p.y, width: p.width, height: p.height, r: 0 }
+  if (p.kind === 'rrect') return { x: p.x, y: p.y, width: p.width, height: p.height, r: p.r }
+  return null
 }

@@ -1,5 +1,7 @@
 import { CancelledError } from '@trazor/core'
 import type { GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
+import { loadBandKernel } from '@trazor/trace'
+import type { BandKernel } from '@trazor/trace'
 import { vectorize } from './native'
 import type { StageCache } from './native'
 import { HelperPool } from './helper-pool'
@@ -21,6 +23,11 @@ export function installWorkerHandler(scope: WorkerScope): void {
   // Helper workers, once the consumer transfers their ports. Absent ⇒ every run
   // traces on this thread.
   let helpers: HelperPool | undefined
+  // The boundary solve's WebAssembly kernel, once the consumer sends one; a run
+  // started after a kernel message waits for it to be ready. Absent ⇒ the
+  // TypeScript descent.
+  let solveKernel: BandKernel | undefined
+  let kernelReady: Promise<void> | undefined
 
   const post = (msg: WorkerOutMessage, transfer?: Transferable[]) =>
     scope.postMessage(msg, transfer)
@@ -35,17 +42,25 @@ export function installWorkerHandler(scope: WorkerScope): void {
       helpers = msg.ports.length > 0 ? new HelperPool(msg.ports) : undefined
       return
     }
+    if (msg.type === 'solve-kernel') {
+      const module = msg.module
+      const previous = kernelReady
+      kernelReady = (async () => {
+        await previous
+        // A module that fails to instantiate leaves the TypeScript descent in place.
+        solveKernel =
+          module === null ? undefined : await loadBandKernel(module).catch(() => undefined)
+      })()
+      return
+    }
     if (msg.type !== 'vectorize') return
 
-    const { id, width, height, buffer, settings, edgeHint, coverageHint, imageId, trace } = msg
+    const { id, width, height, buffer, settings, edgeHint, imageId, trace } = msg
     const image: RasterImage = { width, height, data: new Uint8ClampedArray(buffer) }
     const hint: GrayImage | undefined = edgeHint
       ? { width, height, data: new Float32Array(edgeHint) }
       : undefined
-    const cov: GrayImage | undefined = coverageHint
-      ? { width, height, data: new Float32Array(coverageHint) }
-      : undefined
-    void run(id, image, settings, hint, cov, imageId, trace, msg.withDocument)
+    void run(id, image, settings, hint, imageId, trace, msg.withDocument)
   })
 
   async function run(
@@ -53,18 +68,17 @@ export function installWorkerHandler(scope: WorkerScope): void {
     image: RasterImage,
     settings: VectorizeSettings,
     edgeHint?: GrayImage,
-    coverageHint?: GrayImage,
     imageId?: number,
     trace?: boolean,
     withDocument?: boolean,
   ) {
     try {
+      if (kernelReady !== undefined) await kernelReady
       const result = await vectorize(
         image,
         settings,
         {
           edgeHint,
-          coverageHint,
           shouldCancel: () => cancelled.has(id),
           onProgress: (stage, overall) => {
             const now = Date.now()
@@ -79,7 +93,7 @@ export function installWorkerHandler(scope: WorkerScope): void {
             ? (step) => post({ type: 'trace-step', id, step }, traceTransferables(step.rasters))
             : undefined,
         },
-        { imageId, cache: stageCache, withDocument, helpers },
+        { imageId, cache: stageCache, withDocument, helpers, solveKernel },
       )
       if (cancelled.has(id)) {
         post({ type: 'error', id, message: 'cancelled', cancelled: true })

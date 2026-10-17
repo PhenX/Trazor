@@ -61,6 +61,58 @@ describe('flattenImage', () => {
     expect([...(opaque?.data ?? [])]).toEqual([0, 0, 1])
   })
 
+  it('transparent: keeps a flat translucent wisp below the cut, even one pixel thin', () => {
+    // A 1px-thin horizontal line of constant alpha 120: each pixel has a same-
+    // level neighbor along the line, so a high cut keeps the whole wisp — the
+    // clear pixels above and below never match.
+    const img = rasterOf(4, 3, (_x, y) => [40, 120, 200, y === 1 ? 120 : 0])
+    const { opaque } = flattenImage(img, {
+      background: 'transparent',
+      backgroundColor: '#ffffff',
+      alphaThreshold: 200,
+    })
+    expect([...(opaque?.data ?? [])]).toEqual([0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0])
+  })
+
+  it('transparent: cuts a straight anti-aliased rim at the threshold, though its level runs along it', () => {
+    // An opaque square whose straight rim reads alpha 100 all along each side:
+    // rim pixels share a level along the side but ramp from clear to solid
+    // across it, so they are no translucent plateau — and the solid square
+    // keeps its tight cut everywhere.
+    const img = rasterOf(10, 10, (x, y) => {
+      const inX = x >= 2 && x <= 7
+      const inY = y >= 2 && y <= 7
+      const rimX = x === 1 || x === 8
+      const rimY = y === 1 || y === 8
+      const a = inX && inY ? 255 : (rimX && inY) || (rimY && inX) ? 100 : 0
+      return [30, 30, 30, a]
+    })
+    const { opaque } = flattenImage(img, {
+      background: 'transparent',
+      backgroundColor: '#ffffff',
+      alphaThreshold: 128,
+    })
+    const data = opaque?.data ?? new Uint8Array(0)
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 10; x++) {
+        const solid = x >= 2 && x <= 7 && y >= 2 && y <= 7
+        expect(data[y * 10 + x], `${x},${y}`).toBe(solid ? 1 : 0)
+      }
+    }
+  })
+
+  it('transparent: drops an anti-aliased rim ramp below the cut (no flat neighbor)', () => {
+    // A coverage ramp climbing from clear to solid: no two neighbors share a
+    // level, so nothing below the cut is a translucent plateau.
+    const img = rasterOf(5, 1, (x) => [0, 0, 0, [0, 50, 120, 200, 255][x]])
+    const { opaque } = flattenImage(img, {
+      background: 'transparent',
+      backgroundColor: '#ffffff',
+      alphaThreshold: 200,
+    })
+    expect([...(opaque?.data ?? [])]).toEqual([0, 0, 0, 1, 1])
+  })
+
   it('auto: fully opaque input keeps RGB and returns opaque = null', () => {
     const img = rasterOf(2, 2, (x, y) => [x * 100, y * 100, 42, 255])
     const { image, opaque } = flattenImage(img, {

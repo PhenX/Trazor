@@ -6,25 +6,74 @@ export {
   polygonToCommands,
   pixelCommands,
 } from './closed'
-export type { TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
-export { assembleRegions, extractChains, fitChain, fitChains, traceLabelMap } from './boundary'
+export type { RingFit, TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
+export type { CoveragePatch } from './coverage'
+export {
+  assembleFaces,
+  assembleRegions,
+  extractChains,
+  fitChain,
+  fitChains,
+  traceLabelMap,
+} from './boundary'
 export type {
   BoundaryChain,
   ChainFit,
   ChainNetwork,
   ColorField,
+  FaceShape,
   RegionShape,
   TraceCutoutOptions,
 } from './boundary'
 export { traceCenterline } from './centerline'
 export type { CenterlineOptions, StrokePath } from './centerline'
-export { decomposeMask, ringContains, ringBounds } from './crack'
+export { decomposeMask } from './crack'
 export type { CrackPath } from './crack'
 export { simplifyOpen } from './simplify'
-export { fitOpenPolyline, fitCubicSegment, distanceToCubic } from './fit'
+export { fitOpenPolyline, fitCubicSegment } from './fit'
 export type { Cubic } from './fit'
 export { optimalPolyline, straightReach } from './potrace/polyfit'
-export { refineRingToField, pairwiseField } from './refine'
-export type { SignedField } from './refine'
+export {
+  refineRingToField,
+  pairwiseField,
+  layerField,
+  coverageOf,
+  signedFieldOf,
+  negatedField,
+} from './refine'
+export type { SignedField, LayerFieldSource } from './refine'
 export { reverseCommands } from './paths'
 export type { FlatPoints } from './paths'
+export { OUTSIDE, CLEAR, fitConfig, syncNodes } from './planar/types'
+export type {
+  EdgePrimitive,
+  FaceFill,
+  FaceRing,
+  Faces,
+  FitConfig,
+  FittedEdge,
+  PlanarEdge,
+  PlanarMap,
+  PlanarNode,
+  PremultipliedImage,
+} from './planar/types'
+export { splitFaces } from './planar/faces'
+export { buildPlanarMap } from './planar/map'
+export { faceRings, faceNesting, ringPolygon as faceRingPolygon } from './planar/rings'
+export type { FaceNesting } from './planar/rings'
+export { regionRings, innerFaces } from './planar/regions'
+export { measureSubpixel, applySubpixel, refineSubpixel, imageNoise } from './planar/subpixel'
+export type { SubpixelMeasurement, SubpixelOptions } from './planar/subpixel'
+export { refineJunctions } from './planar/junctions'
+export { solveBoundaries } from './solve/boundary'
+export type { SolveOptions, SolveReport } from './solve/boundary'
+export { BandKernel, loadBandKernel } from './solve/kernel'
+export type { KernelDescentOptions, KernelTimings } from './solve/kernel'
+export { fitPolyline } from './fit/multimodel'
+export type { FitPolylineOptions } from './fit/multimodel'
+export { postFitPasses } from './fit/merge'
+export type { PostFitOptions } from './fit/merge'
+export { edgeFitInput, fitEdge, fitEdgeInput, fitEdges, fitRun } from './fit/edge'
+export type { EdgeFitInput } from './fit/edge'
+export { repairCrossings } from './fit/repair'
+export type { RepairReport, RepairedEdge, RepairOutcome } from './fit/repair'

@@ -190,6 +190,54 @@ describe('serializeSvg', () => {
     expect((svg.match(/<path /g) ?? []).length).toBe(1)
   })
 
+  it('emits fill-opacity for a translucent fill, after fill and before fill-rule, only when below 1', () => {
+    const svg = serializeSvg(
+      {
+        width: 10,
+        height: 10,
+        unit: 'px',
+        shapes: [
+          {
+            commands: square(0, 0, 5, 5),
+            fill: '#2878c8',
+            fillRule: 'evenodd',
+            fillOpacity: 0.451,
+          },
+          { commands: square(5, 0, 10, 5), fill: '#123456', fillRule: 'evenodd', fillOpacity: 1 },
+        ],
+      },
+      { precision: 2 },
+    )
+    expect(svg).toContain('fill="#2878c8" fill-opacity="0.451" fill-rule="evenodd"')
+    // Opacity 1 is the default, so it is omitted.
+    expect(svg).toContain('fill="#123456" fill-rule="evenodd"')
+    expect((svg.match(/fill-opacity/g) ?? []).length).toBe(1)
+  })
+
+  it('does not fold two same-fill shapes that differ in opacity into one path', () => {
+    // A curved blob is not a detected primitive, so consecutive same-paint blobs
+    // would fold into one <path> — a different fill-opacity must keep them apart.
+    const blob = (dx: number): PathCommand[] => [
+      { type: 'M', x: dx, y: 0 },
+      { type: 'Q', x1: dx + 4, y1: 0, x: dx + 4, y: 4 },
+      { type: 'Q', x1: dx + 4, y1: 8, x: dx, y: 8 },
+      { type: 'Z' },
+    ]
+    const svg = serializeSvg(
+      {
+        width: 20,
+        height: 10,
+        unit: 'px',
+        shapes: [
+          { commands: blob(0), fill: '#2878c8', fillRule: 'evenodd', fillOpacity: 0.45 },
+          { commands: blob(8), fill: '#2878c8', fillRule: 'evenodd' },
+        ],
+      },
+      { precision: 2, optimizePaths: true },
+    )
+    expect((svg.match(/<path /g) ?? []).length).toBe(2)
+  })
+
   it('emits stroke-linejoin and id when set, escaping the id', () => {
     const svg = serializeSvg(
       {

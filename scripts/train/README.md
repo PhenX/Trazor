@@ -5,13 +5,12 @@ Offline PyTorch training for the app's on-device pre-pass models. It reads the d
 under `public/models/` (served same-origin — see
 the deploying app's `models/` setup).
 
-Three tasks share this scaffold, selected with `--task` (one generated dataset trains any — it carries all three targets):
+Two tasks share this scaffold, selected with `--task` (one generated dataset trains either — it carries both targets):
 
-| `--task`         | predicts               | target  | ships as            | spec                                                            |
-| ---------------- | ---------------------- | ------- | ------------------- | --------------------------------------------------------------- |
-| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)                 |
-| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md)           |
-| `field`          | coverage field (1-ch)  | `field` | `signed-field.onnx` | [`SIGNED_FIELD_PREPASS.md`](../../docs/SIGNED_FIELD_PREPASS.md) |
+| `--task`         | predicts               | target  | ships as            | spec                                                  |
+| ---------------- | ---------------------- | ------- | ------------------- | ----------------------------------------------------- |
+| `edge` (default) | boundary map (1-ch)    | `edge`  | `edge-prepass.onnx` | [`EDGE_PREPASS.md`](../../docs/EDGE_PREPASS.md)       |
+| `cleanup`        | clean RGB image (3-ch) | `clean` | `cleanup.onnx`      | [`CLEANUP_PREPASS.md`](../../docs/CLEANUP_PREPASS.md) |
 
 These scripts are **not part of the JS build or CI** — they run only when you train. The weights are not committed to
 git; you generate them here; the deploying app publishes them where it fetches them at build time — the Trazor studio uses a private `models` Release — and serves them same-origin under `models/`. For a local run, drop the `.onnx` into your app's served `models/` directory (it's git-ignored).

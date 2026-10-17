@@ -8,14 +8,15 @@
  * closely.
  *
  * A collapse is emitted only when a least-squares conic (a Kåsa circle first, an
- * ellipse fit as a fallback) fits every boundary sample within tolerance, the
+ * ellipse fit as a fallback) fits every boundary sample — about a pixel apart
+ * along the run — within tolerance by its first-order (Sampson) distance, the
  * run is a simple (non-reversing) sub-360° arc, and a reconstructed arc that
- * actually sweeps through every sample exists — so a non-arc run is always left
- * as cubics. Because spline-traced boundaries are one long cubic run (straight
- * edges and corners included), the fitter also segments an embedded arc out of a
- * longer run. `A` radii, rotation and endpoint are snapped to the output
- * precision grid, matching primitive detection, so the result stays on the
- * serializer grid.
+ * actually sweeps through every sample, in order, exists — so a non-arc run is
+ * always left as cubics. Because spline-traced boundaries are one long cubic run
+ * (straight edges and corners included), the fitter also segments an embedded
+ * arc out of a longer run. `A` radii, rotation and endpoint are snapped to the
+ * output precision grid, matching primitive detection, so the result stays on
+ * the serializer grid.
  */
 
 import { arcToCenter, type PathCommand } from '@trazor/core'
@@ -44,6 +45,28 @@ function angleDiff(a: number, b: number): number {
 }
 
 /**
+ * Distance from a point to an ellipse, to first order (Sampson): the implicit
+ * form F = x²/rx² + y²/ry² − 1 in the ellipse's frame, divided by its gradient's
+ * length. Exact on a circle to first order, and it does not shrink by ry/rx near
+ * the sharp ends of a thin ellipse, as the radial distance in the unit-circle
+ * frame does — where a sliver ellipse would otherwise pass for a gentle curve.
+ */
+export function conicDistance(
+  dx: number,
+  dy: number,
+  rx: number,
+  ry: number,
+  cosP: number,
+  sinP: number,
+): number {
+  const x = dx * cosP + dy * sinP
+  const y = -dx * sinP + dy * cosP
+  const f = (x * x) / (rx * rx) + (y * y) / (ry * ry) - 1
+  const g = 2 * Math.hypot(x / (rx * rx), y / (ry * ry))
+  return g > 0 ? Math.abs(f) / g : Infinity
+}
+
+/**
  * True when every sample lies on the reconstructed arc — the test that selects
  * the correct (large-arc, sweep) pair. Both arcs sharing the endpoints lie on
  * the same conic, so a sample-on-conic check cannot tell them apart; only the
@@ -69,25 +92,49 @@ function arcFitsSamples(
   const sinP = Math.sin(phi)
   const minR = Math.min(rx, ry)
   const TWO_PI = 2 * Math.PI
+  // The endpoint is snapped to the output grid, so the run's last sample may sit
+  // just past the arc's end: allow the positional tolerance, as an angle.
+  const slack = tol / minR
   const inSweep = (t: number): boolean => {
     let d = t - theta1
     if (dTheta >= 0) {
       d = ((d % TWO_PI) + TWO_PI) % TWO_PI
-      return d <= dTheta + 1e-6
+      return d <= dTheta + slack || d >= TWO_PI - slack
     }
     d = -(((-d % TWO_PI) + TWO_PI) % TWO_PI)
-    return d >= dTheta - 1e-6
+    return d >= dTheta - slack || d <= -TWO_PI + slack
   }
+  // Along the sweep, the arc between two consecutive samples must be about as
+  // long as the step between them: an arc that runs round the far end of a thin
+  // ellipse between two samples it still passes near is not the run.
+  const speed = (t: number): number => Math.hypot(rx * Math.sin(t), ry * Math.cos(t))
+  let prevT = theta1
+  let prev = start
   for (const s of samples) {
     const dx = s.x - cx
     const dy = s.y - cy
+    if (conicDistance(dx, dy, rx, ry, cosP, sinP) > tol) return false // off the conic
     const ux = (dx * cosP + dy * sinP) / rx
     const uy = (-dx * sinP + dy * cosP) / ry
-    if (Math.abs(Math.hypot(ux, uy) - 1) * minR > tol) return false // off the conic
-    if (!inSweep(Math.atan2(uy, ux))) return false // on the complementary arc
+    const t = Math.atan2(uy, ux)
+    if (!inSweep(t)) return false // on the complementary arc
+    let dt = t - prevT
+    dt = dTheta >= 0 ? ((dt % TWO_PI) + TWO_PI) % TWO_PI : -(((-dt % TWO_PI) + TWO_PI) % TWO_PI)
+    if (dt > Math.PI) dt -= TWO_PI
+    if (dt < -Math.PI) dt += TWO_PI
+    const along = Math.abs(dt) * speed(prevT + dt / 2)
+    if (along > ARC_STEP_RATIO * Math.hypot(s.x - prev.x, s.y - prev.y) + 2 * tol) return false
+    prevT = t
+    prev = s
   }
   return true
 }
+
+/** Longest the arc between two consecutive samples may run, as a multiple of their step. */
+const ARC_STEP_RATIO = 1.5
+
+/** Step (px) along a cubic's control polygon between the samples it is checked at. */
+const ARC_SAMPLE_STEP = 1
 
 /** A conic the run's samples lie on: a circle (rx = ry, angle 0) or an ellipse. */
 interface Conic {
@@ -106,9 +153,10 @@ interface Conic {
  * from the original curve — the same at every radius. (A radius-scaled tolerance
  * let a large, only-roughly-circular run collapse to an arc that rendered
  * visibly off, and which runs crossed that threshold depended on platform
- * floating-point, so the output diverged between machines.)
+ * floating-point, so the output diverged between machines.) It matches the
+ * traced boundary's accuracy, as `ROUND_TOL_PX` does for whole primitives.
  */
-const CONIC_TOL_PX = 0.6
+const CONIC_TOL_PX = 0.15
 
 /** Fit the run's samples to a circle first, then an ellipse; null if neither fits. */
 function fitConic(samples: Pt[]): Conic | null {
@@ -127,13 +175,9 @@ function fitConic(samples: Pt[]): Conic | null {
     const tol = CONIC_TOL_PX
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
-    const onEllipse = samples.every((p) => {
-      const dx = p.x - e.cx
-      const dy = p.y - e.cy
-      const nx = (dx * co + dy * si) / e.rx
-      const ny = (-dx * si + dy * co) / e.ry
-      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
-    })
+    const onEllipse = samples.every(
+      (p) => conicDistance(p.x - e.cx, p.y - e.cy, e.rx, e.ry, co, si) <= tol,
+    )
     if (onEllipse) return { cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry, angle: e.angle, tol }
   }
   return null
@@ -141,27 +185,35 @@ function fitConic(samples: Pt[]): Conic | null {
 
 /**
  * Try to collapse a run of ≥2 consecutive cubics (starting at `start`) into one
- * `A`, or null when the run is not a clean circular/elliptical arc.
+ * `A`. Returns the arc; `NOT_ARC` when the run is not a clean circular/elliptical
+ * arc; or `NO_EMIT` when it is one but no `A` on the output grid reproduces it
+ * within tolerance (an arc near half a turn, whose center the SVG endpoint form
+ * reconstructs ill-conditioned from a rounded radius).
  */
 function collapseToArc(
   start: Pt,
   cubics: Extract<PathCommand, { type: 'C' }>[],
   precision: number,
-): PathCommand | null {
-  // Dense boundary samples: each anchor plus three interior points per cubic.
+): PathCommand | typeof NOT_ARC | typeof NO_EMIT {
+  // Dense boundary samples: each anchor, and interior points about
+  // ARC_SAMPLE_STEP apart (three at least) — so the arc is held to the cubics
+  // along their whole length, not at a few points a long cubic leaves far apart.
   const samples: Pt[] = [start]
   let prev = start
   for (const c of cubics) {
-    samples.push(cubicPoint(prev, c, 0.25), cubicPoint(prev, c, 0.5), cubicPoint(prev, c, 0.75), {
-      x: c.x,
-      y: c.y,
-    })
+    const hull =
+      Math.hypot(c.x1 - prev.x, c.y1 - prev.y) +
+      Math.hypot(c.x2 - c.x1, c.y2 - c.y1) +
+      Math.hypot(c.x - c.x2, c.y - c.y2)
+    const parts = Math.max(4, Math.ceil(hull / ARC_SAMPLE_STEP))
+    for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, c, k / parts))
+    samples.push({ x: c.x, y: c.y })
     prev = { x: c.x, y: c.y }
   }
   const end = prev
 
   const conic = fitConic(samples)
-  if (conic === null) return null
+  if (conic === null) return NOT_ARC
   const { cx, cy, tol } = conic
 
   // Reject a direction reversal (an S-shaped run that merely samples near a
@@ -175,48 +227,80 @@ function collapseToArc(
     const d = angleDiff(ang[i], ang[i - 1])
     if (Math.abs(d) > 1e-4) {
       const s = Math.sign(d)
-      if (dir !== 0 && s !== dir) return null
+      if (dir !== 0 && s !== dir) return NOT_ARC
       dir = s
     }
     sweep += d
   }
   const absSweep = Math.abs(sweep)
-  if (absSweep < 0.5 || absSweep > 2 * Math.PI - 0.2) return null
+  if (absSweep < 0.5 || absSweep > 2 * Math.PI - 0.2) return NOT_ARC
 
   // Snap the arc parameters and endpoint to the output grid (the discretization
   // boundary), matching primitive detection.
   const p = clampPrecision(precision)
   const grid = (v: number): number => Number(v.toFixed(p))
-  const rx = grid(conic.rx)
-  const ry = grid(conic.ry)
+  const unit = 10 ** -p
   const rot = grid((conic.angle * 180) / Math.PI)
   const ex = grid(end.x)
   const ey = grid(end.y)
-  if (rx <= 0 || ry <= 0) return null
+  // The arc is drawn from the start point as written, on the same grid.
+  const s0 = { x: grid(start.x), y: grid(start.y) }
+  if (grid(conic.rx) <= 0 || grid(conic.ry) <= 0) return NOT_ARC
 
   // Of the ≤2 arcs on the fitted conic that share these endpoints, keep the one
-  // whose reconstruction actually sweeps through the samples (a center match is
-  // a cheap pre-filter; the polyline test settles minor/major and direction for
-  // circles and ellipses alike).
-  for (const largeArc of [false, true]) {
-    for (const sweepFlag of [false, true]) {
-      const arc = {
-        type: 'A' as const,
-        rx,
-        ry,
-        rotation: rot,
-        largeArc,
-        sweep: sweepFlag,
-        x: ex,
-        y: ey,
+  // whose reconstruction actually sweeps through the samples (a center match
+  // picks it; the analytic test settles minor/major and direction for circles
+  // and ellipses alike). The endpoint form places the center from the radii, so
+  // near half a turn a radius rounded to the grid moves the center far: of the
+  // grid radii around the fitted one (scaled together on an ellipse), the one
+  // whose center lands nearest the fitted center is written.
+  const candidates: { arc: Extract<PathCommand, { type: 'A' }>; miss: number; step: number }[] = []
+  for (let step = -RADIUS_STEPS; step <= RADIUS_STEPS; step++) {
+    const rx = grid(conic.rx + step * unit)
+    const ry = grid(rx * (conic.ry / conic.rx))
+    if (rx <= 0 || ry <= 0) continue
+    for (const largeArc of [false, true]) {
+      for (const sweepFlag of [false, true]) {
+        const arc = {
+          type: 'A' as const,
+          rx,
+          ry,
+          rotation: rot,
+          largeArc,
+          sweep: sweepFlag,
+          x: ex,
+          y: ey,
+        }
+        const c = arcToCenter(s0.x, s0.y, arc)
+        if (c === null) continue
+        candidates.push({ arc, miss: Math.hypot(c.cx - cx, c.cy - cy), step })
       }
-      const c = arcToCenter(start.x, start.y, arc)
-      if (c === null) continue
-      if (Math.hypot(c.cx - cx, c.cy - cy) > tol) continue // wrong conic of the two
-      if (arcFitsSamples(start, arc, samples, tol)) return arc
     }
   }
-  return null
+  // Nearest center first — to a thousandth of a pixel, then the radius nearest
+  // the fitted one — and the first that sweeps through the samples is written.
+  for (const { arc } of candidates.toSorted(byCenterMiss)) {
+    if (arcFitsSamples(s0, arc, samples, tol)) return arc
+  }
+  return NO_EMIT
+}
+
+/** The run's samples lie on no single conic arc: growth stops. */
+const NOT_ARC = 0
+/** One conic arc, but no `A` on the output grid reproduces it: growth continues. */
+const NO_EMIT = 1
+
+/** Grid steps either side of the fitted radius tried for the best-placed center. */
+const RADIUS_STEPS = 4
+
+/** Candidate order: center miss to a thousandth of a pixel, then radius step. */
+function byCenterMiss(
+  a: { miss: number; step: number },
+  b: { miss: number; step: number },
+): number {
+  return (
+    Math.round(a.miss * 1000) - Math.round(b.miss * 1000) || Math.abs(a.step) - Math.abs(b.step)
+  )
 }
 
 /**
@@ -241,7 +325,8 @@ function segmentArcs(
     let bestLen = 0
     for (let len = 2; i + len <= cubics.length; len++) {
       const arc = collapseToArc(cur, cubics.slice(i, i + len), precision)
-      if (arc === null) break // growth stops at the first non-arc extension
+      if (arc === NOT_ARC) break // growth stops at the first non-arc extension
+      if (arc === NO_EMIT) continue
       best = arc
       bestLen = len
     }

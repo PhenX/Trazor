@@ -9,6 +9,14 @@
  * all relative deltas are integer differences on that grid, so a running sum of
  * deltas reconstructs each absolute position exactly — there is no accumulated
  * rounding drift along a path.
+ *
+ * The compact spelling (SVG 1.1 §8.3.9 path grammar) also drops what the
+ * grammar does not need: the space around a command letter, a repeated command
+ * letter (never after `M`/`m`, whose repeats mean a line), the leading zero of a
+ * fraction (`.5`), and the separator before a fraction that follows a number
+ * already holding a decimal point (`.5.5` reads as two numbers). An arc flag is
+ * always set off by spaces, since a flag next to a number reads as part of it in
+ * many parsers.
  */
 
 import type { PathCommand } from '@trazor/core'
@@ -120,16 +128,35 @@ function gridValue(v: number, p: number, scale: number): number {
   return Math.round(Number(v.toFixed(p)) * scale)
 }
 
+/** {@link formatGrid} without the leading zero of a fraction (`.5`, `-.5`). */
+function formatGridCompact(g: number, p: number): string {
+  const t = formatGrid(g, p)
+  if (t.startsWith('0.')) return t.slice(1)
+  if (t.startsWith('-0.')) return `-${t.slice(2)}`
+  return t
+}
+
 /**
  * Serialize commands to a compact `d` value using absolute/relative/`H`/`V`
  * selection. Semantically identical to {@link buildPathData} at the same
  * precision; only shorter. Each candidate form is priced from its operands'
  * digit counts and only the shortest is rendered; the first candidate wins a
- * tie, in the order absolute, relative, `H`, `h`, `V`, `v`.
+ * tie, in the order absolute, relative, `H`, `h`, `V`, `v`. `compact` selects the
+ * compact spelling (see the module comment); off, every command and operand is
+ * set off by a space as {@link buildPathData} writes them.
  */
-export function optimizePathData(commands: readonly PathCommand[], precision: number): string {
+export function optimizePathData(
+  commands: readonly PathCommand[],
+  precision: number,
+  compact = false,
+): string {
   const p = clampPrecision(precision)
   const scale = POW10[p]
+  const format = compact ? formatGridCompact : formatGrid
+  // A fraction's leading zero is not written in the compact spelling.
+  const len = compact
+    ? (g: number, q: number): number => gridLen(g, q) - (g !== 0 && g > -scale && g < scale ? 1 : 0)
+    : gridLen
 
   let curX = 0
   let curY = 0
@@ -148,12 +175,27 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
    * omitted when the operand starts with `-` (the sign is itself a valid
    * separator), matching {@link buildPathData}.
    */
+  // The compact spelling's state: the last command letter written, and whether
+  // the last token written was a number holding a decimal point.
+  let lastLetter = ''
+  let lastDot = false
+  const putToken = (token: string, afterLetter: boolean): void => {
+    const c = token.charCodeAt(0)
+    if (compact) {
+      if (!afterLetter && c !== 0x2d /* '-' */ && !(c === 0x2e /* '.' */ && lastDot)) d += ' '
+      lastDot = token.includes('.')
+    } else if (c !== 0x2d /* '-' */) d += ' '
+    d += token
+  }
   const put = (letter: string, ops: Float64Array, off: number, n: number): void => {
-    d += d === '' ? letter : ` ${letter}`
+    let afterLetter = true
+    if (!compact) d += d === '' ? letter : ` ${letter}`
+    else if (letter === lastLetter && letter !== 'M' && letter !== 'm') afterLetter = false
+    else d += letter
+    lastLetter = letter
     for (let i = off; i < off + n; i++) {
-      const token = formatGrid(ops[i], p)
-      if (token.charCodeAt(0) !== 0x2d /* '-' */) d += ' '
-      d += token
+      putToken(format(ops[i], p), afterLetter)
+      afterLetter = false
     }
   }
 
@@ -165,10 +207,13 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
   const putArc = (letter: string, end: Float64Array, laf: number, sf: number): void => {
     put(letter, abs, 0, 3)
     d += ` ${laf} ${sf}`
+    lastDot = false
     for (let i = 3; i < 5; i++) {
-      const token = formatGrid(end[i], p)
+      const token = format(end[i], p)
+      // A number after a flag is always set off: `1.5` would read as one number.
       if (token.charCodeAt(0) !== 0x2d /* '-' */) d += ' '
       d += token
+      lastDot = token.includes('.')
     }
   }
 
@@ -185,8 +230,8 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         } else {
           rel[0] = tx - curX
           rel[1] = ty - curY
-          const absLen = gridLen(tx, p) + gridLen(ty, p)
-          const relLen = gridLen(rel[0], p) + gridLen(rel[1], p)
+          const absLen = len(tx, p) + len(ty, p)
+          const relLen = len(rel[0], p) + len(rel[1], p)
           if (relLen < absLen) put('m', rel, 0, 2)
           else put('M', abs, 0, 2)
         }
@@ -207,15 +252,15 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         let ops = abs
         let off = 0
         let n = 2
-        let best = gridLen(tx, p) + gridLen(ty, p) + 2
-        const relLen = gridLen(rel[0], p) + gridLen(rel[1], p) + 2
+        let best = len(tx, p) + len(ty, p) + 2
+        const relLen = len(rel[0], p) + len(rel[1], p) + 2
         if (relLen < best) {
           best = relLen
           letter = 'l'
           ops = rel
         }
         if (ty === curY) {
-          const hLen = gridLen(tx, p) + 1
+          const hLen = len(tx, p) + 1
           if (hLen < best) {
             best = hLen
             letter = 'H'
@@ -223,7 +268,7 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
             off = 0
             n = 1
           }
-          const hRelLen = gridLen(rel[0], p) + 1
+          const hRelLen = len(rel[0], p) + 1
           if (hRelLen < best) {
             best = hRelLen
             letter = 'h'
@@ -233,7 +278,7 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
           }
         }
         if (tx === curX) {
-          const vLen = gridLen(ty, p) + 1
+          const vLen = len(ty, p) + 1
           if (vLen < best) {
             best = vLen
             letter = 'V'
@@ -241,7 +286,7 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
             off = 1
             n = 1
           }
-          const vRelLen = gridLen(rel[1], p) + 1
+          const vRelLen = len(rel[1], p) + 1
           if (vRelLen < best) {
             best = vRelLen
             letter = 'v'
@@ -267,8 +312,8 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         let absLen = 0
         let relLen = 0
         for (let i = 0; i < 4; i++) {
-          absLen += gridLen(abs[i], p)
-          relLen += gridLen(rel[i], p)
+          absLen += len(abs[i], p)
+          relLen += len(rel[i], p)
         }
         if (relLen < absLen) put('q', rel, 0, 4)
         else put('Q', abs, 0, 4)
@@ -290,8 +335,8 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         let absLen = 0
         let relLen = 0
         for (let i = 0; i < 6; i++) {
-          absLen += gridLen(abs[i], p)
-          relLen += gridLen(rel[i], p)
+          absLen += len(abs[i], p)
+          relLen += len(rel[i], p)
         }
         if (relLen < absLen) put('c', rel, 0, 6)
         else put('C', abs, 0, 6)
@@ -307,8 +352,8 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         abs[4] = gridValue(cmd.y, p, scale)
         rel[3] = abs[3] - curX
         rel[4] = abs[4] - curY
-        const absLen = gridLen(abs[3], p) + gridLen(abs[4], p)
-        const relLen = gridLen(rel[3], p) + gridLen(rel[4], p)
+        const absLen = len(abs[3], p) + len(abs[4], p)
+        const relLen = len(rel[3], p) + len(rel[4], p)
         if (relLen < absLen) putArc('a', rel, cmd.largeArc ? 1 : 0, cmd.sweep ? 1 : 0)
         else putArc('A', abs, cmd.largeArc ? 1 : 0, cmd.sweep ? 1 : 0)
         curX = abs[3]
@@ -316,7 +361,10 @@ export function optimizePathData(commands: readonly PathCommand[], precision: nu
         break
       }
       case 'Z': {
-        d += d === '' ? 'Z' : ' Z'
+        if (compact) d += 'Z'
+        else d += d === '' ? 'Z' : ' Z'
+        lastLetter = 'Z'
+        lastDot = false
         curX = startX
         curY = startY
         break

@@ -1,12 +1,22 @@
 import type { BinaryMask, CurveMode, GrayImage, PathCommand, TurnPolicy } from '@trazor/core'
+import { scalePathCommands, signedAreaFlat } from '@trazor/core'
 import { decomposeMask } from './crack'
 import type { CrackPath } from './crack'
 import { adjustVertices } from './potrace/adjust'
-import { assemblePieces } from './potrace/opticurve'
 import { optimalPolyline } from './potrace/polyfit'
-import { smoothClosed } from './potrace/smooth'
+import {
+  candidateStride,
+  descriptionLambda,
+  fitClosedRuns,
+  mergeReach,
+  ringSigmas,
+  runBand,
+  runTau,
+} from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
+import { coveragePatch } from './coverage'
+import type { CoveragePatch } from './coverage'
 import { refineRingToField } from './refine'
 import type { SignedField } from './refine'
 
@@ -29,6 +39,13 @@ export interface TraceCurveOptions {
    * (byte-identical). Ignored in `pixel` curveMode.
    */
   coverage?: GrayImage
+  /**
+   * Working pixels per source pixel (supersampling), 1 when absent. The curve
+   * fit reads its tolerances, uncertainties and anti-aliasing allowances in
+   * source pixels, so a ring traced on an enlarged image is fitted there —
+   * scaled down by this, and its curves scaled back up.
+   */
+  scale?: number
 }
 
 export interface TraceMaskOptions extends TraceCurveOptions {
@@ -43,6 +60,32 @@ export interface TracedShape {
   /** Enclosed pixel area of the outer ring. */
   area: number
   holeCount: number
+}
+
+/**
+ * The polygon half of the chain for one ring, held so the curve half can be
+ * re-fit without re-running the straightness DP. `polygon` is the adjusted
+ * optimal polygon (Selinger §2.3.1, first vertex repeated as last) that the
+ * `polygon` curveMode emits and that decides the corners; `geom` is the refined
+ * ring geometry (sub-pixel, or the lattice ring) the multi-model run fitter
+ * samples for `spline` mode; `vertices` are the optimal polygon's ascending
+ * sample indices into `geom` (first repeated as last).
+ */
+export interface RingFit {
+  polygon: FlatPoints
+  geom: FlatPoints
+  vertices: number[]
+  /** Per-point positional uncertainty σ (px), parallel to `geom` (run-fit weight). */
+  sigma: number[]
+  /** Whether `geom` was snapped to a sub-pixel field (else the lattice ring). */
+  refined: boolean
+  /** Image extent (longer side, px) for the run fitter's λ; 0 when unknown. */
+  extent: number
+  /**
+   * The observed coverage around a small refined ring, which a whole-ring
+   * circle or ellipse must render no worse than the outline it replaces.
+   */
+  coverage?: CoveragePatch
 }
 
 /**
@@ -68,7 +111,7 @@ export function traceMask(mask: BinaryMask, opts: TraceMaskOptions): TracedShape
 export function shapesFromPaths(
   paths: CrackPath[],
   opts: TraceCurveOptions,
-  polygons?: readonly (FlatPoints | null)[],
+  polygons?: readonly (RingFit | null)[],
 ): TracedShape[] {
   const commandsOf = (path: CrackPath, i: number): PathCommand[] =>
     polygons
@@ -118,18 +161,35 @@ export function closedPathToCommands(
 }
 
 /**
- * The polygon half of the chain for one closed ring (Selinger 2003, §2.2 +
- * §2.3.1): optimal polygon, then least-squares vertex adjustment. The ring
- * starts at a guaranteed convex corner (decomposition invariant), so the cycle
- * is linearized there for the straightness/DP stages. Returns the adjusted
- * vertices with the first repeated as the last, or `null` for a ring too short
- * to carry a polygon (the caller falls back to the exact lattice path).
- *
- * It depends on the ring and the optional sub-pixel `field` only — never on
- * smoothing, curve optimization or the corner threshold — so a caller may
- * compute it once and re-fit it many times through {@link polygonToCommands}.
+ * Share of its ring's area a ring's adjusted polygon has to keep to carry a
+ * fit, the area read on the lattice or on the refined ring, whichever is less.
  */
-export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): FlatPoints | null {
+const POLYGON_AREA_FLOOR = 0.75
+
+/**
+ * The polygon half of the chain for one closed ring (Selinger 2003, §2.2 +
+ * §2.3.1): optimal polygon, then least-squares vertex adjustment, plus the
+ * refined ring geometry the multi-model run fitter samples. The ring starts at a
+ * guaranteed convex corner (decomposition invariant), so the cycle is linearized
+ * there for the straightness/DP stages. Returns a {@link RingFit}, or `null` for
+ * a ring too short to carry a polygon or one whose polygon draws its two sides
+ * together (the caller falls back to the exact lattice path).
+ *
+ * It depends on the ring, the optional sub-pixel `field` and `setback` only —
+ * never on smoothing, curve optimization or the corner threshold — so a caller
+ * may compute it once and re-fit it many times through {@link polygonToCommands}.
+ *
+ * `setback` (per ring point, with a `field`; {@link refineRingToField}) sets an
+ * edge that runs hidden under a sheet painted above it back beneath that sheet.
+ * Such a point is fitted no tighter than a lattice point — where it lies under
+ * the sheet does not show — and stays out of the coverage patch, whose observed
+ * edge is the sheet's own.
+ */
+export function ringPolygon(
+  ring: FlatPoints,
+  field?: GrayImage | SignedField,
+  setback?: ArrayLike<number>,
+): RingFit | null {
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
   ext.push(ring[0], ring[1])
@@ -138,27 +198,76 @@ export function ringPolygon(ring: FlatPoints, field?: GrayImage | SignedField): 
   if (vertexIdx.length < 4) return null
 
   // The optimal polygon picks vertices on the integer lattice (its straightness
-  // analysis needs unit steps); sub-pixel refinement then feeds only the moment
-  // sums and vertex adjustment, so each segment's best-fit line tracks the true
-  // edge rather than the staircase.
-  const geom = field ? refineRingToField(ext, field) : ext
+  // analysis needs unit steps); sub-pixel refinement, searching along normals to
+  // the polygon's edges, then feeds the moment sums, the vertex adjustment and
+  // the run fitter's samples, so each fit tracks the true edge rather than the
+  // staircase.
+  const measured: number[] = []
+  const geom = field ? refineRingToField(ext, field, vertexIdx, setback, measured) : ext
   const sums = computeSums(geom)
-  return adjustVertices(geom, sums, vertexIdx, true)
+  const polygon = adjustVertices(geom, sums, vertexIdx, true)
+  // A ring a pixel wide — a hairline, a stroke's counter — has its two sides
+  // inside the straightness tube of the same lines, and the least-squares
+  // vertices draw them together until the polygon encloses a fraction of the
+  // ring; it keeps its exact lattice outline instead. A wider ring's polygon
+  // runs through its samples and keeps their area within a few percent. The
+  // ring's area is read both on the lattice and on the refined ring where a
+  // field measured it, and the smaller one is the floor: a band the field
+  // finds thinner than its pixels (an anti-aliased rim the label pass widened
+  // into a ring of its own) keeps the polygon that follows the measurement
+  // rather than drawing its pixels.
+  const area = Math.min(Math.abs(signedAreaFlat(ring)), Math.abs(signedAreaFlat(geom)))
+  if (Math.abs(signedAreaFlat(polygon)) < POLYGON_AREA_FLOOR * area) return null
+  const sigma = ringSigmas(ext, geom, field !== undefined, vertexIdx, setback, measured)
+  const extent = field ? Math.max(field.width, field.height) : 0
+  const fit: RingFit = {
+    polygon,
+    geom,
+    vertices: vertexIdx,
+    sigma,
+    refined: field !== undefined,
+    extent,
+  }
+  const coverage = field ? coveragePatch(ext, measuredOnly(ext, geom, setback), field) : undefined
+  if (coverage) fit.coverage = coverage
+  return fit
+}
+
+/** `geom` with every set-back point returned to the lattice, so it reads as unmeasured. */
+function measuredOnly(
+  lattice: FlatPoints,
+  geom: FlatPoints,
+  setback: ArrayLike<number> | undefined,
+): FlatPoints {
+  if (!setback) return geom
+  const m = setback.length
+  const out = geom.slice()
+  for (let i = 0; i < out.length >> 1; i++) {
+    if (setback[i % m] === 0) continue
+    out[i * 2] = lattice[i * 2]
+    out[i * 2 + 1] = lattice[i * 2 + 1]
+  }
+  return out
 }
 
 /**
- * The curve half of the chain (Selinger 2003, §2.3.2 + §2.4): an adjusted
- * polygon from {@link ringPolygon} → commands under the curve settings, with
- * adjustment and smoothing cyclic. `pixel` curveMode and a null polygon emit the
- * exact rectilinear ring instead.
+ * The curve half of the chain: a {@link RingFit} from {@link ringPolygon} →
+ * commands under the curve settings. In `spline` mode each smooth run (the
+ * refined ring points between two corners) is fitted directly to those points
+ * by the multi-model run fitter (line / circular arc / G1 cubic, priced by
+ * description length — Selinger 2003 §2.2 for the segmentation, inkvec for the
+ * per-run fit), which carries none of Selinger's chord-adjustment bias. `polygon`
+ * curveMode emits the adjusted polygon; `pixel` curveMode and a null fit emit the
+ * exact rectilinear ring.
  */
 export function polygonToCommands(
   ring: FlatPoints,
-  polygon: FlatPoints | null,
+  fit: RingFit | null,
   opts: TraceCurveOptions,
 ): PathCommand[] {
-  if (opts.curveMode === 'pixel' || polygon === null) return pixelCommands(ring)
+  if (opts.curveMode === 'pixel' || fit === null) return pixelCommands(ring)
 
+  const polygon = fit.polygon
   if (opts.curveMode === 'polygon') {
     const out: PathCommand[] = [{ type: 'M', x: polygon[0], y: polygon[1] }]
     // Last adjusted vertex duplicates the first — skip it.
@@ -169,19 +278,28 @@ export function polygonToCommands(
     return out
   }
 
-  // Drop the duplicated last vertex for the cyclic stages.
-  const ringVerts = polygon.slice(0, polygon.length - 2)
-  const alphamax = (opts.smoothing * 4) / 3
-  const pieces = smoothClosed(ringVerts, alphamax, opts.cornerThreshold)
-
-  // The path starts at the end anchor of the last piece.
-  const lastPiece = pieces[pieces.length - 1]
-  const commands: PathCommand[] = [{ type: 'M', x: lastPiece.ex, y: lastPiece.ey }]
-  commands.push(
-    ...assemblePieces(lastPiece.ex, lastPiece.ey, pieces, opts.curveOptimize, opts.optTolerance),
+  const scale = opts.scale ?? 1
+  const toSource = (v: number): number => v / scale
+  const commands = fitClosedRuns(
+    scale === 1 ? fit.geom : fit.geom.map(toSource),
+    fit.sigma,
+    fit.vertices,
+    scale === 1 ? polygon : polygon.map(toSource),
+    {
+      alphamax: (opts.smoothing * 4) / 3,
+      cornerThreshold: opts.cornerThreshold,
+      lambda: descriptionLambda(fit.extent / scale),
+      tau: runTau(),
+      band: runBand(opts.optTolerance),
+      reach: mergeReach(opts.curveOptimize),
+      stride: Math.round(candidateStride(opts.curveOptimize) * scale),
+      extent: fit.extent / scale,
+      coverage: fit.coverage && scale !== 1 ? { ...fit.coverage, unit: scale } : fit.coverage,
+    },
   )
-  commands.push({ type: 'Z' })
-  return commands
+  // A ring too short for a meaningful run fit falls back to the exact lattice.
+  if (!commands) return pixelCommands(ring)
+  return scale === 1 ? commands : scalePathCommands(commands, scale)
 }
 
 /** Exact rectilinear ring (pixel mode): collinear lattice points collapsed. */

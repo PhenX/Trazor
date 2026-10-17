@@ -97,8 +97,10 @@ describe('native engine pipeline', () => {
     expect(result.width).toBe(60)
     expect(result.height).toBe(60)
     expect(result.palette.length).toBe(2)
-    expect(result.stats.pathCount).toBeGreaterThanOrEqual(2)
-    expect(result.stats.nodeCount).toBeGreaterThan(0)
+    // The two flat, axis-aligned fills serialize as <rect> primitives (fewer
+    // coordinates than an equivalent path); either way, two drawn shapes.
+    const shapeEls = result.svg.match(/<(path|rect|circle|ellipse)\b/g) ?? []
+    expect(shapeEls.length).toBeGreaterThanOrEqual(2)
     expect(result.warnings.filter((w) => w.code === 'empty-result')).toHaveLength(0)
     // The red square must be present as a red-ish fill.
     expect(result.svg).toMatch(/fill="#[a-f0-9]{6}"/)
@@ -221,10 +223,11 @@ describe('native engine pipeline', () => {
     const layers = result.svg.match(/<g id="layer-\d+">/g) ?? []
     expect(layers.length).toBe(2)
     expect((result.svg.match(/<\/g>/g) ?? []).length).toBe(2)
-    // Each used color is named by a layer <title>, and each layer is one path
-    // (stacked paints a color as one contiguous run, folded by the optimizer).
+    // Each used color is named by a layer <title>, and each layer is one shape
+    // (stacked paints a color as one contiguous run; a flat axis-aligned fill
+    // serializes as a <rect> primitive).
     for (const hex of result.palette) expect(result.svg).toContain(`<title>${hex}</title>`)
-    expect((result.svg.match(/<path /g) ?? []).length).toBe(2)
+    expect((result.svg.match(/<(path|rect|circle|ellipse)\b/g) ?? []).length).toBe(2)
   })
 
   it('does not group output by default', async () => {
@@ -258,6 +261,53 @@ describe('native engine pipeline', () => {
       const b = Number.parseInt(hex.slice(5, 7), 16)
       expect(Math.max(Math.abs(r - g), Math.abs(g - b))).toBeLessThanOrEqual(2)
     }
+  })
+
+  it('keeps a gray at its own value in grayscale mode', async () => {
+    const img = createRaster(40, 40)
+    fillRaster(img, 255, 255, 255)
+    for (let y = 8; y < 32; y++) for (let x = 8; x < 32; x++) setPixel(img, x, y, 128, 128, 128)
+    const result = await vectorize(img, settings({ mode: 'grayscale', paletteSize: 4 }))
+    const grays = result.palette.map((hex) => Number.parseInt(hex.slice(1, 3), 16))
+    expect(grays.some((v) => Math.abs(v - 128) <= 1)).toBe(true)
+  })
+
+  it('lowers supersampling that would pass the pixel budget, and says so', async () => {
+    const img = createRaster(2100, 2100)
+    fillRaster(img, 255, 255, 255)
+    for (let y = 900; y < 1200; y++) for (let x = 900; x < 1200; x++) setPixel(img, x, y, 0, 0, 0)
+    const result = await vectorize(img, settings({ mode: 'bw', maxDimension: 0, supersample: 2 }))
+    const w = result.warnings.find((x) => x.code === 'supersample-limited')
+    expect(w?.params).toEqual({ requested: 2, applied: 1, side: 4096 })
+    const plain = await vectorize(img, settings({ mode: 'bw', maxDimension: 0, supersample: 1 }))
+    expect(result.svg).toBe(plain.svg)
+  })
+
+  it('traces transparent art touching the border on a margin, then moves it back', async () => {
+    // A block reaching the left side of its transparent canvas, with a soft
+    // right edge: on the source canvas its outline runs along x = 0 and back
+    // along the soft edge, between x = 20 and 21.
+    const img = createRaster(40, 40)
+    for (let y = 10; y < 30; y++) {
+      for (let x = 0; x < 21; x++) setPixel(img, x, y, 200, 30, 30, x === 20 ? 64 : 255)
+    }
+    const result = await vectorize(img, settings({ mode: 'color', paletteSize: 2 }), undefined, {
+      withDocument: true,
+    })
+    expect(result.width).toBe(40)
+    expect(result.height).toBe(40)
+    let minX = Infinity
+    let maxX = -Infinity
+    for (const shape of result.document?.shapes ?? []) {
+      for (const c of shape.commands) {
+        if (c.type === 'Z') continue
+        minX = Math.min(minX, c.x)
+        maxX = Math.max(maxX, c.x)
+      }
+    }
+    expect(minX).toBeCloseTo(0, 1)
+    expect(maxX).toBeGreaterThanOrEqual(20)
+    expect(maxX).toBeLessThanOrEqual(21)
   })
 
   it('excludes transparent pixels under background auto', async () => {
@@ -387,6 +437,83 @@ describe('native engine pipeline', () => {
     // Same hint ⇒ identical output.
     const again = await vectorize(dotImage(), s, { edgeHint: hint })
     expect(again.svg).toBe(withHint.svg)
+  })
+})
+
+describe('supersampling', () => {
+  // An anti-aliased dark disk on white: radius 9.3 about (20.4, 19.7), each
+  // pixel's coverage integrated over a 4×4 grid.
+  const CX = 20.4
+  const CY = 19.7
+  const R = 9.3
+  function aaDisk(): RasterImage {
+    const img = createRaster(40, 40)
+    for (let y = 0; y < 40; y++) {
+      for (let x = 0; x < 40; x++) {
+        let cov = 0
+        for (let sy = 0; sy < 4; sy++) {
+          for (let sx = 0; sx < 4; sx++) {
+            if (Math.hypot(x + (sx + 0.5) / 4 - CX, y + (sy + 0.5) / 4 - CY) <= R) cov++
+          }
+        }
+        const v = Math.round(255 - (cov / 16) * (255 - 20))
+        setPixel(img, x, y, v, v, v)
+      }
+    }
+    return img
+  }
+
+  it('traces an enlarged image and scales the geometry back to the working size', async () => {
+    for (const mode of ['color', 'bw'] as const) {
+      const s = settings({ mode, paletteSize: 4, segmentation: 'regions', supersample: 2 })
+      const result = await vectorize(aaDisk(), s, undefined, { withDocument: true })
+      expect(result.width).toBe(40)
+      expect(result.height).toBe(40)
+      expect(result.svg).toContain('viewBox="0 0 40 40"')
+      // The disk is the darkest shape; every anchor of its outline lies on the circle.
+      const shapes = result.document?.shapes ?? []
+      const luma = (fill: string | undefined): number => {
+        const c = hexToRgb(fill ?? '') ?? [255, 255, 255]
+        return c[0] + c[1] + c[2]
+      }
+      const disk = shapes.reduce((a, b) => (luma(b.fill) < luma(a.fill) ? b : a))
+      let anchors = 0
+      for (const c of disk.commands) {
+        if (c.type === 'Z') continue
+        anchors++
+        expect(Math.abs(Math.hypot(c.x - CX, c.y - CY) - R)).toBeLessThan(0.3)
+      }
+      expect(anchors).toBeGreaterThan(0)
+    }
+  })
+
+  it('sizes a cutout trap at the output size, in px or mm', async () => {
+    for (const [unit, stroke] of [
+      ['px', 'stroke-width="0.2"'],
+      ['mm', 'stroke-width="0.76"'],
+    ] as const) {
+      const result = await vectorize(
+        redSquareOnWhite(),
+        settings({
+          mode: 'color',
+          paletteSize: 4,
+          segmentation: 'regions',
+          layering: 'cutout',
+          unit,
+          gapFill: 0.2,
+          precision: 2,
+          supersample: 2,
+        }),
+      )
+      expect(result.svg).toContain(stroke)
+    }
+  })
+
+  it('is deterministic', async () => {
+    const s = settings({ mode: 'color', paletteSize: 4, segmentation: 'regions', supersample: 2 })
+    const a = await vectorize(aaDisk(), s)
+    const b = await vectorize(aaDisk(), s)
+    expect(a.svg).toBe(b.svg)
   })
 })
 
@@ -761,6 +888,19 @@ describe('stage cache (E3)', () => {
     expect(cachedGray.svg).toBe(freshGray.svg)
   })
 
+  it('keeps a supersampled bw image apart from the color one (byte-identical to fresh)', async () => {
+    // Color enlarges bounded, a threshold unbounded: the working images differ.
+    const img = scene()
+    const cache: StageCache = {}
+    await run(img, { mode: 'color', paletteSize: 6, supersample: 2 }, cache)
+    const cachedBw = await run(img, { mode: 'bw', supersample: 2 }, cache)
+    const freshBw = await run(img, { mode: 'bw', supersample: 2 })
+    expect(cachedBw.svg).toBe(freshBw.svg)
+    const cachedColor = await run(img, { mode: 'color', paletteSize: 6, supersample: 2 }, cache)
+    const freshColor = await run(img, { mode: 'color', paletteSize: 6, supersample: 2 })
+    expect(cachedColor.svg).toBe(freshColor.svg)
+  })
+
   it('keeps several palettes warm so alternating them hits the cache (byte-identical)', async () => {
     const img = scene()
     const cache: StageCache = {}
@@ -813,15 +953,53 @@ function sixFields(): RasterImage {
   return img
 }
 
-describe('region growing honors the palette budget', () => {
-  it('never paints more colors than paletteSize, with or without autoPaletteSize', async () => {
-    for (const autoPaletteSize of [true, false]) {
+describe('region growing and the palette budget', () => {
+  it('never paints more colors than a fixed paletteSize', async () => {
+    const result = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize: false }),
+    )
+    expect(result.palette.length).toBeLessThanOrEqual(3)
+    expect(result.stats.colorCount).toBeLessThanOrEqual(3)
+  })
+
+  it('keeps visibly distinct fills past an automatic budget rather than repainting them', async () => {
+    // Six vivid fields: meeting a budget of three would paint three of them a
+    // color they are not, and an automatic budget folds only colors no eye
+    // tells apart.
+    const result = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize: true }),
+    )
+    expect(result.palette.length).toBe(6)
+    expect(result.stats.colorCount).toBe(6)
+    // Never past twice the budget: the budget stays the scale of the result.
+    const two = await vectorize(
+      sixFields(),
+      settings({ mode: 'color', segmentation: 'regions', paletteSize: 2, autoPaletteSize: true }),
+    )
+    expect(two.palette.length).toBe(4)
+  })
+
+  it('keeps the budget hard where each color is a part to produce', async () => {
+    // A screen or a vinyl sheet per color (grouped layers), cutout and nested
+    // faces: the color count is what gets produced, whatever Auto reduce says.
+    for (const over of [
+      { groupByColor: true },
+      { layering: 'cutout' as const },
+      { layering: 'nested' as const },
+    ]) {
       const result = await vectorize(
         sixFields(),
-        settings({ mode: 'color', segmentation: 'regions', paletteSize: 3, autoPaletteSize }),
+        settings({
+          mode: 'color',
+          segmentation: 'regions',
+          paletteSize: 3,
+          autoPaletteSize: true,
+          ...over,
+        }),
       )
       expect(result.palette.length).toBeLessThanOrEqual(3)
-      expect(result.stats.colorCount).toBeLessThanOrEqual(3)
     }
   })
 

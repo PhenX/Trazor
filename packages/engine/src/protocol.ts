@@ -6,6 +6,7 @@ import type {
   VectorizeResult,
   VectorizeSettings,
 } from '@trazor/core'
+import type { ink } from '@trazor/raster'
 import type { ShapeOut, SvgShape } from '@trazor/svg'
 import type { FlatRuns } from './flat'
 
@@ -21,8 +22,6 @@ export type WorkerInMessage =
       settings: VectorizeSettings
       /** Optional edge-hint plane: Float32, `width`×`height`, transferred. */
       edgeHint?: ArrayBuffer
-      /** Optional learned coverage-hint plane ([0,1]): Float32, `width`×`height`, transferred. */
-      coverageHint?: ArrayBuffer
       /**
        * Stable per-image identity: the same working image keeps the same id
        * across setting tweaks, a new image gets a new one. Lets the worker reuse
@@ -43,6 +42,14 @@ export type WorkerInMessage =
    * {@link installHelperHandler}.
    */
   | { type: 'helpers'; ports: HelperEndpoint[] }
+  /**
+   * Hand the worker the boundary solve's WebAssembly kernel as a compiled
+   * module (`WebAssembly.compile` of `@trazor/trace/solve.wasm`; a module is
+   * structured-cloneable): the worker instantiates it and runs the planar
+   * chain's solve descent in it from the next run on, with the same output.
+   * `null` returns it to the TypeScript descent.
+   */
+  | { type: 'solve-kernel'; module: WebAssembly.Module | null }
 
 /** Messages emitted by the vectorizer worker. */
 export type WorkerOutMessage =
@@ -89,6 +96,8 @@ export interface HelperCurveOptions {
   curveOptimize: boolean
   optTolerance: number
   cornerThreshold: number
+  /** Working pixels per source pixel (`VectorizeSettings.supersample`). */
+  scale: number
 }
 
 /** Serialization settings for the per-shape half of the SVG a helper produces. */
@@ -96,6 +105,12 @@ export interface HelperSerializeOptions {
   precision: number
   optimize: boolean
   roundPrimitives: boolean
+  /** Compact path spelling (`SerializeOptions.compactPaths`). */
+  compact: boolean
+  /** Source pixels per working pixel: a supersampled run's shapes are scaled by it first. */
+  scale: number
+  /** Then moved by this on both axes (source px): back from a padded canvas. */
+  offset: number
 }
 
 /** An `SvgShape` without its geometry: the paint the coordinator assigns a unit. */
@@ -110,6 +125,14 @@ export type HelperShapeMeta = Omit<SvgShape, 'commands'>
 export interface HelperUnitPaint {
   own: HelperShapeMeta
   under?: HelperShapeMeta
+  /**
+   * The layer is a translucent face, so its exterior takes no alpha coverage
+   * field — its interior sits below the cut level and refining onto that contour
+   * would fold the face away. The paint itself stays opaque (a stacked face keeps
+   * its flat composited fill); this only steers the boundary field, so the
+   * helper's refined polygons match the coordinator's.
+   */
+  translucent?: boolean
 }
 
 /**
@@ -124,6 +147,11 @@ export interface HelperImageMessage {
   height: number
   /** RGBA bytes, transferred. */
   buffer: ArrayBuffer
+  /**
+   * Source alpha per pixel (Uint8, `width`×`height`), transferred; present under
+   * transparent handling. Exterior edges are refined onto its coverage.
+   */
+  alpha?: ArrayBuffer
 }
 
 /**
@@ -200,6 +228,78 @@ export interface HelperChainsMessage {
 }
 
 /**
+ * The planar map's edges for one helper, as their fits read them, cached under
+ * `key` (the run's serial: the map is built afresh every run). Edge `units[k]`
+ * of the coordinator's map is the local edge `k`: its points (an open edge's
+ * ends at its nodes), their σ and its closed flag — `EdgeFitInput`.
+ */
+export interface HelperEdgesMessage {
+  type: 'helper-edges'
+  key: string
+  /** The image frame's size: a closed edge on it tries the frame's rectangle. */
+  width: number
+  height: number
+  /** The fit's objective (`FitConfig`), in the units the σ are in. */
+  tau: number
+  lambda: number
+  /** Int32 global edge index per local edge, ascending, transferred. */
+  units: ArrayBuffer
+  /** Uint8 closed flag per local edge, transferred. */
+  closed: ArrayBuffer
+  /** Edge points (x, y interleaved), one run per local edge. */
+  points: FlatRuns
+  /** Each point's σ, one run per local edge. */
+  sigma: FlatRuns
+}
+
+/**
+ * A band merge's fixed inputs for a helper, cached under `key` (the run's serial
+ * and the merge's index in it): the label map as the merge received it, the
+ * image over white and the pricing, from which the helper builds the merge's
+ * components and their evidence (`ink.BandFits`), as the coordinator did.
+ */
+export interface HelperBandsMessage {
+  type: 'helper-bands'
+  key: string
+  width: number
+  height: number
+  /** Int32 label per pixel, transferred. */
+  labels: ArrayBuffer
+  /** Float32 encoded sRGB over white, three per pixel, transferred. */
+  rgb: ArrayBuffer
+  /** Float64 palette, three encoded sRGB values per ink, transferred. */
+  inkRgb: ArrayBuffer
+  sigmaNoise: number
+  lambda: number
+  regionRecovery: boolean
+  gradients: boolean
+  scale: number
+  /** The ramp search (`ink.RampSearch`). */
+  stopGeometries: number
+  radialsPerSpace: boolean
+}
+
+/**
+ * One batch of a band merge's fits, sent to every helper under `key`: each
+ * applies the batch's merges to its components, whichever of its units it is
+ * then given, so its components stay the coordinator's.
+ */
+export interface HelperBandBatchMessage {
+  type: 'helper-band-batch'
+  /** The merge's key ({@link HelperBandsMessage}). */
+  bands: string
+  key: string
+  /** Int32 `into, from` component pairs merged since the previous batch, transferred. */
+  merges: ArrayBuffer
+  /** Int32 first component of each unit, transferred. */
+  a: ArrayBuffer
+  /** Int32 second component of each unit (the first again for a component on its own), transferred. */
+  b: ArrayBuffer
+  /** Uint8 per unit: blends whose partners all lie in the union testify too, transferred. */
+  inner: ArrayBuffer
+}
+
+/**
  * A unit of parallel work:
  *
  * - `trace-layers` — stacked layering: build the layer's union flood mask from
@@ -212,8 +312,20 @@ export interface HelperChainsMessage {
  * - `fit-chains` — one boundary chain (cutout): fit it once, with the pinned
  *   junction endpoints both neighbors reuse. No serialization — the coordinator
  *   assembles the regions from the shared fits.
+ * - `fit-edges` — one edge of the planar map: its fit (`fitEdgeInput`), curve
+ *   or whole primitive. The coordinator repairs crossings and emits from the
+ *   fits, placed by edge index.
+ * - `fit-bands` — one fit of a band merge's batch: a component, or the union of
+ *   two, fitted on the helper's copy of the merge's components
+ *   (`ink.BandFits.fit`). The coordinator's merge goes on from the fits, placed
+ *   by unit index.
  */
-export type HelperJobKind = 'trace-layers' | 'trace-rings' | 'fit-chains'
+export type HelperJobKind =
+  | 'trace-layers'
+  | 'trace-rings'
+  | 'fit-chains'
+  | 'fit-edges'
+  | 'fit-bands'
 
 /** Dispatch a list of units to one helper. */
 export interface HelperJobMessage {
@@ -229,7 +341,8 @@ export interface HelperJobMessage {
    * run instead of geometry traced from the wrong image.
    */
   stateKey: string
-  curve: HelperCurveOptions
+  /** Curve settings; absent for `fit-edges` and `fit-bands`, whose objective travels with their payload. */
+  curve?: HelperCurveOptions
   /**
    * Units per reply. The helper answers in `helper-batch` messages of this many
    * units and yields its event loop once per batch, so a job of many small units
@@ -241,11 +354,18 @@ export interface HelperJobMessage {
   /** Serialization settings; only `trace-layers` serializes. */
   serialize?: HelperSerializeOptions
   /**
-   * `fit-chains`: per-label palette Oklab (interleaved [L, a, b]), transferred.
-   * Present ⇒ refine each chain onto the sub-pixel color edge between its two
-   * regions, using the Oklab buffer of the cached working image.
+   * `fit-chains` and `trace-layers`: per-label palette RGB (interleaved bytes),
+   * transferred. Present ⇒ refine each chain, or each layer's rings, onto the
+   * sub-pixel color edge between the two regions that meet there, read from the
+   * cached working image's RGBA bytes (the sRGB blend inverted by `coverageOf`).
    */
-  paletteOklab?: ArrayBuffer
+  paletteRgb?: ArrayBuffer
+  /**
+   * The transparency cut level whose coverage field (`alphaCoverageField` of the
+   * cached source alpha) refines exterior edges; absent ⇒ exterior edges stay on
+   * the lattice.
+   */
+  alphaThreshold?: number
   /** `fit-chains`: collapse circular Bézier runs to `A` arcs at this precision. */
   arcPrecision?: number
 }
@@ -262,6 +382,9 @@ export type HelperInMessage =
   | HelperStackMessage
   | HelperRingsMessage
   | HelperChainsMessage
+  | HelperEdgesMessage
+  | HelperBandsMessage
+  | HelperBandBatchMessage
   | HelperJobMessage
   | HelperCancelMessage
 
@@ -282,11 +405,18 @@ export type HelperOutMessage =
       svgCounts?: number[]
       /**
        * Encoded commands: one run per shape for `trace-layers`, one per ring for
-       * `trace-rings`, and per chain fit for `fit-chains` (the open run, then the
-       * closed ring when the chain closes on its own start corner). Runs are in
-       * `units` order.
+       * `trace-rings`, per chain fit for `fit-chains` (the open run, then the
+       * closed ring when the chain closes on its own start corner), and one per
+       * edge for `fit-edges` (its segments). Runs are in `units` order.
        */
       commands: FlatRuns
+      /**
+       * `fit-edges`: each edge's fit apart from its segments, one Float64 record
+       * per unit in `units` order (`packFits`), transferred.
+       */
+      fits?: ArrayBuffer
+      /** `fit-bands`: each unit's fill, in `units` order (no command runs). */
+      fills?: ink.FillFit[]
       /**
        * Serialized shapes in emission order; only `trace-layers`. One per
        * command run, or — for a unit with an underlay — the underlay copy of

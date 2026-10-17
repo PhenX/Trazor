@@ -1,5 +1,6 @@
 import type { RasterImage } from '@trazor/core'
-import { clamp, rgbToHex, rgbToOklab } from '@trazor/core'
+import { ciede2000, clamp, rgbToHex, rgbToLab, rgbToOklab } from '@trazor/core'
+import { ink as rasterInk } from '@trazor/raster'
 
 export interface ImageAnalysis {
   width: number
@@ -8,6 +9,13 @@ export interface ImageAnalysis {
   hasAlpha: boolean
   /** Distinct RGB colors, capped at 65536. */
   distinctColors: number
+  /**
+   * Distinct colors that occur only where the image is not exactly flat — the
+   * colors anti-aliasing invents along edges. A hard-edged pixel palette has
+   * next to none (every pixel is a palette color that also fills a flat run); an
+   * anti-aliased icon at any size has dozens more of them than it has flat ones.
+   */
+  rimColors: number
   /** Shannon entropy (bits) of a 4096-bin RGB histogram. */
   entropyBits: number
   /** Fraction of pixels sitting on a strong edge. */
@@ -68,6 +76,33 @@ export interface ImageAnalysis {
    * is not mistaken for grayscale.
    */
   coloredFraction: number
+  /**
+   * Fraction of samples inside exactly-flat runs whose color is neither of the
+   * two dominant tones: a third flat ink (a gray fill inside a black outline),
+   * which anti-aliasing never produces — an intermediate rim color is never
+   * flat. Tells genuinely two-tone art from art carrying a minor third tone. A
+   * flat color sharing a dominant tone's coarse bin is that tone only within
+   * the palette's same-ink distance of the bin's commonest flat color: a pale
+   * gray fill beside white paper, or beside a transparent ground read over
+   * white, is a third ink.
+   */
+  minorTonesArea: number
+  /**
+   * Color of the darker of the two dominant tones: the ink of two-tone art. The
+   * mean of the tone's exactly-flat samples (its interior), or of all its
+   * samples when none is flat.
+   */
+  inkHex: string
+  /** Color of the lighter of the two dominant tones, read as {@link inkHex}: its paper or ground. */
+  paperHex: string
+  /**
+   * Box-filter-equivalent width, in pixels, of the image's plateau-to-plateau
+   * edges composited over white (the intake's ramp evidence): about 1 for a
+   * native render, about 2 for a 2× bilinear upscale or a σ = 1 blur. An edge
+   * wider than a native one carries no sub-pixel detail a finer grid could
+   * recover.
+   */
+  edgeWidth: number
 }
 
 /** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
@@ -93,6 +128,12 @@ const RAMP_MIN_RANGE = 60
 
 /** Alpha at or above which a pixel counts as opaque for the area statistics. */
 const OPAQUE_MIN_ALPHA = 128
+/** Alpha from which a pixel counts as solid; below it the image has meaningful alpha. */
+const SOLID_MIN_ALPHA = 250
+/** Coarse RGB bins (3 bits per channel) the dominant tones are read from. */
+const COARSE_BINS = 512
+/** Most distinct flat colors counted (the color set's own cap). */
+const FLAT_COLORS_MAX = 65536
 
 /** RGB-sum histogram bins for the percentile spread (8 levels each). */
 const SPREAD_BINS = 96
@@ -101,9 +142,22 @@ const SPREAD_BINS = 96
 const FINE_MAX_SAMPLES = 16
 
 /**
+ * Composite one channel value over white by its alpha: the ground the engine
+ * flattens a transparent image onto (`flattenImage`), so the statistics describe
+ * the image the pipeline will trace. A transparent pixel stores whatever color
+ * its encoder left behind — usually black — and read raw it would turn a dark
+ * icon on a clear canvas into a black field with a hole in it.
+ */
+function overWhite(v: number, a: number): number {
+  return a === 255 ? v : Math.round((v * a + 255 * (255 - a)) / 255)
+}
+
+/**
  * One statistical pass over the image, feeding the settings recommender.
  * Large images are sampled on a regular grid (deterministic), capped at ~256k
- * samples, which is plenty for global statistics.
+ * samples, which is plenty for global statistics. Colors are read composited
+ * over white ({@link overWhite}); `hasAlpha` and the opaque area come from the
+ * source alpha.
  */
 export function analyzeImage(image: RasterImage): ImageAnalysis {
   const { width, height, data } = image
@@ -113,8 +167,19 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const gh = Math.ceil(height / step)
 
   const colorSet = new Set<number>()
+  const flatColorSet = new Set<number>()
   const hist = new Float64Array(4096)
-  const coarse = new Map<number, number>()
+  // Coarse tone bins: sample count, RGB + lightness sums (for the tone's mean
+  // color), the count and RGB sums of exactly-flat samples (for its interior
+  // color), plus the keys in first-seen order so the dominant-tone ranking is
+  // stable.
+  const coarseN = new Uint32Array(COARSE_BINS)
+  const coarseSum = new Float64Array(COARSE_BINS * 4)
+  const flatCoarse = new Uint32Array(COARSE_BINS)
+  const flatCoarseSum = new Float64Array(COARSE_BINS * 3)
+  // Exactly-flat samples by color (up to FLAT_COLORS_MAX colors).
+  const flatColorCount = new Map<number, number>()
+  const coarseKeys: number[] = []
   // Per sample: 1 when opaque and within `SMOOTH_MAX_GRAD` of its right and
   // down neighbors — the pixels the smooth-area flood below may connect.
   const smooth = new Uint8Array(gw * gh)
@@ -135,19 +200,25 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     for (let gx = 0; gx < gw; gx++) {
       const x = gx * step
       const i = (row + x) * 4
-      const r = data[i]
-      const g = data[i + 1]
-      const b = data[i + 2]
       const a = data[i + 3]
-      if (a < 250) hasAlpha = true
+      const r = overWhite(data[i], a)
+      const g = overWhite(data[i + 1], a)
+      const b = overWhite(data[i + 2], a)
+      if (a < SOLID_MIN_ALPHA) hasAlpha = true
       sampleCount++
 
-      if (colorSet.size < 65536) colorSet.add((r << 16) | (g << 8) | b)
+      const colorKey = (r << 16) | (g << 8) | b
+      if (colorSet.size < 65536) colorSet.add(colorKey)
       hist[((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)]++
-      const coarseKey = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
-      coarse.set(coarseKey, (coarse.get(coarseKey) ?? 0) + 1)
-
       const [L, oa, ob] = rgbToOklab(r / 255, g / 255, b / 255)
+      const coarseKey = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
+      if (coarseN[coarseKey] === 0) coarseKeys.push(coarseKey)
+      coarseN[coarseKey]++
+      coarseSum[coarseKey * 4] += r
+      coarseSum[coarseKey * 4 + 1] += g
+      coarseSum[coarseKey * 4 + 2] += b
+      coarseSum[coarseKey * 4 + 3] += L
+
       sumL += L
       sumL2 += L * L
       const chroma = Math.hypot(oa, ob)
@@ -158,17 +229,35 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
       let gy1 = 0
       if (x + step < width) {
         const iR = (row + x + step) * 4
-        gx1 = Math.abs(r - data[iR]) + Math.abs(g - data[iR + 1]) + Math.abs(b - data[iR + 2])
+        const aR = data[iR + 3]
+        gx1 =
+          Math.abs(r - overWhite(data[iR], aR)) +
+          Math.abs(g - overWhite(data[iR + 1], aR)) +
+          Math.abs(b - overWhite(data[iR + 2], aR))
       }
       if (y + step < height) {
         const iD = ((y + step) * width + x) * 4
-        gy1 = Math.abs(r - data[iD]) + Math.abs(g - data[iD + 1]) + Math.abs(b - data[iD + 2])
+        const aD = data[iD + 3]
+        gy1 =
+          Math.abs(r - overWhite(data[iD], aD)) +
+          Math.abs(g - overWhite(data[iD + 1], aD)) +
+          Math.abs(b - overWhite(data[iD + 2], aD))
       }
       if (x + step < width && y + step < height) {
         const grad = Math.max(gx1, gy1)
         if (grad > EDGE_GRAD) edgeCount++
         else if (grad > 3) microCount++
-        else if (grad === 0) flatCount++
+        else if (grad === 0) {
+          flatCount++
+          flatCoarse[coarseKey]++
+          flatCoarseSum[coarseKey * 3] += r
+          flatCoarseSum[coarseKey * 3 + 1] += g
+          flatCoarseSum[coarseKey * 3 + 2] += b
+          const seen = flatColorCount.get(colorKey)
+          if (seen !== undefined) flatColorCount.set(colorKey, seen + 1)
+          else if (flatColorCount.size < FLAT_COLORS_MAX) flatColorCount.set(colorKey, 1)
+          if (flatColorSet.size < 65536) flatColorSet.add(colorKey)
+        }
       }
       if (a >= OPAQUE_MIN_ALPHA) {
         opaqueCount++
@@ -188,15 +277,54 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     }
   }
 
-  const sorted = [...coarse.entries()].toSorted((a, b) => b[1] - a[1])
-  const twoToneCoverage =
-    sampleCount === 0 ? 0 : ((sorted[0]?.[1] ?? 0) + (sorted[1]?.[1] ?? 0)) / sampleCount
-  const dominantHex = sorted.slice(0, 6).map(([key]) => {
+  const sorted = coarseKeys.toSorted((p, q) => coarseN[q] - coarseN[p])
+  const top1 = sorted[0]
+  const top2 = sorted[1]
+  const topN = (key: number | undefined): number => (key === undefined ? 0 : coarseN[key])
+  const twoToneCoverage = sampleCount === 0 ? 0 : (topN(top1) + topN(top2)) / sampleCount
+  const dominantHex = sorted.slice(0, 6).map((key) => {
     const r = ((key >> 6) & 7) * 32 + 16
     const g = ((key >> 3) & 7) * 32 + 16
     const b = (key & 7) * 32 + 16
     return rgbToHex(r, g, b)
   })
+  const topFlat = (key: number | undefined): number => (key === undefined ? 0 : flatCoarse[key])
+  const minorTonesArea =
+    sampleCount === 0
+      ? 0
+      : (flatCount -
+          topFlat(top1) -
+          topFlat(top2) +
+          otherTonesIn(flatColorCount, top1) +
+          otherTonesIn(flatColorCount, top2)) /
+        sampleCount
+  // A tone's color is its interior's: the bin also holds the anti-aliased rim
+  // pixels that blend it into its neighbors (a black ink's bin reaches 31), and
+  // their mean pulls the ink off the color the artist filled with.
+  const toneOf = (key: number): { hex: string; lightness: number } => {
+    const n = coarseN[key]
+    const o = key * 4
+    const nf = flatCoarse[key]
+    const f = key * 3
+    return {
+      hex:
+        nf > 0
+          ? rgbToHex(
+              Math.round(flatCoarseSum[f] / nf),
+              Math.round(flatCoarseSum[f + 1] / nf),
+              Math.round(flatCoarseSum[f + 2] / nf),
+            )
+          : rgbToHex(
+              Math.round(coarseSum[o] / n),
+              Math.round(coarseSum[o + 1] / n),
+              Math.round(coarseSum[o + 2] / n),
+            ),
+      lightness: coarseSum[o + 3] / n,
+    }
+  }
+  const toneA = top1 === undefined ? { hex: '#000000', lightness: 0 } : toneOf(top1)
+  const toneB = top2 === undefined ? toneA : toneOf(top2)
+  const [ink, paper] = toneA.lightness <= toneB.lightness ? [toneA, toneB] : [toneB, toneA]
 
   const meanLightness = sampleCount === 0 ? 0 : sumL / sampleCount
   const variance = sampleCount === 0 ? 0 : Math.max(0, sumL2 / sampleCount - meanLightness ** 2)
@@ -218,9 +346,17 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     1,
   )
 
+  // Pixel art is a small canvas painted in a hard palette: every pixel is one
+  // of a few colors, with no anti-aliased rim. Both tells are needed — a small
+  // anti-aliased icon has the canvas but not the palette (a 128 px icon may
+  // hold only 30 colors, yet most of them are rim colors that never fill a flat
+  // run), a large hard-edged logo the palette but not the canvas — and neither
+  // is pixel art.
+  const rimColors = Math.max(0, colorSet.size - flatColorSet.size)
+  const hardPalette = colorSet.size <= 32 && rimColors * 2 <= colorSet.size
   let pixelArtScore = 0
-  if (pixels <= 128 * 128) pixelArtScore += 0.6
-  if (colorSet.size <= 32) pixelArtScore += 0.25
+  if (pixels <= 128 * 128) pixelArtScore += 0.45
+  if (hardPalette) pixelArtScore += 0.4
   if (microGradientDensity < 0.02) pixelArtScore += 0.15
   pixelArtScore = clamp(pixelArtScore, 0, 1)
 
@@ -230,6 +366,7 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     pixels,
     hasAlpha,
     distinctColors: colorSet.size,
+    rimColors,
     entropyBits,
     edgeDensity,
     microGradientDensity,
@@ -245,7 +382,74 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     contrast,
     colorfulness,
     coloredFraction,
+    minorTonesArea,
+    inkHex: ink.hex,
+    paperHex: paper.hex,
+    edgeWidth: edgeWidthOf(image),
   }
+}
+
+/** The coarse bin (`COARSE_BINS`, 3 bits a channel) of a packed `0xrrggbb` color. */
+function binOf(c: number): number {
+  return ((c >> 21) << 6) | (((c >> 13) & 7) << 3) | ((c >> 5) & 7)
+}
+
+/** CIELAB of a packed `0xrrggbb` color. */
+function labOf(c: number): [number, number, number] {
+  return rgbToLab(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
+}
+
+/**
+ * Exactly-flat samples of coarse bin `key` (`flat`: flat colors and their
+ * counts) whose color lies more than the palette's same-ink distance
+ * (`SAME_INK_DE00`, CIEDE2000) from the bin's commonest flat color: another ink
+ * that shares the bin. 0 for an absent bin.
+ */
+function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined): number {
+  if (key === undefined) return 0
+  let mode = -1
+  let modeCount = 0
+  for (const [c, n] of flat) {
+    if (binOf(c) === key && (n > modeCount || (n === modeCount && c < mode))) {
+      mode = c
+      modeCount = n
+    }
+  }
+  if (mode < 0) return 0
+  const m = labOf(mode)
+  let other = 0
+  for (const [c, n] of flat) {
+    if (binOf(c) !== key || c === mode) continue
+    const q = labOf(c)
+    if (ciede2000(m[0], m[1], m[2], q[0], q[1], q[2]) > rasterInk.SAME_INK_DE00) other += n
+  }
+  return other
+}
+
+/** Side of the central crop the edge width is measured on: edges are local, and a crop keeps them as they are. */
+const EDGE_WIDTH_CROP = 1024
+
+/**
+ * The box-filter-equivalent width of the image's edges (the intake's ramp
+ * evidence, `rampEvidence`), measured on the central `EDGE_WIDTH_CROP`² of a
+ * larger image — a crop, not a reduction, which would sharpen every edge.
+ */
+function edgeWidthOf(image: RasterImage): number {
+  const { width, height, data } = image
+  const cw = Math.min(width, EDGE_WIDTH_CROP)
+  const ch = Math.min(height, EDGE_WIDTH_CROP)
+  let crop = image
+  if (cw < width || ch < height) {
+    const x0 = Math.floor((width - cw) / 2)
+    const y0 = Math.floor((height - ch) / 2)
+    const out = new Uint8ClampedArray(cw * ch * 4)
+    for (let y = 0; y < ch; y++) {
+      const from = ((y0 + y) * width + x0) * 4
+      out.set(data.subarray(from, from + cw * 4), y * cw * 4)
+    }
+    crop = { width: cw, height: ch, data: out }
+  }
+  return rasterInk.rampEvidence(rasterInk.intakePixels(crop).rgb, cw, ch).width
 }
 
 /**
@@ -282,7 +486,8 @@ function smoothAreas(
       const gx = s - ((s / gw) | 0) * gw
       const gy = (s / gw) | 0
       const i = (gy * step * width + gx * step) * 4
-      spread[(data[i] + data[i + 1] + data[i + 2]) >> 3]++
+      const a = data[i + 3]
+      spread[(overWhite(data[i], a) + overWhite(data[i + 1], a) + overWhite(data[i + 2], a)) >> 3]++
       if (gx > 0 && smooth[s - 1] === 1 && seen[s - 1] === 0) {
         seen[s - 1] = 1
         stack[sp++] = s - 1

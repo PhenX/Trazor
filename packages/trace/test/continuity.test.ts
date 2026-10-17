@@ -92,18 +92,16 @@ describe('curve continuity', () => {
     }
   })
 
-  it('keeps G1 at smooth joins even with curve optimization off', () => {
+  it('keeps a smooth circle G1 at every join even with curve optimization off', () => {
     const shapes = traceMask(circleMask(120, 50), { ...OPTS, curveOptimize: false })
-    const segs = segments(shapes[0].commands).filter((s) => s.kind === 'cubic')
-    expect(segs.length).toBeGreaterThan(4)
-    // Consecutive cubic pieces meet tangent-continuously.
-    const joinAngles: number[] = []
-    for (let i = 1; i < segs.length; i++) {
-      if (segs[i - 1].p3[0] === segs[i].p0[0] && segs[i - 1].p3[1] === segs[i].p0[1]) {
-        joinAngles.push(angleBetween(segs[i - 1].tIn, segs[i].tOut))
-      }
+    const segs = segments(shapes[0].commands)
+    expect(segs.length).toBeGreaterThan(2)
+    // No corners on a circle, and the run fitter closes the loop tangent-
+    // continuously (wrap join included) whether or not merging is on.
+    expect(segs.every((s) => s.kind === 'cubic')).toBe(true)
+    for (let i = 0; i < segs.length; i++) {
+      const prev = segs[(i + segs.length - 1) % segs.length]
+      expect(angleBetween(prev.tIn, segs[i].tOut)).toBeLessThan(2)
     }
-    expect(joinAngles.length).toBeGreaterThan(3)
-    expect(Math.max(...joinAngles)).toBeLessThan(2)
   })
 })

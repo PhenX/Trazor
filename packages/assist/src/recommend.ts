@@ -1,5 +1,13 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
-import { clamp, clampInt, getProfile } from '@trazor/core'
+import {
+  DEFAULT_SETTINGS,
+  clamp,
+  clampInt,
+  getProfile,
+  hexToRgb,
+  srgbToLinear,
+  supersampleWithinBudget,
+} from '@trazor/core'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -42,8 +50,51 @@ const ACHROMATIC_CHROMA = 0.03
  */
 const FLAT_ART_MIN_DENSITY = 0.15
 
+/**
+ * Longest side up to which a source traces at its own size rather than at the
+ * default trace size. A source just above that size would shrink only mildly,
+ * and a mild shrink costs the most for the least: a stroke a few pixels wide
+ * loses the flat core the segmentation seeds a region from and dissolves into
+ * its field, for a speed gain of a few percent. Beyond this side the cap's
+ * saving is real and the large-source rule keeps it.
+ */
+const NATIVE_MAX_SIDE = 2048
+
+/**
+ * Smoothing for clean two-tone art (icons, glyphs). Their corners are real and
+ * their edges are straight, so the bw-sketch profile's scan-oriented 0.75 (which
+ * rounds a noisy staircase off) only rounds corners and bows straight runs here.
+ * Measured on the icon corpus: 0.75 → 0.25 moved 512 px GMSD 0.0375 → 0.0317,
+ * material-icons 0.036 → 0.021, lucide 0.057 → 0.043, with the emoji families
+ * (which keep the profile value) unaffected.
+ */
+const FLAT_INK_SMOOTHING = 0.25
+
+/** Decimals clean two-tone art is written with: its edges are measured finer than a tenth. */
+const FLAT_INK_PRECISION = 2
+
+/**
+ * Share of pixels identical to their right and down neighbors above which flat
+ * art is noise-free: a vector render whose fills are exact, not a compressed or
+ * scanned image whose fills are only near-uniform.
+ */
+const PRISTINE_FLAT_DENSITY = 0.9
+
+/** Largest palette the settings accept. */
+const MAX_PALETTE = 64
+
 /** With at least this fraction of genuinely colored pixels, an image is not grayscale. */
 const COLORED_FRACTION_MIN = 0.05
+
+/**
+ * Flat area in a third tone above which two-tone art is not bilevel: a gray
+ * fill inside a black outline is three inks, and a hard threshold would keep
+ * only one of them.
+ */
+const MINOR_TONES_MAX = 0.005
+
+/** Alpha of half coverage: the outline of an anti-aliased edge against transparency. */
+const EDGE_ALPHA_THRESHOLD = 128
 
 /**
  * Gray levels for a tonal ink scan traced as grayscale. Few enough that the
@@ -87,6 +138,56 @@ const CARTOON_MAX_FINE_AREA = 0.04
 const CARTOON_MIN_RIM_RATIO = 0.1
 /** Distinct colors below which an image is a hard-edged pixel palette (the pixel-art profile's own bound). */
 const CARTOON_MIN_DISTINCT_COLORS = 64
+
+/**
+ * Ramp share (`rampArea`) above which an image carries real gradients worth
+ * fitting: a synthetic linear ramp reads ~0.65 and a gradient-shaded emoji
+ * ~0.5, while flat icons and cartoons read 0. Below it, gradient detection only
+ * spends time (the fitter is neutral on flat art) so it stays off — the ramp
+ * measure, not a profile flag, is what turns it on.
+ */
+const GRADIENT_MIN_RAMP_AREA = 0.45
+
+/**
+ * Long side (px) gradient detection runs at when the ramp gate turns it on. The
+ * pixel-level ramp verification dominates the fitter's cost, so detecting on a
+ * copy no larger than this keeps the time within budget on a large input (a
+ * source past `maxDimension` already traces at 1600 px, and detection is capped
+ * below even that); the traced geometry stays full resolution. Sized so a
+ * corpus-scale icon/emoji (≤512 px) still verifies at full resolution.
+ */
+const GRADIENT_DETECT_CAP = 512
+
+/**
+ * The longest source side (px) up to which a cartoon traces on the planar
+ * chain. The ground-truth gate measures the chain ahead of the classic one on
+ * icon-sized cartoons (128 px: GMSD −20%; 512 px: ΔE00 −8%, extra ink −65%),
+ * and level or behind on full-size cartoon illustrations (735–1680 px) at seven
+ * to ten times the time, so a larger cartoon keeps the classic chain. On the
+ * planar chain a cartoon takes the ink front end: against region growing the
+ * gate measures, on the 128 and 512 px icon tiers, ΔE00 −69% and GMSD −10 to
+ * −23% (flat fills −87 to −93%, missed and extra edges −22 to −36%), level
+ * with inkvec in color, for 15–38% more path parameters, more extra ink at
+ * 512 px and a quarter more time.
+ */
+const PLANAR_CARTOON_MAX_SIDE = 512
+
+/**
+ * Most traced pixels (at the traced size, before supersampling) the planar
+ * chain takes by default: 640 × 640. Up to it a shaded emoji traces in 20–40 s
+ * (2–5 s classic) for its GMSD gain, a flat illustration of 640 × 448 in under
+ * 40 s (5 s classic), a black & white icon in 6–16 s and a plain one in a few
+ * seconds. Past it the chain's geometry steps grow faster than the image (the
+ * illustration and the emoji at 768 px both past 40 s), so larger art on the
+ * ink front end is traced at this budget's size instead: the ground-truth gate
+ * measures that ahead of the classic chain at full size on ten 768–1500 px
+ * illustrations and emoji (ΔE00 −49%, GMSD −46%, edges missed level, 13–38 s
+ * against 2–9 s), where the classic chain posterizes a gradient behind cut-out
+ * shapes into bands whose edges fray along the shapes. Larger black & white
+ * art keeps the classic chain at full size; the Geometry setting still selects
+ * the planar chain.
+ */
+const PLANAR_MAX_PIXELS = 640 * 640
 
 /** Whether the image reads as cartoon-style flat art region growing serves best. */
 function isCartoon(a: ImageAnalysis): boolean {
@@ -138,7 +239,12 @@ function isAchromatic(a: ImageAnalysis): boolean {
  * threshold reproduces it exactly, so it is traced as black & white.
  */
 function isBilevelInk(a: ImageAnalysis): boolean {
-  return a.twoToneCoverage > 0.92 && a.contrast > 0.25 && isAchromatic(a)
+  return (
+    a.twoToneCoverage > 0.92 &&
+    a.contrast > 0.25 &&
+    a.minorTonesArea < MINOR_TONES_MAX &&
+    isAchromatic(a)
+  )
 }
 
 /**
@@ -150,12 +256,16 @@ function isBilevelInk(a: ImageAnalysis): boolean {
  * carries (faint pencil, engraved hatching, a JPEG'd rule). A bw threshold
  * collapses that mid-gray into solid ink — thickening every stroke and flooding
  * hatched areas black — so this is traced as grayscale tonal layers, which keep
- * each stroke at its true darkness.
+ * each stroke at its true darkness. Clean flat art (a gray icon whose mid-gray
+ * is its anti-aliased rim) and art on a transparent ground are not scans: they
+ * keep their own flat inks.
  */
 function isTonalLineArt(a: ImageAnalysis): boolean {
   return (
     isAchromatic(a) &&
     !isBilevelInk(a) &&
+    !isCleanFlatArt(a) &&
+    !a.hasAlpha &&
     a.meanLightness > 0.7 &&
     a.edgeDensity > 0.1 &&
     a.distinctColors <= 4096
@@ -196,7 +306,42 @@ export function recommendSettings(
 
   if (a.hasAlpha) {
     patch.background = 'transparent'
-    r.add('alpha', 'Transparent pixels found — they will produce no shapes.')
+    patch.alphaThreshold = EDGE_ALPHA_THRESHOLD
+    r.add('alpha', 'Transparent pixels found — clear areas will produce no shapes.')
+    // Half coverage is the true outline of an anti-aliased opaque edge; soft
+    // see-through content (a shadow, glass, steam) survives the cut as a
+    // translucent interior and is emitted as a face with opacity, so the same
+    // cut serves opaque and translucent alpha alike.
+    r.add(
+      'alphaEdge',
+      'Cutting at half coverage puts every anti-aliased edge on its true outline; translucent regions become faces with opacity.',
+    )
+  }
+
+  // Clean two-tone flat art (an icon, a glyph, a stamp) has exact tones, so the
+  // threshold that splits them is their lightness midpoint — Otsu, made for a
+  // scan's histogram, has no reason to land there — and its ink is its own
+  // measured color, not black.
+  if (patch.mode === 'bw' && isCleanFlatArt(a) && isBilevelInk(a)) {
+    patch.thresholdMode = 'fixed'
+    patch.threshold = coverageMidThreshold(a.inkHex, a.paperHex)
+    patch.fillColor = a.inkHex
+    r.add(
+      'flatInk',
+      'Clean two-tone art — threshold set midway between its two tones, ink painted in its measured color.',
+    )
+    // Clean two-tone art is icons and glyphs, which have sharp corners; the
+    // bw-sketch profile's high smoothing is for scans, where it rounds the
+    // staircase off a noisy edge. Here it rounds real corners and bows straight
+    // edges, so drop it — the corners the shape actually has are preserved.
+    // A clean edge is measured to a few hundredths of a pixel, which a tenth
+    // of a pixel would round away.
+    patch.smoothing = FLAT_INK_SMOOTHING
+    patch.precision = FLAT_INK_PRECISION
+    r.add(
+      'flatInkCorners',
+      'Sharp-cornered art — low smoothing so corners stay sharp, coordinates to a hundredth of a pixel.',
+    )
   }
 
   if (profileId === 'pixel-art') {
@@ -222,10 +367,7 @@ export function recommendSettings(
       `${INK_TONE_LEVELS} gray tones — enough to separate paper, faint lines and ink, few enough to posterize the scan's texture instead of tracing it.`,
       { levels: INK_TONE_LEVELS },
     )
-    if (a.pixels > 4_000_000) {
-      patch.maxDimension = 1600
-      r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
-    }
+    traceSize(a, patch, r)
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -252,13 +394,22 @@ export function recommendSettings(
     // keeps a small palette and file; simple low-color images are untouched.
     const suggested = suggestPaletteSize(a)
     const rich = a.distinctColors > 32
-    const chosen = rich
+    let chosen = rich
       ? Math.max(getProfile(profileId).patch.paletteSize ?? suggested, suggested)
       : suggested
+    // Noise-free flat art: every fill color also fills a flat run, and the
+    // anti-aliasing adds only rim colors, so the flat colors are the palette the
+    // drawing used. A budget below their count forces distinct fills to share;
+    // one above it spends entries on rim blends, which ring each shape in a band
+    // of their own and hold its edge off the anti-aliased boundary it refines to.
+    const flatColors = a.distinctColors - a.rimColors
+    if (a.flatDensity >= PRISTINE_FLAT_DENSITY) chosen = clampInt(flatColors, 2, MAX_PALETTE)
     patch.paletteSize = chosen
     if (rich) patch.autoPaletteSize = true
     if (a.distinctColors >= 65536) {
-      r.add('richColor', `Rich color content — up to ${chosen} palette entries.`, { count: chosen })
+      r.add('richColor', `Rich color content — a budget of ${chosen} palette entries.`, {
+        count: chosen,
+      })
     } else {
       r.add(
         'distinctColors',
@@ -285,7 +436,9 @@ export function recommendSettings(
     // rim color can form — the clean, few-shapes choice for a cartoon. The
     // size-aware region merge folds rim slivers on its own, so the profile's
     // speck floor stands (a flag's stars and a scene's small marks survive),
-    // and the palette budget is a hard cap on the fills that remain.
+    // and the palette budget caps the fills that remain — hard with
+    // `autoPaletteSize` off; under it, on stacked layers, a visibly distinct
+    // feature keeps its color past the cap (up to twice it).
     // Gradient-heavy, sprite-fine or hard-edged art is excluded (`isCartoon`)
     // and stays on quantization, which keeps a gradient's bands and traces a
     // pixel palette exactly.
@@ -293,7 +446,24 @@ export function recommendSettings(
       patch.segmentation = 'regions'
       r.add(
         'cartoonRegions',
-        'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean, within the color budget.',
+        'Cartoon-style flat art — growing each fill from its flat interior (no global palette) so anti-aliased edges stay clean.',
+      )
+    }
+    // Real gradients (a synthetic ramp, a gradient-shaded emoji) posterize into
+    // a stack of bands under a flat-fill palette — many coordinates for a smooth
+    // area. When the ramp measure shows a substantial share of the image ramps,
+    // fit those bands back into gradient paints; the pixel-level verification is
+    // capped to a downscaled copy so the cost stays in budget on large inputs.
+    // Flat art reads `rampArea` 0 and never pays for it.
+    if (a.rampArea >= GRADIENT_MIN_RAMP_AREA) {
+      patch.gradients = true
+      patch.gradientMaxDimension =
+        patch.gradientMaxDimension === undefined
+          ? GRADIENT_DETECT_CAP
+          : Math.min(patch.gradientMaxDimension, GRADIENT_DETECT_CAP)
+      r.add(
+        'gradients',
+        'Smooth color ramps detected — fitting them as gradient fills instead of posterized bands.',
       )
     }
   }
@@ -313,10 +483,16 @@ export function recommendSettings(
     )
   }
 
-  if (a.pixels > 4_000_000) {
-    patch.maxDimension = 1600
-    r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
+  traceSize(a, patch, r)
+  if (cartoon && patch.segmentation === 'regions') {
+    const maxDimension =
+      patch.maxDimension ??
+      getProfile(profileId).patch.maxDimension ??
+      DEFAULT_SETTINGS.maxDimension
+    cartoonSupersample(a, maxDimension, patch, r)
   }
+
+  planarChain(a, profileId, cartoon, patch, r)
 
   if (a.edgeDensity > 0.2 && (patch.mode === 'bw' || patch.mode === 'centerline')) {
     patch.minRegionArea = Math.max(patch.minRegionArea ?? 0, 8)
@@ -324,6 +500,72 @@ export function recommendSettings(
   }
 
   return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+}
+
+/** The enlargement a cartoon is traced at. */
+const CARTOON_SUPERSAMPLE = 2
+
+/**
+ * Widest edge, in pixels (box-filter equivalent), a cartoon is enlarged for: a
+ * native render's edges measure about 1, an upscale's or a blur's 1.6 and more
+ * (the intake's `MIN_WIDTH`, below which a raster is not soft).
+ */
+const CRISP_EDGE_WIDTH = 1.6
+
+/**
+ * A cartoon traced on an enlarged copy: its outlines, claws, glints and whiskers
+ * are a pixel or two wide, and at the image's own size every pixel takes one
+ * color, cutting their anti-aliased shape to the pixel staircase. Asked only for
+ * crisp edges — a blurred or upscaled poster spreads every edge over several
+ * pixels already, and enlarging it adds wobble, not detail — and only when the
+ * whole enlargement fits the engine's working-pixel budget, so a large poster is
+ * traced at its size rather than half-enlarged with a warning.
+ */
+function cartoonSupersample(
+  a: ImageAnalysis,
+  maxDimension: number,
+  patch: Partial<VectorizeSettings>,
+  r: Rationale,
+): void {
+  if (a.edgeWidth >= CRISP_EDGE_WIDTH) return
+  if (supersampleWithinBudget(a.width, a.height, maxDimension, CARTOON_SUPERSAMPLE) < 2) return
+  patch.supersample = CARTOON_SUPERSAMPLE
+  r.add(
+    'cartoonSupersample',
+    'Cartoon outlines and small details a pixel or two wide — traced on a 2× enlarged copy so they keep their shape.',
+  )
+}
+
+/** The trace size for the source: native up to NATIVE_MAX_SIDE, capped past 4 MP. */
+function traceSize(a: ImageAnalysis, patch: Partial<VectorizeSettings>, r: Rationale): void {
+  const longest = Math.max(a.width, a.height)
+  if (a.pixels > 4_000_000) {
+    patch.maxDimension = 1600
+    r.add('largeSource', 'Large source — tracing at 1600 px for speed with no visible loss.')
+  } else if (longest > DEFAULT_SETTINGS.maxDimension && longest <= NATIVE_MAX_SIDE) {
+    patch.maxDimension = longest
+    r.add('nativeSize', 'Traced at native size — a mild downscale would thin fine strokes.')
+  }
+}
+
+/**
+ * The lightness threshold (0-255) at which an anti-aliased edge between `inkHex`
+ * and `paperHex` is half covered. A rasterizer blends the two colors linearly in
+ * their encoded values, so half coverage is the midpoint of the two encoded lumas
+ * — well above the midpoint of their lightnesses (black on white: lightness 0.6,
+ * not 0.5, where a threshold at 0.5 cuts every edge at 61 % coverage and insets
+ * the outline). Expressed as the lightness of the neutral gray at that luma, the
+ * domain the engine's threshold is read in.
+ */
+function coverageMidThreshold(inkHex: string, paperHex: string): number {
+  const mid = (encodedLuma(inkHex) + encodedLuma(paperHex)) / 2
+  return clampInt(Math.round(255 * Math.cbrt(srgbToLinear(mid))), 1, 254)
+}
+
+/** Rec. 709 luma of a hex color's encoded (not linearized) channels, in [0, 1]. */
+function encodedLuma(hex: string): number {
+  const rgb = hexToRgb(hex) ?? [0, 0, 0]
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
 }
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
@@ -378,6 +620,69 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   }
   r.add('pickIllustration', 'Mixed flat artwork — illustration profile.')
   return 'illustration'
+}
+
+/**
+ * The planar geometry chain, where the ground-truth gate measures it ahead of
+ * the classic one: color, grayscale or black & white art on stacked layers not
+ * grouped by color, from an intake left undenoised (photographic or compressed
+ * sources are denoised and stay classic, as do the photo profile, pixel art,
+ * centerline, cutout and nested layering and grouped output). Black & white
+ * art changes only its geometry: its two-label ink mask has no front end to
+ * choose. Color art takes the ink front end with gradient fills, which paints
+ * a ramp as one gradient, traced at a `maxDimension` that keeps it within
+ * `PLANAR_MAX_PIXELS`; a cartoon takes it only up to `PLANAR_CARTOON_MAX_SIDE`. Black & white art
+ * traced at more than `PLANAR_MAX_PIXELS` keeps the classic chain, which is far
+ * faster there.
+ */
+function planarChain(
+  a: ImageAnalysis,
+  profileId: ProfileId,
+  cartoon: boolean,
+  patch: Partial<VectorizeSettings>,
+  r: Rationale,
+): void {
+  const mode = patch.mode ?? DEFAULT_SETTINGS.mode
+  if (mode !== 'color' && mode !== 'grayscale' && mode !== 'bw') return
+  if (profileId === 'photo' || profileId === 'pixel-art') return
+  if ((patch.layering ?? DEFAULT_SETTINGS.layering) !== 'stacked') return
+  if (patch.groupByColor ?? DEFAULT_SETTINGS.groupByColor) return
+  if ((patch.denoise ?? DEFAULT_SETTINGS.denoise) !== 'none') return
+  const maxDimension =
+    patch.maxDimension ?? getProfile(profileId).patch.maxDimension ?? DEFAULT_SETTINGS.maxDimension
+  const fit = Math.min(1, maxDimension / Math.max(a.width, a.height))
+  const over = a.width * a.height * fit * fit > PLANAR_MAX_PIXELS
+  if (over && mode === 'bw') return
+  if (mode === 'bw') {
+    // The ink mask is two labels, so the front end does not apply: only the
+    // geometry changes.
+    patch.geometry = 'planar'
+    r.add(
+      'planarBw',
+      'Black & white art — the ink boundary is located to a fraction of a pixel and fitted once on the planar chain.',
+    )
+    return
+  }
+  if (cartoon && Math.max(a.width, a.height) > PLANAR_CARTOON_MAX_SIDE) return
+  if (over) {
+    patch.maxDimension = Math.floor(
+      Math.max(a.width, a.height) * Math.sqrt(PLANAR_MAX_PIXELS / (a.width * a.height)),
+    )
+  }
+  patch.geometry = 'planar'
+  patch.frontEnd = 'ink'
+  patch.gradients = true
+  if (cartoon) {
+    r.add(
+      'planarCartoon',
+      'Cartoon-style layers — each boundary between two fills is traced and fitted once, so neighboring shapes meet exactly.',
+    )
+    return
+  }
+  r.add(
+    'planarInk',
+    'Clean layered art — inks measured from the drawing and each boundary between two colors fitted once; smooth ramps become gradient fills.',
+  )
 }
 
 function suggestPaletteSize(a: ImageAnalysis): number {

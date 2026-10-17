@@ -1,7 +1,6 @@
 export {
   TUNABLE_PARAMS,
   DEFAULT_FREE,
-  specFor,
   applicableParams,
   toUnit,
   fromUnit,

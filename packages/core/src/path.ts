@@ -37,6 +37,71 @@ export type PathCommand =
     }
   | { readonly type: 'Z' }
 
+/**
+ * The same path scaled by `s` about the origin: every coordinate and arc radius
+ * multiplied (an arc's rotation and flags are unchanged by a uniform scale).
+ */
+export function scalePathCommands(commands: readonly PathCommand[], s: number): PathCommand[] {
+  return commands.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M':
+      case 'L':
+        return { type: c.type, x: c.x * s, y: c.y * s }
+      case 'Q':
+        return { type: 'Q', x1: c.x1 * s, y1: c.y1 * s, x: c.x * s, y: c.y * s }
+      case 'C':
+        return {
+          type: 'C',
+          x1: c.x1 * s,
+          y1: c.y1 * s,
+          x2: c.x2 * s,
+          y2: c.y2 * s,
+          x: c.x * s,
+          y: c.y * s,
+        }
+      case 'A':
+        return { ...c, rx: c.rx * s, ry: c.ry * s, x: c.x * s, y: c.y * s }
+      case 'Z':
+        return c
+    }
+  })
+}
+
+/**
+ * The same path scaled by `s` about the origin, then moved by `(dx, dy)`: a
+ * point `p` becomes `s·p + (dx, dy)`; arc radii scale, rotation and flags stay.
+ */
+export function placePathCommands(
+  commands: readonly PathCommand[],
+  s: number,
+  dx: number,
+  dy: number,
+): PathCommand[] {
+  return commands.map((c): PathCommand => {
+    switch (c.type) {
+      case 'M':
+      case 'L':
+        return { type: c.type, x: c.x * s + dx, y: c.y * s + dy }
+      case 'Q':
+        return { type: 'Q', x1: c.x1 * s + dx, y1: c.y1 * s + dy, x: c.x * s + dx, y: c.y * s + dy }
+      case 'C':
+        return {
+          type: 'C',
+          x1: c.x1 * s + dx,
+          y1: c.y1 * s + dy,
+          x2: c.x2 * s + dx,
+          y2: c.y2 * s + dy,
+          x: c.x * s + dx,
+          y: c.y * s + dy,
+        }
+      case 'A':
+        return { ...c, rx: c.rx * s, ry: c.ry * s, x: c.x * s + dx, y: c.y * s + dy }
+      case 'Z':
+        return c
+    }
+  })
+}
+
 /** Number of anchor points (M/L/Q/C/A count one each; Z counts zero). */
 export function countPathNodes(commands: readonly PathCommand[]): number {
   let nodes = 0
@@ -44,111 +109,6 @@ export function countPathNodes(commands: readonly PathCommand[]): number {
     if (cmd.type !== 'Z') nodes++
   }
   return nodes
-}
-
-export interface Bounds {
-  minX: number
-  minY: number
-  maxX: number
-  maxY: number
-}
-
-/**
- * Bounding box over anchor and control points (a conservative cover of the
- * true curve bounds — control points always enclose a Bézier segment). An `A`
- * arc has no control points, so its exact extrema are computed instead.
- */
-export function pathBounds(commands: readonly PathCommand[]): Bounds | null {
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  let curX = 0
-  let curY = 0
-  const grow = (x: number, y: number) => {
-    if (x < minX) minX = x
-    if (y < minY) minY = y
-    if (x > maxX) maxX = x
-    if (y > maxY) maxY = y
-  }
-  for (const cmd of commands) {
-    switch (cmd.type) {
-      case 'M':
-      case 'L':
-        grow(cmd.x, cmd.y)
-        curX = cmd.x
-        curY = cmd.y
-        break
-      case 'Q':
-        grow(cmd.x1, cmd.y1)
-        grow(cmd.x, cmd.y)
-        curX = cmd.x
-        curY = cmd.y
-        break
-      case 'C':
-        grow(cmd.x1, cmd.y1)
-        grow(cmd.x2, cmd.y2)
-        grow(cmd.x, cmd.y)
-        curX = cmd.x
-        curY = cmd.y
-        break
-      case 'A':
-        for (const [x, y] of arcExtrema(curX, curY, cmd)) grow(x, y)
-        curX = cmd.x
-        curY = cmd.y
-        break
-      case 'Z':
-        break
-    }
-  }
-  if (minX === Infinity) return null
-  return { minX, minY, maxX, maxY }
-}
-
-/**
- * Extreme points of an elliptical arc (both endpoints plus every axis-aligned
- * tangent that falls within the swept angle range), so a bounding box over them
- * exactly covers the arc. Uses the SVG endpoint→center conversion (F.6.5).
- */
-function arcExtrema(
-  x1: number,
-  y1: number,
-  a: Extract<PathCommand, { type: 'A' }>,
-): [number, number][] {
-  const pts: [number, number][] = [
-    [x1, y1],
-    [a.x, a.y],
-  ]
-  const c = arcToCenter(x1, y1, a)
-  if (c === null) return pts
-  const { cx, cy, rx, ry, phi, theta1, dTheta } = c
-  const cos = Math.cos(phi)
-  const sin = Math.sin(phi)
-  const TWO_PI = 2 * Math.PI
-  const inSweep = (t: number): boolean => {
-    // Is angle `t` inside the span from theta1 sweeping by dTheta (signed)?
-    let d = t - theta1
-    if (dTheta >= 0) {
-      d = ((d % TWO_PI) + TWO_PI) % TWO_PI // [0, 2π)
-      return d <= dTheta + 1e-9
-    }
-    d = -(((-d % TWO_PI) + TWO_PI) % TWO_PI) // (−2π, 0]
-    return d >= dTheta - 1e-9
-  }
-  const at = (t: number): [number, number] => [
-    cx + rx * Math.cos(t) * cos - ry * Math.sin(t) * sin,
-    cy + rx * Math.cos(t) * sin + ry * Math.sin(t) * cos,
-  ]
-  // X extrema: d/dt of X(t) = 0 ⇒ tan t = -(ry sinφ)/(rx cosφ).
-  const tx = Math.atan2(-ry * sin, rx * cos)
-  // Y extrema: d/dt of Y(t) = 0 ⇒ tan t = (ry cosφ)/(rx sinφ).
-  const ty = Math.atan2(ry * cos, rx * sin)
-  for (const base of [tx, ty]) {
-    for (const t of [base, base + Math.PI]) {
-      if (inSweep(t)) pts.push(at(t))
-    }
-  }
-  return pts
 }
 
 /** Signed angle from vector (ux, uy) to (vx, vy), in (−π, π]. */

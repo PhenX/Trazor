@@ -18,7 +18,6 @@ export interface PoolJobOptions {
   affinityKey?: string
   onProgress?: (stage: StageId, overall: number) => void
   edgeHint?: GrayImage
-  coverageHint?: GrayImage
 }
 
 interface QueuedJob {
@@ -145,11 +144,6 @@ export class TrazorPool {
       edgeHint = job.opts.edgeHint.data.slice().buffer
       transfer.push(edgeHint)
     }
-    let coverageHint: ArrayBuffer | undefined
-    if (job.opts.coverageHint) {
-      coverageHint = job.opts.coverageHint.data.slice().buffer
-      transfer.push(coverageHint)
-    }
     const msg: WorkerInMessage = {
       type: 'vectorize',
       id: job.id,
@@ -158,7 +152,6 @@ export class TrazorPool {
       buffer,
       settings: job.settings,
       edgeHint,
-      coverageHint,
       imageId: this.idFor(job.image),
     }
     worker.postMessage(msg, transfer)

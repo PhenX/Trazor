@@ -3,6 +3,11 @@ import { CancelledError, createRaster, fillRaster, normalizeSettings, setPixel }
 import type { RasterImage, VectorizeResult, VectorizeSettings } from '@trazor/core'
 import { HelperPool, installHelperHandler, vectorize } from '@trazor/engine'
 import type { HelperEndpoint, StageCache } from '@trazor/engine'
+import type { FittedEdge } from '@trazor/trace'
+import { packFits, unpackFit } from '../src/flat'
+import { balancedOwners } from '../src/helper-pool'
+import { inkFrontEndSteps } from '../src/ink'
+import type { FillFit } from '../src/ink'
 import { createNodeHelpers } from '../../../scripts/bench/node-helpers'
 import type { NodeHelpers } from '../../../scripts/bench/node-helpers'
 import { scenes } from './helpers/gradient-scenes'
@@ -50,6 +55,71 @@ function ramp(): RasterImage {
 const overlayScene = scenes.find((s) => s.name === 'glow over a sky ramp (stacked overlay)') as
   | (typeof scenes)[number]
   | undefined
+
+/**
+ * A disk with an exact-coverage anti-aliased rim on a transparent canvas, a
+ * square of a second color inside it: exterior edges refined against the alpha
+ * coverage and color edges against the palette, in both layerings.
+ */
+function alphaScene(): RasterImage {
+  const img = createRaster(72, 72)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 72; y++) {
+    for (let x = 0; x < 72; x++) {
+      let covered = 0
+      for (let sy = 0; sy < 4; sy++) {
+        for (let sx = 0; sx < 4; sx++) {
+          if (Math.hypot(x + (sx + 0.5) / 4 - 36, y + (sy + 0.5) / 4 - 36) < 26.3) covered++
+        }
+      }
+      if (covered === 0) continue
+      const inner = x >= 28 && x < 44 && y >= 30 && y < 42
+      if (inner) setPixel(img, x, y, 40, 110, 190)
+      else setPixel(img, x, y, 210, 60, 50, Math.round((covered * 255) / 16))
+    }
+  }
+  return img
+}
+
+/**
+ * An opaque disk under a translucent glass panel on a transparent canvas: the
+ * panel's interior is partial alpha with partial neighbors, so it is emitted as
+ * a face with a fill opacity (its exterior stays on the lattice, no alpha
+ * field), while the disk is an opaque face cut at half coverage.
+ */
+function translucentScene(): RasterImage {
+  const img = createRaster(72, 72)
+  fillRaster(img, 0, 0, 0, 0)
+  for (let y = 0; y < 72; y++) {
+    for (let x = 0; x < 72; x++) {
+      if (Math.hypot(x + 0.5 - 24, y + 0.5 - 44) < 16) setPixel(img, x, y, 210, 60, 50, 255)
+      if (x >= 30 && x < 64 && y >= 12 && y < 58) setPixel(img, x, y, 40, 120, 200, 115)
+    }
+  }
+  return img
+}
+
+/** A grid of small discs in three colors: a planar map of a hundred edges. */
+function dots(): RasterImage {
+  const img = createRaster(120, 120)
+  fillRaster(img, 250, 250, 250)
+  const colors: [number, number, number][] = [
+    [200, 40, 40],
+    [40, 120, 200],
+    [40, 160, 80],
+  ]
+  for (let y = 0; y < 120; y++) {
+    for (let x = 0; x < 120; x++) {
+      const i = Math.floor(x / 12)
+      const j = Math.floor(y / 12)
+      if (Math.hypot(x + 0.5 - (i * 12 + 6), y + 0.5 - (j * 12 + 6)) < 3.6) {
+        const [r, g, b] = colors[(i + 2 * j) % 3]
+        setPixel(img, x, y, r, g, b)
+      }
+    }
+  }
+  return img
+}
 
 /** Ink art with a hole and a few specks — enough boundary work for bw mode. */
 function inkArt(): RasterImage {
@@ -111,9 +181,62 @@ const MODES: Mode[] = [
     patch: { ...overlayScene?.settings, mode: 'color', gradients: true },
   },
   {
+    name: 'color stacked, alpha edge',
+    image: alphaScene,
+    patch: { mode: 'color', paletteSize: 3, background: 'transparent', alphaThreshold: 128 },
+  },
+  {
+    name: 'color cutout, alpha edge',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'cutout',
+    },
+  },
+  {
+    name: 'color stacked, translucent face',
+    image: translucentScene,
+    patch: { mode: 'color', paletteSize: 4, background: 'transparent', alphaThreshold: 128 },
+  },
+  {
+    name: 'color cutout, translucent face',
+    image: translucentScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 4,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'cutout',
+    },
+  },
+  {
     name: 'color cutout',
     image: scene,
     patch: { mode: 'color', paletteSize: 6, layering: 'cutout' },
+  },
+  {
+    name: 'color nested',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, layering: 'nested' },
+  },
+  {
+    name: 'color nested, unoptimized',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, layering: 'nested', optimizeSvg: false },
+  },
+  {
+    name: 'color nested, alpha edge',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      layering: 'nested',
+    },
   },
   {
     name: 'color cutout, grouped',
@@ -135,6 +258,65 @@ const MODES: Mode[] = [
   { name: 'bw, adaptive', image: inkArt, patch: { mode: 'bw', thresholdMode: 'adaptive' } },
   { name: 'bw, pixel curves', image: inkArt, patch: { mode: 'bw', curveMode: 'pixel' } },
   { name: 'grayscale', image: scene, patch: { mode: 'grayscale', paletteSize: 5 } },
+  // The planar chain fits each edge of its map in the helper the edge is
+  // assigned to; the repair and every layering read the fits placed by edge.
+  {
+    name: 'color planar',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, geometry: 'planar' },
+  },
+  {
+    name: 'color planar, ink front end',
+    image: scene,
+    patch: { mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true },
+  },
+  // The ink front end's band merge fits its components and each wave of
+  // unions across the helpers; on a ramp the bands merge, so every helper
+  // replays the merges between waves.
+  {
+    name: 'color planar, ink front end, merged bands',
+    image: ramp,
+    patch: { mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true },
+  },
+  {
+    name: 'color planar, ink front end over two grounds',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      geometry: 'planar',
+      frontEnd: 'ink',
+      gradients: true,
+      background: 'transparent',
+      alphaThreshold: 128,
+    },
+  },
+  {
+    name: 'color planar cutout',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, geometry: 'planar', layering: 'cutout' },
+  },
+  {
+    name: 'color planar nested',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, geometry: 'planar', layering: 'nested' },
+  },
+  {
+    name: 'color planar, supersampled',
+    image: scene,
+    patch: { mode: 'color', paletteSize: 6, geometry: 'planar', supersample: 2 },
+  },
+  {
+    name: 'color planar, alpha edge',
+    image: alphaScene,
+    patch: {
+      mode: 'color',
+      paletteSize: 3,
+      background: 'transparent',
+      alphaThreshold: 128,
+      geometry: 'planar',
+    },
+  },
+  { name: 'bw planar', image: inkArt, patch: { mode: 'bw', geometry: 'planar' } },
   // Centerline strokes come from the skeleton graph walk, which is one
   // indivisible pass over the whole mask, so it stays on the coordinator; the
   // run must still be identical with a pool attached.
@@ -253,6 +435,30 @@ describe('helper pool parallel tracing', () => {
     const sequential = await vectorize(img, s)
     expect(after.svg).toBe(sequential.svg)
   })
+
+  it('rejects a planar run cancelled while its edges fit and leaves the pool reusable', async () => {
+    const img = dots()
+    const s = settings({ mode: 'color', paletteSize: 4, geometry: 'planar' })
+    const stages: string[] = []
+    let edges = 0
+    // Cancels once the boundary is solved, so the abort lands among the edge fits.
+    const ctx = { shouldCancel: () => stages.includes('solve') }
+    await expect(
+      vectorize(img, s, ctx, {
+        helpers: helpers.pool,
+        onPlanarStage: (stage, map) => {
+          stages.push(stage)
+          edges = map.edges.length
+        },
+      }),
+    ).rejects.toBeInstanceOf(CancelledError)
+    // Enough edges that the coordinator checks for a cancel before the fits are in.
+    expect(edges).toBeGreaterThan(64)
+    expect(stages).not.toContain('fit')
+    const after = await vectorize(img, s, undefined, { helpers: helpers.pool })
+    const sequential = await vectorize(img, s)
+    expect(after.svg).toBe(sequential.svg)
+  })
 })
 
 /**
@@ -305,5 +511,280 @@ describe('helper results are placed by unit index', () => {
     } finally {
       clearInterval(timer)
     }
+  })
+})
+
+describe('planar edge fits across helpers', () => {
+  it('fits each edge in the helper or on the coordinator and places the fits by edge index', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    // Two endpoints onto one in-process helper would share its single edge
+    // payload, so the pool gets one helper and the replies are reordered.
+    const jobs: string[] = []
+    let shipped = 0
+    const watched: HelperEndpoint = {
+      postMessage: (message, transfer) => {
+        const m = message as { type: string; kind?: string; units?: ArrayBuffer }
+        if (m.type === 'helper-job' && m.kind) jobs.push(m.kind)
+        if (m.type === 'helper-edges' && m.units) shipped += m.units.byteLength / 4
+        ends.pool.postMessage(message, transfer)
+      },
+      addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
+    }
+    const pool = new HelperPool([watched])
+    const timer = setInterval(ends.flush, 0)
+    try {
+      const img = scene()
+      const s = settings({ mode: 'color', paletteSize: 6, geometry: 'planar' })
+      let edges = 0
+      const parallel = await vectorize(img, s, undefined, {
+        helpers: pool,
+        withDocument: true,
+        onPlanarStage: (stage, map) => {
+          if (stage === 'fit') edges = map.edges.length
+        },
+      })
+      const sequential = await vectorize(img, s, undefined, { withDocument: true })
+      expect(edges).toBeGreaterThan(1)
+      expect(jobs).toContain('fit-edges')
+      // The coordinator keeps a share of the edges; the helper is sent the rest.
+      expect(shipped).toBeGreaterThan(0)
+      expect(shipped).toBeLessThan(edges)
+      expect(digest(parallel)).toEqual(digest(sequential))
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('rejects a cancel among the edges the coordinator fits before any helper answers', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    const cancels: unknown[] = []
+    const watched: HelperEndpoint = {
+      postMessage: (message, transfer) => {
+        if ((message as { type: string }).type === 'helper-cancel') cancels.push(message)
+        ends.pool.postMessage(message, transfer)
+      },
+      addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
+    }
+    const pool = new HelperPool([watched])
+    const img = dots()
+    const s = settings({ mode: 'color', paletteSize: 4, geometry: 'planar' })
+    const stages: string[] = []
+    // The helper's replies are held back, so only the coordinator's checks
+    // between its own edges can see the cancel.
+    const ctx = { shouldCancel: () => stages.includes('solve') }
+    await expect(
+      vectorize(img, s, ctx, { helpers: pool, onPlanarStage: (stage) => stages.push(stage) }),
+    ).rejects.toBeInstanceOf(CancelledError)
+    expect(stages).not.toContain('fit')
+    // The helper's job is cancelled at once, not when its next reply lands.
+    expect(cancels.length).toBeGreaterThan(0)
+    const timer = setInterval(ends.flush, 0)
+    try {
+      const after = await vectorize(img, s, undefined, { helpers: pool })
+      const sequential = await vectorize(img, s)
+      expect(after.svg).toBe(sequential.svg)
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('hands every fit to the later stages exactly as the sequential fit makes it', async () => {
+    const helpers = createNodeHelpers(2)
+    await helpers.ready
+    try {
+      const img = alphaScene()
+      const s = settings({
+        mode: 'color',
+        paletteSize: 3,
+        background: 'transparent',
+        alphaThreshold: 128,
+        geometry: 'planar',
+      })
+      const fitsOf = async (pool?: HelperPool): Promise<readonly FittedEdge[]> => {
+        let fits: readonly FittedEdge[] = []
+        await vectorize(img, s, undefined, {
+          helpers: pool,
+          onPlanarStage: (stage, _map, f) => {
+            if (stage === 'fit' && f) fits = f
+          },
+        })
+        return fits
+      }
+      const sequential = await fitsOf()
+      const parallel = await fitsOf(helpers.pool)
+      expect(sequential.length).toBeGreaterThan(1)
+      // Field for field, primitives included: a fit absent a primitive has no key for one.
+      expect(parallel).toStrictEqual(sequential)
+    } finally {
+      await helpers.dispose()
+    }
+  }, 30000)
+})
+
+describe('band merge fits across helpers', () => {
+  it('fits every unit of every batch in a helper exactly as the merge fits it', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    const pool = new HelperPool([ends.pool])
+    const timer = setInterval(ends.flush, 0)
+    try {
+      // The ramp's bands merge, so the helper's copy of the components must
+      // follow every batch's merges for its later fits to be the merge's.
+      const steps = inkFrontEndSteps(ramp(), 1, false, true)
+      let merges = 0
+      let units = 0
+      for (let r = steps.next(), n = 0; !r.done; n++) {
+        const batch = r.value
+        if (n === 0) pool.setBands('bands', batch.source)
+        pool.setBandBatch('bands', `bands#${n}`, batch)
+        merges += batch.merges.length / 2
+        const total = batch.a.length
+        const fills: FillFit[] = new Array(total)
+        for await (const out of pool.dispatch({
+          kind: 'fit-bands',
+          total,
+          stateKey: `bands#${n}`,
+          owners: new Int32Array(total),
+          batch: 4,
+        })) {
+          fills[out.unit] = out.fill as FillFit
+        }
+        for (let i = 0; i < total; i++) expect(fills[i]).toStrictEqual(batch.fit(i))
+        units += total
+        r = steps.next(fills)
+      }
+      expect(merges).toBeGreaterThan(0)
+      expect(units).toBeGreaterThan(merges)
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('fits each union in the helper or on the coordinator and hands the fits back by unit', async () => {
+    const ends = channel()
+    installHelperHandler(ends.helper)
+    let batched = 0
+    let shipped = 0
+    let merges = 0
+    const watched: HelperEndpoint = {
+      postMessage: (message, transfer) => {
+        const m = message as { type: string; kind?: string; units?: number[] }
+        const batch = message as { a?: ArrayBuffer; merges?: ArrayBuffer }
+        if (m.type === 'helper-band-batch' && batch.a && batch.merges) {
+          batched += batch.a.byteLength / 4
+          merges += batch.merges.byteLength / 8
+        }
+        if (m.type === 'helper-job' && m.kind === 'fit-bands') shipped += m.units?.length ?? 0
+        ends.pool.postMessage(message, transfer)
+      },
+      addEventListener: (type, listener) => ends.pool.addEventListener(type, listener),
+    }
+    const pool = new HelperPool([watched])
+    const timer = setInterval(ends.flush, 0)
+    try {
+      const img = ramp()
+      const s = settings({ mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true })
+      const parallel = await vectorize(img, s, undefined, { helpers: pool, withDocument: true })
+      const sequential = await vectorize(img, s, undefined, { withDocument: true })
+      // The bands merge, and the coordinator keeps a share of the fits.
+      expect(merges).toBeGreaterThan(0)
+      expect(shipped).toBeGreaterThan(0)
+      expect(shipped).toBeLessThan(batched)
+      expect(digest(parallel)).toEqual(digest(sequential))
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
+  it('rejects a run cancelled in the ink front end and leaves the pool reusable', async () => {
+    const helpers = createNodeHelpers(2)
+    await helpers.ready
+    try {
+      const img = ramp()
+      const s = settings({ mode: 'color', geometry: 'planar', frontEnd: 'ink', gradients: true })
+      let inPalette = false
+      const ctx = {
+        onProgress: (stage: string) => {
+          if (stage === 'palette') inPalette = true
+        },
+        shouldCancel: () => inPalette,
+      }
+      await expect(vectorize(img, s, ctx, { helpers: helpers.pool })).rejects.toBeInstanceOf(
+        CancelledError,
+      )
+      const after = await vectorize(img, s, undefined, { helpers: helpers.pool })
+      const sequential = await vectorize(img, s)
+      expect(after.svg).toBe(sequential.svg)
+    } finally {
+      await helpers.dispose()
+    }
+  }, 30000)
+})
+
+describe('balancedOwners', () => {
+  it('evens out the weight across helpers, heaviest unit first', () => {
+    const weights = [1, 9, 4, 4, 2, 7, 3, 3, 1, 6]
+    const owners = balancedOwners(weights, 3)
+    const load = [0, 0, 0]
+    weights.forEach((w, i) => (load[owners[i]] += w))
+    // 40 in all over three helpers: none carries more than 14.
+    expect(Math.max(...load)).toBeLessThanOrEqual(14)
+    expect(balancedOwners(weights, 3)).toEqual(owners)
+  })
+
+  it('keeps a lone helper on every unit', () => {
+    expect([...balancedOwners([5, 1, 3], 1)]).toEqual([0, 0, 0])
+  })
+})
+
+describe('fitted edges cross a message exactly', () => {
+  it('round-trips segments, scalars and every primitive bit for bit', () => {
+    const fits: FittedEdge[] = [
+      {
+        x0: 0.1 + 0.2,
+        y0: -0,
+        segments: [
+          { type: 'L', x: 3, y: 4 },
+          { type: 'C', x1: 1 / 3, y1: 2 / 3, x2: Math.PI, y2: Math.E, x: 5, y: 6 },
+          { type: 'A', rx: 2, ry: 1.5, rotation: 30, largeArc: false, sweep: true, x: 0.3, y: -0 },
+        ],
+        closed: true,
+        params: 17,
+        chi2: 1e-300,
+      },
+      {
+        x0: 1,
+        y0: 2,
+        segments: [],
+        closed: true,
+        params: 3,
+        chi2: 0.5,
+        primitive: { kind: 'circle', cx: 1.5, cy: -2.25, r: Math.SQRT2 },
+      },
+      {
+        x0: 1,
+        y0: 2,
+        segments: [{ type: 'L', x: 1, y: 2 }],
+        closed: true,
+        params: 5,
+        chi2: 0.25,
+        primitive: { kind: 'ellipse', cx: 1, cy: 2, rx: 3, ry: 4, rotation: -0.5 },
+      },
+      {
+        x0: 0,
+        y0: 0,
+        segments: [{ type: 'L', x: 8, y: 0 }],
+        closed: false,
+        params: 2,
+        chi2: 0,
+        primitive: { kind: 'rect', cx: 4, cy: 4, w: 8, h: 8, r: 0.75, rotation: 0.125 },
+      },
+    ]
+    const { commands, records } = packFits(fits)
+    const back = fits.map((_, i) => unpackFit(commands, records, i))
+    expect(back).toStrictEqual(fits)
+    expect(Object.is(back[0].y0, -0)).toBe(true)
   })
 })

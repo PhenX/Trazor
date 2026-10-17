@@ -102,8 +102,17 @@ The `scripts/` tooling (dataset generation, corpus fetch, tracer evaluation) sup
 
 ## Notes on licensing
 
-- This repository is **MIT**. The tracing algorithms are implemented from their published papers; no GPL code (e.g.
-  the Potrace reference implementation) was used or linked.
+- This repository is licensed under the **Functional Source License, Version 1.1, ALv2 Future License**
+  (FSL-1.1-ALv2, see [`LICENSE`](LICENSE)): you may use, copy, modify and redistribute it for any purpose except a
+  Competing Use, and each version becomes available under the Apache License 2.0 two years after it is made
+  available. Versions up to and including commit `d5dd561` were published under the MIT license and remain
+  available under it. No GPL code (e.g. the Potrace reference implementation) was used or linked.
+- The planar color chain, that is the ink front end (`packages/raster/src/{ink,fill,intake}`) and the planar
+  geometry (`packages/trace/src/{planar,solve,fit}`, `crates/solve`), is a modified port of
+  [inkvec](https://github.com/logolabs/inkvec) by LogoLabs and Stefan-Lucian Deleanu, under the Apache License 2.0.
+  Each ported file says so in its header, and inkvec's notice and license are in
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Many thanks to its authors. The other tracing algorithms are
+  implemented from their published papers ([`docs/REFERENCES.md`](docs/REFERENCES.md)).
 - `@trazor/ml` ships **no model weights**. They keep their own licenses (u2netp and SlimSAM, both Apache-2.0) and are
   downloaded at runtime, not distributed with this repository. Weights the project trains itself are served
   same-origin under `models/` by the app that deploys them.

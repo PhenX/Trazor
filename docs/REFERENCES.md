@@ -22,7 +22,130 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   Curves”, in _Graphics Gems_, Academic Press, 1990.**
   Least-squares cubic Bézier fitting with iterative reparameterization
   (Newton-Raphson) and recursive splitting at max-error points. Used for open
-  polylines (centerline strokes) in `packages/trace/src/fit.ts`.
+  polylines (centerline strokes) in `packages/trace/src/fit.ts`, for the
+  per-run cubic of the multi-model fitter and for the arm lengths of the
+  illustration-mode G1 spline pieces, there σ-weighted and held to inkvec's
+  admissible arms (`packages/trace/src/potrace/runfit.ts` `fitG1Cubic`).
+- **Michael Plass and Maureen Stone, “Curve-Fitting with Piecewise Parametric
+  Cubics”, _Computer Graphics_ 17(3) (SIGGRAPH ’83), 1983.** Least-squares
+  fitting of piecewise parametric cubics with tangent continuity at the knots.
+  The illustration-mode G1 refit of `packages/trace/src/potrace/runfit.ts`
+  (`g1Refit`) takes the run fitter's breakpoints as knots and solves one shared
+  direction per knot by linear least squares over the span's samples,
+  alternated with the pieces' arm lengths and a Newton reparameterization.
+- **William H. Press, Saul A. Teukolsky, William T. Vetterling and Brian P.
+  Flannery, _Numerical Recipes_, 3rd ed., Cambridge University Press, 2007,
+  §2.4 (tridiagonal systems) and §2.7 (cyclic tridiagonal systems via the
+  Sherman–Morrison formula).** The G1 refit's knot-tangent system is symmetric
+  tridiagonal along a span and cyclic around a smooth loop
+  (`solveTridiag`/`solveCyclic` in `runfit.ts`).
+- **logolabs, “inkvec” — curve fitting (stage 11, Apache-2.0), and Raph Levien’s
+  `kurbo` cubic fitter it builds on.** <https://github.com/logolabs/inkvec>
+  (`crates/inkvec-fit/{lib,multimodel,curves,merge,primitives}.rs`,
+  `docs/algorithm/11-fitting.md`). The measured boundary is described by the
+  fewest lines, circular arcs and cubics under a minimum-description-length
+  objective (`cost = 0.5·χ² + λ·params`, χ² the squared point-to-curve residuals
+  weighted by per-point `1/σ²`, `λ = ln(extent/precision) ≈ 8.5` at 512 px, a
+  span admissible only within `τ·σ`, `τ = 2`), a dynamic program picking the
+  segmentation and the per-span model jointly, then a `merge_free_cubics` pass —
+  fitting the curve to the points rather than to the polygon’s chords so it
+  carries none of the Selinger chain’s circumscribe/inscribe bias.
+  `packages/trace/src/potrace/runfit.ts` implements a browser-fast form: a
+  bounded DP over a candidate set (the optimal-polygon vertices of Selinger §2.2
+  as breakpoints, the discrete-curvature sign changes and a coarse stride inside
+  a long edge) rather than inkvec’s DP over every point, with the corner prior
+  from `smoothing`/`cornerThreshold`, an endpoint-pinned circle fit (so the arc
+  scored is the arc drawn) and a monotone-sweep gate on the arc. At low smoothing
+  (geometric mode) it follows inkvec's structural model too: a corner is a vertex
+  of the unadjusted polygon turning at least `CORNER_DEGREES` (45°) whose refined
+  samples turn by as much — each side's tangent at it read from that side's
+  samples, the vertex's chamfer left out, as the tangent of a geometric circle
+  fitted to them (a straight side fits a huge one) or else of the widest one-sided
+  Savitzky–Golay window the measurement model accepts (A. Savitzky & M. J. E.
+  Golay, “Smoothing and differentiation of data by simplified least squares
+  procedures”, _Analytical Chemistry_ 36(8), 1964), so a stroke's round cap, whose
+  lattice polygon turns ~45° at every vertex, is not drawn as a pointed arch; the samples
+  within the anti-aliasing chamfer of a corner (`CORNER_CHAMFER`, reaching
+  `1/sin(½·interior)` along sharper corners) carry no weight, and the corner is
+  placed where its two fitted edges meet within that allowance
+  (`adjust_vertices_at`), a chamfer stub of at most 2.5 px between two corners
+  collapsing into one (`sharpen_corners`, `SHARPEN_MAX_CHORD`); lines and arcs
+  are refitted freely — a σ-weighted total-least-squares line (the smaller
+  eigenvalue of the weighted scatter, inkvec's `chi2_line`) and a geometric circle
+  — and joined where the models meet; and a whole loop is one circle when its
+  reduced χ² stays within τ² and its description costs no more than the DP's
+  (the whole-primitive rule of `primitives.rs`), so a few outlying samples do not
+  veto it the way a per-sample band would. At higher smoothing (illustration
+  mode) a measured ring is offered an ellipse as well, and a ring the corner rule
+  cut up is offered both against its corner spans' cost — inkvec's
+  `fit_primitive_or_arcs`, which offers every closed boundary a circle, an
+  ellipse and a rounded rectangle whatever its corners. Such a primitive must
+  also render the ring's observed coverage no worse than the fitted outline —
+  the rendered-coverage comparison of inkvec's boundary solve (stage 08, below),
+  used here as a judge between two candidates rather than as a fit
+  (`packages/trace/src/coverage.ts` `pathCoverageError`). The joins inkvec's DP charges a tangent break for, and snaps to one
+  tangent after it where it left them smooth (`multimodel.rs` `refine`,
+  `tangents.rs` `break_cost`), are all made G1 by the refit after Plass & Stone
+  (below), its pieces' arms held to the 0.02–1 chord inkvec admits a G1 cubic's
+  arms in (`candidates.rs`, `MAX_ARM`; `multimodel.rs` `polish_arms` refines
+  arms inside such a box).
+- **logolabs, “inkvec” — sub-pixel boundary refinement (stage 07, Apache-2.0).**
+  <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/planar.rs`
+  `refine_subpixel`/`edge_offset`, `docs/algorithm/07-subpixel.md`). Each boundary
+  point is moved onto the coverage = ½ level set by searching along the local
+  boundary normal for the crossing: coverage is probed at the pixel centres along
+  the normal, the two probes bracketing ½ locate the edge, and a clean step
+  inverts through the _exact_ half-plane coverage of a unit square — which, unlike
+  a bilinear root-find between pixel centres, carries no bias towards the ½ grid
+  (a slanted edge is otherwise read ~0.15 px fat). `refineRingToField` in
+  `packages/trace/src/refine.ts` implements this over the engine's signed coverage
+  fields (`alphaCoverageField`, `pairwiseField`, `layerField`), feeding the
+  polygon, vertex-adjustment and run-fitting stages the de-staircased points. A
+  stacked layer's field reads its rim pixels only and fills in the rest, so a
+  point moves only where the two pixels beside it straddle ½, one of them is
+  saturated, or a pixel past them read between the same colors crosses ½; each
+  point it measured takes inkvec's positional uncertainty
+  (`CoverageField::position_sigma`): the image noise of J. Immerkær, “Fast noise
+  variance estimation”, _CVIU_ 64(2), 1996, over the pair's contrast and the
+  coverage step per pixel, in quadrature with a 0.05 px model error, so a soft
+  color-band edge is fitted loosely instead of as the label pass's staircase.
+- **logolabs, “inkvec” — boundary solve (stage 08, Apache-2.0).**
+  <https://github.com/logolabs/inkvec> (`crates/inkvec-trace/src/boundary_opt.rs`
+  `optimise`, `docs/algorithm/08-boundary-solve.md`). The data term of inkvec's
+  boundary solve is the exact coverage the geometry renders against the pixels.
+  Trazor uses that comparison as a judge between two candidate outlines of a
+  small ring rather than as a fit (`packages/trace/src/coverage.ts`
+  `pathCoverageError`): a solve on it was measured net-neutral on GMSD and
+  regressed angular icons (the coverage-area null space wanders a straight
+  boundary into a sawtooth), and was removed.
+- **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
+  (SIGGRAPH ’84)_ 18(3), 1984.** The coverage-as-alpha compositing model every
+  anti-aliasing SVG renderer follows:
+  each shape's pixel coverage is blended as an independent alpha, which is exact
+  only when the shapes' geometry within the pixel is uncorrelated. Two stacked
+  shapes drawn along the same edge are fully correlated there, and compositing
+  them leaks the lower color into the edge pixels — a seam of the base color along
+  a sheet's edge. A stacked base layer's edge that runs hidden under a sheet
+  painted above it is therefore set back beneath the sheet
+  (`packages/engine/src/setback.ts`, applied by `refineRingToField`). The planar
+  chain sets back a hidden edge's shared fit, sampled about a working pixel apart
+  with every segment end kept (`fittedPoints`; an arc read in its center form,
+  W3C SVG 1.1 F.6.5): each point one source pixel along the normal of the chord
+  across two set-back distances of arc length either side — a centred difference
+  over a wide stencil — where the sheet holds the set-back point and the pixel
+  half a pixel past it (`setBackPoints`). A run of moved segments is refitted
+  between the fit's corners, every other segment drawn as the shared fit draws
+  it; a refit that strays from a point by more than the set-back distance is
+  replaced by the refits of the run's two halves, recursively (the subdivision of
+  Douglas & Peucker, Canadian Cartographer 10(2), 1973), since the program prices
+  a line by its points' best-fit line but draws the chord between its pinned ends
+  (`setBackFit`, `keepsTo`); and two hidden edges meet halfway between their set-back ends
+  (`layerRingCommands`, `packages/engine/src/planar.ts`).
+- **M. Goldapp, “Approximation of circular arcs by cubic polynomials”, _Computer
+  Aided Geometric Design_ 8(3), 1991.** The control-arm length `k = (4/3)·tan(θ/4)`
+  for emitting a fitted circular arc as ≤90° circle-exact cubics
+  (`packages/trace/src/potrace/runfit.ts`), which `@trazor/svg`’s `fitArcs` can
+  later collapse to `A` commands.
 - **David Douglas & Thomas Peucker, “Algorithms for the reduction of the number
   of points required to represent a digitized line or its caricature”,
   _Cartographica_ 10(2), 1973.** Polyline simplification used for open paths
@@ -35,35 +158,399 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   transform used to estimate stroke width for centerline output
   (`packages/raster/src/thin.ts`).
 
+## Ink front end (packages/raster/src/ink, fill, intake)
+
+The planar chain's raster front end, ported from inkvec (Apache-2.0): how many inks an image
+holds and which pixels each one owns, decided by the same description length the geometry
+uses. Each file names the inkvec files it follows.
+
+- **Intake** (`intake/coverage.ts`, `intake/softness.ts`, `intake/soft.ts`, after inkvec's
+  `inkvec-trace/src/{coverage,softness}.rs`, `coverage/{oversample,resample}.rs` and
+  `inkvec-cli/src/soft_intake.rs`, identical to an inkvec build on 1,004 images): the edge width
+  from first- and second-difference votes (after P. Marziliano, F. Dufaux, S. Winkler & T.
+  Ebrahimi, “A no-reference perceptual blur metric”, ICIP 2002); a ringing score for compression
+  damage; whether the pixels can be thrown away and put back (the resampling evidence of A. C.
+  Popescu & H. Farid, “Exposing digital forgeries by detecting traces of resampling”, _IEEE TSP_
+  53(2), 2005) by an exact premultiplied box filter (T. Porter & T. Duff, “Compositing digital
+  images”, SIGGRAPH 1984); ramp, core and spacing evidence over a chamfer distance (G.
+  Borgefors, “Distance transformations in digital images”, _CVGIP_ 34, 1986); a soft intake —
+  wide edges, ringing or a lossy container — loosens the palette's guards and lets the noise
+  rise to the residual against the labels; for the planar chain's ink front end also edges
+  whose pixels stray off their two-ink blend segments (the median boundary residual against the
+  clean palette's labels at 3.5 levels or more, inkvec's `residual_sigma` boundary population;
+  `packages/engine/src/ink.ts` `edgeNoise`), the noise then taken from that clean measurement;
+  and an upscaled raster is reduced by the factor its
+  edges imply (the degradation model of K. Zhang, J. Liang, L. Van Gool & R. Timofte, “Designing
+  a practical degradation model for deep blind image super-resolution”, ICCV 2021).
+- **The palette** (`ink/palette.ts`, `ink/mdl.ts`, `ink/distinct.ts`, `ink/snap.ts`, after
+  inkvec's `inkvec-trace/src/color.rs` and `color/{mdl,distinct,represent,snap}.rs`, identical to
+  an inkvec build on 1,582 corpus rasters and photographs up to 6000×4000: same inks, colours
+  within one single-precision ulp, same labels): how many inks an image holds decided by minimum
+  description length (Rissanen 1978) — frequency modes over a coarse OKLab grid (B. Ottosson, “A
+  perceptual color space for image processing”, 2020) walked in order, each kept when folding it
+  into its nearest ink would cost more residual than minting it costs, `½·claim·(d/σ)² >
+λ·3`, with the BIC price; below a CIEDE2000 floor (G. Sharma, W. Wu & E. N. Dalal, “The
+  CIEDE2000 color-difference formula”, _Color Res. Appl._ 30(1), 2005) never; a candidate on
+  the chord of two accepted inks that does not straddle them is coverage (Yang et al. 2011); a
+  rare candidate kept only when its pixels are colours no mixture of their neighbours' inks
+  explains (Aksoy et al. 2017, above); an overshoot rim rejected for want of interior (after J.
+  Yang, N. Vining, S. Kheradmand, N. Carr, L. Sigal & A. Sheffer, “Subpixel deblurring of
+  anti-aliased raster clip-art”, _CGF_ 42(2), 2023).
+- **Regions** (`ink/regions.ts`, `ink/components.ts`, `ink/native-regions.ts`,
+  `ink/regularize.ts`, after inkvec's `inkvec-trace/src/{regions,regularize,native}.rs` and
+  `regions/components.rs`, matching an inkvec build's label maps exactly on 37 corpus images):
+  4-connected components by row runs and union-find (K. Wu, E. Otoo & K. Suzuki, “Optimizing
+  two-pass connected-component labeling algorithms”, _Pattern Analysis and Applications_
+  12(2), 2009); speckles folded into the touching label of least energy under a
+  contrast-sensitive Potts model — the squared color distance to each ink, less a price per
+  shared edge weighted by the two pixels' color agreement, both on the color range's own
+  scale (one iterated conditional modes step, Besag 1986 below; the region and boundary terms
+  of Y. Boykov & M.-P. Jolly, “Interactive graph cuts for optimal boundary & region
+  segmentation of objects in N-D images”, _ICCV_ 2001; `ink/regions.ts` `despeckle`), where
+  inkvec folds by contact alone; thin slivers that are blends
+  of the two or three inks around them split back to their dominant ink, and single blend
+  pixels moved to the ink their nearest convex mixture favours (the two-colour edge model of
+  L. Yang, P. V. Sander, J. Lawrence & H. Hoppe, “Antialiasing Recovery”, _ACM TOG_ 30(3),
+  2011, widened to three; over premultiplied RGBA with a clear backdrop on transparent
+  images); the smallest components merged past the face-id cap (region-adjacency merging of
+  K. Haris, S. N. Efstratiadis, N. Maglaveras & A. K. Katsaggelos, “Hybrid image segmentation
+  using watersheds and fast region merging”, _IEEE TIP_ 7(12), 1998); the noise read off the
+  residual against the labels, and the research label regularization by iterated conditional
+  modes (J. Besag, “On the statistical analysis of dirty pictures”, _JRSS B_ 48(3), 1986).
+
+- **Fill models** (`fill/*.ts`, after inkvec's `inkvec-trace/src/gradient.rs` and
+  `gradient/{fit,fit/profile,stops,stops/knots,score,eval,evidence,svg,budget}.rs`, matching an
+  inkvec build on 648 corpus candidates to 10⁻⁶): each region's fill chosen among flat, linear
+  and radial (circular or elliptical) in linear light and in sRGB, with up to two interior
+  stops, by `½·χ² + λ·params` with the BIC price `λ = ½·ln n` (G. Schwarz, “Estimating the
+  dimension of a model”, _Ann. Statist._ 6(2), 1978) and a half-LSB dead zone in the residual;
+  only strictly interior, unblended pixels testify. On a raster enlarged `s` times the price is
+  taken over the source's `n/s²` pixels and in working-pixel units, `s²·½·ln(n/s²)` (each source
+  pixel is `s²` interpolated working pixels, one observation counted `s²` times), and the
+  front end's pixel counts — the sliver test's interior, the least gradient region, the least
+  shared seam — in source pixels: inkvec's `price_in_raster_units`, which prices its own
+  pixel knobs in the raster's units. The radial centre by variable projection
+  (G. H. Golub & V. Pereyra, “The differentiation of pseudo-inverses and nonlinear least
+  squares problems whose variables separate”, _SIAM J. Numer. Anal._ 10(2), 1973; L. Kaufman,
+  “A variable projection method for solving separable nonlinear least squares problems”,
+  _BIT_ 15, 1975) under Levenberg–Marquardt; interior stops by a binned knot scan, exact at
+  each offset it prices (D. J. Hudson, “Fitting segmented curves whose join points have to be
+  estimated”, _JASA_ 61, 1966; J. Bai & P. Perron, “Computation and analysis of multiple
+  structural change models”, _J. Appl. Econometrics_ 18, 2003), coarse to fine: every 16th
+  offset, then every offset around the three best coarse minima (P. M. Lerman, “Fitting
+  segmented regression models by grid search”, _Appl. Statist._ 29(1), 1980), refined by
+  majorize–minimize (D. R. Hunter & K. Lange, “A tutorial on MM algorithms”, _Am. Stat._
+  58(1), 2004) and Huber-weighted
+  iteratively reweighted least squares (P. J. Huber, _Ann. Math. Statist._ 35(1), 1964; P. W.
+  Holland & R. E. Welsch, _Commun. Stat._ 6(9), 1977), a second stop searched on a beam of the
+  three geometries cheapest with at most one (B. T. Lowerre, _The HARPY speech recognition
+  system_, PhD thesis, Carnegie Mellon University, 1976) and on every geometry before the
+  ramp-or-step test drops them, the radial and elliptic centers searched once, on the
+  linear-light colors, and their stops refitted in sRGB (inkvec searches them in each space;
+  `INKVEC_SEARCH` keeps that, pinned by the parity suite), the medians of its sliver test found by
+  selection (C. A. R. Hoare, “Algorithm 65: Find”, _Commun. ACM_ 4(7), 1961); the sRGB
+  transfer curves' powers in single precision (`fill/power.ts`) from a table at the leading
+  mantissa bits and a binomial series between them (P. T. P. Tang, “Table-driven implementation
+  of the exponential function in IEEE floating-point arithmetic”, _ACM TOMS_ 15(2), 1989), bit
+  for bit `Math.pow`'s rounding by Ziv's test (A. Ziv, “Fast evaluation of elementary
+  mathematical functions with correctly rounded last bit”, _ACM TOMS_ 17(3), 1991); gradient meshes
+  as in G. Lecot & B.
+  Lévy, “Ardeco: automatic region detection and conversion”, EGSR 2006, and the region
+  recovery of S. Chakraborty et al., “Image vectorization via gradient reconstruction”,
+  _CGF_ 44(2), 2025.
+- **Transparency carried natively** (`ink/native.ts`, `ink/native-palette.ts`, `ink/fade.ts`,
+  after inkvec's `inkvec-trace/src/native.rs` and `native/{palette,fade}.rs`, identical to an
+  inkvec build on 942 transparent corpus rasters at 128 px and 161 at 512 and 1024 px, the whole
+  chain through the carve and the fades on 938): an ink is a color and an opacity, the clear
+  ground an ink like any other, every pixel kept as its color over white and its alpha (an
+  invertible form of premultiplied RGBA, Porter & Duff 1984, above); two inks are one only if they
+  look alike over white and over mid-gray, both in OKLab (Ottosson 2020, above), so white paint
+  and the clear ground stay apart; the palette walk, its blend tests and its representation
+  floor over those two grounds, a rare ink kept when it draws something (the rare-color weakness
+  of popularity quantization, P. Heckbert, “Color image quantization for frame buffer display”,
+  SIGGRAPH 1982); the band merge never joining inks of different opacity; a carved feature named
+  by a visible ink when its pixels are paint; and fades — a glow, a soft shadow, a halo — fitted
+  as one gradient with a color and an opacity at each stop, the opacity profile chosen by the
+  same description length as a fill.
+- **Band merge and carve** (`fill/bands.ts`, `fill/recovery.ts`, `fill/carve.ts`, after inkvec's
+  `inkvec-trace/src/gradient/{bands,regions}.rs` and `carve.rs`, identical label maps and work
+  spent to an inkvec build on 98 corpus images under `INKVEC_SEARCH` and inkvec's work cap,
+  105 carved features identical): the palette's
+  bands of one ramp merged back into one gradient region by greedy agglomeration of 4-connected
+  components, the pair that saves the most description length first, under a deterministic
+  work cap (the region-adjacency merging of Haris et al. 1998, above), inkvec's
+  `max(floor, 32·w·h)` units with a floor of 2²⁴ against inkvec's 2²⁸, so the merge's work
+  grows with the image rather than every image up to about 2900 × 2900 px getting 2²⁸ units
+  (`MERGE_WORK_FLOOR`, `INKVEC_MERGE_WORK_FLOOR`); a seam between two
+  regions read as smooth when most of its pixel pairs step under 3 CIE76 units and as an edge
+  when most step over 6 OKLab units, so an edge is never merged across and two flat regions
+  are unioned only across a smooth seam whose inks are one ramp step apart (CIEDE2000 under
+  15, Sharma, Wu & Dalal 2005, above) — the region recovery of Chakraborty et al. 2025 §3.2;
+  then a feature a merged fill swallowed (a stroke inside a ramp, its pixels far from the fill
+  and near another ink) carved back out as its own region and the parent refitted.
+
+## Planar-map geometry core (packages/trace/src/planar, solve, fit)
+
+One geometry chain for every color mode, ported from inkvec (Apache-2.0, see
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)): faces, a planar map whose
+edges two faces share, sub-pixel measurement, a boundary solve, an MDL fit with
+whole-boundary primitives, and crossing repair. Each file names the inkvec files it
+follows.
+
+- **logolabs, “inkvec” — planar map (stage 06).** `crates/inkvec-trace/src/planar.rs`,
+  `planar/{cracks,runs}.rs`, `inkvec-cli/src/rings.rs`, `emit/winding.rs`. Faces as
+  4-connected components (`planar/faces.ts`, after Wu, Otoo & Suzuki, “Optimizing
+  two-pass connected-component labeling algorithms”, _Pattern Analysis and
+  Applications_ 12, 2009); the crack network between them walked into edges stored once,
+  with junction nodes and split saddle corners (`planar/map.ts`; the cell-complex view of
+  V. Kovalevsky, “Finite topology as applied to image analysis”, _CVGIP_ 46, 1989); each
+  face's rings and their nesting read off the map's topology (`planar/rings.ts`, the
+  border hierarchy of S. Suzuki & K. Abe, “Topological structural analysis of digitized
+  binary images by border following”, _CVGIP_ 30, 1985), wound by depth so `nonzero`
+  paints what `evenodd` paints (W3C SVG 1.1 §11.3); and the rings of a union of faces, a
+  stacked layer (`planar/regions.ts`).
+- **Sub-pixel measurement and junctions** (`planar/subpixel.ts`, `planar/junctions.ts`,
+  after inkvec's `inkvec-trace/src/{planar,coverage,contour,gradient,taper}.rs` and
+  `planar/junctions.rs`, cross-checked against an inkvec build to 10⁻⁶ px): each boundary
+  point slid along its normal to the ½ level of its two faces' coverage, unmixed by
+  least-squares projection over premultiplied RGBA, a clean step read off by inverting the
+  exact half-plane coverage of a pixel; its σ from the noise over the contrast and the
+  coverage gradient, inflated where the contour bends unlike an arc. The noise is the low
+  quantile of the absolute Laplacian (J. Immerkær, “Fast noise variance estimation”, _CVIU_
+  64(2), 1996), found by selection (C. A. R. Hoare, “Algorithm 65: Find”, _CACM_ 4(7), 1961).
+  Each junction goes to the weighted least-squares meeting point of its edges' end tangents
+  (lines, or quadratics where an end bends) and, where they meet tangentially, to where a
+  taper vanishes: a Kåsa circle (1976) held tangent to the through boundary.
+- **The boundary solve** (`solve/band.ts`, `solve/folds.ts`, `solve/boundary.ts`, and the descent's
+  WebAssembly port `crates/solve/src/{band,lbfgs,linesearch}.rs` behind `solve/kernel.ts`, after
+  inkvec's `inkvec-trace/src/boundary_opt.rs` and `boundary_opt/band.rs`, cross-checked
+  against an inkvec build to 10⁻⁸ px): every boundary point moved at once so that the map's
+  exact rendered coverage matches the image — the region term of T. F. Chan & L. A. Vese,
+  “Active contours without edges”, _IEEE TIP_ 10(2), 2001 (as in P. Getreuer, “Chan–Vese
+  Segmentation”, _IPOL_, 2012) with each face's fill fixed, over a narrow band (D.
+  Adalsteinsson & J. A. Sethian, “A fast level set method for propagating interfaces”, _J.
+  Comput. Phys._ 118, 1995), with the kink and anchor priors scaled to the data term. Exact
+  box coverage by signed-area accumulation, the rasterizer of libart and R. Levien's
+  font-rs, an exact box filter as in J. Manson & S. Schaefer, “Wavelet Rasterization”,
+  _Computer Graphics Forum_ 30(2), 2011, with one carry per face; the analytic gradient by
+  suffix sums. Afterwards the boundaries in a self-crossing the solve made are backed off
+  (a coarse-grid join and exact segment tests). A map built on an enlarged copy is solved
+  against the source's own pixels, each the box filter of the drawing over its whole area, so
+  the forward model is the sampling the source went through (analysis by synthesis with the
+  true point-spread function, the box of Manson & Schaefer above); the enlargement's
+  interpolated ramps are no box filter of the boundary and pull the solve off it.
+- **D. C. Liu & J. Nocedal, “On the limited memory BFGS method for large scale
+  optimization”, _Mathematical Programming_ 45, 1989; J. J. Moré & D. J. Thuente, “Line
+  search algorithms with guaranteed sufficient decrease”, _ACM TOMS_ 20(3), 1994.** The
+  boundary solve's optimizer (`solve/lbfgs.ts`, `solve/linesearch.ts`, their WebAssembly port
+  `crates/solve/src/{lbfgs,linesearch}.rs`, after inkvec's
+  `boundary_opt/{lbfgs,linesearch}.rs`): L-BFGS with three pairs along the projected path
+  of R. H. Byrd, P. Lu, J. Nocedal & C. Zhu, “A limited memory algorithm for bound
+  constrained optimization”, _SIAM J. Sci. Comput._ 16(5), 1995, each point held to a disc
+  about its start, stopped on the projected gradient or the whole problem's relative
+  decrease; the nonsmooth case as in A. S. Lewis & M. L. Overton, “Nonsmooth optimization
+  via quasi-Newton methods”, _Mathematical Programming_ 141, 2013.
+- **J. R. Shewchuk, “Adaptive precision floating-point arithmetic and fast robust
+  geometric predicates”, _Discrete & Computational Geometry_ 18, 1997.** The exact
+  `orient2d` behind crossing detection (`fit/crossings.ts`, after inkvec's
+  `inkvec-core/src/predicates.rs` and repair stage 12): fitted edges flattened, a grid
+  broad phase, and exact segment tests, so a ring whose independent edge fits cross is
+  found and repaired.
+- **The fit's core** (`fit/cost.ts`, `roots.ts`, `curves.ts`, `cubicfit.ts`, `circle.ts`,
+  `objective.ts`, `tangents.ts`, after inkvec's `inkvec-fit/src/{lib,cost,curves,candidates,
+tangents}.rs`, cross-checked against an inkvec build): the description length
+  `0.5·χ² + λ·params` with σ-weighted χ² and the O(1) total-least-squares line residual from
+  prefix sums (K. Pearson, “On lines and planes of closest fit”, _Phil. Mag._ 2, 1901); the
+  line-only optimal polygon of P. Selinger, “Potrace” (2003) §2.2 under that cost; G1 cubics
+  whose arms match a span's area and moment, the quartic of R. Levien, “Fitting cubic Bézier
+  curves” (2021, raphlinus.github.io), refined by Newton on the arms; the distance to a cubic
+  by the quintic's roots in [0, 1] (C. Yuksel, “High-performance polynomial root finding for
+  graphics”, _Proc. ACM CGIT_ 5(3), 2022; kurbo's nearest-point code); circular arcs from an
+  O(1) Kåsa fit per span; the end tangents of a run from a symmetric window.
+- **The multimodel dynamic program** (`fit/candidates.ts`, `fit/scan.ts`, `fit/limits.ts`,
+  `fit/multimodel.ts`, after inkvec's `inkvec-fit/src/{multimodel,candidates,decimate}.rs`
+  and `multimodel/{scan,limits}.rs`, cross-checked against an inkvec build on 19 inputs to
+  10⁻⁹): one exact dynamic program over every segmentation of a boundary and every
+  assignment of `{line, G1 cubic, circular arc, elliptical arc}` under `½χ² + λ·params` plus a
+  turn charged at every vertex (the segmentation DP of R. Bellman, “On the approximation of
+  curves by line segments using dynamic programming”, _CACM_ 4(6), 1961, priced by minimum
+  description length after J. Rissanen, “Modeling by shortest data description”,
+  _Automatica_ 14, 1978); the elliptical arc from Taubin's conic scored by P. D. Sampson's
+  distance (“Fitting conic sections to ‘very scattered’ data”, _CGIP_ 18, 1982); candidates
+  bounded and abandoned early (T. L. Morin & R. E. Marsten, “Branch-and-bound strategies for
+  dynamic programming”, _Oper. Res._ 24(4), 1976; R. Killick, P. Fearnhead & I. A. Eckley,
+  “Optimal detection of changepoints with a linear computational cost”, _JASA_ 107, 2012; T.
+  Rakthanmanon et al., KDD 2012 §4.1.3); forced vertices and span caps as admissibility
+  limits, after M. de Berg, M. van Kreveld & S. Schirra, “Topologically correct subdivision
+  simplification using the bandwidth criterion”, _CaGIS_ 25(4), 1998, and A. Saalfeld,
+  “Topologically consistent line simplification with the Douglas-Peucker algorithm”,
+  _CaGIS_ 26(1), 1999; line–line corners refined to their lines' intersection (Selinger 2003
+  §2.3.3); a long boundary decimated to the inverse-variance means of short cells of
+  consecutive points, at each mean's own σ, `(Σ σ⁻²)^−½`, cut at its sharp bends and ends,
+  which stay as measured — the weighted mean of grouped measurements (P. R. Bevington &
+  D. K. Robinson, _Data Reduction and Error Analysis for the Physical Sciences_, 3rd ed.,
+  McGraw-Hill, 2003, ch. 4), against which the program prices a curve as against every point
+  up to a constant (`decimationCells`).
+- **Post-fit passes** (`fit/merge.ts`, `fit/snap.ts`, after inkvec's
+  `inkvec-fit/src/merge{.rs,/residual.rs,/grid.rs,/snap.rs}` and `post_fit_passes`,
+  cross-checked against an inkvec build on 160 fits): a short run of segments replaced by
+  one cubic with free end tangents when that is cheaper under the same description length,
+  found by a coarse grid and a compass search with candidates abandoned early on lower
+  bounds (C.-D. Bei & R. M. Gray, “An improved minimum distortion encoding algorithm for
+  vector quantization”, _IEEE Trans. Commun._ 33(10), 1985; the reordered-sum margin of N. J.
+  Higham, “The accuracy of floating point summation”, _SIAM J. Sci. Comput._ 14(4), 1993,
+  eq. 2.6), a rejected run not retried until its vertices change (local invalidation, M.
+  Garland & P. S. Heckbert, “Surface simplification using quadric error metrics”, SIGGRAPH
+  1997); on a decimated fit the passes read every measured point, not the cell means — the
+  grouped-data reduction (Bevington & Robinson ch. 4) holds for the program's squared
+  distance to the curve, not for the passes' nearest-sample residual, whose overstatement
+  (up to half the sample spacing) a cell would weigh by its point count over runs as many
+  times longer; a chamfer the rasterizer rounded sharpened back into the corner of its two
+  lines, unless that would leave a closed ring under three segments or half its area (a small
+  closed shape whose short side looks like a chamfer); and the research snaps (axis lines, `S`-reflected smooth joins on the output grid), off by
+  default. Distances use the correctly rounded `hypot` of F. Borges, “An improved algorithm
+  for hypot(a,b)”, arXiv:1904.09481, 2019.
+- **Curve or primitive** (`fit/choice.ts`, `fit/edge.ts`, after inkvec's
+  `inkvec-fit/src/choice.rs` and `inkvec-cli/src/pipeline.rs` `fit_boundaries`): each edge's
+  program fit and its best whole-boundary primitive compared under the one description length,
+  the curve's χ² read from the program's cut; the image frame proved a rectangle without the
+  program when its offer is below a floor no path can beat (the line floor from the smallest
+  eigenvalue of the weighted scatter, Pearson 1901; branch and bound as in Morin & Marsten
+  1976); open edges ending exactly on their nodes, the post-fit passes run where inkvec runs
+  them.
+- **Crossing repair** (`fit/repair.ts`, after inkvec's `inkvec-cli/src/rings.rs`
+  (`repair_ring_crossings`, `pin_crossings`, `segment_ranges`) and `pipeline.rs` `repair_fits`):
+  the edges of a ring whose independent fits cross refitted under admissibility limits — a
+  vertex pinned where the curves cross, or the span cap halved, whichever the description
+  length prefers — for a bounded number of rounds, then restored to the least constrained fit
+  that crosses nothing (the topology-preserving simplification of de Berg, van Kreveld &
+  Schirra 1998 and Saalfeld 1999, decided by the same cost).
+- **Whole-boundary primitives** (`fit/primitives.ts`, `fit/ellipse.ts`,
+  `fit/roundrect.ts`, `fit/lm.ts`, after inkvec's `inkvec-fit/src/primitives{.rs,/*}`):
+  circles from the algebraic fits of I. Kåsa (_IEEE Trans. Instrum. Meas._ 25, 1976), G.
+  Taubin (_IEEE PAMI_ 13(11), 1991) and N. Chernov (_Circular and Linear Regression_, CRC, 2010) refined to the orthogonal distance (S. J. Ahn, W. Rauh & H.-J. Warnecke, _Pattern
+  Recognition_ 34, 2001); ellipses from the direct conic fit of R. Halíř & J. Flusser
+  (WSCG 1998) likewise refined; rounded rectangles on the exact Minkowski distance;
+  Levenberg–Marquardt (K. Levenberg 1944, D. Marquardt 1963); the minimum-area bounding
+  rectangle by rotating calipers over A. M. Andrew's monotone-chain hull (_Information
+  Processing Letters_ 9, 1979; H. Freeman & R. Shapira, _CACM_ 18(7), 1975; G. Toussaint,
+  MELECON 1983). A primitive replaces a boundary's curves only when it costs less under
+  the shared description length.
+
+- **G. Green, _An Essay on the Application of Mathematical Analysis to the
+  Theories of Electricity and Magnetism_, 1828 (Green's theorem); M.
+  Abramowitz & I. A. Stegun, _Handbook of Mathematical Functions_, 1964,
+  §25.4.29–30 (Gauss–Legendre quadrature, exact for polynomials of degree
+  2n − 1) and §25.4.5 (Simpson's rule).** The area a fitted ring encloses,
+  `½∮ x dy − y dx` over its segments: exact for lines, and for quadratics and
+  cubics by three-point Gauss–Legendre (the integrand of a cubic is a quintic),
+  an arc summed over its angle by Simpson's rule. The planar emission leaves out
+  a ring that encloses none — a sliver a pixel wide whose sides were fitted
+  onto one chord (`packages/engine/src/planar.ts` `fittedArea`, `paintsArea`).
+
 ## Shape fitting (packages/svg)
 
 - **I. Kåsa, “A circle fitting procedure and its error analysis”, _IEEE Trans.
   Instrumentation and Measurement_ 25(1), 1976.** Algebraic least-squares circle
   fit; recovers an unbiased center/radius from unevenly-spaced boundary samples
-  for `<circle>` primitive recognition (`packages/svg/src/fit.ts`) and for
-  collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`).
+  for `<circle>` primitive recognition (`packages/svg/src/fit.ts`), for
+  collapsing circular-arc Bézier runs to `A` commands (`packages/svg/src/arc.ts`),
+  and for the arc model of the multi-model run fitter
+  (`packages/trace/src/potrace/runfit.ts`).
+- **S. J. Ahn, W. Rauh & H.-J. Warnecke, “Least-squares orthogonal distances
+  fitting of circle, sphere, ellipse, hyperbola, and parabola”, _Pattern
+  Recognition_ 34(12), 2001; K. Levenberg, _Quarterly of Applied Mathematics_
+  2(2), 1944; D. Marquardt, _SIAM J. Applied Mathematics_ 11(2), 1963.**
+  Geometric (orthogonal-distance) least squares by Levenberg–Marquardt: the
+  box and corner radius of a `<rect rx>` candidate fitted to its loop sampled
+  about a pixel apart, on the exact distance to a rounded rectangle (its inner
+  rectangle's distance minus the radius), started from the samples' box and the
+  radius that matches their area (`packages/svg/src/fit.ts` `fitRoundedRect`).
+  The candidate is accepted only when the loop and the fitted outline lie
+  within tolerance of each other both ways — a two-sided Hausdorff test
+  (D. P. Huttenlocher, G. A. Klanderman & W. J. Rucklidge, “Comparing images
+  using the Hausdorff distance”, _IEEE PAMI_ 15(9), 1993) — so a bowl or a
+  spindle whose anchors lie on its box stays a path
+  (`packages/svg/src/primitive.ts` `detectRoundedRect`).
+- **Walter Gander, Gene H. Golub & Rolf Strebel, “Least-squares fitting of
+  circles and ellipses”, _BIT Numerical Mathematics_ 34(4), 1994.** Geometric
+  (orthogonal-distance) circle fitting by Gauss–Newton from an algebraic start;
+  the free circle model of the geometric-mode refit
+  (`packages/trace/src/potrace/runfit.ts` `fitCircleFree`), started from Kåsa's
+  fit, whose algebraic residual is biased on a short, strongly curved arc.
 - **Andrew Fitzgibbon, Maurizio Pilu & Robert Fisher, “Direct least square
   fitting of ellipses”, _IEEE Trans. PAMI_ 21(5), 1999.** Direct conic ellipse
   fit (smallest-eigenvector of the design scatter). Used, with the points
   normalized for conditioning, to recover `<ellipse>` center/radii/angle
   (`packages/svg/src/fit.ts`).
+- **Paul D. Sampson, “Fitting conic sections to ‘very scattered’ data: An
+  iterative refinement of the Bookstein algorithm”, _Computer Graphics and Image
+  Processing_ 18(1), 1982.** The first-order geometric distance from a point to
+  a conic, `|F|/|∇F|` of its implicit form. `fitArcs` accepts an arc only where
+  every sample, about a pixel apart along the run, lies within tolerance by
+  this distance (`packages/svg/src/arc.ts` `conicDistance`): the radial distance
+  in the unit-circle frame shrinks by `ry/rx` near the sharp ends of a thin
+  ellipse, where half of one two pixels thick passed for a gently bowed run.
+  The serializer's `<ellipse>` detection holds a closed loop to the same
+  distance, sampled about a pixel apart (`packages/svg/src/primitive.ts`
+  `detectRound`), so a thin pointed lens stays a path. The whole-ring ellipse of the run fitter is refined by Levenberg–Marquardt on
+  the same distance (`packages/trace/src/potrace/runfit.ts` `fitEllipseFree`).
+- **David Eberly, “Distance from a Point to an Ellipse, an Ellipsoid, or a
+  Hyperellipsoid”, Geometric Tools, 2011.** The nearest point on an ellipse by
+  a robust bisection on the root of its one-variable characteristic function.
+  The exact orthogonal distance a whole-ring ellipse is judged by
+  (`packages/trace/src/potrace/runfit.ts` `ellipseDistance`).
+- **logolabs, “inkvec” — a ring of one width as one stroke
+  (`crates/inkvec-cli/src/primitive.rs` `annulus_stroke`, `STROKE_TOL`, and
+  `emit.rs` `annulus_strokes`), with W3C, “Scalable Vector Graphics (SVG) 1.1”,
+  §11.4 (a stroke paints the band half its width either side of the outline,
+  its corners by the `miter` join).** A face whose outline and one hole are
+  whole primitives, one the other offset by a uniform width — concentric
+  circles, or a rectangle and its offset hole, the outer corner `r + t/2` and
+  the inner `max(r − t/2, 0)` — is the stroke of the midline primitive, held to
+  0.1 px displacement of either outline (a corner's apex moves `(√2 − 1)` times
+  a radius change). Written for screen output only
+  (`packages/svg/src/primitive.ts` `annulusStroke`, `packages/svg/src/serialize.ts`
+  `shapeOut`, `packages/engine/src/planar.ts` `ringStroke`).
 - **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements
-  arc bounds and arc→Bézier reconstruction (`packages/core/src/path.ts`
-  `arcToCenter`, `packages/svg/src/arc.ts` `arcToCubics`).
+  arc bounds, arc→Bézier reconstruction and the arc samples the serializer's
+  regular-polygon test reads (`packages/core/src/path.ts` `arcToCenter`,
+  `packages/svg/src/arc.ts` `arcToCubics`, `packages/svg/src/primitive.ts`
+  `denseOutline`). Near half a turn the
+  endpoint form reconstructs the centre ill-conditioned from the radius: rounding
+  the radius to the output grid by ε moves the centre by about √(2rε), so
+  `fitArcs` tries the grid radii around the fitted one and keeps the one whose
+  reconstructed centre lands nearest the fitted centre.
 
 ## Color & quantization (packages/core, packages/raster)
 
 - **Björn Ottosson, “A perceptual color space for image processing” (Oklab), 2020.** <https://bottosson.github.io/posts/oklab/>
   All perceptual color math: clustering distances, palette merging, ΔE
   fidelity scoring (`packages/core/src/color.ts`).
+- **Gaurav Sharma, Wencheng Wu & Edul N. Dalal, “The CIEDE2000 color-difference
+  formula: implementation notes, supplementary test data, and mathematical
+  observations”, _Color Research & Application_ 30(1), 2005.** The CIEDE2000
+  color difference and the sRGB→CIELAB (D65) conversion it runs on
+  (`ciede2000`, `rgbToLab` in `packages/core/src/color.ts`), verified against
+  the paper's published test pairs. Used as the perceptually even “same ink”
+  floor (ΔE₀₀ 1.5) in autoK's near-duplicate merge
+  (`packages/raster/src/quantize.ts`) and the region merge's consolidation
+  (`packages/raster/src/segment.ts`), where Oklab distance is too strict near
+  black and too loose in saturated hues, and as the visible-fold bound (ΔE₀₀ 10) at
+  which the region merge's `maxRegions` cap stops under `keepVisibleColors`.
 - **Stuart P. Lloyd, “Least squares quantization in PCM”, _IEEE Trans.
   Information Theory_ 28(2), 1982.** The assign/update iterations the k-means
   refinement runs after seeding (`packages/raster/src/quantize.ts`).
 - **David Arthur & Sergei Vassilvitskii, “k-means++: The Advantages of Careful
   Seeding”, _SODA_ 2007.** Palette clustering seeding
   (`packages/raster/src/quantize.ts`).
+- **ITU-R Recommendation BT.709, “Parameter values for the HDTV standards for
+  production and international programme exchange”.** The luma weights
+  (0.2126, 0.7152, 0.0722) of `toEncodedLuma` (`packages/raster/src/convert.ts`),
+  applied to the gamma-encoded channels a rasterizer blends an anti-aliased edge
+  in, so the bw threshold field is linear in an edge pixel's coverage.
 - **Nobuyuki Otsu, “A Threshold Selection Method from Gray-Level Histograms”,
   _IEEE Trans. SMC_ 9(1), 1979.** Automatic binarization threshold
   (`packages/raster/src/threshold.ts`).
@@ -81,17 +568,77 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   merging two regions shrinks as their areas grow, so small regions fold freely
   while large regions merge only when near-identical. The `mergeSizeBias` option
   of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
-  close-but-distinct dominant colors apart instead of averaging them into one.
+  close-but-distinct dominant colors apart instead of averaging them into one. The
+  predicate is tested on the regions as they are when a pair is reached wherever
+  the union would visibly repaint the larger region, so a pair ranked on two
+  fragments' distance never paints a line the color of a fill.
+- **logolabs, “inkvec” — border pad (Apache-2.0).** `crates/inkvec-cli/src/border.rs`: a
+  transparent raster whose art reaches its outermost ring of pixels is traced on a canvas
+  2 px larger, its new pixels transparent, and the geometry moved back by the margin
+  (`packages/raster/src/border.ts`, applied by the planar chain in `packages/engine/src/native.ts`), so the art
+  ends on a closed outline and its edges are refined where the frame used to cut them.
+- **Yağız Aksoy, Tunç Ozan Aydın, Aljoša Smolić & Marc Pollefeys, “Unmixing-Based
+  Soft Color Segmentation for Image Manipulation”, _ACM TOG_ 36(2), 2017, §5.** A
+  color model grows only from pixels the current colors cannot explain as a
+  mixture. The region merge's rare-ink veto (`packages/raster/src/represent.ts`,
+  after inkvec's `color/represent.rs`, Apache-2.0): a small region whose pixels no
+  two- or three-color mixture of the regions around them explains — the local
+  edge model of Yang et al., “Antialiasing Recovery”, _ACM TOG_ 30(3), 2011 — is
+  an ink of its own, and the size term does not fold it into a visibly different
+  neighbor; resampling overshoot of those colors (15 % past a chord's end, or an
+  ink scaled by up to 1.15) is no evidence. A region whose votes reach half its own
+  pixels but not the image's share is represented at its own scale — a claw or a
+  pupil on a large image — and stays apart from a neighbor it differs from at a
+  glance.
+- **Anat Levin, Dani Lischinski & Yair Weiss, “A Closed-Form Solution to Natural Image
+  Matting”, _IEEE Trans. PAMI_ 30(2), 2008.** The two-color compositing model
+  c = α·F + (1 − α)·B behind matting. The region-growing segmentation's thin-feature
+  inks (`packages/raster/src/unmix.ts`): a line or counter too thin for a flat core is
+  painted the ink its rim blends toward — α read in encoded sRGB along each pixel's
+  field→ink direction, the field being the nearest region of another color, the ink
+  the mean of the most covered quarter of its pixels — not the mean of its rim, when
+  the two-color fit explains its pixels, the ink is a color extreme between its sides
+  (no mixture or overshoot of them, as in `represent.ts`) and stands apart from each
+  side as the rescue's features do; the region merge then compares those rim-free
+  inks. A thin region whose pixels are blends of two sides is a marker seeded inside a
+  ramp and is flooded again from them.
+- **“Student” (William Sealy Gosset), “The Probable Error of a Mean”, _Biometrika_
+  6(1), 1908.** The standard error of a mean, s/√n. The thin-feature inks
+  (`packages/raster/src/unmix.ts`): a thin region whose median pixel is covered by
+  its ink less than half is mostly its field's rim, and the ink read from its few most
+  covered pixels must clear the mixture tolerance by more than the standard error of
+  their residuals — compression ringing tints an outline's rim unevenly, so its mean
+  can stray past the tolerance by less than its own uncertainty.
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared
-  error merges first. The hard `maxRegions` cap of the region-growing merge
+  error merges first. The `maxRegions` cap of the region-growing merge
   (`packages/raster/src/segment.ts`) folds regions by |A|·|B|/(|A|+|B|)·ΔE²
   until the color budget is met, so the budget's damage lands on the smallest,
-  closest regions.
+  closest regions; under `keepVisibleColors` it stops at the first fold that
+  would join two non-speck regions ≥ 10 ΔE₀₀ apart, once the count is within
+  twice the budget.
+- **Azriel Rosenfeld, “Digital Straight Line Segments”, _IEEE Transactions on
+  Computers_ C-23(12), 1974.** The digitization of a straight line is an
+  8-connected arc: at a slope under 45° it steps to the next row across a
+  corner. The region-growing segmentation's last rescue pass
+  (`packages/raster/src/segment.ts`, `RESCUE_PASSES`) grows its blobs across
+  corners for that reason — an anti-aliased hairline's darkest pixels are such a
+  digitization, and grown across sides only they break into specks.
 - **Frank Crow, “Summed-area tables for texture mapping”, _SIGGRAPH_ 1984.**
   Integral images backing the adaptive (local-mean) threshold
   (`packages/raster/src/threshold.ts`).
+- **Robert G. Keys, “Cubic Convolution Interpolation for Digital Image
+  Processing”, _IEEE Transactions on Acoustics, Speech, and Signal Processing_
+  29(6), 1981.** The interpolating cubic with a = −½ (Catmull-Rom), exact on a
+  linear ramp. The supersampling enlargement `upscaleImage`
+  (`packages/raster/src/resize.ts`), applied premultiplied by alpha.
+- **Peter Selinger, “mkbitmap” (Potrace distribution), 2001–2019.**
+  <https://potrace.sourceforge.net/mkbitmap.html> — scales a grayscale image up
+  with a smooth (cubic) interpolation before thresholding it for Potrace, so a
+  small image traces on a finer grid; the idea behind the engine's opt-in
+  `supersample` (`packages/engine/src/native.ts`), taken from the documented
+  behavior only.
 - **C. Tomasi & R. Manduchi, “Bilateral Filtering for Gray and Color Images”,
   _ICCV_ 1998.** Edge-preserving denoise option
   (`packages/raster/src/filters.ts`).
@@ -191,7 +738,7 @@ where it is used. Keep this file up to date when adding or changing algorithms.
 
 - **Peter Selinger, Potrace (software), GPL-2.0.** Reference implementation of
   the paper above; not used as code because its license is incompatible with
-  this repository’s MIT license.
+  this repository’s license.
 - **Vision Cortex, “VTracer”, MIT © 2024 TSANG, Hao Fung.**
   <https://github.com/visioncortex/vtracer> — the O(n) color-tracing framework
   (connected-cluster segmentation → hierarchical layering → spline fit). Used as
@@ -203,6 +750,35 @@ where it is used. Keep this file up to date when adding or changing algorithms.
   win came from palette budgeting instead (`packages/assist/src/recommend.ts`).
   Informed the stacked/cutout layering vocabulary; cutouts use the shared
   boundary-graph approach for seam-freedom.
+- **logolabs, “inkvec” (software), Apache-2.0.** <https://github.com/logolabs/inkvec>
+  — a Rust icon/logo vectorizer built around coverage rather than pixels: the
+  coverage of an anti-aliased pixel is inverted from its color, alpha is
+  coverage, edges are refined against exact half-plane coverage, and curves are
+  fitted by a multi-model (line / arc / cubic / ellipse) dynamic program priced
+  by description length. Used as the measured icon benchmark oracle. Its coverage model informed
+  the transparency coverage field (`alphaCoverageField`), the cutout and
+  stacked-layer boundary fields (`pairwiseField`, `layerField`, `coverageOf` —
+  the sRGB blend inversion, from `crates/inkvec-trace/src/coverage.rs`), the
+  interior palette read (`interiorPaletteColors`), the CIEDE2000 “same ink”
+  merge floor (`quantize.ts`, its `SAME_INK_DE00`), the mixture-label
+  absorption pass, and the seam return and blend-band dissolve after region
+  growing (`packages/raster/src/mixture.ts`) — its ink-idea test
+  (`crates/inkvec-trace/src/color.rs`): a label whose pixels are coverage
+  blends of its two neighbors, and which fills little interior, is not an ink —
+  and the treatment of an ink as color plus opacity: a flat translucent region
+  (a shadow, glass, steam) is emitted as a face with a `fill-opacity`, its ink
+  recovered by inverting the over-white composite the working image carries —
+  `ink = (over − 255·(1 − a)) / a` — at the label's median alpha
+  (`translucentFaces`, `packages/engine`). Its planar-face emission
+  (`crates/inkvec-cli/src/emit.rs` `emit_color`, `rings.rs`) — each face painted
+  once as its outer ring in containment order, same-color siblings merged into
+  one even-odd path — informed the `nested` layering (`assembleFaces`,
+  `emitNestedFaces`). No code was taken.
+- **T. Porter & T. Duff, “Compositing Digital Images”, _Computer Graphics
+  (SIGGRAPH)_ 18(3), 1984.** The `over` operator `out = src·a + dst·(1 − a)` that
+  `flattenImage` applies to composite a transparent source onto white, and whose
+  straight-alpha inverse recovers a translucent face's ink from that white
+  composite (`translucentFaces`).
 - **K. Zhao, L. Bao, Y. Li, X. Su, K. Zhang & X. Qiao, “Less is More: Efficient
   Image Vectorization with Adaptive Parameterization” (AdaVec), _CVPR_ 2025.**
   <https://github.com/IMU-Group/AdaVec> — SAM + superpixel layer decomposition,

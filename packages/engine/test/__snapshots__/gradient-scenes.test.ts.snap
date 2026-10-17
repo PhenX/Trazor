@@ -14,7 +14,7 @@ exports[`gradient scenes > 'disc fading to transparent' 1`] = `
 {
   "colors": 1,
   "gradients": [
-    "g0 radial c(60,60) r46 0:#c81e1e 0.33:#c81e1e@1 0.42:#c81e1e@0.88 0.64:#c81e1e@0.59 1:#c81e1e@0.13",
+    "g0 radial c(60,60) r49 0:#c81e1e 0.3:#c81e1e@1 0.42:#c81e1e@0.84 0.64:#c81e1e@0.53 1:#c81e1e@0.03",
   ],
   "paths": 1,
 }
@@ -57,9 +57,8 @@ exports[`gradient scenes > 'glow over a sky ramp (stacked overlay)' 1`] = `
   "gradients": [
     "g0 linear (119,0)->(119,180) 0:#141e5a 0.17:#3b3155 0.45:#7c504c 1:#fa8c3c",
     "g1 radial c(151,61) r26 0:#fff078 1:#fff078@0",
-    "url(#g1) over url(#g0)",
   ],
-  "paths": 7,
+  "paths": 6,
 }
 `;
 

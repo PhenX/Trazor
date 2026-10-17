@@ -7,9 +7,9 @@
  * when a detector's math changes.
  */
 
-import type { PathCommand } from '@trazor/core'
+import { arcToCenter, type PathCommand } from '@trazor/core'
 import type { Primitive } from '../src/index'
-import { fitCircle, fitEllipse } from '../src/fit'
+import { fitCircle, fitEllipse, fitRoundedRect } from '../src/fit'
 import { clampPrecision } from '../src/pathdata'
 
 interface Pt {
@@ -81,14 +81,7 @@ function detectRect(start: Pt, ops: PathCommand[], scale: number): Primitive | n
   }
 }
 
-function cubicMid(p0: Pt, c: Extract<PathCommand, { type: 'C' }>): Pt {
-  return {
-    x: 0.125 * p0.x + 0.375 * c.x1 + 0.375 * c.x2 + 0.125 * c.x,
-    y: 0.125 * p0.y + 0.375 * c.y1 + 0.375 * c.y2 + 0.125 * c.y,
-  }
-}
-
-const ROUND_TOL_PX = 0.6
+const ROUND_TOL_PX = 0.15
 
 function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
   if (ops.length < 3 || !ops.every((o) => o.type === 'C')) return null
@@ -97,7 +90,12 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
   let prev = start
   for (const op of ops) {
     if (op.type !== 'C') return null
-    samples.push(cubicPoint(prev, op, 0.25), cubicPoint(prev, op, 0.5), cubicPoint(prev, op, 0.75))
+    const hull =
+      Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+      Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+      Math.hypot(op.x - op.x2, op.y - op.y2)
+    const parts = Math.max(4, Math.ceil(hull))
+    for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, op, k / parts))
     samples.push({ x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
   }
@@ -119,15 +117,19 @@ function detectRound(start: Pt, ops: PathCommand[], precision: number): Primitiv
     const co = Math.cos(e.angle)
     const si = Math.sin(e.angle)
     const onEllipse = samples.every((p) => {
+      // Sampson distance to the conic.
       const dx = p.x - e.cx
       const dy = p.y - e.cy
-      const nx = (dx * co + dy * si) / e.rx
-      const ny = (-dx * si + dy * co) / e.ry
-      return Math.abs(Math.hypot(nx, ny) - 1) * Math.min(e.rx, e.ry) <= tol
+      const x = dx * co + dy * si
+      const y = -dx * si + dy * co
+      const f = (x * x) / (e.rx * e.rx) + (y * y) / (e.ry * e.ry) - 1
+      const g = 2 * Math.hypot(x / (e.rx * e.rx), y / (e.ry * e.ry))
+      return (g > 0 ? Math.abs(f) / g : Infinity) <= tol
     })
     if (onEllipse) {
       const deg = (e.angle * 180) / Math.PI
-      const angle = Math.abs(deg) < 0.5 ? undefined : deg
+      const tiltMove = Math.abs(e.rx - e.ry) * Math.abs(Math.sin(e.angle))
+      const angle = tiltMove <= 0.25 * ROUND_TOL_PX ? undefined : deg
       return round(
         {
           kind: 'ellipse',
@@ -170,17 +172,85 @@ function roundedRectSdf(
   return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r
 }
 
+/** Points of an axis-aligned rounded rect's outline, at most `step` apart. */
+function roundedRectOutline(
+  cx: number,
+  cy: number,
+  hx: number,
+  hy: number,
+  r: number,
+  step: number,
+): Pt[] {
+  const out: Pt[] = []
+  const ax = hx - r
+  const ay = hy - r
+  const corners: [number, number, number][] = [
+    [cx + ax, cy - ay, -Math.PI / 2],
+    [cx + ax, cy + ay, 0],
+    [cx - ax, cy + ay, Math.PI / 2],
+    [cx - ax, cy - ay, Math.PI],
+  ]
+  const arcParts = Math.max(2, Math.ceil((0.5 * Math.PI * r) / step))
+  for (let c = 0; c < 4; c++) {
+    const [ox, oy, a0] = corners[c]
+    for (let k = 0; k < arcParts; k++) {
+      const a = a0 + (0.5 * Math.PI * k) / arcParts
+      out.push({ x: ox + r * Math.cos(a), y: oy + r * Math.sin(a) })
+    }
+    const a1 = a0 + 0.5 * Math.PI
+    const bx = ox + r * Math.cos(a1)
+    const by = oy + r * Math.sin(a1)
+    const [nx, ny, na] = corners[(c + 1) % 4]
+    const ex = nx + r * Math.cos(na)
+    const ey = ny + r * Math.sin(na)
+    const parts = Math.max(1, Math.ceil(Math.hypot(ex - bx, ey - by) / step))
+    for (let k = 0; k < parts; k++)
+      out.push({ x: bx + ((ex - bx) * k) / parts, y: by + ((ey - by) * k) / parts })
+  }
+  return out
+}
+
+/** Rounded-rect matches by loop: the match does not depend on the output precision. */
+const rrectMatches = new Map<string, Extract<Primitive, { kind: 'rrect' }> | null>()
+
 function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Primitive | null {
+  const key = JSON.stringify([start, ops])
+  if (!rrectMatches.has(key)) rrectMatches.set(key, matchRoundedRect(start, ops))
+  const match = rrectMatches.get(key)
+  return match ? round(match, precision) : null
+}
+
+function matchRoundedRect(
+  start: Pt,
+  ops: PathCommand[],
+): Extract<Primitive, { kind: 'rrect' }> | null {
   if (ops.length < 4 || !ops.every((o) => o.type === 'L' || o.type === 'C')) return null
   if (!ops.some((o) => o.type === 'C')) return null
 
+  // Samples at most a pixel apart along every edge.
   const samples: Pt[] = [start]
+  const line = (a: Pt, b: Pt): void => {
+    const parts = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 1))
+    for (let k = 1; k <= parts; k++)
+      samples.push({ x: a.x + ((b.x - a.x) * k) / parts, y: a.y + ((b.y - a.y) * k) / parts })
+  }
   let prev = start
   for (const op of ops) {
-    if (op.type === 'C') samples.push(cubicMid(prev, op))
-    else samples.push({ x: (prev.x + op.x) / 2, y: (prev.y + op.y) / 2 })
-    samples.push({ x: op.x, y: op.y })
+    if (op.type !== 'L' && op.type !== 'C') return null
+    if (op.type === 'C') {
+      const hull =
+        Math.hypot(op.x1 - prev.x, op.y1 - prev.y) +
+        Math.hypot(op.x2 - op.x1, op.y2 - op.y1) +
+        Math.hypot(op.x - op.x2, op.y - op.y2)
+      const parts = Math.max(4, Math.ceil(hull / 1))
+      for (let k = 1; k < parts; k++) samples.push(cubicPoint(prev, op, k / parts))
+      samples.push({ x: op.x, y: op.y })
+    } else line(prev, { x: op.x, y: op.y })
     prev = { x: op.x, y: op.y }
+  }
+  if (prev.x !== start.x || prev.y !== start.y) {
+    line(prev, start)
+    samples.pop()
   }
 
   const xs = samples.map((p) => p.x)
@@ -189,67 +259,64 @@ function detectRoundedRect(start: Pt, ops: PathCommand[], precision: number): Pr
   const maxX = Math.max(...xs)
   const minY = Math.min(...ys)
   const maxY = Math.max(...ys)
-  const cx = (minX + maxX) / 2
-  const cy = (minY + maxY) / 2
   const hx = (maxX - minX) / 2
   const hy = (maxY - minY) / 2
   if (hx <= 0 || hy <= 0) return null
+  const tol = 0.3
 
-  const maxR = Math.min(hx, hy)
-  const tol = Math.max(0.75, maxR * 0.03)
-
-  const maxErr = (r: number): number => {
-    let err = 0
-    for (const p of samples) {
-      const d = Math.abs(roundedRectSdf(p.x, p.y, cx, cy, hx, hy, r))
-      if (d > err) err = d
-    }
-    return err
+  // Start from the samples' box and the radius whose rounded rect has their area.
+  let twice = 0
+  for (let i = 0; i < samples.length; i++) {
+    const a = samples[i]
+    const b = samples[(i + 1) % samples.length]
+    twice += a.x * b.y - b.x * a.y
   }
+  const cut = 4 * hx * hy - Math.abs(twice) / 2
+  const r0 = Math.min(Math.sqrt(Math.max(cut, 0) / (4 - Math.PI)), hx, hy)
+  const fit = fitRoundedRect(Float64Array.from(xs), Float64Array.from(ys), {
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+    hx,
+    hy,
+    r: r0,
+  })
 
-  const steps = 64
-  const step = maxR / steps
-  let bestR = step
-  let bestErr = Infinity
-  for (let i = 1; i <= steps; i++) {
-    const err = maxErr(step * i)
-    if (err < bestErr) {
-      bestErr = err
-      bestR = step * i
-    }
+  // One way: every sample on the fitted outline.
+  for (const p of samples)
+    if (Math.abs(roundedRectSdf(p.x, p.y, fit.cx, fit.cy, fit.hx, fit.hy, fit.r)) > tol) return null
+  if (fit.r < tol) return null
+  // The other: every outline point near the closed polyline through the samples.
+  // Each polyline segment is at most a pixel long, so one within `tol` of a
+  // point starts within `tol + 1` of it: in the point's 2 px grid cell or a
+  // neighboring one.
+  const cell = (x: number, y: number): string => `${Math.floor(x / 2)},${Math.floor(y / 2)}`
+  const grid = new Map<string, number[]>()
+  for (let i = 0; i < samples.length; i++) {
+    const key = cell(samples[i].x, samples[i].y)
+    const list = grid.get(key)
+    if (list) list.push(i)
+    else grid.set(key, [i])
   }
-  bestR = goldenMin(maxErr, Math.max(0, bestR - step), Math.min(maxR, bestR + step))
-  bestErr = maxErr(bestR)
-  if (bestErr > tol) return null
-  if (bestR < tol) return null
-  return round(
-    { kind: 'rrect', x: cx - hx, y: cy - hy, width: 2 * hx, height: 2 * hy, r: bestR },
-    precision,
-  )
-}
-
-function goldenMin(f: (x: number) => number, a: number, b: number): number {
-  const gr = (Math.sqrt(5) - 1) / 2
-  let c = b - gr * (b - a)
-  let d = a + gr * (b - a)
-  let fc = f(c)
-  let fd = f(d)
-  for (let i = 0; i < 40; i++) {
-    if (fc < fd) {
-      b = d
-      d = c
-      fd = fc
-      c = b - gr * (b - a)
-      fc = f(c)
-    } else {
-      a = c
-      c = d
-      fc = fd
-      d = a + gr * (b - a)
-      fd = f(d)
-    }
+  for (const o of roundedRectOutline(fit.cx, fit.cy, fit.hx, fit.hy, fit.r, 0.5)) {
+    let best = Infinity
+    const gx = Math.floor(o.x / 2)
+    const gy = Math.floor(o.y / 2)
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++)
+        for (const i of grid.get(`${gx + dx},${gy + dy}`) ?? []) {
+          const d = pointSegDist(o.x, o.y, samples[i], samples[(i + 1) % samples.length])
+          if (d < best) best = d
+        }
+    if (best > tol) return null
   }
-  return (a + b) / 2
+  return {
+    kind: 'rrect',
+    x: fit.cx - fit.hx,
+    y: fit.cy - fit.hy,
+    width: 2 * fit.hx,
+    height: 2 * fit.hy,
+    r: fit.r,
+  }
 }
 
 function angleDiff(a: number, b: number): number {
@@ -263,7 +330,24 @@ function denseOutline(start: Pt, ops: PathCommand[]): Pt[] {
   const pts: Pt[] = []
   let prev = start
   for (const op of ops) {
-    if (op.type === 'C') {
+    if (op.type === 'A') {
+      // The arc on its own ellipse, about a pixel apart.
+      const arc = arcToCenter(prev.x, prev.y, op)
+      if (arc === null) {
+        pts.push(prev)
+      } else {
+        const cos = Math.cos(arc.phi)
+        const sin = Math.sin(arc.phi)
+        const steps = Math.max(2, Math.ceil(Math.abs(arc.dTheta) * Math.max(arc.rx, arc.ry)))
+        for (let s = 0; s < steps; s++) {
+          const t = arc.theta1 + (arc.dTheta * s) / steps
+          const ex = arc.rx * Math.cos(t)
+          const ey = arc.ry * Math.sin(t)
+          pts.push({ x: arc.cx + cos * ex - sin * ey, y: arc.cy + sin * ex + cos * ey })
+        }
+      }
+      prev = { x: op.x, y: op.y }
+    } else if (op.type === 'C') {
       for (let s = 0; s < 8; s++) pts.push(cubicPoint(prev, op, s / 8))
       prev = { x: op.x, y: op.y }
     } else if (op.type === 'Q') {
@@ -360,13 +444,26 @@ function detectRegularPolygon(start: Pt, ops: PathCommand[], precision: number):
   const pts = denseOutline(start, ops)
   if (pts.length < 24) return null
 
-  const cx = mean(pts.map((p) => p.x))
-  const cy = mean(pts.map((p) => p.y))
+  // Area centroid (shoelace): the exact center of a regular figure, unlike the
+  // sample mean, which the per-segment sampling weights unevenly.
+  let cross = 0
+  let momentX = 0
+  let momentY = 0
+  for (let i = 0; i < pts.length; i++) {
+    const q = pts[i + 1 < pts.length ? i + 1 : 0]
+    const c = pts[i].x * q.y - q.x * pts[i].y
+    cross += c
+    momentX += (pts[i].x + q.x) * c
+    momentY += (pts[i].y + q.y) * c
+  }
+  const degenerate = Math.abs(cross) < 1e-6
+  const cx = degenerate ? mean(pts.map((p) => p.x)) : momentX / (3 * cross)
+  const cy = degenerate ? mean(pts.map((p) => p.y)) : momentY / (3 * cross)
   const rad = pts.map((p) => Math.hypot(p.x - cx, p.y - cy))
   const ang = pts.map((p) => Math.atan2(p.y - cy, p.x - cx))
   const rMax = Math.max(...rad)
   if (rMax < 3) return null
-  const tol = Math.min(4, Math.max(0.8, rMax * 0.045))
+  const tol = 0.3
 
   const bx0 = Math.min(...pts.map((p) => p.x))
   const bx1 = Math.max(...pts.map((p) => p.x))

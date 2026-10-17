@@ -1,8 +1,9 @@
 import { CancelledError } from '@trazor/core'
 import type { GrayImage, PathCommand, RasterImage, TurnPolicy } from '@trazor/core'
-import type { ChainNetwork, FlatPoints } from '@trazor/trace'
+import type { ink } from '@trazor/raster'
+import type { ChainNetwork, EdgeFitInput, FitConfig, FittedEdge, FlatPoints } from '@trazor/trace'
 import type { ShapeOut } from '@trazor/svg'
-import { flatTransferables, packRuns, unpackCommands } from './flat'
+import { flatTransferables, packRuns, unpackCommands, unpackFit } from './flat'
 import type {
   HelperCurveOptions,
   HelperEndpoint,
@@ -43,6 +44,16 @@ export interface RingUnitsPayload {
   coverage?: GrayImage
 }
 
+/** The planar map's edges as their fits read them, and the objective they are fitted under. */
+export interface EdgeUnitsPayload {
+  /** The image frame's size. */
+  width: number
+  height: number
+  cfg: FitConfig
+  /** Every edge's fit inputs, by edge index. */
+  edges: readonly EdgeFitInput[]
+}
+
 /** What a dispatch asks the helpers to do. */
 export interface HelperDispatchSpec {
   kind: HelperJobKind
@@ -50,13 +61,32 @@ export interface HelperDispatchSpec {
   total: number
   /** Key of the cached payload the units index into (as passed to the setter). */
   stateKey: string
-  curve: HelperCurveOptions
+  /** Curve settings; omitted for `fit-edges` and `fit-bands`, whose objective travels with their payload. */
+  curve?: HelperCurveOptions
+  /**
+   * The helper each unit runs on, by unit index — the owners the payload was
+   * shipped under ({@link HelperPool.setEdges}); round-robin when omitted. A
+   * unit owned by {@link HelperPool.size} (one past the last helper) is the
+   * caller's to run: it is neither sent nor yielded.
+   */
+  owners?: ArrayLike<number>
+  /**
+   * Abandons the dispatch when aborted, also while it waits on a helper: the
+   * iteration rejects with `CancelledError` and the job is cancelled on every
+   * helper.
+   */
+  signal?: AbortSignal
   /** Paint of the shapes a unit produces; omit to fit without serializing. */
   meta?: (unit: number) => HelperUnitPaint
   /** Serialization settings; omit to fit without serializing. */
   serialize?: HelperSerializeOptions
-  /** `fit-chains`: per-label palette Oklab, enabling sub-pixel color refinement. */
-  paletteOklab?: Float32Array
+  /**
+   * Per-label palette RGB, enabling sub-pixel color refinement: `fit-chains`
+   * refines each shared chain, `trace-layers` each layer's boundary field.
+   */
+  paletteRgb?: Uint8Array
+  /** The transparency cut level whose coverage refines exterior edges. */
+  alphaThreshold?: number
   /** `fit-chains`: collapse circular Bézier runs to `A` arcs at this precision. */
   arcPrecision?: number
   /**
@@ -83,6 +113,32 @@ export interface HelperUnitOutput {
    * entry followed by the entry's own copy.
    */
   svg?: (ShapeOut | null)[]
+  /** `fit-edges`: the edge's fit, whose segments are `shapes[0]`. */
+  fit?: FittedEdge
+  /** `fit-bands`: the unit's fill (no shapes). */
+  fill?: ink.FillFit
+}
+
+/**
+ * Assign units to `count` owners (the helpers, and the caller when it runs a
+ * share) so their summed weights come out even: heaviest unit first, each to
+ * the owner with the least weight so far (Graham 1969, "Bounds on
+ * multiprocessing timing anomalies", SIAM J. Appl. Math. 17(2) — the LPT rule,
+ * within 4/3 of the best makespan). Ties go to the lower unit and the lower
+ * owner, so the assignment is a function of the weights alone.
+ */
+export function balancedOwners(weights: readonly number[], count: number): Int32Array {
+  const owners = new Int32Array(weights.length)
+  if (count <= 1) return owners
+  const order = weights.map((_, i) => i).toSorted((a, b) => weights[b] - weights[a] || a - b)
+  const load = new Float64Array(count)
+  for (const unit of order) {
+    let h = 0
+    for (let k = 1; k < count; k++) if (load[k] < load[h]) h = k
+    owners[unit] = h
+    load[h] += weights[unit]
+  }
+  return owners
 }
 
 /** Per-helper bookkeeping: which cached payloads it already holds. */
@@ -92,6 +148,8 @@ interface Slot {
   stackKey: string | null
   ringKey: string | null
   chainKey: string | null
+  edgeKey: string | null
+  bandKey: string | null
 }
 
 /** A dispatch in flight: the units still owed, buffered results, and the waiters. */
@@ -106,23 +164,27 @@ interface Job {
 
 /**
  * A set of helper workers the vectorization pipeline farms parallel units out
- * to: stacked layers, bw rings, or cutout boundary chains. Every helper is a
- * stateful engine instance ({@link installHelperHandler}) that caches the
- * working image, the label/ring/chain payload it was given and the rings and
- * polygons it derived — so a warm curve tweak re-fits in the helper without
- * shipping or recomputing geometry.
+ * to: stacked layers, bw rings, cutout boundary chains, or planar edge fits.
+ * Every helper is a stateful engine instance ({@link installHelperHandler})
+ * that caches the working image, the label/ring/chain/edge payload it was
+ * given and the rings and polygons it derived — so a warm curve tweak re-fits
+ * in the helper without shipping or recomputing geometry.
  *
  * Units are partitioned round-robin by unit index, which is deterministic: a
- * re-run hands each unit to the helper that already holds its cache. Results
- * are handed back strictly in unit order whatever order the helpers finish in,
- * so the shapes array and the SVG text match a sequential run byte for byte.
+ * re-run hands each unit to the helper that already holds its cache. Planar
+ * edges, whose fits vary in cost by orders of magnitude, go to the owners the
+ * caller balanced them over ({@link balancedOwners}), the caller itself among
+ * them: it runs its own share while the helpers run theirs. Results are handed back
+ * strictly in unit order whatever order the helpers finish in, so the shapes
+ * array and the SVG text match a sequential run byte for byte.
  *
  * **Memory.** Each helper holds its own copy of what it is sent: the working
  * image (4·w·h bytes — 45 MB for 4096×2731) plus, for stacked, the label map
  * (4·w·h) and its pixel buckets, for bw its share of the rings and the coverage
- * field (4·w·h), and for cutout the Oklab buffer it derives (12·w·h). Ring and
- * polygon caches add to that. A consumer sizes the pool for the image it is
- * tracing rather than for the core count alone.
+ * field (4·w·h), for cutout the chains it owns, and for planar the points and
+ * σ of the edges it fits (24 bytes a point). Ring and polygon caches add to
+ * that. A consumer sizes the pool for the image it is tracing rather than for
+ * the core count alone.
  */
 export class HelperPool {
   private readonly slots: Slot[]
@@ -136,6 +198,8 @@ export class HelperPool {
       stackKey: null,
       ringKey: null,
       chainKey: null,
+      edgeKey: null,
+      bandKey: null,
     }))
     for (let i = 0; i < this.slots.length; i++) {
       const slot = this.slots[i]
@@ -156,11 +220,15 @@ export class HelperPool {
     return unit % this.slots.length
   }
 
-  /** Cache the working image on every helper that does not already hold `key`. */
-  setImage(key: string, image: RasterImage): void {
+  /**
+   * Cache the working image — and, under transparent handling, the source alpha
+   * — on every helper that does not already hold `key`.
+   */
+  setImage(key: string, image: RasterImage, alpha?: Uint8Array | null): void {
     for (const slot of this.slots) {
       if (slot.imageKey === key) continue
       const buffer = image.data.slice().buffer
+      const alphaBuffer = alpha ? alpha.slice().buffer : undefined
       this.send(
         slot,
         {
@@ -169,8 +237,9 @@ export class HelperPool {
           width: image.width,
           height: image.height,
           buffer,
+          alpha: alphaBuffer,
         },
-        [buffer],
+        alphaBuffer ? [buffer, alphaBuffer] : [buffer],
       )
       slot.imageKey = key
     }
@@ -286,23 +355,129 @@ export class HelperPool {
   }
 
   /**
-   * Run `spec.total` units across the helpers, yielding each unit's output in
-   * unit-index order. Abandoning the iteration (a `break`, or a `CancelledError`
-   * thrown by the consumer) cancels the job on every helper.
+   * Cache each helper's own share of the planar map's edges under `key`: helper
+   * `owners[k]` gets edge `k`, so the whole set crosses once. A key names one
+   * map and one assignment; the dispatch that fits them passes the same owners.
+   */
+  setEdges(key: string, payload: EdgeUnitsPayload, owners: ArrayLike<number>): void {
+    for (let h = 0; h < this.slots.length; h++) {
+      const slot = this.slots[h]
+      if (slot.edgeKey === key) continue
+      const units: number[] = []
+      const closed: number[] = []
+      const points: Float64Array[] = []
+      const sigma: Float64Array[] = []
+      for (let k = 0; k < payload.edges.length; k++) {
+        if (owners[k] !== h) continue
+        const edge = payload.edges[k]
+        units.push(k)
+        closed.push(edge.closed ? 1 : 0)
+        points.push(edge.points)
+        sigma.push(edge.sigma)
+      }
+      const packedPoints = packRuns(points)
+      const packedSigma = packRuns(sigma)
+      const unitBuf = new Int32Array(units).buffer
+      const closedBuf = new Uint8Array(closed).buffer
+      this.send(
+        slot,
+        {
+          type: 'helper-edges',
+          key,
+          width: payload.width,
+          height: payload.height,
+          tau: payload.cfg.tau,
+          lambda: payload.cfg.lambda,
+          units: unitBuf,
+          closed: closedBuf,
+          points: packedPoints,
+          sigma: packedSigma,
+        },
+        [unitBuf, closedBuf, ...flatTransferables(packedPoints), ...flatTransferables(packedSigma)],
+      )
+      slot.edgeKey = key
+    }
+  }
+
+  /**
+   * Cache a band merge's fixed inputs on every helper that does not already hold
+   * `key`; each builds the merge's components from them (`ink.BandFits`).
+   */
+  setBands(key: string, source: ink.BandFitSource): void {
+    for (const slot of this.slots) {
+      if (slot.bandKey === key) continue
+      const labels = source.labels.slice().buffer
+      const rgb = source.rgb.slice().buffer
+      const inkRgb = source.inkRgb.slice().buffer
+      this.send(
+        slot,
+        {
+          type: 'helper-bands',
+          key,
+          width: source.w,
+          height: source.h,
+          labels,
+          rgb,
+          inkRgb,
+          sigmaNoise: source.sigmaNoise,
+          lambda: source.lambda,
+          regionRecovery: source.regionRecovery,
+          gradients: source.gradients,
+          scale: source.scale,
+          stopGeometries: source.search.stopGeometries,
+          radialsPerSpace: source.search.radialsPerSpace,
+        },
+        [labels, rgb, inkRgb],
+      )
+      slot.bandKey = key
+    }
+  }
+
+  /**
+   * Send one batch of the band merge cached under `bands` to every helper,
+   * under `key`: each applies the batch's merges, so its components stay the
+   * coordinator's whether or not it fits any of the batch's units.
+   */
+  setBandBatch(bands: string, key: string, batch: ink.FitBatch): void {
+    for (const slot of this.slots) {
+      const merges = batch.merges.slice().buffer
+      const a = batch.a.slice().buffer
+      const b = batch.b.slice().buffer
+      const inner = batch.inner.slice().buffer
+      this.send(slot, { type: 'helper-band-batch', bands, key, merges, a, b, inner }, [
+        merges,
+        a,
+        b,
+        inner,
+      ])
+    }
+  }
+
+  /**
+   * Run `spec.total` units across the helpers, yielding each helper-owned unit's
+   * output in unit-index order. The first step of the iteration posts every
+   * helper's job. Abandoning the iteration (a `break`, a `CancelledError` thrown
+   * by the consumer, or `spec.signal` aborted) cancels the job on every helper.
    */
   async *dispatch(spec: HelperDispatchSpec): AsyncGenerator<HelperUnitOutput> {
     if (this.slots.length === 0) throw new Error('helper pool is empty')
     const id = this.nextJobId++
     const job: Job = { id, pending: new Set(), results: new Map(), error: null, wake: null }
     this.jobs.set(id, job)
+    const abort = (): void => this.abort(job)
+    spec.signal?.addEventListener('abort', abort)
     try {
       const buckets: number[][] = this.slots.map(() => [])
-      for (let unit = 0; unit < spec.total; unit++) buckets[this.helperOf(unit)].push(unit)
+      const owners = spec.owners
+      const helperOwned = (unit: number): boolean => !owners || owners[unit] < this.slots.length
+      for (let unit = 0; unit < spec.total; unit++) {
+        if (helperOwned(unit)) buckets[owners ? owners[unit] : this.helperOf(unit)].push(unit)
+      }
       for (let h = 0; h < this.slots.length; h++) {
         const units = buckets[h]
         if (units.length === 0) continue
         job.pending.add(h)
-        const paletteOklab = spec.paletteOklab ? spec.paletteOklab.slice().buffer : undefined
+        const paletteRgb = spec.paletteRgb ? spec.paletteRgb.slice().buffer : undefined
         this.send(
           this.slots[h],
           {
@@ -315,13 +490,15 @@ export class HelperPool {
             batch: Math.max(1, spec.batch ?? 1),
             meta: spec.meta ? units.map(spec.meta) : undefined,
             serialize: spec.serialize,
-            paletteOklab,
+            paletteRgb,
+            alphaThreshold: spec.alphaThreshold,
             arcPrecision: spec.arcPrecision,
           },
-          paletteOklab ? [paletteOklab] : undefined,
+          paletteRgb ? [paletteRgb] : [],
         )
       }
       for (let unit = 0; unit < spec.total; unit++) {
+        if (!helperOwned(unit)) continue
         while (!job.results.has(unit)) {
           if (job.error) throw job.error
           if (job.pending.size === 0) {
@@ -335,6 +512,7 @@ export class HelperPool {
         yield out
       }
     } finally {
+      spec.signal?.removeEventListener('abort', abort)
       this.jobs.delete(id)
       if (job.pending.size > 0) {
         for (const h of job.pending) {
@@ -346,15 +524,18 @@ export class HelperPool {
 
   /** Cancel every dispatch in flight; each rejects with `CancelledError`. */
   cancel(): void {
-    for (const job of this.jobs.values()) {
-      job.error = new CancelledError()
-      for (const h of job.pending) this.send(this.slots[h], { type: 'helper-cancel', id: job.id })
-      job.wake?.()
-      job.wake = null
-    }
+    for (const job of this.jobs.values()) this.abort(job)
   }
 
   // ------------------------------ internals ------------------------------
+
+  /** Fail `job` with `CancelledError`, cancel it on its helpers and wake its waiter. */
+  private abort(job: Job): void {
+    job.error = new CancelledError()
+    for (const h of job.pending) this.send(this.slots[h], { type: 'helper-cancel', id: job.id })
+    job.wake?.()
+    job.wake = null
+  }
 
   private send(slot: Slot, msg: HelperInMessage, transfer?: Transferable[]): void {
     slot.endpoint.postMessage(msg, transfer)
@@ -367,17 +548,23 @@ export class HelperPool {
       case 'helper-batch': {
         // Geometry and serialized shapes advance separately: a unit with an
         // underlay serializes its geometry once per paint.
+        const records = msg.fits ? new Float64Array(msg.fits) : undefined
         let run = 0
         let part = 0
         for (let u = 0; u < msg.units.length; u++) {
           const count = msg.counts[u]
           const parts = msg.svgCounts?.[u] ?? count
+          // A fit-edges unit is one run, its edge's segments, plus one fit record.
+          const fit = records ? unpackFit(msg.commands, records, run) : undefined
           const shapes: PathCommand[][] = new Array(count)
-          for (let i = 0; i < count; i++) shapes[i] = unpackCommands(msg.commands, run + i)
+          for (let i = 0; i < count; i++) {
+            shapes[i] = fit && i === 0 ? fit.segments : unpackCommands(msg.commands, run + i)
+          }
           const svg = msg.svg ? msg.svg.slice(part, part + parts) : undefined
           run += count
           part += parts
-          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg })
+          const fill = msg.fills?.[u]
+          job.results.set(msg.units[u], { unit: msg.units[u], shapes, svg, fit, fill })
         }
         break
       }

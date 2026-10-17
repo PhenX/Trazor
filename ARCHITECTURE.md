@@ -20,6 +20,7 @@ packages/engine   orchestrates the above per mode; runs in a Web Worker (+ Trazo
 packages/ml       optional on-device ML that improves the input (bg removal, segment, edge pre-pass, cleanup)
 packages/assist   image statistics → recommended settings & palettes
 packages/tune     automatic settings search: weighted objectives + adaptive parameter descent (pure, no DOM)
+crates/solve      Rust → WebAssembly: the boundary solve's descent, an opt-in kernel for packages/trace
 ```
 
 The Trazor studio (hosted at [trazor.studio](https://trazor.studio)) is the reference consumer — a separate product,
@@ -50,7 +51,7 @@ The engine runs one of four modes; every mode ends at the SVG serializer. Stage 
 
 ```
 decode (consumer)
-  → resize → denoise → flatten alpha            [raster]         preprocess
+  → resize → denoise → (supersample) → flatten alpha [raster]    preprocess
   → color/grayscale:  Oklab k-means++ quantize, or region growing [raster]     palette
                       region cleanup             [raster]         segment
                       gradients: merge ramp bands → linear/radial gradient paint [raster] (opt-in)
@@ -63,30 +64,54 @@ decode (consumer)
 ```
 
 - **stacked** layering paints regions back-to-front, each layer covering itself plus everything above it, so lower
-  shapes extend underneath and edges never crack. The most connective color — the one whose regions have the largest
+  shapes extend underneath and edges never crack. Where a sheet above reaches a lower layer's outline, that stretch of
+  the lower layer's edge is hidden, and it is set back a pixel beneath the sheet (`packages/engine/src/setback.ts`):
+  two coincident anti-aliased edges composite into a seam of the lower color along the sheet's edge, and the hidden
+  stretch needs no precision, so it is fitted loosely. The most connective color — the one whose regions have the largest
   total perimeter, i.e. that borders the most other regions — is pinned to the bottom as the full-silhouette base (the
   standard layered-vinyl build: a cartoon's black outline or a flat design's backdrop shows between the colors stacked
-  on it); the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
+  on it). When other colors come within a fifth of that perimeter the vote cannot tell them apart (a poster's backdrop
+  against its letter fill), so each contender's stack is built and the one whose layers trace the least edge wins;
+  the rest stack by descending area. Paint order sets only which sheet is the base — never the rendered pixels.
   A region fully enclosed by one other color and buried **two or more** sheets below that surround (a base-colored
   pupil under the eye white and the face) is relabeled into its surround for the solid base layers, then repainted on
   top as its own island layer — so the layers below stay whole instead of each carrying a floating hole that would
   drift out of alignment. A pocket with only one sheet over it keeps its single hole (it weeds and aligns fine). Because
   a color can then recur (base outline + pupil island), grouped stacked output groups by paint **layer**, not by color,
   so the two stay separate, correctly-ordered cut layers.
+- **supersampling** (`supersample` > 1, opt-in) traces at an integer multiple of the working size: the preprocessed
+  image is enlarged by bicubic interpolation (the smooth resampling Potrace's `mkbitmap -s` applies before a small
+  image is traced), so each pixel still gets one color, but on a finer grid — a line a pixel or two wide keeps its
+  shape instead of being cut to the pixel staircase. Everything downstream reads its sizes in source pixels (pixel-size
+  settings, the segmenter's gradient and size rules, the alpha translucency test, the set-back, the run fitter's
+  tolerances), and the geometry is scaled back, so the SVG keeps the working size. It costs about the square of the
+  factor in time and memory.
 - **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
   reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
   [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
+- On the **planar chain**, every layering leaves out a ring whose fitted segments enclose no area
+  (`packages/engine/src/planar.ts` `paintsArea`, Green's theorem over the fitted lines, curves and arcs): a sliver a
+  pixel wide whose sides were fitted onto one chord paints nothing, and written out it would only add a subpath and a
+  paint color. A face (or a stacked sheet) whose outline and one hole are whole-edge primitives offset by one width — a
+  frame, a rim, an outline icon's square or circle — is written for screen output as one stroked `<rect>` or
+  `<circle>` on its midline (`@trazor/svg` `annulusStroke`, after inkvec), which is how the artist drew it; a
+  millimetre document keeps the filled ring, since a cutter or a laser reads a stroke as a line to cut along. A planar
+  stacked sheet reaches under every face painted above it that its own faces touch, and carries on only through faces
+  that border nothing painted below it (plus any pocket it encloses): reaching through a face that does would draw that
+  face's edges with the faces below once more in every sheet between the two.
 
 ## Package responsibilities
 
 - **`core`** — `RasterImage`/`GrayImage`/`BinaryMask`/`LabelMap`, the `PathCommand` model, `VectorizeSettings` (schema +
   `normalizeSettings` clamping) and `TARGET_PROFILES`, Oklab color math, geometry helpers, `mulberry32`, and the
-  `TrazorEngine`/`VectorizeResult`/progress/warning types every layer speaks.
-- **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize, gaussian/median/
+  `VectorizeResult`/`EngineContext`/progress/warning types every layer speaks.
+- **`raster`** — everything that takes pixels and returns pixels, masks or labels: area-average resize and bicubic
+  enlargement (supersampling), gaussian/median/
   bilateral filters, alpha flattening, deterministic k-means++ quantization (with exact- and fixed-palette paths),
   Otsu + integral-image adaptive thresholds, connected-component cleanup, morphology, Zhang-Suen thinning, chamfer
   distance / stroke-width estimation, and marker-controlled **region-growing** segmentation (an alternative to global
-  quantization for flat art — soft edges split between neighbors instead of inventing a rim color), and
+  quantization for flat art — soft edges split between neighbors instead of inventing a rim color, and a thin band of
+  blend colors grown along a soft edge dissolves back into the two regions it runs between), and
   **gradient detection** (`gradient.ts`) that merges posterized ramp bands into one region painted with a single
   `<linearGradient>` or `<radialGradient>` — every fit verified on the pixels against the flat bands it replaces —
   keeps a transparent source's fades as opacity stops, and paints a semi-transparent layer stacked over a ramp (a glow
@@ -103,10 +128,18 @@ decode (consumer)
   (below), and the worker protocol: `installWorkerHandler` (worker side) + `TrazorClient`
   (main-thread, latest-wins) in [`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 - **`ml`** — lazy `onnxruntime-web` (WebGPU → WASM fallback), a Cache-Storage model store, `BackgroundRemover` (U²-Netp),
-  `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint), `CleanupEnhancer`
-  (denoise/de-JPEG) and `FieldEnhancer` (sub-pixel coverage). Browser-only; fails soft so a consumer works without it.
+  `MagicSegmenter` (SlimSAM), and the conditioning pre-passes `EdgeEnhancer` (boundary hint) and `CleanupEnhancer`
+  (denoise/de-JPEG). Browser-only; fails soft so a consumer works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
+- **`crates/solve`** — the planar boundary solve's descent (`packages/trace/src/solve/`: the band energy and its
+  gradient, L-BFGS on each independent part, the Moré–Thuente line search) ported to Rust and compiled to
+  WebAssembly (`packages/trace/wasm/solve.wasm`, `npm run build:wasm`). Opt-in: `loadBandKernel` instantiates it and
+  `SolveOptions.kernel` / the engine's `solveKernel` run option / the worker's `solve-kernel` message route the
+  descent through it. The port keeps every summation order and uses only correctly rounded arithmetic, so it
+  computes the TypeScript's positions bit for bit; the band's setup, the parts and the fold guard stay in TypeScript.
+  Each solve runs in a fresh instance over an imported memory sized for it, with a bump allocator, so the memory
+  never grows (a grown memory detaches its old buffer, which slows a V8 thread's typed arrays for good).
 - **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring
   (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
   round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; a consumer pairs it with the
@@ -121,12 +154,13 @@ coordinator.
 
 The parallel unit is chosen per mode, always something whose result is a function of shared, immutable state:
 
-| Mode       | Unit                                               | Stays on the coordinator                                      |
-| ---------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| stacked    | one cut layer (union flood → rings → curves → SVG) | the layering plan (order, lifted islands), document assembly  |
-| bw         | one ring of the mask (polygon + curve stages)      | threshold, despeckle, ring decomposition, shape assembly, SVG |
-| cutout     | one boundary chain's fit                           | the crack walk, region assembly, serialization                |
-| centerline | —                                                  | everything (the skeleton graph walk is one indivisible pass)  |
+| Mode       | Unit                                                    | Stays on the coordinator                                           |
+| ---------- | ------------------------------------------------------- | ------------------------------------------------------------------ |
+| stacked    | one cut layer (union flood → rings → curves → SVG)      | the layering plan (order, lifted islands), document assembly       |
+| bw         | one ring of the mask (polygon + curve stages)           | threshold, despeckle, ring decomposition, shape assembly, SVG      |
+| cutout     | one boundary chain's fit                                | the crack walk, region assembly, serialization                     |
+| planar     | one edge's fit; one band-merge fit of the ink front end | the rest of the front end, map, sub-pixel, solve, repair, emission |
+| centerline | —                                                       | everything (the skeleton graph walk is one indivisible pass)       |
 
 The bw unit is a ring, not a shape: a shape there is an outer ring plus the holes under it, and one ink silhouette
 routinely carries most of the rings in the image, so a shape-sized unit would leave the whole run waiting on it. A
@@ -139,6 +173,13 @@ without shipping or recomputing geometry. Units are partitioned round-robin by u
 reaches the same helper's caches — and results are placed strictly **by unit index**, so the shapes array, `document`
 and the SVG text are byte-identical to a sequential run. Geometry crosses as transferred `Float64Array` runs, never as
 structured-cloned arrays of arrays; helpers answer in batches and yield between them, so cancellation still interleaves.
+The planar chain's edges are the exception to round-robin: one edge's fit costs from microseconds to a second, so they
+are assigned by estimated cost (heaviest first, each to the least-loaded owner) — still a function of the map alone,
+and the fits still land by edge index. The coordinator is one of the owners, weighted like a helper: it fits its share
+while the helpers fit theirs, checking for a cancel between its own edges.
+The ink front end's band merge shares its fits the same way: it hands them out in batches of independent fits (every
+component on its own, then each wave of unions), each helper rebuilds the merge's components from its inputs and
+replays every batch's merges, and the merge goes on from the fits in unit order.
 Each helper holds its own copy of the image and label map, so a consumer sizes the pool for the image, not only for the
 core count.
 

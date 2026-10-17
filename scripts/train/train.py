@@ -21,14 +21,13 @@ from PIL import Image
 from torch.utils.data import DataLoader
 
 from dataset import IMAGENET_MEAN, IMAGENET_STD, PrepassDataset
-from losses import cleanup_loss, edge_loss, field_loss
+from losses import cleanup_loss, edge_loss
 from model import TinyUNet
 
 # Per-task config: output channels, checkpoint name, and ONNX output tensor name.
 TASKS = {
     "edge": {"out_channels": 1, "checkpoint": "edge-prepass.pt", "output_name": "edges"},
     "cleanup": {"out_channels": 3, "checkpoint": "cleanup.pt", "output_name": "output"},
-    "field": {"out_channels": 1, "checkpoint": "signed-field.pt", "output_name": "field"},
 }
 
 
@@ -129,11 +128,9 @@ def main() -> None:
 
     if args.task == "cleanup":
         loss_fn = partial(cleanup_loss, ssim_weight=args.ssim_weight)
-    elif args.task == "field":
-        loss_fn = field_loss
     else:
         loss_fn = edge_loss
-    # Edge uses an ODS-like F-score; the soft-regression tasks (cleanup, field) use PSNR.
+    # Edge uses an ODS-like F-score; cleanup, a soft regression, uses PSNR.
     metric_fn = f_score if args.task == "edge" else psnr
     metric_name = "F" if args.task == "edge" else "PSNR"
 

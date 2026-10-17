@@ -1,5 +1,5 @@
 import type { PathCommand } from '@trazor/core'
-import type { FlatPoints } from '@trazor/trace'
+import type { EdgePrimitive, FittedEdge, FlatPoints } from '@trazor/trace'
 
 /**
  * A batch of variable-length number runs packed into one transferable buffer:
@@ -19,7 +19,7 @@ export function flatTransferables(runs: FlatRuns): Transferable[] {
 }
 
 /** Pack number runs (ring points, control-point lists) into one buffer. */
-export function packRuns(runs: readonly (readonly number[])[]): FlatRuns {
+export function packRuns(runs: readonly ArrayLike<number>[]): FlatRuns {
   const offsets = new Int32Array(runs.length + 1)
   let total = 0
   for (let i = 0; i < runs.length; i++) {
@@ -199,4 +199,77 @@ export function unpackCommands(runs: FlatRuns, index: number): PathCommand[] {
     }
   }
   return out
+}
+
+/**
+ * Slots per fitted edge in a {@link packFits} record: `x0, y0, closed, params,
+ * chi2`, the primitive's kind (0 none, 1 circle, 2 ellipse, 3 rect) and up to
+ * six primitive numbers.
+ */
+const FIT_RECORD = 12
+
+/**
+ * Pack fitted edges into two transferable buffers: each edge's segments as one
+ * command run, and its other fields as one {@link FIT_RECORD}-slot record.
+ * Float64 slots hold every number exactly, so {@link unpackFit} returns an
+ * edge equal to the one packed, field for field.
+ */
+export function packFits(fits: readonly FittedEdge[]): {
+  commands: FlatRuns
+  records: Float64Array
+} {
+  const records = new Float64Array(fits.length * FIT_RECORD)
+  for (let i = 0; i < fits.length; i++) {
+    const f = fits[i]
+    const at = i * FIT_RECORD
+    records[at] = f.x0
+    records[at + 1] = f.y0
+    records[at + 2] = f.closed ? 1 : 0
+    records[at + 3] = f.params
+    records[at + 4] = f.chi2
+    const p = f.primitive
+    if (p === undefined) continue
+    switch (p.kind) {
+      case 'circle':
+        records.set([1, p.cx, p.cy, p.r], at + 5)
+        break
+      case 'ellipse':
+        records.set([2, p.cx, p.cy, p.rx, p.ry, p.rotation], at + 5)
+        break
+      case 'rect':
+        records.set([3, p.cx, p.cy, p.w, p.h, p.r, p.rotation], at + 5)
+        break
+    }
+  }
+  return { commands: packCommands(fits.map((f) => f.segments)), records }
+}
+
+/** Decode fitted edge `index` of a {@link packFits} pair. */
+export function unpackFit(commands: FlatRuns, records: Float64Array, index: number): FittedEdge {
+  const r = records.subarray(index * FIT_RECORD, (index + 1) * FIT_RECORD)
+  const fit: FittedEdge = {
+    x0: r[0],
+    y0: r[1],
+    segments: unpackCommands(commands, index),
+    closed: r[2] !== 0,
+    params: r[3],
+    chi2: r[4],
+  }
+  const primitive = primitiveOf(r)
+  if (primitive !== null) fit.primitive = primitive
+  return fit
+}
+
+/** The primitive a fit record carries, or null. */
+function primitiveOf(r: Float64Array): EdgePrimitive | null {
+  switch (r[5]) {
+    case 1:
+      return { kind: 'circle', cx: r[6], cy: r[7], r: r[8] }
+    case 2:
+      return { kind: 'ellipse', cx: r[6], cy: r[7], rx: r[8], ry: r[9], rotation: r[10] }
+    case 3:
+      return { kind: 'rect', cx: r[6], cy: r[7], w: r[8], h: r[9], r: r[10], rotation: r[11] }
+    default:
+      return null
+  }
 }

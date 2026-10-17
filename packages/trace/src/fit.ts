@@ -122,7 +122,7 @@ function evalCubic(c: Cubic, t: number): [number, number] {
 }
 
 /** One Newton-Raphson step of the parameter for point (px, py). */
-function refineParam(c: Cubic, px: number, py: number, t: number): number {
+export function refineParam(c: Cubic, px: number, py: number, t: number): number {
   const [qx, qy] = evalCubic(c, t)
   const [d1x, d1y] = cubicDeriv1(c, t)
   const [d2x, d2y] = cubicDeriv2(c, t)
@@ -133,25 +133,6 @@ function refineParam(c: Cubic, px: number, py: number, t: number): number {
   if (Math.abs(denom) < 1e-12) return t
   const nt = t - numer / denom
   return nt < 0 ? 0 : nt > 1 ? 1 : nt
-}
-
-/** Approximate distance from a point to a cubic (coarse scan + Newton). */
-export function distanceToCubic(c: Cubic, px: number, py: number): number {
-  let bestT = 0
-  let bestD = Infinity
-  for (let i = 0; i <= 16; i++) {
-    const t = i / 16
-    const [qx, qy] = evalCubic(c, t)
-    const d = (qx - px) * (qx - px) + (qy - py) * (qy - py)
-    if (d < bestD) {
-      bestD = d
-      bestT = t
-    }
-  }
-  let t = bestT
-  for (let i = 0; i < 3; i++) t = refineParam(c, px, py, t)
-  const [qx, qy] = evalCubic(c, t)
-  return Math.min(Math.sqrt(bestD), Math.hypot(qx - px, qy - py))
 }
 
 /**

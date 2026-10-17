@@ -1,12 +1,16 @@
 import {
   CancelledError,
-  DEFAULT_SETTINGS,
   deltaEOkSq,
   hexToRgb,
+  linearToSrgb,
   mmPerPx,
   normalizeSettings,
   nowMs,
+  rgbToHex,
   rgbToOklab,
+  placePathCommands,
+  SUPERSAMPLE_BUDGET_SIDE,
+  supersampleWithinBudget,
 } from '@trazor/core'
 import type {
   BinaryMask,
@@ -19,11 +23,9 @@ import type {
   StageId,
   StageTiming,
   TurnPolicy,
-  VectorizeMode,
   VectorizeResult,
   VectorizeSettings,
   VectorizeWarning,
-  TrazorEngine,
   TraceChart,
   TraceStep,
   VectorDocument,
@@ -44,7 +46,9 @@ import {
   totalNodes,
 } from './trace'
 import {
+  absorbMixtureLabels,
   adaptiveBinarize,
+  alphaCoverageField,
   bilateralFilter,
   binarize,
   borderDominantColor,
@@ -52,12 +56,14 @@ import {
   clearBorderLabel,
   detectEdges,
   despeckleMaskGuided,
+  encodedOfLightness,
   dissolveThinBands,
   estimateStrokeWidth,
   findEnclosedComponents,
   fitRegionGradients,
   flattenImage,
   gaussianBlur,
+  interiorPaletteColors,
   medianFilter,
   mergeSmallRegions,
   otsuThreshold,
@@ -68,31 +74,106 @@ import {
   signedAdaptiveField,
   signedThresholdField,
   smoothLabelsSpatial,
+  toEncodedLuma,
   toGrayscale,
   toOklabBuffer,
+  upscaleImage,
+  TRANSLUCENT_MAX_ALPHA,
+  TRANSLUCENT_MIN_ALPHA,
   zhangSuenThin,
+  BORDER_PAD,
+  padImage,
+  touchesBorder,
 } from '@trazor/raster'
+import type { EnclosedComponent } from '@trazor/raster'
 import {
+  assembleFaces,
   assembleRegions,
   decomposeMask,
+  edgeFitInput,
   extractChains,
+  fitChains,
+  fitEdgeInput,
+  layerField,
+  OUTSIDE,
   ringPolygon,
   shapesFromPaths,
   traceCenterline,
-  traceLabelMap,
 } from '@trazor/trace'
-import type { ChainFit, CrackPath, FlatPoints, RegionShape, TracedShape } from '@trazor/trace'
+import type {
+  BandKernel,
+  ChainFit,
+  ChainNetwork,
+  CrackPath,
+  FaceShape,
+  FitConfig,
+  FittedEdge,
+  PlanarEdge,
+  PlanarMap,
+  RingFit,
+  SignedField,
+  TracedShape,
+} from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
-import type { ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
-import type { HelperPool, StackPlanPayload } from './helper-pool'
+import type { Primitive, ShapeOut, StrokedPrimitive, SvgGradient, SvgShape } from '@trazor/svg'
+import { balancedOwners } from './helper-pool'
+import type {
+  HelperDispatchSpec,
+  HelperPool,
+  HelperUnitOutput,
+  StackPlanPayload,
+} from './helper-pool'
 import type {
   HelperCurveOptions,
   HelperSerializeOptions,
   HelperShapeMeta,
   HelperUnitPaint,
 } from './protocol'
+import { sheetSetback } from './setback'
+import {
+  cutoutRegions,
+  nestedFaces,
+  setBackFit,
+  ringCommands as planarRingCommands,
+  paintsArea,
+  placePrimitive,
+  ringPrimitive,
+  ringStroke,
+  stackedLayers,
+  tracePlanar,
+} from './planar'
+import type { PlanarFace, PlanarRegion } from './planar'
+import {
+  cleanLabels,
+  edgeNoise,
+  fitHere,
+  inkFrontEndSteps,
+  intakeIsSoft,
+  nativeInkFrontEndSteps,
+  softNoise,
+} from './ink'
+import type { BandFitSource, CleanLabels, FillFit, FitSteps } from './ink'
 
 const QUANTIZE_SEED = 0x02f6e2b1
+
+/** One paint run of a face: a fill, whether it must stay its own path, and its palette colors. */
+interface FacePaint {
+  fill: string
+  unfoldable?: boolean
+  colors: readonly string[]
+  /** A translucent paint's fill opacity (its `fill` then the straight color). */
+  opacity?: number
+}
+
+/** A face paint as the per-shape metadata a helper serializes with. */
+function toMeta(p: FacePaint, layerId: number): HelperShapeMeta {
+  return {
+    fill: p.fill,
+    fillRule: 'evenodd',
+    layerId,
+    ...(p.unfoldable ? { unfoldable: true } : {}),
+  }
+}
 
 /** Oklab ΔE above which a small region counts as a keep-worthy detail. */
 const DETAIL_CONTRAST = 0.1
@@ -163,27 +244,6 @@ function edgeProtectMask(
   const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
   const data = new Uint8Array(width * height)
   for (let i = 0; i < data.length; i++) data[i] = g.data[i] > EDGE_PROTECT_THRESHOLD ? 1 : 0
-  return { width, height, data }
-}
-
-/**
- * Learned coverage hint ([0,1] GrayImage, 0.5 = boundary) → a signed coverage
- * field ([-0.5, 0.5]) at the working resolution, quantized to 1/256 steps. The
- * quantization is the discretization boundary that keeps the (possibly WebGPU)
- * hint from perturbing geometry below the trace's sub-pixel sensitivity.
- */
-function coverageHintField(
-  hint: GrayImage | undefined,
-  width: number,
-  height: number,
-): GrayImage | null {
-  if (!hint) return null
-  const g = hint.width === width && hint.height === height ? hint : resizeGray(hint, width, height)
-  const data = new Float32Array(width * height)
-  for (let i = 0; i < data.length; i++) {
-    const v = g.data[i] - 0.5
-    data[i] = Math.round(v * 256) / 256
-  }
   return { width, height, data }
 }
 
@@ -298,8 +358,19 @@ interface PaletteEntry {
   paletteClampedTo?: number
   /** Per-label gradient paint (label ⇒ ramp fill, or null for a flat fill); absent when gradients are off. */
   gradients?: (GradientPaint | null)[]
+  /**
+   * Per-label fill opacity (label ⇒ opacity in (0,1), or undefined for an opaque
+   * label) and the ink each translucent label paints in; both absent when no
+   * label is a translucent face. Kept beside `paletteHex` (which keeps the
+   * composited color) so a cutout run paints the ink at its opacity while a
+   * stacked run keeps the flat composited fill.
+   */
+  fillOpacity?: (number | undefined)[]
+  inkHex?: (string | undefined)[]
   /** Per label, the label painted beneath it with the same geometry (an overlay's base), or -1; absent with `gradients`. */
   underlays?: Int32Array
+  /** The pixel noise the ink front end measured (encoded sRGB units); absent from the classic front end. */
+  sigmaNoise?: number
   /** Stacked layer rings for one ring key; a key change replaces the whole set. */
   rings?: LayerRings
   /**
@@ -317,7 +388,7 @@ interface PaletteEntry {
  * paint order, and the island layers that follow them on top. Derived from the
  * labels and their counts, so it is byte-identical to recomputation.
  */
-interface StackPlan {
+export interface StackPlan {
   stackLabels: Int32Array
   /** Size of the label space (the palette length) the labels index into. */
   labelCount: number
@@ -347,7 +418,7 @@ interface RingLayer {
 interface LayerRings {
   key: string
   layers: RingLayer[]
-  polygons?: (FlatPoints | null)[][]
+  polygons?: (RingFit | null)[][]
 }
 
 /**
@@ -363,7 +434,7 @@ interface InkEntry {
   coverage?: GrayImage
   ringKey?: string
   rings?: CrackPath[]
-  polygons?: (FlatPoints | null)[]
+  polygons?: (RingFit | null)[]
 }
 
 /**
@@ -396,6 +467,14 @@ export interface StageCache {
   opaque?: BinaryMask | null
   /** Source alpha per pixel when `opaque` is set (transparent handling), else null. */
   alpha?: Uint8Array | null
+  /** The intake's soft verdict on the image before supersampling (planar runs). */
+  intakeSoft?: boolean
+  /** The noise of the edges that made the intake soft (`edgeNoise`; ink front end). */
+  intakeEdgeNoise?: number
+  /** The clean palette and labels the edge noise was read against (`cleanLabels`; ink front end). */
+  intakeClean?: CleanLabels
+  /** What a supersampled planar run's geometry measures against (`PlanarRun.source`). */
+  planarSource?: PlanarSource
   /** LRU of palette entries (valid for the current image + preKey); newest last. */
   palette?: Map<string, PaletteEntry>
   /** Ink mask + coverage field + rings for the current image + preKey (bw/centerline). */
@@ -486,6 +565,56 @@ export interface VectorizeRunOptions {
    * requests it.
    */
   withDocument?: boolean
+  /**
+   * Overrides `settings.geometry` for this run when set (a probe's choice of
+   * chain); unset, the settings choose.
+   */
+  geometry?: 'classic' | 'planar'
+  /**
+   * Overrides `settings.frontEnd` for this run when set; read only on the
+   * planar chain, as the setting is.
+   */
+  frontEnd?: 'classic' | 'ink'
+  /**
+   * Called with the planar map after each geometry stage of the `planar`
+   * chain (`lattice`, then each stage that moves points), and with the fitted
+   * edges after the fit (`fit`): a probe for measuring each stage. The map is
+   * live — copy what you keep.
+   */
+  onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+  /**
+   * Runs the planar chain's boundary solve descent in this WebAssembly kernel
+   * (`loadBandKernel` of `@trazor/trace`) instead of in TypeScript; it computes
+   * the same positions. Absent, the TypeScript descent runs.
+   */
+  solveKernel?: BandKernel
+}
+
+/** The image a supersampled run was enlarged from, prepared as the working image is. */
+interface PlanarSource {
+  /** Composited as the working image is (over white, or the custom background). */
+  image: RasterImage
+  /** Its straight alpha, or null when the working image is opaque. */
+  alpha: Uint8Array | null
+}
+
+/** How the planar chain runs: its stage probe and its front end. */
+interface PlanarRun {
+  onStage?: VectorizeRunOptions['onPlanarStage']
+  solveKernel?: BandKernel
+  frontEnd: 'classic' | 'ink'
+  /** The intake's soft verdict (`intakeIsSoft`, or for the ink front end its edges' residual). */
+  soft: boolean
+  /** The residual of the edges against the clean labels, when it made the intake soft (`edgeNoise`). */
+  edgeNoise?: number
+  /** The clean palette and labels those edges were read against, for the front end to reuse. */
+  clean?: CleanLabels
+  /**
+   * On a supersampled run, the image before the enlargement: the boundary
+   * solve compares the coverage of its pixels, the box-filtered samples of the
+   * drawing, while the labels keep the enlarged grid.
+   */
+  source?: PlanarSource
 }
 
 /** Build the structured document from the shapes/gradients the serializer received. */
@@ -509,6 +638,7 @@ function buildDocument(
     commands: s.commands,
     fill: s.fill,
     fillRule: s.fillRule,
+    fillOpacity: s.fillOpacity,
     stroke: s.stroke,
     strokeWidth: s.strokeWidth,
     layerId: s.layerId,
@@ -523,16 +653,63 @@ function buildDocument(
   }
 }
 
-/** Settings that change the preprocessed working image. */
+/**
+ * `s` read on a working image enlarged `scale` times (supersampling): its
+ * pixel areas scale by `scale²` and its pixel lengths by `scale`. The blur is
+ * applied before the enlargement, the curve fit reads its tolerances in source
+ * pixels (`TraceCurveOptions.scale`) and the cutout trap is sized at the output
+ * (`gapFill` may be millimetres), so none of them changes.
+ */
+function forWorkingGrid(s: VectorizeSettings, scale: number): VectorizeSettings {
+  const area = scale * scale
+  return {
+    ...s,
+    minRegionArea: s.minRegionArea * area,
+    gradientMinArea: s.gradientMinArea * area,
+    adaptiveRadius: s.adaptiveRadius * scale,
+    pruneLength: s.pruneLength * scale,
+    fitTolerance: s.fitTolerance * scale,
+    simplifyTolerance: s.simplifyTolerance * scale,
+    strokeWidth: s.strokeWidth * scale,
+  }
+}
+
+/** A gradient paint in user space scaled by `s` about the origin, then moved by `d` on both axes. */
+function placeGradient<T extends GradientPaint>(g: T, s: number, d: number): T {
+  return g.kind === 'linear'
+    ? { ...g, x1: g.x1 * s + d, y1: g.y1 * s + d, x2: g.x2 * s + d, y2: g.y2 * s + d }
+    : { ...g, cx: g.cx * s + d, cy: g.cy * s + d, r: g.r * s }
+}
+
+/**
+ * Whether a ring of one width may be written as one stroked primitive: only
+ * for optimized screen output — a cutter or a laser reads a stroke as a line to
+ * cut along, not as the filled ring it paints.
+ */
+function screenStrokes(settings: VectorizeSettings): boolean {
+  return settings.optimizeSvg && settings.unit === 'px'
+}
+
+/** The supersampling factor a run applies, within the working-pixel budget (`supersampleWithinBudget`). */
+function supersampleFactor(source: RasterImage, s: VectorizeSettings): number {
+  return supersampleWithinBudget(source.width, source.height, s.maxDimension, s.supersample)
+}
+
+/**
+ * Settings that change the preprocessed working image. A supersampled image
+ * is enlarged bounded for color and grayscale and unbounded for a threshold
+ * (bw, centerline), so the two differ once the factor passes 1.
+ */
 function preKeyOf(s: VectorizeSettings): string {
   return [
     s.maxDimension,
+    s.supersample,
     s.denoise,
     s.blurRadius,
     s.background,
     s.backgroundColor,
     s.alphaThreshold,
-    s.mode === 'grayscale' ? 'g' : 'c',
+    s.mode === 'grayscale' ? 'g' : s.supersample > 1 && s.mode !== 'color' ? 'i' : 'c',
   ].join('|')
 }
 
@@ -601,10 +778,28 @@ export async function vectorize(
   ctx?: EngineContext,
   opts?: VectorizeRunOptions,
 ): Promise<VectorizeResult> {
-  const settings = normalizeSettings(settingsIn)
+  const normalized = normalizeSettings(settingsIn)
+  // A supersampled run works on an image `scale` times the working size, so
+  // its pixel-size settings are read on that grid; the SVG keeps the size.
+  const scale = supersampleFactor(source, normalized)
+  const requested =
+    scale === normalized.supersample ? normalized : { ...normalized, supersample: scale }
+  const settings = scale === 1 ? requested : forWorkingGrid(requested, scale)
+  // The geometry chain and its front end: the run options when set, else the
+  // settings; the front end is read only on the planar chain.
+  const geometry = opts?.geometry ?? settings.geometry
+  const frontEnd = geometry === 'planar' ? (opts?.frontEnd ?? settings.frontEnd) : 'classic'
   const started = nowMs()
   const run = new Run(ctx)
   const warnings: VectorizeWarning[] = []
+  if (scale < normalized.supersample) {
+    warnings.push({
+      code: 'supersample-limited',
+      severity: 'info',
+      message: `Supersampled ${scale}× instead of ${normalized.supersample}×: the enlarged image would pass ${SUPERSAMPLE_BUDGET_SIDE}² pixels.`,
+      params: { requested: normalized.supersample, applied: scale, side: SUPERSAMPLE_BUDGET_SIDE },
+    })
+  }
 
   const cache = opts?.cache
   const imageId = opts?.imageId
@@ -614,29 +809,87 @@ export async function vectorize(
 
   // ---- preprocess (reused across runs when the image + preprocess key match) ----
   run.stage('preprocess')
-  const preKey = preKeyOf(settings)
+  // In the planar chain, transparent art reaching the canvas edge is traced on
+  // a canvas a margin larger (`pad` working px), so its outline closes round
+  // it and the hard edge the canvas cuts is measured as an edge; the geometry
+  // moves back by the margin afterwards.
+  const pad =
+    geometry === 'planar' &&
+    settings.background !== 'custom' &&
+    !settings.omitBackground &&
+    ctx?.edgeHint === undefined &&
+    touchesBorder(source)
+      ? BORDER_PAD
+      : 0
+  // The planar chain keeps the image before its enlargement and reads the
+  // intake's verdict, the ink front end its edges' residual too.
+  const preKey = `${preKeyOf(settings)}|${pad}|${geometry}|${frontEnd}`
   let image: RasterImage
   let opaque: BinaryMask | null
   let alpha: Uint8Array | null
+  // Whether the raster is soft (wide edges, ringing), read before any filter or
+  // enlargement widens its edges: the planar chain's noise rises to the labels'
+  // residual on a soft intake.
+  let intakeSoft = false
+  let intakeEdgeNoise: number | undefined
+  let intakeClean: CleanLabels | undefined
+  let planarSource: PlanarSource | undefined
   if (cacheable && cache.imageId === imageId && cache.preKey === preKey && cache.workImage) {
     image = cache.workImage
     opaque = cache.opaque ?? null
     alpha = cache.alpha ?? null
+    intakeSoft = cache.intakeSoft ?? false
+    intakeEdgeNoise = cache.intakeEdgeNoise
+    intakeClean = cache.intakeClean
+    planarSource = cache.planarSource
     cacheStats(cache).preHits++
     run.progress(1)
   } else {
     let img = resizeToFit(source, settings.maxDimension)
+    if (pad > 0) img = padImage(img, pad)
+    if (geometry === 'planar') {
+      intakeSoft = intakeIsSoft(img)
+      // The ink front end's palette keeps every variant of a damaged edge's inks apart
+      // unless the intake is soft; edges that stray off their blends make it so.
+      if (!intakeSoft && frontEnd === 'ink' && settings.mode === 'color') {
+        const clean = cleanLabels(img)
+        intakeEdgeNoise = edgeNoise(img, clean)
+        intakeSoft = intakeEdgeNoise !== undefined
+        // Kept for the opaque front end, which takes it on these very pixels: not on a
+        // soft intake (read under the soft guards) nor on an enlarged one.
+        if (!intakeSoft && scale === 1) intakeClean = clean
+      }
+    }
     run.progress(0.3)
     if (settings.denoise === 'median') img = medianFilter(img, 1)
     else if (settings.denoise === 'bilateral') img = bilateralFilter(img, 2, 2, 35)
     if (settings.blurRadius > 0) img = gaussianBlur(img, settings.blurRadius)
+    const before = img
+    // Color segmentation would keep the cubic's ringing as colors of its own; a
+    // threshold reads the smoother contour of the plain cubic.
+    if (scale > 1) {
+      img = upscaleImage(img, scale, settings.mode === 'color' || settings.mode === 'grayscale')
+    }
     run.progress(0.7)
-    const flat = flattenImage(img, settings)
+    const flat = flattenImage(img, settings, scale)
     img = flat.image
     opaque = flat.opaque
     alpha = flat.alpha
+    // A transparent working image takes the two-ground front end, which reads no clean labels.
+    if (alpha !== null) intakeClean = undefined
     if (settings.mode === 'grayscale') desaturateInPlace(img)
     image = img
+    if (geometry === 'planar' && scale > 1) {
+      const src = flattenImage(before, settings, 1)
+      if (settings.mode === 'grayscale') desaturateInPlace(src.image)
+      planarSource = {
+        image: src.image,
+        alpha:
+          alpha === null
+            ? null
+            : (src.alpha ?? new Uint8Array(src.image.width * src.image.height).fill(255)),
+      }
+    }
     if (cacheable) {
       cacheStats(cache).preMisses++
       // New image or preprocess ⇒ every palette and ink entry depended on it.
@@ -645,11 +898,18 @@ export async function vectorize(
       cache.workImage = image
       cache.opaque = opaque
       cache.alpha = alpha
+      cache.intakeSoft = intakeSoft
+      cache.intakeEdgeNoise = intakeEdgeNoise
+      cache.intakeClean = intakeClean
+      cache.planarSource = planarSource
       cache.palette = new Map()
       cache.ink = undefined
     }
   }
   const { width, height } = image
+  // The SVG's size: the working image before any supersampling enlarged it.
+  const outWidth = width / scale - 2 * pad
+  const outHeight = height / scale - 2 * pad
   await run.tick()
 
   if (run.tracing) {
@@ -660,6 +920,7 @@ export async function vectorize(
       }
       if (settings.denoise !== 'none') notes.push(`Denoise: ${settings.denoise}.`)
       if (settings.blurRadius > 0) notes.push(`Blur radius ${settings.blurRadius}.`)
+      if (scale > 1) notes.push(`Supersampled ×${scale} (bicubic) for tracing.`)
       if (settings.mode === 'grayscale') notes.push('Desaturated for grayscale tracing.')
       return {
         code: 'preprocess',
@@ -691,16 +952,24 @@ export async function vectorize(
   // half itself.
   const shapeParts: (ShapeOut | null)[] = []
   // Full-shape primitive substitution (<circle>/<ellipse>/<rect rx>) stays off
-  // for cutout — an element can't be shared with a neighbor's path edge. Arc
-  // fitting for cutout happens seam-safely per shared chain instead (the
-  // `refineChain` passed to the tracer).
-  const roundPrimitives = settings.optimizeSvg && settings.layering !== 'cutout'
+  // for the shared partitions (cutout, nested) — an element can't be shared with
+  // a neighbor's path edge, and two sibling faces both draw the boundary between
+  // them, so approximating one as a primitive would open a seam. Arc fitting
+  // happens seam-safely per shared chain instead (the `refineChain` passed to
+  // the tracer). Only stacked, which overdraws with independent layers, uses them.
+  const roundPrimitives = settings.optimizeSvg && settings.layering === 'stacked'
+  // The compact path spelling for screen output; a millimetre document (cutter,
+  // laser, plotter) keeps every number set off for its importers' parsers.
+  const compactPaths = settings.optimizeSvg && settings.unit === 'px'
   // Exactly the per-shape settings the serializer would apply, so a helper's
   // output drops into the document unchanged.
   const shapeSerialize: HelperSerializeOptions = {
     precision: settings.precision,
     optimize: settings.optimizeSvg,
     roundPrimitives,
+    compact: compactPaths,
+    scale: 1 / scale,
+    offset: -pad,
   }
   // Helper payloads are keyed by the same identities the StageCache uses, so a
   // warm run finds its rings and polygons in the helper that owns those units.
@@ -722,6 +991,17 @@ export async function vectorize(
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
+      geometry === 'planar'
+        ? {
+            onStage: opts?.onPlanarStage,
+            solveKernel: opts?.solveKernel,
+            frontEnd,
+            soft: intakeSoft,
+            edgeNoise: intakeEdgeNoise,
+            clean: intakeClean,
+            source: planarSource,
+          }
+        : undefined,
     )
   } else {
     await inkPipeline(
@@ -733,11 +1013,48 @@ export async function vectorize(
       warnings,
       (p) => (palette = p),
       ctx?.edgeHint,
-      ctx?.coverageHint,
       cacheable ? cache : undefined,
       imageId,
       { helpers, scope: helperScope, serial, serialize: shapeSerialize },
+      geometry === 'planar'
+        ? {
+            onStage: opts?.onPlanarStage,
+            solveKernel: opts?.solveKernel,
+            frontEnd,
+            soft: intakeSoft,
+            edgeNoise: intakeEdgeNoise,
+            clean: intakeClean,
+            source: planarSource,
+          }
+        : undefined,
+      alpha,
     )
+  }
+
+  if (scale > 1 || pad > 0) {
+    // Back to the source canvas: the geometry was traced `scale` times larger,
+    // on a canvas `pad` px larger on every side.
+    const s = 1 / scale
+    for (let i = 0; i < shapes.length; i++) {
+      const shape = shapes[i]
+      shapes[i] = {
+        ...shape,
+        commands: placePathCommands(shape.commands, s, -pad, -pad),
+        ...(shape.strokeWidth !== undefined ? { strokeWidth: shape.strokeWidth * s } : {}),
+        ...(shape.primitive !== undefined
+          ? { primitive: placePrimitive(shape.primitive, s, -pad) }
+          : {}),
+        ...(shape.strokedPrimitive !== undefined
+          ? {
+              strokedPrimitive: {
+                primitive: placePrimitive(shape.strokedPrimitive.primitive, s, -pad),
+                width: shape.strokedPrimitive.width * s,
+              },
+            }
+          : {}),
+      }
+    }
+    for (let i = 0; i < defs.length; i++) defs[i] = placeGradient(defs[i], s, -pad)
   }
 
   if (run.tracing) {
@@ -764,8 +1081,8 @@ export async function vectorize(
     settings.groupByColor && (settings.mode === 'color' || settings.mode === 'grayscale')
   const svg = serializeSvg(
     {
-      width,
-      height,
+      width: outWidth,
+      height: outHeight,
       unit: settings.unit,
       widthMm: settings.unit === 'mm' ? settings.widthMm : undefined,
       title: settings.svgTitle || undefined,
@@ -775,6 +1092,7 @@ export async function vectorize(
     {
       precision: settings.precision,
       optimizePaths: settings.optimizeSvg,
+      compactPaths,
       roundPrimitives,
       // One <g> per cut layer (color layers only). Cutout is a color partition,
       // so group by color; stacked paints in layer order and a color can recur
@@ -819,7 +1137,7 @@ export async function vectorize(
     })
   }
   if (settings.unit === 'mm') {
-    warnTinyFeatures(shapes, width, settings, warnings)
+    warnTinyFeatures(shapes, outWidth, settings, warnings)
   }
   if (defs.length > 0 && (settings.unit === 'mm' || settings.groupByColor)) {
     warnings.push({
@@ -833,8 +1151,8 @@ export async function vectorize(
   const timings = run.finish()
   return {
     svg,
-    width,
-    height,
+    width: outWidth,
+    height: outHeight,
     palette,
     stats: {
       pathCount: analysis.pathCount,
@@ -845,7 +1163,9 @@ export async function vectorize(
       stages: timings,
     },
     warnings,
-    document: opts?.withDocument ? buildDocument(shapes, defs, width, height, settings) : undefined,
+    document: opts?.withDocument
+      ? buildDocument(shapes, defs, outWidth, outHeight, settings)
+      : undefined,
   }
 }
 
@@ -874,13 +1194,18 @@ async function colorPipeline(
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
+  planarRun: PlanarRun | undefined,
 ): Promise<void> {
   run.stage('palette')
   // The palette + cleaned label map are reused when the image and every setting
   // that shapes them are unchanged. An edge hint feeds the merge, so caching is
   // disabled while one is present (correctness over speed).
   const canCachePal = cache !== undefined && imageId !== undefined && edgeHint === undefined
-  const palKey = canCachePal ? palKeyOf(settings) : undefined
+  // The ink front end serves color images on the planar chain: an opaque one
+  // over white, a transparent one over two grounds (an ink is a color and an
+  // opacity).
+  const useInk = planarRun?.frontEnd === 'ink' && settings.mode === 'color'
+  const palKey = canCachePal ? `${palKeyOf(settings)}${useInk ? '|ink' : ''}` : undefined
   // Edge hint (if any) protects thin features from the size merge and from the
   // tracer's speck filter; null when no hint (and always null when caching).
   const protect = edgeProtectMask(edgeHint, image.width, image.height)
@@ -892,6 +1217,9 @@ async function colorPipeline(
   let paletteClampedTo: number | undefined
   let gradients: (GradientPaint | null)[] | undefined
   let underlays: Int32Array | undefined
+  let fillOpacity: (number | undefined)[] | undefined
+  let inkHex: (string | undefined)[] | undefined
+  let sigmaNoise: number | undefined
 
   const cached =
     canCachePal && cache && cache.imageId === imageId && palKey !== undefined
@@ -908,23 +1236,71 @@ async function colorPipeline(
     paletteClampedTo = cached.paletteClampedTo
     gradients = cached.gradients
     underlays = cached.underlays
+    fillOpacity = cached.fillOpacity
+    inkHex = cached.inkHex
+    sigmaNoise = cached.sigmaNoise
     cacheStats(cache!).palHits++
     await run.tick()
     run.stage('segment')
     await run.tick()
+  } else if (useInk) {
+    if (canCachePal) cacheStats(cache!).palMisses++
+    const soft = planarRun?.soft ?? false
+    const edge = planarRun?.edgeNoise
+    const steps =
+      alpha !== null
+        ? nativeInkFrontEndSteps(image, alpha, settings.supersample, soft, settings.gradients, edge)
+        : inkFrontEndSteps(
+            image,
+            settings.supersample,
+            soft,
+            settings.gradients,
+            edge,
+            planarRun?.clean,
+          )
+    const front = helperCtx.helpers
+      ? await fitStepsAcross(run, helperCtx.helpers, helperCtx.serial, steps)
+      : fitHere(steps)
+    ;({ labels, paletteHex, paletteRgb, counts, sigmaNoise, gradients } = front)
+    fillOpacity = front.fillOpacity
+    inkHex = front.inkHex
+    await run.tick()
+    run.stage('segment')
+    await run.tick()
+    if (canCachePal && palKey !== undefined) {
+      paletteEntry = {
+        labels,
+        paletteHex,
+        paletteRgb,
+        counts,
+        sigmaNoise,
+        gradients,
+        fillOpacity,
+        inkHex,
+      }
+      palettePut(cache!, palKey, paletteEntry)
+    }
   } else if (settings.segmentation === 'regions' && settings.palette === null) {
     if (canCachePal) cacheStats(cache!).palMisses++
     // Region growing (marker-controlled watershed): no global palette, so an
     // anti-aliased edge is split between its two neighbors instead of inventing
     // a third rim color. The merge thresholds decide the color count, and
-    // `paletteSize` is its hard upper bound — never an exact count, so
-    // `autoPaletteSize` changes nothing here.
+    // `paletteSize` bounds it — never an exact count. It is a hard bound with
+    // `autoPaletteSize` off, and wherever a color is a part to produce or a set
+    // to edit as one: layers grouped by color (a screen or a vinyl sheet each)
+    // and cutout or nested faces. On stacked layers under `autoPaletteSize` it
+    // is the engine's own budget, spent until the next fold would repaint a
+    // visibly distinct feature, which keeps its color past it (at most twice
+    // the budget).
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
       minRegionArea: settings.minRegionArea,
       maxRegions: settings.paletteSize,
+      keepVisibleColors:
+        settings.autoPaletteSize && settings.layering === 'stacked' && !settings.groupByColor,
       mask: opaque,
+      scale: settings.supersample,
     })
     await run.tick()
     run.stage('segment')
@@ -945,6 +1321,18 @@ async function colorPipeline(
       underlays = fitted.underlays
       counts = countLabels(labels)
     }
+    {
+      const tl = translucentFaces(
+        image,
+        labels,
+        alpha,
+        paletteHex.length,
+        gradients,
+        settings.supersample ** 2,
+      )
+      fillOpacity = tl?.opacity
+      inkHex = tl?.inkHex
+    }
     if (canCachePal && palKey !== undefined) {
       paletteEntry = {
         labels,
@@ -954,6 +1342,8 @@ async function colorPipeline(
         paletteClampedTo,
         gradients,
         underlays,
+        fillOpacity,
+        inkHex,
       }
       palettePut(cache!, palKey, paletteEntry)
     }
@@ -962,7 +1352,7 @@ async function colorPipeline(
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
     // fixed-palette paths, which quantize resolves without clustering).
-    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD)
+    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
     const clusterSample: BinaryMask = {
       width: image.width,
       height: image.height,
@@ -1009,6 +1399,25 @@ async function colorPipeline(
     if (settings.dissolveBands > 0) {
       dissolveThinBands(q.labels, settings.dissolveBands, protect ?? undefined)
     }
+    // Dissolve labels that are anti-aliased blends of their two dominant
+    // neighbors — a rim color k-means handed its own centroid — splitting each
+    // back to the neighbor its coverage favors, before the size merge. A rim
+    // ink is a color phenomenon (an invented hue where two distinct fills meet);
+    // grayscale mode's neighboring tones are legitimate tonal steps, not
+    // mixtures, so the pass is color-only. Also skipped with a fixed palette
+    // (the user's exact colors), in pixel mode (exact lattice), under an edge
+    // hint (a predicted boundary is never moved), and when gradients are on (a
+    // smooth ramp's own bands read as blends, and the gradient fitter — not this
+    // pass — turns them into a gradient).
+    if (
+      settings.mode === 'color' &&
+      settings.palette === null &&
+      settings.curveMode !== 'pixel' &&
+      protect === null &&
+      !settings.gradients
+    ) {
+      absorbMixtureLabels(image, q.labels, q.paletteRgb)
+    }
     // `protect` (hoisted above) lets an edge hint keep small regions on a
     // predicted boundary; with no hint this is byte-identical to the plain merge.
     if (settings.preserveDetails) {
@@ -1034,8 +1443,18 @@ async function colorPipeline(
       mergeSmallRegions(q.labels, settings.minRegionArea)
     }
     labels = q.labels
-    paletteHex = q.paletteHex
-    paletteRgb = q.paletteRgb
+    if (settings.palette === null) {
+      // A cluster's mean over every pixel it owns carries its anti-aliased rim
+      // into its color; the color is read from the region interiors instead,
+      // once the cleanup has settled which pixels each label owns. A fixed
+      // palette is the user's exact colors and stays as given.
+      const measured = interiorPaletteColors(image, labels, q.paletteRgb)
+      paletteHex = measured.paletteHex
+      paletteRgb = measured.paletteRgb
+    } else {
+      paletteHex = q.paletteHex
+      paletteRgb = q.paletteRgb
+    }
     counts = new Uint32Array(labels.count)
     for (let i = 0; i < labels.data.length; i++) {
       const l = labels.data[i]
@@ -1058,6 +1477,18 @@ async function colorPipeline(
       underlays = fitted.underlays
       counts = countLabels(labels)
     }
+    if (settings.palette === null) {
+      const tl = translucentFaces(
+        image,
+        labels,
+        alpha,
+        paletteHex.length,
+        gradients,
+        settings.supersample ** 2,
+      )
+      fillOpacity = tl?.opacity
+      inkHex = tl?.inkHex
+    }
     await run.tick()
 
     if (canCachePal && palKey !== undefined) {
@@ -1069,6 +1500,8 @@ async function colorPipeline(
         paletteClampedTo,
         gradients,
         underlays,
+        fillOpacity,
+        inkHex,
       }
       palettePut(cache!, palKey, paletteEntry)
     }
@@ -1107,6 +1540,38 @@ async function colorPipeline(
   // underlay may overlap a same-paint sheet beneath it, so it is never folded
   // into one even-odd path with it.
   const underOf = (l: number): number => underlays?.[l] ?? -1
+  // A translucent label's fill opacity (undefined ⇒ opaque), and the ink it
+  // paints in — which composites over the white canvas to the source-over-white
+  // color. Used by the cutout partition, whose faces are disjoint and so sit over
+  // that white ground directly; stacked layers keep the flat composited fill,
+  // since a translucent face there would composite over the sheets below it (a
+  // later session emits those sheets and turns the fill translucent).
+  const opacityOf = (l: number): number | undefined => fillOpacity?.[l]
+  const inkOf = (l: number): string | undefined => inkHex?.[l]
+  // One label's stacked paint runs, in emission order (base first, own on top): a
+  // gradient overlay keeps its base underlay; every other label is a single
+  // opaque or gradient fill.
+  const stackedFacePaints = (label: number): FacePaint[] => {
+    const own: FacePaint = { fill: fillFor[label], colors: paletteColorsFor[label] }
+    const under = underOf(label)
+    if (under >= 0) {
+      return [{ fill: fillFor[under], unfoldable: true, colors: paletteColorsFor[under] }, own]
+    }
+    return [own]
+  }
+  // A translucent paint in the planar chain's stacked sheets: a label with a
+  // fill opacity, or a gradient whose stops fade. No sheet beneath reaches under
+  // it, so it paints its straight color at its opacity (a fade carries its
+  // opacities on its stops) and composites over what lies there.
+  const translucentPaint = (label: number): boolean =>
+    opacityOf(label) !== undefined ||
+    (gradients?.[label]?.stops.some((st) => (st.opacity ?? 1) < 1) ?? false)
+  const planarFacePaints = (label: number): FacePaint[] => {
+    const opacity = opacityOf(label)
+    const ink = inkOf(label)
+    if (opacity !== undefined && ink !== undefined) return [{ fill: ink, colors: [ink], opacity }]
+    return stackedFacePaints(label)
+  }
 
   if (run.tracing) {
     run.emitStep(() => {
@@ -1136,6 +1601,7 @@ async function colorPipeline(
     curveOptimize: settings.curveOptimize,
     optTolerance: settings.optTolerance,
     cornerThreshold: settings.cornerThreshold,
+    scale: settings.supersample,
   }
   // With detail preservation or an edge hint, the merge above is the sole speck
   // filter — the tracer must not drop the small regions it deliberately kept.
@@ -1148,66 +1614,147 @@ async function colorPipeline(
   // every helper key a miss.
   const labelScope = palKey !== undefined ? `${helperCtx.scope}|${palKey}` : `#${helperCtx.serial}`
 
-  if (settings.layering === 'cutout') {
-    // Sub-pixel color-boundary refinement: each shared chain is snapped onto the
-    // true anti-aliased edge between its two region colors. Skipped in pixel
-    // mode (exact lattice) and when the palette is degenerate.
-    const refinesColor = settings.curveMode !== 'pixel' && paletteHex.length > 1
-    // Collapse circular/elliptical Bézier runs to `A` arcs per shared chain
-    // (fitted once, reused reversed) so cutout gets the node reduction without
-    // seam divergence. Full-shape primitives stay off for cutout (an element
-    // can't be shared with a neighbour's path), which is why `roundPrimitives`
-    // is disabled at serialization.
+  // Sub-pixel boundary refinement: a color edge is snapped onto the true
+  // anti-aliased edge between its two region colors, an exterior edge onto the
+  // transparency coverage at the cut level. Skipped in pixel mode (exact
+  // lattice); a single color with no transparency has no edge to refine.
+  const refines = settings.curveMode !== 'pixel'
+  const alphaField =
+    refines && alpha !== null && settings.alphaThreshold > 0
+      ? alphaCoverageField(alpha, image.width, image.height, settings.alphaThreshold)
+      : undefined
+  const refinesEdges = refines && (paletteHex.length > 1 || alphaField !== undefined)
+  const alphaLevel = alphaField !== undefined ? settings.alphaThreshold : undefined
+
+  // The planar-map chain: one map of the label map's faces whose edges every
+  // layering walks, fitted once.
+  const planarTrace =
+    planarRun && settings.curveMode !== 'pixel'
+      ? await tracePlanar({
+          labels,
+          image,
+          alpha,
+          paints: paletteHex.map((hex, l) => ({
+            hex,
+            gradient: gradients?.[l] ?? undefined,
+            under: underOf(l) >= 0 ? paletteHex[underOf(l)] : undefined,
+            opacity: opacityOf(l),
+            ink: inkOf(l),
+          })),
+          scale: settings.supersample,
+          source: planarRun.source,
+          sigmaNoise:
+            sigmaNoise ?? (planarRun.soft ? softNoise(image, labels, paletteRgb) : undefined),
+          onStage: planarRun.onStage,
+          solveKernel: planarRun.solveKernel,
+          fitEdges: planarEdgeFitter(run, helperCtx),
+        })
+      : undefined
+  const planar = planarTrace?.geo
+  const planarFits = planarTrace?.fits
+
+  if (settings.layering === 'cutout' || settings.layering === 'nested') {
+    // Both partition layerings walk the same shared chain graph and fit each
+    // chain once; only the assembly differs (regions vs. nested faces). Collapse
+    // circular/elliptical Bézier runs to `A` arcs per shared chain (fitted once,
+    // reused reversed) so the node reduction stays seam-safe; full-shape
+    // primitives stay off for a shared partition (an element can't be shared with
+    // a neighbour's path), which is why `roundPrimitives` is disabled at
+    // serialization.
     const arcPrecision = settings.optimizeSvg ? settings.precision : undefined
-    let regions: RegionShape[]
-    if (helpers) {
-      regions = await fitCutoutInHelpers(
+    const colorField = refinesEdges
+      ? { pixels: image.data, paletteRgb, alpha: alphaField }
+      : undefined
+    const cutoutOpts = {
+      ...curveOpts,
+      colorField,
+      refineChain:
+        arcPrecision === undefined
+          ? undefined
+          : (cmds: PathCommand[]) => fitArcs(cmds, arcPrecision),
+    }
+    let network: ChainNetwork | undefined
+    let fits: ChainFit[] | undefined
+    if (planar) {
+      // The planar chain fits its own edges.
+    } else if (helpers) {
+      ;({ network, fits } = await fitChainsInHelpers(
         run,
         helpers,
         labels,
         image,
-        refinesColor ? paletteToOklab(paletteRgb) : undefined,
+        alpha,
+        refinesEdges ? paletteRgb : undefined,
+        alphaLevel,
         curveOpts,
         arcPrecision,
         helperCtx,
         labelScope,
+      ))
+    } else {
+      network = extractChains(labels)
+      fits = fitChains(network, cutoutOpts)
+    }
+
+    if (settings.layering === 'nested') {
+      emitNestedFaces(
+        planar && planarFits
+          ? nestedFaces(planar, planarFits, translucentPaint)
+          : assembleFaces(network as ChainNetwork, fits as ChainFit[]),
+        fillFor,
+        paletteColorsFor,
+        underOf,
+        usedPalette,
+        shapes,
+        planar && planarFits ? planarFacePaints : undefined,
       )
     } else {
-      regions = traceLabelMap(labels, {
-        ...curveOpts,
-        colorField: refinesColor
-          ? { oklab: toOklabBuffer(image), paletteOklab: paletteToOklab(paletteRgb) }
-          : undefined,
-        refineChain: arcPrecision === undefined ? undefined : (cmds) => fitArcs(cmds, arcPrecision),
-      })
-    }
-    regions.sort((a, b) => b.area - a.area)
-    // Trap width in viewBox px. An mm-unit output carries a physical millimetre
-    // trap: convert it through the document's mm-per-px so the overlap means the
-    // same on press at any trace resolution; a px-unit trap is already viewBox px.
-    const trapScale = mmPerPx(image.width, settings.widthMm)
-    const trapPx =
-      settings.gapFill <= 0
-        ? 0
-        : settings.unit === 'mm'
-          ? trapScale > 0
-            ? settings.gapFill / trapScale
-            : 0
-          : settings.gapFill
-    for (const region of regions) {
-      const under = underOf(region.label)
-      for (const label of under >= 0 ? [under, region.label] : [region.label]) {
-        const fill = fillFor[label]
-        addColors(usedPalette, paletteColorsFor[label])
-        shapes.push({
-          commands: region.commands,
-          fill,
-          fillRule: 'evenodd',
-          ...(label === under ? { unfoldable: true } : {}),
-          ...(trapPx > 0
-            ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
-            : {}),
-        })
+      const regions =
+        planar && planarFits
+          ? cutoutRegions(planar, planarFits)
+          : assembleRegions(network as ChainNetwork, fits as ChainFit[])
+      regions.sort((a, b) => b.area - a.area)
+      // Trap width in viewBox px. An mm-unit output carries a physical millimetre
+      // trap: convert it through the document's mm-per-px so the overlap means the
+      // same on press at any trace resolution; a px-unit trap is already viewBox px.
+      // A supersampled run traces `supersample` working pixels per viewBox pixel.
+      const ss = settings.supersample
+      // The output canvas: the working image less any border margin.
+      const trapScale = mmPerPx(image.width / ss + 2 * helperCtx.serialize.offset, settings.widthMm)
+      const trapPx =
+        settings.gapFill <= 0
+          ? 0
+          : settings.unit === 'mm'
+            ? trapScale > 0
+              ? (settings.gapFill / trapScale) * ss
+              : 0
+            : settings.gapFill * ss
+      for (const region of regions) {
+        const under = underOf(region.label)
+        for (const label of under >= 0 ? [under, region.label] : [region.label]) {
+          // A cutout face is disjoint, so it sits over the white canvas: a
+          // translucent label paints its ink at its opacity and reproduces the
+          // source-over-white color, while an opaque label paints its flat fill.
+          const opacity = label === under ? undefined : opacityOf(label)
+          const ink = opacity !== undefined ? inkOf(label) : undefined
+          const fill = ink ?? fillFor[label]
+          addColors(
+            usedPalette,
+            opacity !== undefined && ink !== undefined ? [ink] : paletteColorsFor[label],
+          )
+          const primitive = 'primitive' in region ? (region as PlanarRegion).primitive : null
+          shapes.push({
+            commands: region.commands,
+            fill,
+            fillRule: 'evenodd',
+            ...(primitive ? { primitive } : {}),
+            ...(opacity !== undefined ? { fillOpacity: opacity } : {}),
+            ...(label === under ? { unfoldable: true } : {}),
+            ...(trapPx > 0
+              ? { stroke: fill, strokeWidth: trapPx, strokeLinejoin: 'round' as const }
+              : {}),
+          })
+        }
       }
     }
     run.progress(1)
@@ -1218,11 +1765,43 @@ async function colorPipeline(
     // optimization over the cached rings and polygons.
     const ringKey = ringKeyOf(settings, traceMinArea)
     const reusable = paletteEntry?.rings
-    const cachedLayers =
-      reusable !== undefined && reusable.key === ringKey ? reusable.layers : undefined
     // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
     const wantPolygons = settings.curveMode !== 'pixel'
+    // Each layer's polygons are refined against its own boundary field, which
+    // reads the mask the rings were cut from — so they cannot be rebuilt from
+    // cached rings alone, and a ring set cached without them (by a `pixel`
+    // run) is decomposed again.
+    const cachedLayers =
+      reusable !== undefined &&
+      reusable.key === ringKey &&
+      !(wantPolygons && refinesEdges && reusable.polygons === undefined)
+        ? reusable.layers
+        : undefined
     const cachedPolygons = cachedLayers && wantPolygons ? reusable?.polygons : undefined
+    /**
+     * The boundary field of one layer, from the mask its rings were cut from. A
+     * translucent layer takes no alpha field: its interior sits below the cut
+     * level, so refining its exterior onto that level's contour would fold the
+     * face away — its edges stay on the lattice while its color edges still snap.
+     */
+    const fieldFor = (
+      mask: Uint8Array,
+      stackLabels: Int32Array,
+      label: number,
+      translucent: boolean,
+    ): SignedField | undefined =>
+      refinesEdges
+        ? layerField({
+            width: image.width,
+            height: image.height,
+            mask,
+            labels: stackLabels,
+            pixels: image.data,
+            paletteRgb,
+            label,
+            alpha: translucent ? undefined : alphaField,
+          })
+        : undefined
 
     // Layer bookkeeping shared by the cached and the computed path: layers are
     // painted in order and the running count is each layer's own id.
@@ -1247,15 +1826,12 @@ async function colorPipeline(
       totalLayers = total
       traceStride = Math.max(1, Math.ceil(total / TRACE_SNAPSHOTS))
     }
-    /** The paints a layer's shapes carry, for a helper to serialize them with. */
     const layerPaint = (label: number, layerId: number): HelperUnitPaint => {
-      const under = underOf(label)
-      const own: HelperShapeMeta = { fill: fillFor[label], fillRule: 'evenodd', layerId }
-      if (under < 0) return { own }
-      return {
-        own,
-        under: { fill: fillFor[under], fillRule: 'evenodd', layerId, unfoldable: true },
-      }
+      const paints = stackedFacePaints(label)
+      const translucent = opacityOf(label) !== undefined
+      return paints.length === 2
+        ? { under: toMeta(paints[0], layerId), own: toMeta(paints[1], layerId), translucent }
+        : { own: toMeta(paints[0], layerId), translucent }
     }
     /**
      * Place one layer's traced shapes, then report progress and yield. A layer
@@ -1264,23 +1840,30 @@ async function colorPipeline(
      * serialized them, carries the underlay copy of every shape followed by the
      * layer's own copies, in that order.
      */
+    const planarStack = planar !== undefined && planarFits !== undefined
     const paintShapes = async (
       label: number,
       layerShapes: readonly PathCommand[][],
       parts: readonly (ShapeOut | null)[] | undefined,
+      primitives?: readonly (Primitive | null)[],
+      strokes?: readonly (StrokedPrimitive | null)[],
     ): Promise<void> => {
-      const under = underOf(label)
       const layerId = done
       let at = 0
-      for (const l of under >= 0 ? [under, label] : [label]) {
-        if (layerShapes.length > 0) addColors(usedPalette, paletteColorsFor[l])
-        for (const commands of layerShapes) {
+      for (const p of planarStack ? planarFacePaints(label) : stackedFacePaints(label)) {
+        if (layerShapes.length > 0) addColors(usedPalette, p.colors)
+        for (let k = 0; k < layerShapes.length; k++) {
+          const primitive = primitives?.[k] ?? null
+          const stroked = screenStrokes(settings) ? (strokes?.[k] ?? null) : null
           shapes.push({
-            commands,
-            fill: fillFor[l],
+            commands: layerShapes[k],
+            fill: p.fill,
             fillRule: 'evenodd',
             layerId,
-            ...(l === under ? { unfoldable: true } : {}),
+            ...(p.opacity !== undefined ? { fillOpacity: p.opacity } : {}),
+            ...(p.unfoldable ? { unfoldable: true } : {}),
+            ...(primitive !== null ? { primitive } : {}),
+            ...(stroked !== null ? { strokedPrimitive: stroked } : {}),
           })
           if (parts) shapeParts.push(parts[at] ?? null)
           at++
@@ -1297,7 +1880,7 @@ async function colorPipeline(
     const paintLayer = (
       label: number,
       paths: CrackPath[],
-      polygons: (FlatPoints | null)[] | undefined,
+      polygons: (RingFit | null)[] | undefined,
     ): Promise<void> =>
       paintShapes(
         label,
@@ -1305,7 +1888,50 @@ async function colorPipeline(
         undefined,
       )
 
-    if (helpers) {
+    if (planar && planarFits) {
+      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
+      const { faces } = planar.map
+      // Each face's label as the base layers paint it, and the lifted islands' faces.
+      const paintLabel = new Int32Array(faces.count).fill(-1)
+      for (let p = 0; p < faces.ids.length; p++) {
+        const f = faces.ids[p]
+        if (paintLabel[f] < 0) paintLabel[f] = plan.stackLabels[p]
+      }
+      const islands = plan.islands.map((isl) => {
+        const own = new Set<number>()
+        for (const p of isl.pixels) own.add(faces.ids[p])
+        return { label: isl.label, faces: [...own].toSorted((a, b) => a - b) }
+      })
+      // A hidden edge sits a source pixel beneath the sheet over it.
+      const ss = settings.supersample
+      const layers = stackedLayers(
+        planar,
+        planarFits,
+        paintLabel,
+        plan.order,
+        islands,
+        {
+          faceIds: faces.ids,
+          width: faces.width,
+          height: faces.height,
+          distance: ss,
+          ramp: 3 * ss,
+          fit: setBackFit(faces.width, faces.height, ss),
+        },
+        translucentPaint,
+      )
+      startLayers(layers.length)
+      for (const layer of layers) {
+        // oxlint-disable-next-line no-await-in-loop
+        await paintShapes(
+          layer.label,
+          layer.shapes.map((sh) => sh.commands),
+          undefined,
+          layer.shapes.map((sh) => sh.primitive),
+          layer.shapes.map((sh) => sh.stroked),
+        )
+      }
+    } else if (helpers) {
       // Each layer is an independent unit: the helper rebuilds the layer's union
       // flood from the shared plan, decomposes it, fits the curve chain and
       // serializes its shapes. Units come back in layer order, so the paint
@@ -1315,6 +1941,7 @@ async function colorPipeline(
         unit < plan.order.length ? plan.order[unit] : plan.islands[unit - plan.order.length].label
       const total = plan.order.length + plan.islands.length
       const stackKey = `${labelScope}|${ringKey}`
+      if (refinesEdges) helpers.setImage(helperCtx.scope, image, alpha)
       helpers.setStackPlan(stackKey, stackPayload(labels, plan, settings.turnPolicy, traceMinArea))
       startLayers(total)
       for await (const out of helpers.dispatch({
@@ -1324,6 +1951,8 @@ async function colorPipeline(
         curve: curveOpts,
         meta: (unit) => layerPaint(labelOf(unit), unit),
         serialize: helperCtx.serialize,
+        paletteRgb: refinesEdges ? paletteRgb : undefined,
+        alphaThreshold: alphaLevel,
       })) {
         // oxlint-disable-next-line no-await-in-loop
         await paintShapes(labelOf(out.unit), out.shapes, out.svg)
@@ -1335,7 +1964,7 @@ async function colorPipeline(
         else cacheStats(cache!).polyMisses++
       }
       // Rings without polygons (a `pixel` run stored them): rebuild and keep them.
-      const rebuilt: (FlatPoints | null)[][] | undefined =
+      const rebuilt: (RingFit | null)[][] | undefined =
         wantPolygons && !cachedPolygons ? [] : undefined
       startLayers(cachedLayers.length)
       for (let i = 0; i < cachedLayers.length; i++) {
@@ -1356,16 +1985,37 @@ async function colorPipeline(
       }
       // Rings and polygons are retained only when there is a cache to hold them.
       const layers: RingLayer[] | undefined = canCachePal ? [] : undefined
-      const polygonSets: (FlatPoints | null)[][] | undefined =
-        layers && wantPolygons ? [] : undefined
+      const polygonSets: (RingFit | null)[][] | undefined = layers && wantPolygons ? [] : undefined
+      const plan = stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined)
+      const position = paintPositions(plan)
       await decomposeStackedLayers(
         labels,
-        stackPlanFor(labels, counts, paletteEntry, canCachePal ? cache : undefined),
+        plan,
         settings.turnPolicy,
         traceMinArea,
         startLayers,
-        async (label, paths) => {
-          const polygons = wantPolygons ? layerPolygons(paths) : undefined
+        async (label, paths, mask, island) => {
+          const field = fieldFor(
+            mask,
+            plan.stackLabels,
+            island ? label : -1,
+            opacityOf(label) !== undefined,
+          )
+          // A base layer's edge under a sheet above it is set back beneath the
+          // sheet; an island is painted over everything and hides nothing.
+          const hidden =
+            field && !island
+              ? {
+                  mask,
+                  labels: plan.stackLabels,
+                  position,
+                  layer: position[label],
+                  width: image.width,
+                  height: image.height,
+                  scale: settings.supersample,
+                }
+              : undefined
+          const polygons = wantPolygons ? layerPolygons(paths, field, hidden) : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
           await paintLayer(label, paths, polygons)
@@ -1386,12 +2036,55 @@ async function colorPipeline(
 }
 
 /**
- * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`.
- * Stacked layering traces flat label masks with no sub-pixel field, so the
- * polygons depend on the rings alone.
+ * Adjusted optimal polygons for one stacked layer's rings, parallel to `paths`,
+ * refined against the layer's boundary `field` when one applies (its color
+ * edges and the transparency coverage); without one they depend on the rings
+ * alone. With `hidden` — a base layer's stacking — each ring's edges that run
+ * under a sheet painted above it are set back beneath that sheet
+ * (`sheetSetback`).
  */
-function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
-  return paths.map((p) => ringPolygon(p.points))
+function layerPolygons(
+  paths: CrackPath[],
+  field?: SignedField,
+  hidden?: LayerStacking,
+): (RingFit | null)[] {
+  return paths.map((p) =>
+    ringPolygon(
+      p.points,
+      field,
+      hidden
+        ? sheetSetback(
+            p.points,
+            hidden.mask,
+            hidden.labels,
+            hidden.position,
+            hidden.layer,
+            hidden.width,
+            hidden.height,
+            hidden.scale,
+          )
+        : undefined,
+    ),
+  )
+}
+
+/** Where one base layer sits in the stack: what `sheetSetback` reads. */
+interface LayerStacking {
+  mask: Uint8Array
+  labels: Int32Array
+  position: Int32Array
+  layer: number
+  width: number
+  height: number
+  /** Working pixels per source pixel (supersampling). */
+  scale: number
+}
+
+/** Each label's paint position among the base layers (−1 for a label not in `order`). */
+function paintPositions(plan: StackPlan): Int32Array {
+  const position = new Int32Array(plan.labelCount).fill(-1)
+  for (let i = 0; i < plan.order.length; i++) position[plan.order[i]] = i
+  return position
 }
 
 /**
@@ -1408,7 +2101,11 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
  * base, so it reads as the outline/backdrop showing between the colors stacked
  * on top: the standard layered-vinyl build (a cartoon's black outline, a flat
  * design's background). A thin outline threading between regions outscores a
- * compact blob of the same color, and a tiny dark speck never wins. The rest
+ * compact blob of the same color, and a tiny dark speck never wins. A vote this
+ * close is no vote, though: when other colors come within `BASE_CONTEST` of the
+ * leader's perimeter (a poster's backdrop against its letter fill, a cartoon's
+ * outline against its white ground), each contender's stack is built and the one
+ * whose layers trace the least edge is kept ({@link stackedEdge}). The rest
  * stack by descending area (large fields low, small details on top). Order sets
  * only which sheet is the full base and the layer/group order — never the
  * rendered pixels, since each pixel's topmost layer is its own.
@@ -1425,11 +2122,42 @@ function layerPolygons(paths: CrackPath[]): (FlatPoints | null)[] {
  * show through and the rendered pixels are unchanged — only the cut layers get
  * cleaner.
  */
-function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
-  const order0 = stackingOrder(labels, counts)
+export function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
+  const perim = regionPerimeters(labels)
+  const enclosedAll = findEnclosedComponents(labels)
+  const contenders = baseContenders(perim, counts)
+  if (contenders.length < 2) return planWith(labels, counts, enclosedAll, stackingOrder)
+  // A contested base: trace each contender's stack and keep the one whose
+  // layers draw the least edge (the first, most connective one on a tie).
+  let best: StackPlan | undefined
+  let bestEdge = Infinity
+  for (const base of contenders) {
+    const plan = planOnBase(labels, counts, base, enclosedAll)
+    const edge = stackedEdge(plan, labels.width)
+    if (edge < bestEdge) {
+      bestEdge = edge
+      best = plan
+    }
+  }
+  return best as StackPlan
+}
+
+/**
+ * The plan for one way of ordering the base layers: `pickOrder` orders the
+ * labels (base first), the islands buried {@link MIN_LIFT_DEPTH} or more below
+ * their surround in that order are lifted, and the painted map is ordered
+ * again.
+ */
+function planWith(
+  labels: LabelMap,
+  counts: Uint32Array,
+  enclosedAll: readonly EnclosedComponent[],
+  pickOrder: (labels: LabelMap, counts: Uint32Array) => number[],
+): StackPlan {
+  const order0 = pickOrder(labels, counts)
   const position0 = new Int32Array(counts.length).fill(-1)
   order0.forEach((l, i) => (position0[l] = i))
-  const enclosed = findEnclosedComponents(labels).filter((c) => {
+  const enclosed = enclosedAll.filter((c) => {
     const depth = position0[c.surround] - position0[c.label]
     return position0[c.label] >= 0 && position0[c.surround] >= 0 && depth >= MIN_LIFT_DEPTH
   })
@@ -1448,7 +2176,7 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
       if (l >= 0) stackCounts[l]++
     }
     stackLabels = painted
-    order = stackingOrder(
+    order = pickOrder(
       { width: labels.width, height: labels.height, data: painted, count: labels.count },
       stackCounts,
     )
@@ -1470,6 +2198,132 @@ function stackPlan(labels: LabelMap, counts: Uint32Array): StackPlan {
     .map((label) => ({ label, pixels: byColor.get(label) as number[] }))
 
   return { stackLabels, labelCount: counts.length, order, islands }
+}
+
+/**
+ * Share of the leading perimeter a label needs to contest the base. The
+ * perimeter vote stands for how much edge a base saves, and between two colors
+ * this close it no longer tells them apart: on a poster the backdrop and the
+ * letter fill tie, and the stacks the two build differ by a tenth of their edge.
+ */
+const BASE_CONTEST = 0.8
+/** Most contenders whose stacks are traced for a contested base. */
+const BASE_CONTENDERS = 3
+
+/**
+ * The labels contesting the base, most connective first: the one with the
+ * largest perimeter, and the others within {@link BASE_CONTEST} of it (at most
+ * {@link BASE_CONTENDERS} in all). A single contender is an uncontested base.
+ */
+function baseContenders(perim: Float64Array, counts: Uint32Array): number[] {
+  const labels: number[] = []
+  for (let l = 0; l < counts.length; l++) if (counts[l] > 0) labels.push(l)
+  labels.sort((a, b) => perim[b] - perim[a] || counts[b] - counts[a] || a - b)
+  if (labels.length === 0) return []
+  const floor = BASE_CONTEST * perim[labels[0]]
+  return labels.filter((l) => perim[l] >= floor).slice(0, BASE_CONTENDERS)
+}
+
+/** The plan with `base` pinned to the bottom and the rest by descending area. */
+export function planOnBase(
+  labels: LabelMap,
+  counts: Uint32Array,
+  base: number,
+  enclosedAll: readonly EnclosedComponent[] = findEnclosedComponents(labels),
+): StackPlan {
+  return planWith(labels, counts, enclosedAll, (_, c) => orderOnBase(c, base))
+}
+
+/** `base` first, then every other label with pixels by descending pixel count. */
+function orderOnBase(counts: Uint32Array, base: number): number[] {
+  const order: number[] = []
+  for (let l = 0; l < counts.length; l++) if (counts[l] > 0 && l !== base) order.push(l)
+  order.sort((a, b) => counts[b] - counts[a])
+  order.unshift(base)
+  return order
+}
+
+/**
+ * The edge a stacked plan's layers trace: the perimeter (cell sides facing
+ * outside) of every base layer's cut — its own color's union components through
+ * the labels painted at or above it, as {@link decomposeStackedLayers} builds
+ * them — plus every island layer's. The cuts are nested (each layer's is taken
+ * from the labels at or above it), so they are built once, top layer down: each
+ * layer's pixels join a union-find whose components keep their perimeter as
+ * they merge (a shared side takes two off), and a layer's cut is the components
+ * its own pixels landed in. Linear in the pixels, however many layers.
+ */
+export function stackedEdge(plan: StackPlan, width: number): number {
+  const labels = plan.stackLabels
+  const n = labels.length
+  const { order } = plan
+  // Pixels bucketed by label, one pass.
+  const size = new Int32Array(plan.labelCount + 1)
+  for (let p = 0; p < n; p++) if (labels[p] >= 0) size[labels[p] + 1]++
+  for (let l = 0; l < plan.labelCount; l++) size[l + 1] += size[l]
+  const bucket = new Int32Array(size[plan.labelCount])
+  const fill = size.slice(0, plan.labelCount)
+  for (let p = 0; p < n; p++) if (labels[p] >= 0) bucket[fill[labels[p]]++] = p
+
+  const parent = new Int32Array(n).fill(-1)
+  const perim = new Int32Array(n)
+  const seen = new Int32Array(n).fill(-1)
+  const find = (p: number): number => {
+    let r = p
+    while (parent[r] !== r) r = parent[r]
+    while (parent[p] !== r) {
+      const next = parent[p]
+      parent[p] = r
+      p = next
+    }
+    return r
+  }
+  const join = (p: number, q: number): void => {
+    const a = find(p)
+    const b = find(q)
+    if (a === b) {
+      perim[a] -= 2
+      return
+    }
+    const keep = a < b ? a : b
+    const drop = a < b ? b : a
+    parent[drop] = keep
+    perim[keep] += perim[drop] - 2
+  }
+  let edge = 0
+  for (let layer = order.length - 1; layer >= 0; layer--) {
+    const label = order[layer]
+    for (let k = size[label]; k < size[label + 1]; k++) {
+      const p = bucket[k]
+      parent[p] = p
+      perim[p] = 4
+      const x = p - ((p / width) | 0) * width
+      if (x > 0 && parent[p - 1] >= 0) join(p, p - 1)
+      if (x < width - 1 && parent[p + 1] >= 0) join(p, p + 1)
+      if (p >= width && parent[p - width] >= 0) join(p, p - width)
+      if (p < n - width && parent[p + width] >= 0) join(p, p + width)
+    }
+    for (let k = size[label]; k < size[label + 1]; k++) {
+      const r = find(bucket[k])
+      if (seen[r] === layer) continue
+      seen[r] = layer
+      edge += perim[r]
+    }
+  }
+  // An island layer's cut is exactly its own pixels.
+  const own = new Uint8Array(n)
+  for (const island of plan.islands) {
+    for (const p of island.pixels) own[p] = 1
+    for (const p of island.pixels) {
+      const x = p - ((p / width) | 0) * width
+      if (x === 0 || own[p - 1] === 0) edge++
+      if (x === width - 1 || own[p + 1] === 0) edge++
+      if (p < width || own[p - width] === 0) edge++
+      if (p >= n - width || own[p + width] === 0) edge++
+    }
+    for (const p of island.pixels) own[p] = 0
+  }
+  return edge
 }
 
 /** The stacked plan for this label map, from the palette entry when it holds one. */
@@ -1531,9 +2385,11 @@ function stackPayload(
 /**
  * Stacked layering: build each cut layer's mask from `plan` and decompose it
  * into boundary rings, handing them to `onLayer` in paint order (base layers
- * bottom-up, then the lifted island layers). `startLayers` reports the layer
- * total first, so a caller can drive progress; `onLayer` is awaited, so the
- * caller controls where the loop yields.
+ * bottom-up, then the lifted island layers) along with the mask they were cut
+ * from — valid until the next layer is built — and whether the layer is a
+ * lifted island. `startLayers` reports the layer total first, so a caller can
+ * drive progress; `onLayer` is awaited, so the caller controls where the loop
+ * yields.
  */
 async function decomposeStackedLayers(
   labels: LabelMap,
@@ -1541,7 +2397,7 @@ async function decomposeStackedLayers(
   turnPolicy: TurnPolicy,
   minArea: number,
   startLayers: (total: number) => void,
-  onLayer: (label: number, paths: CrackPath[]) => Promise<void>,
+  onLayer: (label: number, paths: CrackPath[], mask: Uint8Array, island: boolean) => Promise<void>,
 ): Promise<void> {
   const floor = Math.max(1, minArea)
   const stackData = plan.stackLabels
@@ -1636,7 +2492,7 @@ async function decomposeStackedLayers(
     // Remove this layer's own pixels so the next union is the layers below it.
     for (let k = offset[label]; k < offset[label + 1]; k++) union[bucket[k]] = 0
     // oxlint-disable-next-line no-await-in-loop
-    await onLayer(label, paths)
+    await onLayer(label, paths, cut, false)
   }
 
   // Island layers: each lifted color repainted on top of every base layer.
@@ -1645,29 +2501,32 @@ async function decomposeStackedLayers(
     for (const p of island.pixels) cut[p] = 1
     const paths = decomposeMask(cutMask, turnPolicy, floor)
     // oxlint-disable-next-line no-await-in-loop
-    await onLayer(island.label, paths)
+    await onLayer(island.label, paths, cut, true)
   }
 }
 
 /**
- * Cutout tracing across helpers: the coordinator walks the crack network into
- * chains, each chain is fitted ONCE in the helper that owns it, and the regions
- * are assembled here from the shared fits — so both neighbours of a chain still
- * inherit mathematically identical geometry and the partition stays seam-free.
+ * Partition chain fitting across helpers: the coordinator walks the crack
+ * network into chains, each chain is fitted ONCE in the helper that owns it, and
+ * the fits are collected here — so an assembler (regions for cutout, faces for
+ * nested) inherits mathematically identical geometry on both sides of a chain
+ * and the partition stays seam-free.
  */
-async function fitCutoutInHelpers(
+async function fitChainsInHelpers(
   run: Run,
   helpers: HelperPool,
   labels: LabelMap,
   image: RasterImage,
-  paletteOklab: Float32Array | undefined,
+  alpha: Uint8Array | null,
+  paletteRgb: Uint8Array | undefined,
+  alphaThreshold: number | undefined,
   curve: HelperCurveOptions,
   arcPrecision: number | undefined,
   helperCtx: HelperContext,
   labelScope: string,
-): Promise<RegionShape[]> {
+): Promise<{ network: ChainNetwork; fits: ChainFit[] }> {
   const network = extractChains(labels)
-  if (paletteOklab) helpers.setImage(helperCtx.scope, image)
+  if (paletteRgb) helpers.setImage(helperCtx.scope, image, alpha)
   helpers.setChains(labelScope, network)
   const fits: ChainFit[] = new Array(network.chains.length)
   let done = 0
@@ -1677,7 +2536,8 @@ async function fitCutoutInHelpers(
     stateKey: labelScope,
     curve,
     batch: CHAIN_BATCH,
-    paletteOklab,
+    paletteRgb,
+    alphaThreshold,
     arcPrecision,
   })) {
     fits[out.unit] = { open: out.shapes[0], closed: out.shapes[1] }
@@ -1690,7 +2550,303 @@ async function fitCutoutInHelpers(
       await run.tick()
     }
   }
-  return assembleRegions(network, fits)
+  return { network, fits }
+}
+
+/**
+ * The planar chain's edge fitter with a helper pool: each edge fitted once,
+ * from the inputs its fit reads (`edgeFitInput`), in the helper it is assigned
+ * to or on this thread, and the fits placed by edge index — what `fitEdges`
+ * returns on this thread. Edges are assigned by their estimated cost
+ * ({@link edgeFitWeight}) over the helpers and this thread, weighted alike, so
+ * all finish together: this thread fits its share while the helpers fit
+ * theirs, and places their fits as they arrive, whenever it yields. Undefined
+ * without helpers: the chain fits its edges itself. The map is built afresh
+ * every run, so its edges are keyed by the run's serial.
+ */
+function planarEdgeFitter(
+  run: Run,
+  helperCtx: HelperContext,
+): ((map: PlanarMap, cfg: FitConfig) => Promise<FittedEdge[]>) | undefined {
+  const helpers = helperCtx.helpers
+  if (!helpers) return undefined
+  const key = `#${helperCtx.serial}|edges`
+  return async (map, cfg) => {
+    const total = map.edges.length
+    const edges = map.edges.map((_, k) => edgeFitInput(map, k))
+    const weights = map.edges.map(edgeFitWeight)
+    // This thread is the last owner, one past the helpers.
+    const self = helpers.size
+    const owners = balancedOwners(weights, self + 1)
+    helpers.setEdges(key, { width: map.width, height: map.height, cfg, edges }, owners)
+    const fits: FittedEdge[] = new Array(total)
+    await shareUnits(
+      run,
+      helpers,
+      { kind: 'fit-edges', total, stateKey: key, owners, batch: EDGE_BATCH },
+      (k) => (fits[k] = fitEdgeInput(edges[k], map, cfg)),
+      (out) => (fits[out.unit] = out.fit as FittedEdge),
+      weights,
+      EDGE_TICK_WEIGHT,
+    )
+    return fits
+  }
+}
+
+/**
+ * Run fit steps (an ink front end's band merge, {@link FitSteps}) with each
+ * batch's fits shared between the helpers and this thread. Every helper is
+ * sent a merge's fixed inputs once and then every batch's merges, so its copy
+ * of the merge's components stays the merge's, and fits the units it is
+ * assigned by estimated cost (the batch's `work`; the heaviest unit stays on
+ * this thread, so a batch smaller than the pool keeps it busy); the fits go
+ * back to the merge in unit order, exactly as {@link fitHere} makes them. A
+ * merge's payloads are keyed by the run's serial.
+ */
+async function fitStepsAcross<T>(
+  run: Run,
+  helpers: HelperPool,
+  serial: number,
+  steps: FitSteps<T>,
+): Promise<T> {
+  const merges = new Map<BandFitSource, string>()
+  let batches = 0
+  for (let r = steps.next(); ;) {
+    if (r.done) return r.value
+    const batch = r.value
+    let bands = merges.get(batch.source)
+    if (bands === undefined) {
+      bands = `#${serial}|bands${merges.size}`
+      merges.set(batch.source, bands)
+      helpers.setBands(bands, batch.source)
+    }
+    const key = `${bands}#${batches++}`
+    helpers.setBandBatch(bands, key, batch)
+    const total = batch.a.length
+    const self = helpers.size
+    // The balance's first owner, which takes the heaviest unit, is this thread.
+    const owners = balancedOwners(Array.from(batch.work), self + 1).map((o) =>
+      o === 0 ? self : o - 1,
+    )
+    const fits: FillFit[] = new Array(total)
+    // oxlint-disable-next-line no-await-in-loop
+    await shareUnits(
+      run,
+      helpers,
+      { kind: 'fit-bands', total, stateKey: key, owners, batch: BAND_BATCH },
+      (u) => (fits[u] = batch.fit(u)),
+      (out) => (fits[out.unit] = out.fill as FillFit),
+      batch.work,
+      BAND_TICK_WORK,
+    )
+    r = steps.next(fits)
+  }
+}
+
+/**
+ * Run `spec.total` units over the helpers and this thread: a unit owned by
+ * `helpers.size` (`spec.owners`) runs here (`here`), the others in their
+ * helpers, whose outputs are handed to `place` as they arrive, whenever this
+ * thread yields. This thread checks for a cancel after every `tickWork` of
+ * estimated cost (`work`, per unit) of its own units, and a cancel stops the
+ * helpers' jobs too.
+ */
+async function shareUnits(
+  run: Run,
+  helpers: HelperPool,
+  spec: HelperDispatchSpec & { owners: ArrayLike<number> },
+  here: (unit: number) => void,
+  place: (out: HelperUnitOutput) => void,
+  work: ArrayLike<number>,
+  tickWork: number,
+): Promise<void> {
+  const self = helpers.size
+  const stop = new AbortController()
+  const replies = helpers.dispatch({ ...spec, signal: stop.signal })
+  // Starting the placement posts the helpers' jobs, so they run while this
+  // thread runs its own share.
+  const placed = placeReplies(run, replies, place)
+  // A rejection is rethrown by the await below, once this thread's share is done.
+  placed.catch(() => undefined)
+  try {
+    let sinceTick = 0
+    for (let u = 0; u < spec.total; u++) {
+      if (spec.owners[u] !== self) continue
+      here(u)
+      sinceTick += work[u]
+      if (sinceTick >= tickWork) {
+        sinceTick = 0
+        // oxlint-disable-next-line no-await-in-loop
+        await run.tick()
+      }
+    }
+  } catch (err) {
+    stop.abort()
+    throw err
+  }
+  await placed
+}
+
+/** Hand each helper output to `place` as it arrives, checking for a cancel as they come. */
+async function placeReplies(
+  run: Run,
+  replies: AsyncGenerator<HelperUnitOutput>,
+  place: (out: HelperUnitOutput) => void,
+): Promise<void> {
+  let done = 0
+  for await (const out of replies) {
+    place(out)
+    done++
+    if ((done & PLACE_TICK_MASK) === 0) {
+      // oxlint-disable-next-line no-await-in-loop
+      await run.tick()
+    }
+  }
+}
+
+/**
+ * An edge fit's estimated cost, for balancing the helpers and the coordinator:
+ * its work per point grows with the point count up to {@link EDGE_REACH}
+ * points and is level beyond, where the program's spans reach no further; a
+ * closed edge runs the program from two cuts and the primitive search. An edge
+ * against the image frame lies along it, a few lines whose cost is linear in
+ * its points.
+ */
+function edgeFitWeight(edge: PlanarEdge): number {
+  const n = edge.points.length >> 1
+  if (edge.left === OUTSIDE || edge.right === OUTSIDE) return 2 * n
+  return n * Math.min(n, EDGE_REACH) * (edge.closed ? 2 : 1)
+}
+
+/** Point count past which an edge fit's cost per point stops growing ({@link edgeFitWeight}). */
+const EDGE_REACH = 32
+
+/** Helper outputs placed between cancel checks (a power of two, minus one). */
+const PLACE_TICK_MASK = 63
+
+/**
+ * Estimated cost ({@link edgeFitWeight}) of the edges the coordinator fits
+ * between cancel checks: about 50 ms of fitting, a few edges where they are
+ * long, a few hundred where they are short.
+ */
+const EDGE_TICK_WEIGHT = 6000
+
+/**
+ * Edges per helper reply. Edge fits run from microseconds to a second, so a
+ * small batch keeps cancellation prompt at a message count still well under
+ * one per edge.
+ */
+const EDGE_BATCH = 16
+
+/** Band fits per helper reply: like an edge's, a fit takes from microseconds to half a second. */
+const BAND_BATCH = 16
+
+/**
+ * Estimated cost (`unionWork`, about 1000 units a millisecond) of the band fits
+ * the coordinator makes between cancel checks: about 50 ms of fitting.
+ */
+const BAND_TICK_WORK = 50_000
+
+/** The primitive a planar chain's face draws when its ring is one whole-primitive edge. */
+function primitiveOf(face: FaceShape): Primitive | null {
+  return 'primitive' in face ? (face as PlanarFace).primitive : null
+}
+
+/**
+ * Nested layering emission (inkvec `emit_color`, `crates/inkvec-cli/src/emit.rs`):
+ * paint each planar face once as its outer ring, in containment order (a parent
+ * before the faces nested inside it), and merge same-color sibling faces into
+ * one even-odd path. A child's outline is painted over its parent, so a boundary
+ * between nested faces is written once and the shared curve — the identical fit —
+ * leaves no seam. Faces are pushed in a pre-order walk of the containment forest,
+ * larger area first at each level; a face carrying an underlay emits its base
+ * paint first (its own geometry) and is never merged, mirroring cutout.
+ */
+function emitNestedFaces(
+  faces: readonly FaceShape[],
+  fillFor: readonly string[],
+  paletteColorsFor: readonly string[][],
+  underOf: (label: number) => number,
+  usedPalette: string[],
+  shapes: SvgShape[],
+  translucent?: (label: number) => FacePaint[],
+): void {
+  const children: number[][] = faces.map(() => [])
+  const roots: number[] = []
+  for (let i = 0; i < faces.length; i++) {
+    if (faces[i].parent >= 0) children[faces[i].parent].push(i)
+    else roots.push(i)
+  }
+  // Largest area first within a level, index as a deterministic tiebreak, so a
+  // face never sits above one it contains and the output is stable.
+  const byArea = (a: number, b: number): number => faces[b].area - faces[a].area || a - b
+  roots.sort(byArea)
+  for (const list of children) list.sort(byArea)
+
+  // A face merges with its same-color siblings only when its paint is a flat hex
+  // and it carries no underlay (a gradient's `url(#…)` fill and an underlay each
+  // stay their own element, exactly as inkvec keeps them out of the merge).
+  const opacityOfFace = (i: number): FacePaint | undefined => {
+    const p = translucent?.(faces[i].label)
+    return p !== undefined && p.length === 1 && p[0].opacity !== undefined ? p[0] : undefined
+  }
+  const mergeable = (i: number): boolean =>
+    underOf(faces[i].label) < 0 &&
+    fillFor[faces[i].label].startsWith('#') &&
+    opacityOfFace(i) === undefined
+
+  const emitLevel = (members: readonly number[]): void => {
+    const done = new Uint8Array(members.length)
+    for (let a = 0; a < members.length; a++) {
+      if (done[a]) continue
+      done[a] = 1
+      const i = members[a]
+      const label = faces[i].label
+      const under = underOf(label)
+      if (!mergeable(i)) {
+        // Non-merged: an underlay's base paint first (same geometry), then the
+        // face's own paint, each its own element.
+        const primitive = primitiveOf(faces[i])
+        const wash = opacityOfFace(i)
+        for (const paintLabel of under >= 0 ? [under, label] : [label]) {
+          const own = paintLabel === label && wash !== undefined
+          addColors(usedPalette, own ? wash.colors : paletteColorsFor[paintLabel])
+          shapes.push({
+            commands: faces[i].commands,
+            fill: own ? wash.fill : fillFor[paintLabel],
+            fillRule: 'evenodd',
+            ...(own ? { fillOpacity: wash.opacity } : {}),
+            ...(primitive ? { primitive } : {}),
+            ...(paintLabel === under ? { unfoldable: true } : {}),
+          })
+        }
+        emitLevel(children[i])
+        continue
+      }
+      // Merge every later same-fill sibling into one even-odd path (disjoint
+      // siblings, so even-odd paints their union). Their children still follow.
+      const group = [i]
+      for (let b = a + 1; b < members.length; b++) {
+        if (done[b]) continue
+        const j = members[b]
+        if (!mergeable(j) || fillFor[faces[j].label] !== fillFor[label]) continue
+        done[b] = 1
+        group.push(j)
+      }
+      const commands: PathCommand[] = []
+      for (const j of group) commands.push(...faces[j].commands)
+      addColors(usedPalette, paletteColorsFor[label])
+      const primitive = group.length === 1 ? primitiveOf(faces[i]) : null
+      shapes.push({
+        commands,
+        fill: fillFor[label],
+        fillRule: 'evenodd',
+        ...(primitive ? { primitive } : {}),
+      })
+      for (const j of group) emitLevel(children[j])
+    }
+  }
+  emitLevel(roots)
 }
 
 /** Chains between a progress report and a cancel check (a power of two, minus one). */
@@ -1711,26 +2867,26 @@ async function inkPipeline(
   warnings: VectorizeWarning[],
   setPalette: (p: string[]) => void,
   edgeHint: GrayImage | undefined,
-  coverageHint: GrayImage | undefined,
   cache: StageCache | undefined,
   imageId: number | undefined,
   helperCtx: HelperContext,
+  planarRun: PlanarRun | undefined,
+  alpha: Uint8Array | null,
 ): Promise<void> {
   run.stage('palette')
   // The despeckled mask and its coverage field are reused when the image and
-  // every threshold setting behind them are unchanged. Both hints feed the mask
-  // or the field without appearing in the key, so caching is off while either is
-  // present (correctness over speed).
+  // every threshold setting behind them are unchanged. The edge hint feeds the
+  // mask without appearing in the key, so caching is off while it is present
+  // (correctness over speed).
   const canCacheInk =
     cache !== undefined &&
     imageId !== undefined &&
     cache.imageId === imageId &&
-    edgeHint === undefined &&
-    coverageHint === undefined
+    edgeHint === undefined
   const inkKey = canCacheInk ? inkKeyOf(settings) : undefined
   let entry = canCacheInk && cache.ink?.key === inkKey ? cache.ink : undefined
   // Edge hint (if any) protects thin real features from the size-based despeckle;
-  // with no hint this is byte-identical to despeckleMask (and always null when caching).
+  // with no hint it is null (and always null when caching).
   const protect = edgeProtectMask(edgeHint, image.width, image.height)
 
   let mask: BinaryMask
@@ -1767,16 +2923,15 @@ async function inkPipeline(
     } else {
       const t =
         settings.thresholdMode === 'auto' ? otsuThreshold(gray, opaque) : settings.threshold / 255
-      mask = binarize(gray, t, settings.invert, opaque)
-      if (settings.curveMode !== 'pixel') coverage = signedThresholdField(gray, t, settings.invert)
-    }
-    // A learned coverage hint (FieldEnhancer) replaces the field derived from the
-    // degraded input, so refinement snaps ring vertices to the clean edge. Quantized
-    // (the discretization boundary) and only when a sub-pixel field applies. No hint
-    // ⇒ the classical field, byte-identical.
-    if (coverageHint && settings.curveMode !== 'pixel') {
-      const hf = coverageHintField(coverageHint, image.width, image.height)
-      if (hf) coverage = hf
+      // The threshold is a lightness; the mask and the field read it in encoded
+      // luma, where an anti-aliased edge's coverage is linear. On neutral pixels
+      // the two orders agree, so the mask is the lightness threshold's; the field
+      // then inverts the rasterizer's blend instead of lightness's cube-root curve,
+      // which read every edge pixel as less ink than it holds.
+      const luma = toEncodedLuma(image)
+      const tl = encodedOfLightness(t)
+      mask = binarize(luma, tl, settings.invert, opaque)
+      if (settings.curveMode !== 'pixel') coverage = signedThresholdField(luma, tl, settings.invert)
     }
     await run.tick()
 
@@ -1806,7 +2961,54 @@ async function inkPipeline(
   run.stage('trace')
   setPalette([settings.fillColor])
 
-  if (settings.mode === 'bw') {
+  if (settings.mode === 'bw' && planarRun && settings.curveMode !== 'pixel') {
+    // The planar chain: ink (label 0) against paper (label 1) or transparency,
+    // each painted with the mean of its interior pixels, the ink faces emitted.
+    const { width: w, height: h } = mask
+    const data = new Int32Array(w * h)
+    for (let i = 0; i < data.length; i++) {
+      data[i] = mask.data[i] ? 0 : opaque !== null && opaque.data[i] === 0 ? -1 : 1
+    }
+    const labels: LabelMap = { width: w, height: h, data, count: 2 }
+    const means = interiorMeans(image, data, 2)
+    const meanRgb = Uint8Array.from(means.flatMap((hex) => hexToRgb(hex) ?? [255, 255, 255]))
+    const { geo, fits } = await tracePlanar({
+      labels,
+      image,
+      alpha,
+      paints: means.map((hex) => ({ hex })),
+      scale: settings.supersample,
+      source: planarRun.source,
+      sigmaNoise: planarRun.soft ? softNoise(image, labels, meanRgb) : undefined,
+      onStage: planarRun.onStage,
+      solveKernel: planarRun.solveKernel,
+      fitEdges: planarEdgeFitter(run, helperCtx),
+    })
+    const { faces } = geo.map
+    const inkFaces: number[] = []
+    for (let f = 0; f < faces.count; f++) if (faces.label[f] === 0) inkFaces.push(f)
+    inkFaces.sort((a, b) => faces.area[b] - faces.area[a] || a - b)
+    for (const f of inkFaces) {
+      const commands: PathCommand[] = []
+      const rings = geo.rings[f].filter((ring) => {
+        const ringCmds = planarRingCommands(ring, fits)
+        if (!paintsArea(ringCmds)) return false
+        commands.push(...ringCmds)
+        return true
+      })
+      const primitive = rings.length === 1 ? ringPrimitive(rings[0], fits) : null
+      const stroked =
+        screenStrokes(settings) && rings.length === 2 ? ringStroke(rings[0], rings[1], fits) : null
+      shapes.push({
+        commands,
+        fill: settings.fillColor,
+        fillRule: 'evenodd',
+        ...(primitive !== null ? { primitive } : {}),
+        ...(stroked !== null ? { strokedPrimitive: stroked } : {}),
+      })
+    }
+    run.progress(1)
+  } else if (settings.mode === 'bw') {
     // With a hint, the guided despeckle is the speck filter (it already dropped
     // everything small that the hint did not protect), so the tracer must not
     // re-drop the small features it kept — mirrors preserveDetails in color.
@@ -1818,7 +3020,7 @@ async function inkPipeline(
     // `pixel` curveMode emits the exact lattice ring and never reads a polygon.
     const wantPolygons = settings.curveMode !== 'pixel'
     let paths: CrackPath[]
-    let polygons: (FlatPoints | null)[] | undefined
+    let polygons: (RingFit | null)[] | undefined
     if (entry?.rings && entry.ringKey === ringKey) {
       paths = entry.rings
       polygons = wantPolygons ? entry.polygons : undefined
@@ -1838,6 +3040,7 @@ async function inkPipeline(
       curveOptimize: settings.curveOptimize,
       optTolerance: settings.optTolerance,
       cornerThreshold: settings.cornerThreshold,
+      scale: settings.supersample,
     }
     const helpers = helperCtx.helpers
     let traced: TracedShape[]
@@ -1943,6 +3146,50 @@ async function inkPipeline(
   }
 }
 
+/**
+ * Each label's color as `#rrggbb`: the mean of its interior pixels (all four
+ * 4-neighbours share the label), or of all its pixels when it has none.
+ */
+function interiorMeans(image: RasterImage, labels: Int32Array, count: number): string[] {
+  const { width: w, height: h, data } = image
+  const inner = new Float64Array(count * 4)
+  const all = new Float64Array(count * 4)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      const l = labels[i]
+      if (l < 0 || l >= count) continue
+      all[l * 4] += data[i * 4]
+      all[l * 4 + 1] += data[i * 4 + 1]
+      all[l * 4 + 2] += data[i * 4 + 2]
+      all[l * 4 + 3]++
+      const inside =
+        (x === 0 || labels[i - 1] === l) &&
+        (x === w - 1 || labels[i + 1] === l) &&
+        (y === 0 || labels[i - w] === l) &&
+        (y === h - 1 || labels[i + w] === l)
+      if (!inside) continue
+      inner[l * 4] += data[i * 4]
+      inner[l * 4 + 1] += data[i * 4 + 1]
+      inner[l * 4 + 2] += data[i * 4 + 2]
+      inner[l * 4 + 3]++
+    }
+  }
+  const out: string[] = []
+  for (let l = 0; l < count; l++) {
+    const acc = inner[l * 4 + 3] > 0 ? inner : all
+    const n = Math.max(1, acc[l * 4 + 3])
+    out.push(
+      rgbToHex(
+        Math.round(acc[l * 4] / n),
+        Math.round(acc[l * 4 + 1] / n),
+        Math.round(acc[l * 4 + 2] / n),
+      ),
+    )
+  }
+  return out
+}
+
 /** Rings between a progress report and a cancel check (a power of two, minus one). */
 const RING_TICK_MASK = 255
 
@@ -1978,11 +3225,16 @@ function ringShapeUnits(
   return units
 }
 
+/**
+ * Replace each pixel by the gray of its Oklab lightness: a gray's Oklab L is
+ * the cube root of its linear luminance, so the gray is `linearToSrgb(L³)` in
+ * encoded sRGB, and a gray pixel keeps its own value.
+ */
 function desaturateInPlace(image: RasterImage): void {
   const { data } = image
   for (let i = 0; i < data.length; i += 4) {
     const L = rgbToOklab(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255)[0]
-    const v = Math.round(L * 255)
+    const v = Math.round(255 * linearToSrgb(Math.min(1, Math.max(0, L * L * L))))
     data[i] = v
     data[i + 1] = v
     data[i + 2] = v
@@ -2077,7 +3329,7 @@ function applyGradients(
     minArea:
       settings.gradientMinArea > 0
         ? settings.gradientMinArea
-        : Math.max(GRADIENT_MIN_AREA, settings.minRegionArea),
+        : Math.max(GRADIENT_MIN_AREA * settings.supersample ** 2, settings.minRegionArea),
     // Strength loosens the growth's backtracking ceiling and lowers the required
     // color span together, so a low value keeps only clean, high-contrast ramps
     // (flat objects stay flat) and a high value tolerates more reversal and
@@ -2121,6 +3373,98 @@ function countLabels(labels: LabelMap): Uint32Array {
     if (l >= 0) counts[l]++
   }
   return counts
+}
+
+/** Fewest translucent pixels before a label is emitted as a translucent face. */
+const MIN_TRANSLUCENT_PIXELS = 16
+
+/** Lower median value of a 256-bin channel histogram at `base`, over `total` samples. */
+function medianBin(hist: Uint32Array, base: number, total: number): number {
+  const half = (total + 1) >> 1
+  let acc = 0
+  let v = 0
+  for (; v < 255; v++) {
+    acc += hist[base + v]
+    if (acc >= half) break
+  }
+  return v
+}
+
+/**
+ * Classify each label as a translucent face and, for those that are, recolor it
+ * to its ink and return its fill opacity (label ⇒ opacity, else undefined; the
+ * whole result undefined when no label is translucent).
+ *
+ * inkvec treats an ink as color plus opacity: a soft shadow, glass or steam is a
+ * translucent face painted its ink color at `alpha/255` opacity, so over a white
+ * ground it reproduces the source-over-white color and over other content it
+ * shows through. A label qualifies when most of its pixels are partly transparent
+ * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`). Its opacity is the
+ * median source alpha over those pixels. Its ink is the straight-alpha color the
+ * source stored under partial coverage, recovered by inverting the over-white
+ * composite the working image carries — `ink = (over − 255·(1 − a)) / a`, i.e.
+ * `(over − 255)·255/α + 255` — read as the per-channel median over the label's
+ * translucent pixels, so the composited rim the labeling handed it does not move
+ * the color. Returns the per-label opacity and ink (both indexed by label,
+ * undefined for an opaque label), or undefined when no label is translucent;
+ * `paletteHex` is left untouched. Gradient labels are skipped. `area` is the
+ * working pixels per source pixel squared (supersampling). Deterministic:
+ * histograms only.
+ */
+interface Translucency {
+  opacity: (number | undefined)[]
+  inkHex: (string | undefined)[]
+}
+function translucentFaces(
+  image: RasterImage,
+  labels: LabelMap,
+  alpha: Uint8Array | null,
+  count: number,
+  gradients: (GradientPaint | null)[] | undefined,
+  area: number,
+): Translucency | undefined {
+  if (alpha === null) return undefined
+  const lab = labels.data
+  const px = image.data
+  const transN = new Uint32Array(count)
+  const totalN = new Uint32Array(count)
+  const aHist = new Uint32Array(count * 256)
+  const inkHist = new Uint32Array(count * 768)
+  for (let i = 0; i < lab.length; i++) {
+    const l = lab[i]
+    if (l < 0 || l >= count) continue
+    totalN[l]++
+    const a = alpha[i]
+    if (a < TRANSLUCENT_MIN_ALPHA || a >= TRANSLUCENT_MAX_ALPHA) continue
+    transN[l]++
+    aHist[l * 256 + a]++
+    const p = i * 4
+    const inv = 255 / a
+    let r = Math.round((px[p] - 255) * inv + 255)
+    let g = Math.round((px[p + 1] - 255) * inv + 255)
+    let b = Math.round((px[p + 2] - 255) * inv + 255)
+    r = r < 0 ? 0 : r > 255 ? 255 : r
+    g = g < 0 ? 0 : g > 255 ? 255 : g
+    b = b < 0 ? 0 : b > 255 ? 255 : b
+    const base = l * 768
+    inkHist[base + r]++
+    inkHist[base + 256 + g]++
+    inkHist[base + 512 + b]++
+  }
+  let opacity: (number | undefined)[] | undefined
+  let inkHex: (string | undefined)[] | undefined
+  for (let l = 0; l < count; l++) {
+    if (gradients?.[l]) continue
+    if (transN[l] < MIN_TRANSLUCENT_PIXELS * area || transN[l] * 2 < totalN[l]) continue
+    const medA = medianBin(aHist, l * 256, transN[l])
+    if (medA < TRANSLUCENT_MIN_ALPHA || medA >= TRANSLUCENT_MAX_ALPHA) continue
+    const r = medianBin(inkHist, l * 768, transN[l])
+    const g = medianBin(inkHist, l * 768 + 256, transN[l])
+    const b = medianBin(inkHist, l * 768 + 512, transN[l])
+    ;(opacity ??= new Array<number | undefined>(count))[l] = Math.round((medA / 255) * 1000) / 1000
+    ;(inkHex ??= new Array<string | undefined>(count))[l] = rgbToHex(r, g, b)
+  }
+  return opacity && inkHex ? { opacity, inkHex } : undefined
 }
 
 /** Append each color not already present (preserves first-appearance order). */
@@ -2236,14 +3580,3 @@ function warnTinyFeatures(
 function round2(v: number): number {
   return Math.round(v * 100) / 100
 }
-
-export function createNativeEngine(): TrazorEngine {
-  return {
-    id: 'native',
-    label: 'Trazor native',
-    modes: ['color', 'grayscale', 'bw', 'centerline'] satisfies VectorizeMode[],
-    vectorize: (image, settings, ctx) => vectorize(image, settings, ctx),
-  }
-}
-
-export { DEFAULT_SETTINGS }

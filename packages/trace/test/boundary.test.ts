@@ -87,10 +87,11 @@ describe('traceLabelMap', () => {
   })
 
   it('shares every interior boundary anchor between adjacent regions (seam-free)', () => {
-    // A wavy two-label split.
+    // A steeply zig-zagging two-label split: several turns, so the shared
+    // boundary carries multiple interior anchors to check the sharing on.
     const rows: string[] = []
     for (let y = 0; y < 16; y++) {
-      const split = 6 + Math.round(3 * Math.sin(y / 3))
+      const split = 5 + 4 * (y % 2)
       rows.push('0'.repeat(split) + '1'.repeat(16 - split))
     }
     const shapes = traceLabelMap(labelsOf(rows), OPTS)

@@ -170,6 +170,31 @@ describe('fitArcs', () => {
     ).toBeLessThan(0.6)
   })
 
+  it('validates a near-half-turn arc from its start point as written', () => {
+    // An off-grid start rounds by up to half a grid unit; near half a turn the
+    // endpoint form moves the center far for that, so the arc is judged from
+    // the rounded start a renderer draws it from.
+    let worst = 0
+    let arcs = 0
+    for (let k = 0; k < 40; k++) {
+      const cx = 50.37 + 0.113 * k
+      const cy = 40.81 - 0.071 * k
+      const r = 3.3 + 0.37 * k
+      const sweep = ((170 + (k % 5) * 5) * Math.PI) / 180
+      const a0 = 0.31 * k
+      const { start, cubics } = arcCubics(cx, cy, r, a0, a0 + sweep, 2)
+      if (start.type !== 'M') throw new Error('expected M')
+      for (const c of fitArcs([start, ...cubics], 1)) {
+        if (c.type !== 'A') continue
+        arcs++
+        const s0 = { x: Number(start.x.toFixed(1)), y: Number(start.y.toFixed(1)) }
+        worst = Math.max(worst, maxCircleError(s0, c, cx, cy, r))
+      }
+    }
+    expect(arcs).toBeGreaterThan(10)
+    expect(worst).toBeLessThan(0.2)
+  })
+
   it('collapses a three-cubic 270° arc with the large-arc flag set', () => {
     const { start, cubics } = arcCubics(0, 0, 30, 0, 1.5 * Math.PI, 3)
     const out = fitArcs([start, ...cubics], 3)
@@ -238,6 +263,46 @@ describe('fitArcs', () => {
       return { ...c, x: c.x * s, y: c.y * s }
     })
     expect(fitArcs([start, ...bumped], 2).some((c) => c.type === 'A')).toBe(false)
+  })
+
+  it('keeps a run 0.3px off its circle as cubics (the traced boundary is more accurate)', () => {
+    // A traced edge sits within a tenth or two of a pixel of the drawing; an arc
+    // that moves it 0.3px is a visible loss, however round the run looks.
+    const { start, cubics } = arcCubics(0, 0, 40, 0, Math.PI / 2, 4)
+    const bumped = cubics.map((c, i) => {
+      if (c.type !== 'C' || i === cubics.length - 1) return c
+      const s = (40 + 0.3) / 40
+      return { ...c, x: c.x * s, y: c.y * s }
+    })
+    expect(fitArcs([start, ...bumped], 2).some((c) => c.type === 'A')).toBe(false)
+    expect(fitArcs([start, ...cubics], 2).some((c) => c.type === 'A')).toBe(true)
+  })
+
+  it('does not read two near-collinear cubics as the flank of a sliver ellipse', () => {
+    // A straight edge traced as two cubics sits within a few hundredths of a
+    // pixel of an ellipse a quarter-pixel thick, and its samples pass the conic
+    // test; an arc of that ellipse runs round its far end between two samples.
+    const start: PathCommand = { type: 'M', x: 27.1, y: 26.5 }
+    const cubics: PathCommand[] = [
+      { type: 'C', x1: 28, y1: 26.3, x2: 29.1, y2: 26, x: 30, y: 26 },
+      { type: 'C', x1: 52.7, y1: 26, x2: 75.3, y2: 25.9, x: 98, y: 26.1 },
+      { type: 'C', x1: 105.9, y1: 26.2, x2: 114, y2: 34.1, x: 114, y: 42 },
+    ]
+    expect(fitArcs([start, ...cubics], 2).some((c) => c.type === 'A')).toBe(false)
+  })
+
+  it('does not read a gently bowed run as half of a thin ellipse', () => {
+    // A traced edge bowing two pixels over sixty lies near half an ellipse two
+    // pixels thick at a few points of each cubic, yet between them that arc
+    // strays almost half a pixel off the long cubic and turns back at both ends.
+    const start: PathCommand = { type: 'M', x: 200.77, y: 348.67 }
+    const cubics: PathCommand[] = [
+      { type: 'C', x1: 185.48, y1: 359.94, x2: 168.2, y2: 367.83, x: 150.9, y: 375.6 },
+      { type: 'C', x1: 149.18, y1: 376.38, x2: 147.24, y2: 377.17, x: 145.34, y: 377.25 },
+    ]
+    for (const precision of [1, 2]) {
+      expect(fitArcs([start, ...cubics], precision).some((c) => c.type === 'A')).toBe(false)
+    }
   })
 
   it('collapses an axis-aligned elliptical arc into an A with distinct radii', () => {
@@ -381,6 +446,46 @@ describe('serialize with arcs', () => {
     })
     const d = /d="([^"]*)"/.exec(svg)?.[1] ?? ''
     expect(d).toMatch(/[Aa]\s*50\s+50/)
+  })
+
+  it('writes a primitive the shape carries as its element, roundPrimitives off', () => {
+    const svg = serializeSvg(
+      {
+        width: 140,
+        height: 100,
+        unit: 'px',
+        shapes: [
+          {
+            commands: halfDisc(),
+            fill: '#000',
+            primitive: { kind: 'circle', cx: 70, cy: 50, r: 30.004 },
+          },
+        ],
+      },
+      { precision: 2, optimizePaths: true, roundPrimitives: false },
+    )
+    expect(svg).toContain('<circle cx="70" cy="50" r="30" fill="#000"/>')
+    expect(svg).not.toContain('<path')
+  })
+
+  it("puts a written rect's far edges on the output grid", () => {
+    const svg = serializeSvg(
+      {
+        width: 140,
+        height: 100,
+        unit: 'px',
+        shapes: [
+          {
+            commands: halfDisc(),
+            fill: '#000',
+            primitive: { kind: 'rrect', x: 49.34, y: 68.34, width: 68.92, height: 14.74, r: 7.37 },
+          },
+        ],
+      },
+      { precision: 1, optimizePaths: true, roundPrimitives: false },
+    )
+    // Edges 49.3 → 118.3 and 68.3 → 83.1, each rounded once.
+    expect(svg).toContain('<rect x="49.3" y="68.3" width="69" height="14.8" rx="7.4"')
   })
 
   it('stays byte-identical (no arc) when roundPrimitives is off', () => {

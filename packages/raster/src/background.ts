@@ -2,12 +2,12 @@
  * Alpha flattening and background-color probing.
  */
 import { createMask, hexToRgb } from '@trazor/core'
-import type { BinaryMask, RasterImage, VectorizeSettings } from '@trazor/core'
+import type { BinaryMask, GrayImage, RasterImage, VectorizeSettings } from '@trazor/core'
 
 export interface FlattenResult {
   /** RGB composited over white (`transparent`) or `backgroundColor` (`custom`), alpha 255. */
   image: RasterImage
-  /** `null` under fully-opaque handling; else 1 where original alpha ≥ `alphaThreshold`. */
+  /** `null` under fully-opaque handling; else 1 for each pixel that produces a shape (see {@link flattenImage}). */
   opaque: BinaryMask | null
   /** Source alpha per pixel (0-255), kept whenever `opaque` is; `null` otherwise. */
   alpha: Uint8Array | null
@@ -38,16 +38,22 @@ function compositeOver(image: RasterImage, br: number, bg: number, bb: number): 
  * Resolve the alpha channel ahead of vectorization.
  *
  * - `transparent`: composite RGB over white (removes fringe colors in
- *   semi-transparent edge pixels) and report `opaque` = original alpha ≥
- *   `alphaThreshold`.
+ *   semi-transparent edge pixels) and report `opaque` — the pixels that produce
+ *   a shape: original alpha ≥ `alphaThreshold`, or, for an image dominated by
+ *   flat translucent content, alpha ≥ `TRANSLUCENT_MIN_ALPHA` (see below).
  * - `custom`: composite over `backgroundColor`; `opaque` is `null`.
  * - `auto`: behaves as `transparent` when any pixel has alpha < 250, else as
  *   fully opaque (composited over white — a no-op except for alpha in
  *   [250, 255) — with `opaque` `null`).
+ *
+ * `scale` is the working pixels per source pixel of an enlarged (supersampled)
+ * image: an anti-aliased rim ramps over that many times the pixels, so the
+ * translucency test compares alphas a source pixel apart.
  */
 export function flattenImage(
   image: RasterImage,
   settings: Pick<VectorizeSettings, 'background' | 'backgroundColor' | 'alphaThreshold'>,
+  scale = 1,
 ): FlattenResult {
   const { width, height, data } = image
   const n = width * height
@@ -78,11 +84,119 @@ export function flattenImage(
   const opaque = createMask(width, height)
   const alpha = new Uint8Array(n)
   const threshold = settings.alphaThreshold
-  for (let i = 0, p = 3; i < n; i++, p += 4) {
-    alpha[i] = data[p]
-    opaque.data[i] = data[p] >= threshold ? 1 : 0
-  }
+  for (let i = 0, p = 3; i < n; i++, p += 4) alpha[i] = data[p]
+  // Which pixels produce a shape. The half-coverage cut (`alphaThreshold` 128)
+  // is the true outline of an anti-aliased opaque edge. An image carrying broad
+  // see-through content (a shadow, glass, steam) also keeps every
+  // flat-translucent pixel — a partial-alpha plateau or wisp, not a rim — below
+  // the cut, so that soft field is emitted as translucent faces rather than
+  // half of it dropping at the opaque cut, while every other pixel keeps the
+  // tight cut. The image counts as see-through only when flat-translucent
+  // pixels cover at least `TRANSLUCENT_AREA_GATE` of it.
+  const md = markFlatTranslucent(alpha, width, height, Math.max(1, Math.round(scale)))
+  let marked = 0
+  for (let i = 0; i < n; i++) marked += md[i]
+  const keepFlat = marked >= n * TRANSLUCENT_AREA_GATE
+  for (let i = 0; i < n; i++)
+    opaque.data[i] = alpha[i] >= threshold || (keepFlat && md[i] === 1) ? 1 : 0
   return { image: flat, opaque, alpha }
+}
+
+/** Alpha below which a pixel is treated as fully clear (produces no shape). */
+export const TRANSLUCENT_MIN_ALPHA = 8
+/** Alpha at or above which a pixel is fully solid, so it is not translucent content. */
+export const TRANSLUCENT_MAX_ALPHA = 250
+/**
+ * Largest alpha step between two neighbors still counted as one flat translucent
+ * level. A see-through region's coverage is nearly constant (steps of a few
+ * levels); an anti-aliased rim climbs by ~one-over-its-width of full scale per
+ * pixel, far more, so this separates a translucent plateau from an opaque edge.
+ */
+const TRANSLUCENT_FLAT_DELTA = 24
+/**
+ * Fraction of the image that must read as flat-translucent before the sub-cut
+ * expansion applies. A genuine see-through region (a steamy emoji is ~20%)
+ * clears it by a wide margin; a soft-edged opaque icon marks only a rim's worth
+ * of stray pixels (a few percent at most), so it stays cut cleanly at the
+ * threshold with no edge dilation.
+ */
+const TRANSLUCENT_AREA_GATE = 0.05
+
+/**
+ * Mark each flat-translucent pixel (1): partly transparent
+ * (`TRANSLUCENT_MIN_ALPHA` ≤ α < `TRANSLUCENT_MAX_ALPHA`), with an in-bounds
+ * 4-neighbor `step` pixels away (a source pixel of an enlarged image) also
+ * partly transparent and within `TRANSLUCENT_FLAT_DELTA` of its own alpha on
+ * one axis, while the other axis does not ramp through it — one neighbor more
+ * than `TRANSLUCENT_FLAT_DELTA` above and the other as far below. That is the
+ * plateau of a see-through region (a shadow, glass, steam), down to a one-pixel
+ * wisp, whose level runs along it with clear or equal pixels across it. An
+ * anti-aliased rim of an opaque shape is a ramp from clear to solid across the
+ * edge, so even a straight rim, whose pixels share one level along its length,
+ * is never marked. Fixed scan order: deterministic.
+ */
+function markFlatTranslucent(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  step: number,
+): Uint8Array {
+  const out = new Uint8Array(alpha.length)
+  const flatWith = (a: number, b: number): boolean =>
+    b >= TRANSLUCENT_MIN_ALPHA &&
+    b < TRANSLUCENT_MAX_ALPHA &&
+    Math.abs(a - b) <= TRANSLUCENT_FLAT_DELTA
+  const ramps = (a: number, p: number, q: number): boolean =>
+    (p >= a + TRANSLUCENT_FLAT_DELTA && q <= a - TRANSLUCENT_FLAT_DELTA) ||
+    (q >= a + TRANSLUCENT_FLAT_DELTA && p <= a - TRANSLUCENT_FLAT_DELTA)
+  const vstep = step * width
+  for (let y = 0; y < height; y++) {
+    const row = y * width
+    for (let x = 0; x < width; x++) {
+      const i = row + x
+      const a = alpha[i]
+      if (a < TRANSLUCENT_MIN_ALPHA || a >= TRANSLUCENT_MAX_ALPHA) continue
+      const hasL = x >= step
+      const hasR = x < width - step
+      const hasU = y >= step
+      const hasD = y < height - step
+      const flatH = (hasL && flatWith(a, alpha[i - step])) || (hasR && flatWith(a, alpha[i + step]))
+      const flatV =
+        (hasU && flatWith(a, alpha[i - vstep])) || (hasD && flatWith(a, alpha[i + vstep]))
+      const rampH = hasL && hasR && ramps(a, alpha[i - step], alpha[i + step])
+      const rampV = hasU && hasD && ramps(a, alpha[i - vstep], alpha[i + vstep])
+      if ((flatH && !rampV) || (flatV && !rampH)) out[i] = 1
+    }
+  }
+  return out
+}
+
+/**
+ * Signed coverage field of the transparency cut, in [-0.5, 0.5]: positive where
+ * the source alpha reaches `alphaThreshold` (the pixel produces a shape),
+ * negative below it, zero at the level. Each side is normalized by its own
+ * distance to the extreme — `signedThresholdField`'s construction — so a solid
+ * pixel reads +0.5, a clear one −0.5 and an anti-aliased rim pixel its partial
+ * coverage. The tracer refines a region's exterior boundary onto the zero
+ * contour: at half coverage (`alphaThreshold` 128) that is the true outline of
+ * an anti-aliased edge, since a rasterizer writes each rim pixel's coverage
+ * into alpha and keeps the ink color under it.
+ */
+export function alphaCoverageField(
+  alpha: Uint8Array,
+  width: number,
+  height: number,
+  alphaThreshold: number,
+): GrayImage {
+  const t = Math.min(255, Math.max(0, alphaThreshold)) / 255
+  const inScale = 0.5 / Math.max(1 - t, 1e-6)
+  const outScale = 0.5 / Math.max(t, 1e-6)
+  const out = new Float32Array(alpha.length)
+  for (let i = 0; i < alpha.length; i++) {
+    const d = alpha[i] / 255 - t
+    out[i] = d * (d > 0 ? inScale : outScale)
+  }
+  return { width, height, data: out }
 }
 
 /**
