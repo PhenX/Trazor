@@ -569,7 +569,9 @@ export function cutoutRegions(geo: PlanarGeometry, fits: readonly FittedEdge[]):
     region.primitive = n === 1 && rings.length === 1 ? ringPrimitive(rings[0], fits) : null
     region.area += faces.area[f]
     for (const ring of rings) {
-      for (const c of ringCommands(ring, fits)) region.commands.push(c)
+      const commands = ringCommands(ring, fits)
+      if (!paintsArea(commands)) continue
+      for (const c of commands) region.commands.push(c)
       if (!ring.outer) region.holeCount++
     }
   }
@@ -627,8 +629,10 @@ export function nestedFaces(
     let area = 0
     for (const ring of geo.rings[f]) {
       if (!ring.outer && !holeOntoClear(geo, ring, alone)) continue
+      const ringCmds = ringCommands(ring, fits)
+      if (!paintsArea(ringCmds)) continue
       if (ring.outer) area = Math.abs(polygonArea2(faceRingPolygon(geo.map, ring))) / 2
-      for (const c of ringCommands(ring, fits)) commands.push(c)
+      for (const c of ringCmds) commands.push(c)
       kept.push(ring)
     }
     const primitive = kept.length === 1 ? ringPrimitive(kept[0], fits) : null
@@ -655,6 +659,112 @@ function insidePolygon(x: number, y: number, poly: ArrayLike<number>): boolean {
 }
 
 /**
+ * Fitted area, in px², below which a ring paints nothing: the fit put every side
+ * of a sliver face on one curve (a ring out along a chord and back, or a point),
+ * leaving an area that is floating-point error. A millionth of a pixel stays
+ * under one 8-bit coverage level of a single pixel even at 60× zoom
+ * (`3600 · 10⁻⁶ < 1/255`), while the smallest face the front end keeps holds a
+ * pixel or more.
+ */
+const NO_AREA = 1e-6
+
+/** Whether a fitted ring encloses any area ({@link NO_AREA}). */
+export function paintsArea(commands: readonly PathCommand[]): boolean {
+  return Math.abs(fittedArea(commands)) >= NO_AREA
+}
+
+/** Gauss–Legendre nodes and weights on [0, 1], three points: exact for the quintic `x·y′ − y·x′` of a cubic. */
+const GL3_T = [0.5 - Math.sqrt(15) / 10, 0.5, 0.5 + Math.sqrt(15) / 10]
+const GL3_W = [5 / 18, 8 / 18, 5 / 18]
+
+/**
+ * The signed area a closed path's fitted segments enclose, by Green's theorem
+ * (`½∮ x dy − y dx`): exact for lines, quadratics and cubics, an arc summed over
+ * its angle in 32 steps of Simpson's rule.
+ */
+export function fittedArea(commands: readonly PathCommand[]): number {
+  let twice = 0
+  let x = 0
+  let y = 0
+  let sx = 0
+  let sy = 0
+  for (const c of commands) {
+    switch (c.type) {
+      case 'M':
+        x = sx = c.x
+        y = sy = c.y
+        break
+      case 'Z':
+        twice += x * sy - sx * y
+        x = sx
+        y = sy
+        break
+      case 'L':
+        twice += x * c.y - c.x * y
+        x = c.x
+        y = c.y
+        break
+      case 'Q':
+      case 'C': {
+        const px = c.type === 'Q' ? [x, c.x1, c.x] : [x, c.x1, c.x2, c.x]
+        const py = c.type === 'Q' ? [y, c.y1, c.y] : [y, c.y1, c.y2, c.y]
+        const d = px.length - 1
+        for (let k = 0; k < 3; k++) {
+          const t = GL3_T[k]
+          let bx = px.slice()
+          let by = py.slice()
+          let dx = 0
+          let dy = 0
+          for (let m = d; m > 0; m--) {
+            if (m === 1) {
+              dx = d * (bx[1] - bx[0])
+              dy = d * (by[1] - by[0])
+            }
+            for (let i = 0; i < m; i++) {
+              bx[i] += (bx[i + 1] - bx[i]) * t
+              by[i] += (by[i + 1] - by[i]) * t
+            }
+            bx = bx.slice(0, m)
+            by = by.slice(0, m)
+          }
+          twice += GL3_W[k] * (bx[0] * dy - by[0] * dx)
+        }
+        x = c.x
+        y = c.y
+        break
+      }
+      case 'A': {
+        const e = arcToCenter(x, y, c)
+        if (e === null) twice += x * c.y - c.x * y
+        else {
+          const cos = Math.cos(e.phi)
+          const sin = Math.sin(e.phi)
+          const steps = 32
+          const h = e.dTheta / steps
+          for (let i = 0; i <= steps; i++) {
+            const th = e.theta1 + i * h
+            const ex = e.rx * Math.cos(th)
+            const ey = e.ry * Math.sin(th)
+            const px = e.cx + cos * ex - sin * ey
+            const py = e.cy + sin * ex + cos * ey
+            const dpx = -cos * e.rx * Math.sin(th) - sin * e.ry * Math.cos(th)
+            const dpy = -sin * e.rx * Math.sin(th) + cos * e.ry * Math.cos(th)
+            const wgt = i === 0 || i === steps ? 1 : i % 2 === 1 ? 4 : 2
+            twice += ((wgt * h) / 3) * (px * dpy - py * dpx)
+          }
+        }
+        x = c.x
+        y = c.y
+        break
+      }
+      default:
+        break
+    }
+  }
+  return twice / 2
+}
+
+/**
  * Group a union's rings into shapes: each outer ring (anticlockwise on screen,
  * a negative signed area) with the holes inside it — the smallest outer ring
  * holding a hole's first point — so a lone round ring is a shape of its own a
@@ -663,8 +773,9 @@ function insidePolygon(x: number, y: number, poly: ArrayLike<number>): boolean {
  * follows; a ring fitted as two arcs has no polygon of its own end points.
  */
 function groupRings(
-  rings: readonly { commands: PathCommand[]; poly: Float64Array; primitive: Primitive | null }[],
+  all: readonly { commands: PathCommand[]; poly: Float64Array; primitive: Primitive | null }[],
 ): { commands: PathCommand[]; primitive: Primitive | null }[] {
+  const rings = all.filter((r) => paintsArea(r.commands))
   const areas = rings.map((r) => polygonArea2(r.poly))
   const outers: number[] = []
   for (let i = 0; i < rings.length; i++) if (areas[i] < 0) outers.push(i)

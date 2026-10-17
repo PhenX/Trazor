@@ -135,6 +135,7 @@ import {
   nestedFaces,
   setBackFit,
   ringCommands as planarRingCommands,
+  paintsArea,
   placePrimitive,
   ringPrimitive,
   stackedLayers,
@@ -2967,7 +2968,10 @@ async function inkPipeline(
     inkFaces.sort((a, b) => faces.area[b] - faces.area[a] || a - b)
     for (const f of inkFaces) {
       const commands: PathCommand[] = []
-      for (const ring of geo.rings[f]) commands.push(...planarRingCommands(ring, fits))
+      for (const ring of geo.rings[f]) {
+        const ringCmds = planarRingCommands(ring, fits)
+        if (paintsArea(ringCmds)) commands.push(...ringCmds)
+      }
       const rings = geo.rings[f]
       const primitive = rings.length === 1 ? ringPrimitive(rings[0], fits) : null
       shapes.push({

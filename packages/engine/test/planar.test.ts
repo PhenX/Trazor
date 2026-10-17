@@ -4,10 +4,12 @@ import type { FittedEdge } from '@trazor/trace'
 import { describe, expect, it } from 'vitest'
 import {
   cutoutRegions,
+  fittedArea,
   fittedPoints,
   gradientAt,
   keepsTo,
   nestedFaces,
+  paintsArea,
   planarGeometry,
   polylineFit,
   setBackFit,
@@ -666,5 +668,63 @@ describe('gradient paint in the forward model', () => {
     // Past the ellipse the last stop pads.
     gradientAt(g, 15, 6, out)
     expect(out[0]).toBe(1)
+  })
+})
+
+describe('the area a fitted ring paints', () => {
+  const k = 0.5522847498 * 10
+  const circle: PathCommand[] = [
+    { type: 'M', x: 10, y: 0 },
+    { type: 'C', x1: 10, y1: k, x2: k, y2: 10, x: 0, y: 10 },
+    { type: 'C', x1: -k, y1: 10, x2: -10, y2: k, x: -10, y: 0 },
+    { type: 'C', x1: -10, y1: -k, x2: -k, y2: -10, x: 0, y: -10 },
+    { type: 'C', x1: k, y1: -10, x2: 10, y2: -k, x: 10, y: 0 },
+    { type: 'Z' },
+  ]
+
+  it('is exact for lines, quadratics, cubics and arcs', () => {
+    const square: PathCommand[] = [
+      { type: 'M', x: 0, y: 0 },
+      { type: 'L', x: 2, y: 0 },
+      { type: 'L', x: 2, y: 2 },
+      { type: 'L', x: 0, y: 2 },
+      { type: 'Z' },
+    ]
+    expect(fittedArea(square)).toBeCloseTo(4, 12)
+    // A parabolic segment over a chord of 2 with its control 2 up: ⅔ of 2 × 1.
+    const lens: PathCommand[] = [
+      { type: 'M', x: 0, y: 0 },
+      { type: 'Q', x1: 1, y1: 2, x: 2, y: 0 },
+      { type: 'Z' },
+    ]
+    expect(Math.abs(fittedArea(lens))).toBeCloseTo(4 / 3, 12)
+    // The four-cubic circle encloses slightly more than π r².
+    expect(fittedArea(circle)).toBeCloseTo(314.2472, 3)
+    const disc: PathCommand[] = [
+      { type: 'M', x: 10, y: 0 },
+      { type: 'A', rx: 10, ry: 10, rotation: 0, largeArc: true, sweep: true, x: -10, y: 1e-4 },
+      { type: 'A', rx: 10, ry: 10, rotation: 0, largeArc: false, sweep: true, x: 10, y: 0 },
+      { type: 'Z' },
+    ]
+    expect(fittedArea(disc)).toBeCloseTo(Math.PI * 100, 4)
+  })
+
+  it('is nothing for a sliver whose sides were fitted onto one chord', () => {
+    // Out along a chord and back, and a point: what a pixel-wide face between
+    // two junctions draws once both its edges are fitted to the same line.
+    const outAndBack: PathCommand[] = [
+      { type: 'M', x: 374.0198558219513, y: 359.3955170927488 },
+      { type: 'L', x: 374.61415808187826, y: 359.2758359752141 },
+      { type: 'L', x: 374.0198558219513, y: 359.3955170927488 },
+      { type: 'Z' },
+    ]
+    const point: PathCommand[] = [
+      { type: 'M', x: 135.76960783526818, y: 317.5 },
+      { type: 'L', x: 135.76960783526818, y: 317.5 },
+      { type: 'Z' },
+    ]
+    expect(paintsArea(outAndBack)).toBe(false)
+    expect(paintsArea(point)).toBe(false)
+    expect(paintsArea(circle)).toBe(true)
   })
 })

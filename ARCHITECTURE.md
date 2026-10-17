@@ -89,6 +89,10 @@ decode (consumer)
 - **cutout** layering is an exact partition: the label-map boundary network is fitted **once** and both adjacent regions
   reuse the identical curve (junction points pinned), so there are no gaps or overlaps. See
   [`packages/trace/ARCHITECTURE.md`](packages/trace/ARCHITECTURE.md).
+- On the **planar chain**, every layering leaves out a ring whose fitted segments enclose no area
+  (`packages/engine/src/planar.ts` `paintsArea`, Green's theorem over the fitted lines, curves and arcs): a sliver a
+  pixel wide whose sides were fitted onto one chord paints nothing, and written out it would only add a subpath and a
+  paint color.
 
 ## Package responsibilities
 
