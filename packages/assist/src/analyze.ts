@@ -1,5 +1,5 @@
 import type { RasterImage } from '@trazor/core'
-import { clamp, rgbToHex, rgbToOklab } from '@trazor/core'
+import { ciede2000, clamp, rgbToHex, rgbToLab, rgbToOklab } from '@trazor/core'
 import { ink as rasterInk } from '@trazor/raster'
 
 export interface ImageAnalysis {
@@ -80,7 +80,11 @@ export interface ImageAnalysis {
    * Fraction of samples inside exactly-flat runs whose color is neither of the
    * two dominant tones: a third flat ink (a gray fill inside a black outline),
    * which anti-aliasing never produces — an intermediate rim color is never
-   * flat. Tells genuinely two-tone art from art carrying a minor third tone.
+   * flat. Tells genuinely two-tone art from art carrying a minor third tone. A
+   * flat color sharing a dominant tone's coarse bin is that tone only within
+   * the palette's same-ink distance of the bin's commonest flat color: a pale
+   * gray fill beside white paper, or beside a transparent ground read over
+   * white, is a third ink.
    */
   minorTonesArea: number
   /**
@@ -128,6 +132,8 @@ const OPAQUE_MIN_ALPHA = 128
 const SOLID_MIN_ALPHA = 250
 /** Coarse RGB bins (3 bits per channel) the dominant tones are read from. */
 const COARSE_BINS = 512
+/** Most distinct flat colors counted (the color set's own cap). */
+const FLAT_COLORS_MAX = 65536
 
 /** RGB-sum histogram bins for the percentile spread (8 levels each). */
 const SPREAD_BINS = 96
@@ -171,6 +177,8 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   const coarseSum = new Float64Array(COARSE_BINS * 4)
   const flatCoarse = new Uint32Array(COARSE_BINS)
   const flatCoarseSum = new Float64Array(COARSE_BINS * 3)
+  // Exactly-flat samples by color (up to FLAT_COLORS_MAX colors).
+  const flatColorCount = new Map<number, number>()
   const coarseKeys: number[] = []
   // Per sample: 1 when opaque and within `SMOOTH_MAX_GRAD` of its right and
   // down neighbors — the pixels the smooth-area flood below may connect.
@@ -245,6 +253,9 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
           flatCoarseSum[coarseKey * 3] += r
           flatCoarseSum[coarseKey * 3 + 1] += g
           flatCoarseSum[coarseKey * 3 + 2] += b
+          const seen = flatColorCount.get(colorKey)
+          if (seen !== undefined) flatColorCount.set(colorKey, seen + 1)
+          else if (flatColorCount.size < FLAT_COLORS_MAX) flatColorCount.set(colorKey, 1)
           if (flatColorSet.size < 65536) flatColorSet.add(colorKey)
         }
       }
@@ -279,7 +290,14 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   })
   const topFlat = (key: number | undefined): number => (key === undefined ? 0 : flatCoarse[key])
   const minorTonesArea =
-    sampleCount === 0 ? 0 : (flatCount - topFlat(top1) - topFlat(top2)) / sampleCount
+    sampleCount === 0
+      ? 0
+      : (flatCount -
+          topFlat(top1) -
+          topFlat(top2) +
+          otherTonesIn(flatColorCount, top1) +
+          otherTonesIn(flatColorCount, top2)) /
+        sampleCount
   // A tone's color is its interior's: the bin also holds the anti-aliased rim
   // pixels that blend it into its neighbors (a black ink's bin reaches 31), and
   // their mean pulls the ink off the color the artist filled with.
@@ -369,6 +387,36 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     paperHex: paper.hex,
     edgeWidth: edgeWidthOf(image),
   }
+}
+
+/**
+ * Exactly-flat samples of coarse bin `key` (`flat`: flat colors and their
+ * counts) whose color lies more than the palette's same-ink distance
+ * (`SAME_INK_DE00`, CIEDE2000) from the bin's commonest flat color: another ink
+ * that shares the bin. 0 for an absent bin.
+ */
+function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined): number {
+  if (key === undefined) return 0
+  const binOf = (c: number): number => ((c >> 21) << 6) | (((c >> 13) & 7) << 3) | ((c >> 5) & 7)
+  let mode = -1
+  let modeCount = 0
+  for (const [c, n] of flat) {
+    if (binOf(c) === key && (n > modeCount || (n === modeCount && c < mode))) {
+      mode = c
+      modeCount = n
+    }
+  }
+  if (mode < 0) return 0
+  const lab = (c: number): [number, number, number] =>
+    rgbToLab(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
+  const m = lab(mode)
+  let other = 0
+  for (const [c, n] of flat) {
+    if (binOf(c) !== key || c === mode) continue
+    const q = lab(c)
+    if (ciede2000(m[0], m[1], m[2], q[0], q[1], q[2]) > rasterInk.SAME_INK_DE00) other += n
+  }
+  return other
 }
 
 /** Side of the central crop the edge width is measured on: edges are local, and a crop keeps them as they are. */

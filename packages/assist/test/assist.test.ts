@@ -89,6 +89,24 @@ function thinStrokesWithSoftRims() {
   return img
 }
 
+/**
+ * A dark glyph with a pale gray stripe across it (twemoji's skunk: #292f33 and
+ * #e1e8ed), on a transparent canvas or on white: the stripe shares the white
+ * ground's coarse bin, but it is a third ink.
+ */
+function darkGlyphWithPaleStripe(onWhite: boolean) {
+  const img = createRaster(160, 160)
+  if (onWhite) fillRaster(img, 255, 255, 255)
+  else fillRaster(img, 0, 0, 0, 0)
+  for (let y = 30; y < 130; y++) {
+    for (let x = 30; x < 130; x++) {
+      if (y >= 70 && y < 90) setPixel(img, x, y, 0xe1, 0xe8, 0xed)
+      else setPixel(img, x, y, 0x29, 0x2f, 0x33)
+    }
+  }
+  return img
+}
+
 /** A black glyph on a transparent canvas casting a wide half-transparent shadow. */
 function inkWithSoftShadow() {
   const img = inkOnTransparent()
@@ -451,6 +469,14 @@ describe('analyzeImage', () => {
     const a = analyzeImage(thinStrokesWithSoftRims())
     expect(a.inkHex).toBe('#000000')
     expect(a.paperHex).toBe('#ffffff')
+  })
+
+  it("counts a pale ink sharing the ground's coarse bin as a third tone", () => {
+    for (const onWhite of [false, true]) {
+      const a = analyzeImage(darkGlyphWithPaleStripe(onWhite))
+      expect(a.minorTonesArea).toBeGreaterThan(0.05)
+      expect(recommendSettings(a).profileId).not.toBe('bw-sketch')
+    }
   })
 
   it('counts a flat third tone, which anti-aliasing never produces', () => {

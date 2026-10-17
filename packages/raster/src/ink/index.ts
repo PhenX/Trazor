@@ -14,6 +14,7 @@ export {
   MEASURED_SIGMA_CAP,
   MEASURED_SIGMA_SCALE,
   paletteEvidence,
+  SAME_INK_DE00,
   splitAlphaInks,
 } from './palette'
 export type { Palette, PaletteEvidence } from './palette'
