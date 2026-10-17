@@ -20,6 +20,7 @@ packages/engine   orchestrates the above per mode; runs in a Web Worker (+ Trazo
 packages/ml       optional on-device ML that improves the input (bg removal, segment, edge pre-pass, cleanup)
 packages/assist   image statistics → recommended settings & palettes
 packages/tune     automatic settings search: weighted objectives + adaptive parameter descent (pure, no DOM)
+crates/solve      Rust → WebAssembly: the boundary solve's descent, an opt-in kernel for packages/trace
 ```
 
 The Trazor studio (hosted at [trazor.studio](https://trazor.studio)) is the reference consumer — a separate product,
@@ -121,6 +122,14 @@ decode (consumer)
   (denoise/de-JPEG). Browser-only; fails soft so a consumer works without it.
 - **`assist`** — one statistics pass over an image (`analyzeImage`) feeding `recommendSettings` (profile + patch +
   rationale) and `suggestPalettes` (data-derived palettes).
+- **`crates/solve`** — the planar boundary solve's descent (`packages/trace/src/solve/`: the band energy and its
+  gradient, L-BFGS on each independent part, the Moré–Thuente line search) ported to Rust and compiled to
+  WebAssembly (`packages/trace/wasm/solve.wasm`, `npm run build:wasm`). Opt-in: `loadBandKernel` instantiates it and
+  `SolveOptions.kernel` / the engine's `solveKernel` run option / the worker's `solve-kernel` message route the
+  descent through it. The port keeps every summation order and uses only correctly rounded arithmetic, so it
+  computes the TypeScript's positions bit for bit; the band's setup, the parts and the fold guard stay in TypeScript.
+  Each solve runs in a fresh instance over an imported memory sized for it, with a bump allocator, so the memory
+  never grows (a grown memory detaches its old buffer, which slows a V8 thread's typed arrays for good).
 - **`tune`** — the automatic settings search: the tunable parameter space (`TUNABLE_PARAMS`), objective scoring
   (`scoreCandidate`, weighting fidelity / simplicity / file size / color economy / cleanliness), and the deterministic
   round-based `TuneSearch` (seed round → adaptive coordinate descent). Pure and DOM-free; a consumer pairs it with the

@@ -101,6 +101,7 @@ import {
   traceCenterline,
 } from '@trazor/trace'
 import type {
+  BandKernel,
   ChainFit,
   ChainNetwork,
   CrackPath,
@@ -579,6 +580,12 @@ export interface VectorizeRunOptions {
    * live — copy what you keep.
    */
   onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+  /**
+   * Runs the planar chain's boundary solve descent in this WebAssembly kernel
+   * (`loadBandKernel` of `@trazor/trace`) instead of in TypeScript; it computes
+   * the same positions. Absent, the TypeScript descent runs.
+   */
+  solveKernel?: BandKernel
 }
 
 /** The image a supersampled run was enlarged from, prepared as the working image is. */
@@ -592,6 +599,7 @@ interface PlanarSource {
 /** How the planar chain runs: its stage probe and its front end. */
 interface PlanarRun {
   onStage?: VectorizeRunOptions['onPlanarStage']
+  solveKernel?: BandKernel
   frontEnd: 'classic' | 'ink'
   /** The intake's soft verdict (`intakeIsSoft`, or for the ink front end its edges' residual). */
   soft: boolean
@@ -975,6 +983,7 @@ export async function vectorize(
       geometry === 'planar'
         ? {
             onStage: opts?.onPlanarStage,
+            solveKernel: opts?.solveKernel,
             frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
@@ -999,6 +1008,7 @@ export async function vectorize(
       geometry === 'planar'
         ? {
             onStage: opts?.onPlanarStage,
+            solveKernel: opts?.solveKernel,
             frontEnd,
             soft: intakeSoft,
             edgeNoise: intakeEdgeNoise,
@@ -1617,6 +1627,7 @@ async function colorPipeline(
           sigmaNoise:
             sigmaNoise ?? (planarRun.soft ? softNoise(image, labels, paletteRgb) : undefined),
           onStage: planarRun.onStage,
+          solveKernel: planarRun.solveKernel,
           fitEdges: planarEdgeFitter(run, helperCtx),
         })
       : undefined
@@ -2947,6 +2958,7 @@ async function inkPipeline(
       source: planarRun.source,
       sigmaNoise: planarRun.soft ? softNoise(image, labels, meanRgb) : undefined,
       onStage: planarRun.onStage,
+      solveKernel: planarRun.solveKernel,
       fitEdges: planarEdgeFitter(run, helperCtx),
     })
     const { faces } = geo.map

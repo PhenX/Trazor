@@ -27,6 +27,7 @@ import {
 } from '@trazor/trace'
 import type { Primitive } from '@trazor/svg'
 import type {
+  BandKernel,
   EdgePrimitive,
   FaceFill,
   FaceNesting,
@@ -453,6 +454,8 @@ export interface PlanarTraceInput {
   sigmaNoise?: number
   /** Called with the map after each stage, and with the fits after the fit. */
   onStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+  /** Runs the boundary solve's descent in this WebAssembly kernel; in TypeScript when absent. */
+  solveKernel?: BandKernel
   /**
    * Fits every edge of the solved map under `cfg`, by edge index, exactly as
    * `fitEdges` does — elsewhere, such as across helper workers; `fitEdges` on
@@ -508,7 +511,10 @@ export async function tracePlanar(input: PlanarTraceInput): Promise<{
   input.onStage?.('subpixel', map)
   refineJunctions(map)
   input.onStage?.('junctions', map)
-  solveBoundaries(map, image, fills, source !== undefined ? { source } : {})
+  solveBoundaries(map, image, fills, {
+    ...(source !== undefined ? { source } : {}),
+    ...(input.solveKernel !== undefined ? { kernel: input.solveKernel } : {}),
+  })
   input.onStage?.('solve', map)
   // From here on σ is in content units (source pixels), as the fit's prices are.
   if (s !== 1) for (const e of map.edges) e.sigma = e.sigma.map((v) => v * s)

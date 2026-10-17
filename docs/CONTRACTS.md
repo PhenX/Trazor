@@ -1448,6 +1448,10 @@ export type WorkerInMessage =
   // installHelperHandler). The worker builds a HelperPool from them and traces in parallel from the
   // next run on; an empty list returns it to the sequential path.
   | { type: 'helpers'; ports: HelperEndpoint[] }
+  // Hand the worker the boundary solve's WebAssembly kernel, compiled (WebAssembly.compile of
+  // @trazor/trace/solve.wasm); later runs solve the planar chain's boundary in it (same output).
+  // null returns to the TypeScript descent; a module that fails to instantiate is ignored.
+  | { type: 'solve-kernel'; module: WebAssembly.Module | null }
 export type WorkerOutMessage =
   | { type: 'progress'; id: number; stage: StageId; overall: number }
   | { type: 'trace-step'; id: number; step: TraceStep } // one recorded pipeline step (raster snapshots transferred)
@@ -1513,6 +1517,9 @@ export function vectorize(
     // `subpixel`, `junctions`, `solve`) and with the fitted edges after the fit (`fit`) and the crossing repair (`repair`) — a hook for
     // stage-by-stage inspection tools. The map is live; copy what you keep.
     onPlanarStage?: (stage: string, map: PlanarMap, fits?: readonly FittedEdge[]) => void
+    // Runs the planar chain's boundary solve descent in this WebAssembly kernel (loadBandKernel of
+    // @trazor/trace); the same SVG. Absent, the TypeScript descent runs — the default.
+    solveKernel?: BandKernel
   },
 ): Promise<VectorizeResult>
 // StageCache is an opaque worker-owned holder: one preprocessed-image entry, a

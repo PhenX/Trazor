@@ -42,6 +42,14 @@ export type WorkerInMessage =
    * {@link installHelperHandler}.
    */
   | { type: 'helpers'; ports: HelperEndpoint[] }
+  /**
+   * Hand the worker the boundary solve's WebAssembly kernel as a compiled
+   * module (`WebAssembly.compile` of `@trazor/trace/solve.wasm`; a module is
+   * structured-cloneable): the worker instantiates it and runs the planar
+   * chain's solve descent in it from the next run on, with the same output.
+   * `null` returns it to the TypeScript descent.
+   */
+  | { type: 'solve-kernel'; module: WebAssembly.Module | null }
 
 /** Messages emitted by the vectorizer worker. */
 export type WorkerOutMessage =
