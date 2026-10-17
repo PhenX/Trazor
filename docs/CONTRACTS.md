@@ -447,7 +447,11 @@ export function fitRegionGradients(
   every pixel, rims included, except that an unmixed ink stands for its region
   against any region that is not rim material (a coreless region with no unmixed
   ink), and a union without a speaking core is painted the size-weighted mean of
-  its parts' inks — then consolidates non-adjacent
+  its parts' inks. Each round ranks and judges its pairs on their distances as it
+  began; a union that would repaint the larger side by ≥ 1.5 ΔE00 must also pass
+  on the regions as they are when it is reached (a line never takes the color of a
+  fill one of its rim fragments sat beside), while a rim folding into the region it
+  borders keeps the round's distance — then consolidates non-adjacent
   near-duplicates globally (means within the merge's near-duplicate floor in Oklab,
   or rendered colors under 1.5 ΔE00 — Oklab spreads the darkest values, so a
   dithered black and a flat one are one color); `maxRegions` caps the count — pairs fold by least

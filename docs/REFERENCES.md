@@ -543,7 +543,10 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   merging two regions shrinks as their areas grow, so small regions fold freely
   while large regions merge only when near-identical. The `mergeSizeBias` option
   of the region-growing merge (`packages/raster/src/segment.ts`), which keeps
-  close-but-distinct dominant colors apart instead of averaging them into one.
+  close-but-distinct dominant colors apart instead of averaging them into one. The
+  predicate is tested on the regions as they are when a pair is reached wherever
+  the union would visibly repaint the larger region, so a pair ranked on two
+  fragments' distance never paints a line the color of a fill.
 - **logolabs, “inkvec” — border pad (Apache-2.0).** `crates/inkvec-cli/src/border.rs`: a
   transparent raster whose art reaches its outermost ring of pixels is traced on a canvas
   2 px larger, its new pixels transparent, and the geometry moved back by the margin

@@ -1154,10 +1154,25 @@ function rescueMarkerlessFeatures(
   return out
 }
 
+/** CIEDE2000 between two Oklab colors, as the sRGB colors they render. */
+function oklabDe00(l1: number, a1: number, b1: number, l2: number, a2: number, b2: number): number {
+  const [r1, g1, bl1] = oklabToRgb(l1, a1, b1)
+  const [r2, g2, bl2] = oklabToRgb(l2, a2, b2)
+  const [L1, A1, B1] = rgbToLab(r1, g1, bl1)
+  const [L2, A2, B2] = rgbToLab(r2, g2, bl2)
+  return ciede2000(L1, A1, B1, L2, A2, B2)
+}
+
 /**
  * Agglomerative region-adjacency-graph merge. Union-find over regions; each
  * round folds every adjacent pair whose ΔE is under `mergeThreshold` or where
- * either side is below `minArea`, closest pair first. Adjacent pairs are judged
+ * either side is below `minArea`, closest pair first. A round ranks and judges
+ * its pairs on their distances as it began, so a rim folds into the region a
+ * fragment of it was close to. A union that would visibly repaint the larger
+ * side (by `SAME_INK_DE00`) must also pass on the regions as they are when it
+ * is reached — statistical region merging tests its predicate on the current
+ * regions (Nock & Nielsen 2004) — so a line never takes the color of a fill
+ * one of its rim fragments sat beside. Adjacent pairs are judged
  * on their means over *every* pixel, rims included: a sliver the flood grew
  * from a lone flat pixel is rim material (a chroma-bled speck of black along a
  * pupil), and what folds it into the region it lies against is the tint of
@@ -1248,11 +1263,43 @@ function mergeRegions(
     sizeBias <= 0
       ? mergeThreshold
       : floor + sizeBias * SRM_SCALE * scale * (1 / Math.sqrt(size[a]) + 1 / Math.sqrt(size[b]))
+  // The color a union of `a` and `b` is rendered with, into `paint`: their
+  // merged flat interior when it speaks for the region — the rims it gathered
+  // do not — else the size-weighted mean of the parts' inks.
+  const paint = new Float64Array(3)
+  const unionPaint = (a: number, b: number): void => {
+    const nn = size[a] + size[b]
+    const core = coreN[a] + coreN[b]
+    if (coreSpeaks(core, nn, scale * scale)) {
+      paint[0] = (coreL[a] + coreL[b]) / core
+      paint[1] = (coreA[a] + coreA[b]) / core
+      paint[2] = (coreB[a] + coreB[b]) / core
+    } else {
+      paint[0] = (inkL[a] + inkL[b]) / nn
+      paint[1] = (inkA[a] + inkA[b]) / nn
+      paint[2] = (inkB[a] + inkB[b]) / nn
+    }
+  }
+  // Whether a union of `a` and `b` visibly repaints the larger of the two, the
+  // region it keeps: its color moves by `SAME_INK_DE00` or more (a line taking
+  // the color of a fill's flat core, where a rim folding into its region leaves
+  // that region's color as it is).
+  const repaintsKept = (a: number, b: number): boolean => {
+    const keep = size[a] >= size[b] ? a : b
+    unionPaint(a, b)
+    return oklabDe00(mL[keep], mA[keep], mB[keep], paint[0], paint[1], paint[2]) >= SAME_INK_DE00
+  }
   const union = (a: number, b: number): void => {
     // Fold the smaller into the larger (keep the dominant color id stable).
     const keep = size[a] >= size[b] ? a : b
     const drop = keep === a ? b : a
     const nn = size[a] + size[b]
+    if (nn > 0) {
+      unionPaint(keep, drop)
+      mL[keep] = paint[0]
+      mA[keep] = paint[1]
+      mB[keep] = paint[2]
+    }
     fullL[keep] += fullL[drop]
     fullA[keep] += fullA[drop]
     fullB[keep] += fullB[drop]
@@ -1264,17 +1311,6 @@ function mergeRegions(
     coreA[keep] += coreA[drop]
     coreB[keep] += coreB[drop]
     coreN[keep] += coreN[drop]
-    if (coreSpeaks(coreN[keep], nn, scale * scale)) {
-      // The merged flat interior speaks for the region; the rims it gathered do not.
-      mL[keep] = coreL[keep] / coreN[keep]
-      mA[keep] = coreA[keep] / coreN[keep]
-      mB[keep] = coreB[keep] / coreN[keep]
-    } else if (nn > 0) {
-      // No speaking core: the size-weighted mean of the parts' inks.
-      mL[keep] = inkL[keep] / nn
-      mA[keep] = inkA[keep] / nn
-      mB[keep] = inkB[keep] / nn
-    }
     size[keep] = nn
     parent[drop] = keep
     if (
@@ -1288,13 +1324,8 @@ function mergeRegions(
     }
   }
   // CIEDE2000 between the colors two regions are rendered with.
-  const renderedDe00 = (a: number, b: number): number => {
-    const [ar, ag, ab] = oklabToRgb(mL[a], mA[a], mB[a])
-    const [br, bg, bb] = oklabToRgb(mL[b], mA[b], mB[b])
-    const [L1, A1, B1] = rgbToLab(ar, ag, ab)
-    const [L2, A2, B2] = rgbToLab(br, bg, bb)
-    return ciede2000(L1, A1, B1, L2, A2, B2)
-  }
+  const renderedDe00 = (a: number, b: number): number =>
+    oklabDe00(mL[a], mA[a], mB[a], mL[b], mA[b], mB[b])
   // CIEDE2000 between a represented region's ink and the color another region
   // is rendered with.
   const inkDe00 = (ink: number, other: number): number => {
@@ -1383,12 +1414,20 @@ function mergeRegions(
       const ra = find(a)
       const rb = find(b)
       if (ra === rb) continue
-      if (d < mergeLimit(ra, rb) || size[ra] < minArea || size[rb] < minArea) {
-        if (keepsApart(ra, rb, d)) continue
-        union(ra, rb)
-        activeRegions--
-        merged = true
-      }
+      const limit = mergeLimit(ra, rb)
+      const small = size[ra] < minArea || size[rb] < minArea
+      if (!(d < limit || small) || keepsApart(ra, rb, d)) continue
+      // `d` is the pair's distance as the round began, and a side may have
+      // grown since: two alike fragments, one now part of a line and the other
+      // of a fill. A union that leaves the larger side its color (a rim or a
+      // speck folding into the region it borders) stands on that distance; one
+      // that would visibly repaint it must also pass on the regions as they
+      // are, where statistical region merging tests its predicate (Nock &
+      // Nielsen 2004).
+      if (!small && inkDelta(ra, rb) >= limit && repaintsKept(ra, rb)) continue
+      union(ra, rb)
+      activeRegions--
+      merged = true
     }
     if (!merged) break
   }

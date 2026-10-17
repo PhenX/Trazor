@@ -581,6 +581,50 @@ describe('segmentRegions — size-aware merge (SRM)', () => {
     expect(b.labels.count).toBe(a.labels.count)
     expect(Array.from(b.labels.data)).toEqual(Array.from(a.labels.data))
   })
+
+  it('never repaints a dark line the color of a fill a fragment of it sat beside', () => {
+    // A dark brown hose four pixels wide loops over a dark teal field and a
+    // slightly greener band, enlarged 2× (supersampling). A fragment of its
+    // anti-aliased rim sits beside a fragment of teal, close enough in color to
+    // be queued as a pair; by the time the pair is reached the rim fragment has
+    // joined the line, and the teal fragment's larger flat core would paint
+    // their union teal. The line keeps its own dark color along its length.
+    const w = 60
+    const h = 60
+    const ink = [35, 27, 24]
+    const teal = [4, 51, 69]
+    const band = [19, 62, 64]
+    const img = coverageImage(
+      w,
+      h,
+      (x, y) =>
+        Math.abs(y - (h / 2 + 0.3 * h * Math.sin((x / w) * Math.PI * 2))) < 2 ||
+        Math.abs(x - (w / 2 + 0.3 * w * Math.sin((y / h) * Math.PI * 3))) < 2,
+      ink,
+      (_x, y) => (y < 20 ? band : teal),
+    )
+    const seg = segmentRegions(upscaleImage(img, 2), {
+      ...ENGINE,
+      minRegionArea: 16,
+      keepVisibleColors: true,
+      scale: 2,
+    })
+    let core = 0
+    let dark = 0
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4
+        if (img.data[o] !== ink[0] || img.data[o + 1] !== ink[1] || img.data[o + 2] !== ink[2])
+          continue
+        core++
+        const label = seg.labels.data[2 * y * 2 * w + 2 * x]
+        const [r, g, b] = [0, 1, 2].map((k) => seg.paletteRgb[label * 3 + k])
+        if (Math.abs(r - ink[0]) + Math.abs(g - ink[1]) + Math.abs(b - ink[2]) < 24) dark++
+      }
+    }
+    expect(core).toBeGreaterThan(200)
+    expect(dark).toBe(core)
+  })
 })
 
 /** Pixel coverage (8×8 samples) of a shape, as a blend of `ink` over `paper` per channel. */
