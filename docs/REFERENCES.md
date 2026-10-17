@@ -577,6 +577,13 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   side as the rescue's features do; the region merge then compares those rim-free
   inks. A thin region whose pixels are blends of two sides is a marker seeded inside a
   ramp and is flooded again from them.
+- **“Student” (William Sealy Gosset), “The Probable Error of a Mean”, _Biometrika_
+  6(1), 1908.** The standard error of a mean, s/√n. The thin-feature inks
+  (`packages/raster/src/unmix.ts`): a thin region whose median pixel is covered by
+  its ink less than half is mostly its field's rim, and the ink read from its few most
+  covered pixels must clear the mixture tolerance by more than the standard error of
+  their residuals — compression ringing tints an outline's rim unevenly, so its mean
+  can stray past the tolerance by less than its own uncertainty.
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared

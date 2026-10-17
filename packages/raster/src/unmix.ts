@@ -34,11 +34,18 @@
  * rescue's bar for a feature): an ink nearer a side than that is the side's
  * own rim, compression smearing the edge's chroma or ringing past it. Such a
  * rim, a shaded region (wider than a rim) and a web of several inks (a
- * residual no single ink explains) keep their mean. A region whose pixels are
- * blends of two sides of different colors, centered well inside the chord
- * between them and spread across it (`UNMIX_BAND_INTERIOR`,
- * `UNMIX_BAND_SPREAD`), is a band of that blend — a marker seeded inside an
- * anti-aliased ramp — and is reported as one.
+ * residual no single ink explains) keep their mean. Where most of a region's
+ * pixels lie nearer their field than its ink (median coverage under
+ * `UNMIX_MEDIAN_COVERAGE`), the region is mostly its field's rim — the
+ * anti-aliased edge along an outline, its end blending toward the outline —
+ * and the ink, read from the few most covered pixels at that end, must clear
+ * the mixture tolerance by more than its standard error: the RMS spread of
+ * those pixels' own residuals over the root of their count (Student 1908).
+ * Compression ringing tints an edge's pixels unevenly; an ink drawn there
+ * tints them alike. A region whose pixels are blends of two sides of different
+ * colors, centered well inside the chord between them and spread across it
+ * (`UNMIX_BAND_INTERIOR`, `UNMIX_BAND_SPREAD`), is a band of that blend — a
+ * marker seeded inside an anti-aliased ramp — and is reported as one.
  */
 import { oklabToRgb, rgbToOklab } from '@trazor/core'
 import { MIX_INKS, MIXTURE_TOLERANCE, mixtureResidual, overshootResidual } from './represent'
@@ -67,6 +74,14 @@ const UNMIX_FIELD_APART = 0.1
  * of several inks, or a region whose color runs along it, does not fit.
  */
 export const UNMIX_RESIDUAL_SHARE = 0.1
+
+/**
+ * Median coverage of a region's pixels by its ink below which the region is
+ * mostly the rim of its field — more of its pixels lie nearer the field than
+ * the ink, which is read from the few at one end — and its ink must clear the
+ * mixture tolerance by more than its standard error.
+ */
+const UNMIX_MEDIAN_COVERAGE = 0.5
 
 /**
  * How far inside the chord between its two sides, as a share of its length, a
@@ -270,16 +285,20 @@ export function unmixThinInks(
   // The ink of region r: the mean of its most covered pixels, the coverage read
   // along each pixel's field→ink direction, refined UNMIX_ROUNDS times from the
   // region's color. Writes `fit` (ink r, g, b, RMS residual, RMS contrast of
-  // the ink against the fields); false when no pixel has a field.
+  // the ink against the fields, median coverage of the pixels by the ink, and
+  // the least coverage among the most covered pixels the ink is the mean of —
+  // `alpha` keeps each pixel's coverage of that last refinement); false when no
+  // pixel has a field.
   const alpha = new Float64Array(members.length)
   const order = new Float64Array(members.length)
-  const fit = new Float64Array(5)
+  const fit = new Float64Array(7)
   const fitRegion = (r: number): boolean => {
     const s0 = start[r]
     const s1 = start[r + 1]
     let ir = col[r * 3]
     let ig = col[r * 3 + 1]
     let ib = col[r * 3 + 2]
+    let top = 0
     for (let round = 0; round < UNMIX_ROUNDS; round++) {
       let fitted = 0
       for (let k = s0; k < s1; k++) {
@@ -302,6 +321,7 @@ export function unmixThinInks(
       if (fitted === 0) return false
       const sorted = order.subarray(0, fitted).toSorted()
       const cut = sorted[Math.min(fitted - 1, Math.floor((1 - UNMIX_TOP_SHARE) * fitted))]
+      top = cut
       let sr = 0
       let sg = 0
       let sb = 0
@@ -340,13 +360,15 @@ export function unmixThinInks(
       const eg = vg - t * ug
       const eb = vb - t * ub
       res2 += er * er + eg * eg + eb * eb
-      resN++
+      order[resN++] = t
     }
     fit[0] = ir
     fit[1] = ig
     fit[2] = ib
     fit[3] = Math.sqrt(res2 / resN)
     fit[4] = Math.sqrt(con2 / resN)
+    fit[5] = order.subarray(0, resN).toSorted()[(resN - 1) >> 1]
+    fit[6] = top
     return true
   }
 
@@ -462,11 +484,49 @@ export function unmixThinInks(
     return true
   }
 
+  // The residual of a color (encoded sRGB) against the first `k` colors of
+  // `cols`: its distance from their nearest mixture or from their resampling
+  // overshoot, whichever is less (`mixtureResidual`, `overshootResidual`; with
+  // one color, the distance to it or its overshoot).
+  const cols = new Float64Array((MIX_INKS + 1) * 3)
+  const unexplained = (c: Float64Array, k: number): number =>
+    Math.min(
+      k === 1
+        ? Math.hypot(c[0] - cols[0], c[1] - cols[1], c[2] - cols[2])
+        : mixtureResidual(c, cols, k),
+      overshootResidual(c, cols, k),
+    )
+
+  // The standard error of region r's ink residual against the first `k` colors
+  // of `cols`: the RMS spread of the residuals of the pixels the ink is the mean
+  // of (the most covered, coverage at least `fit[6]`) over the root of their
+  // count.
+  const pc = new Float64Array(3)
+  const inkError = (r: number, k: number): number => {
+    let sum = 0
+    let sum2 = 0
+    let c = 0
+    for (let q = start[r]; q < start[r + 1]; q++) {
+      if (!(alpha[q] >= fit[6])) continue
+      const o = members[q] * 4
+      pc[0] = rgba[o] / 255
+      pc[1] = rgba[o + 1] / 255
+      pc[2] = rgba[o + 2] / 255
+      const e = unexplained(pc, k)
+      sum += e
+      sum2 += e * e
+      c++
+    }
+    const mean = sum / c
+    return Math.sqrt(Math.max(0, sum2 / c - mean * mean) / c)
+  }
+
   // Second reading, then the tests: the fit explains the region and its ink is
-  // a color extreme between its sides; otherwise the region may be a band.
+  // a color extreme between its sides — past its standard error too where most
+  // of the region lies nearer its field than its ink; otherwise the region may
+  // be a band.
   const sideN = new Int32Array(regionCount)
   const sideId = new Int32Array(regionCount)
-  const cols = new Float64Array((MIX_INKS + 1) * 3)
   const px = new Float64Array(3)
   for (let r = 0; r < regionCount; r++) {
     if (thin[r] === 0) continue
@@ -507,13 +567,11 @@ export function unmixThinInks(
       px[0] = fit[0]
       px[1] = fit[1]
       px[2] = fit[2]
-      const resid =
-        k === 0
-          ? Infinity
-          : k === 1
-            ? Math.hypot(px[0] - cols[0], px[1] - cols[1], px[2] - cols[2])
-            : mixtureResidual(px, cols, k)
-      extreme = resid > MIXTURE_TOLERANCE && overshootResidual(px, cols, k) > MIXTURE_TOLERANCE
+      const resid = unexplained(px, k)
+      extreme = resid > MIXTURE_TOLERANCE
+      if (extreme && resid < Infinity && fit[5] < UNMIX_MEDIAN_COVERAGE) {
+        extreme = resid - MIXTURE_TOLERANCE > inkError(r, k)
+      }
       if (extreme) extreme = standsApart(fit, sides, counts, outsideN)
     }
     if (extreme) {

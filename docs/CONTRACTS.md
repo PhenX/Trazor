@@ -436,12 +436,14 @@ export function fitRegionGradients(
   encoded sRGB, each pixel's field the nearest region of another color, the ink the
   mean of the most covered quarter of its pixels) when that two-color fit explains
   its pixels within 10 % of the ink's contrast, the ink is no mixture or overshoot of
-  the regions around it (0.025 sRGB, as `represent.ts`) and it stands ≥ 0.25 Oklab
-  from each side it runs along (0.125 within one field); otherwise its mean over
-  every pixel. A thin region whose pixels are blends of two sides of different
-  colors, centered inside the chord between them and spread across it, is a
-  marker seeded inside a ramp: its pixels are flooded again from the regions around
-  it.
+  the regions around it (0.025 sRGB, as `represent.ts`) — by more than its standard
+  error (the RMS spread of the most covered quarter's own residuals over √n) where
+  the median pixel's coverage by the ink is under ½, the region mostly its field's
+  rim — and it stands ≥ 0.25 Oklab from each side it runs along (0.125 within one
+  field); otherwise its mean over every pixel. A thin region whose pixels are
+  blends of two sides of different colors, centered inside the chord between them
+  and spread across it, is a marker seeded inside a ramp: its pixels are flooded
+  again from the regions around it.
 - A region-adjacency-graph merge folds adjacent pairs under `mergeThreshold` and
   regions under `minRegionArea` (closest first) — a pair judged on its means over
   every pixel, rims included, except that an unmixed ink stands for its region
