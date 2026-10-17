@@ -389,6 +389,16 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   }
 }
 
+/** The coarse bin (`COARSE_BINS`, 3 bits a channel) of a packed `0xrrggbb` color. */
+function binOf(c: number): number {
+  return ((c >> 21) << 6) | (((c >> 13) & 7) << 3) | ((c >> 5) & 7)
+}
+
+/** CIELAB of a packed `0xrrggbb` color. */
+function labOf(c: number): [number, number, number] {
+  return rgbToLab(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
+}
+
 /**
  * Exactly-flat samples of coarse bin `key` (`flat`: flat colors and their
  * counts) whose color lies more than the palette's same-ink distance
@@ -397,7 +407,6 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
  */
 function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined): number {
   if (key === undefined) return 0
-  const binOf = (c: number): number => ((c >> 21) << 6) | (((c >> 13) & 7) << 3) | ((c >> 5) & 7)
   let mode = -1
   let modeCount = 0
   for (const [c, n] of flat) {
@@ -407,13 +416,11 @@ function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined
     }
   }
   if (mode < 0) return 0
-  const lab = (c: number): [number, number, number] =>
-    rgbToLab(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255)
-  const m = lab(mode)
+  const m = labOf(mode)
   let other = 0
   for (const [c, n] of flat) {
     if (binOf(c) !== key || c === mode) continue
-    const q = lab(c)
+    const q = labOf(c)
     if (ciede2000(m[0], m[1], m[2], q[0], q[1], q[2]) > rasterInk.SAME_INK_DE00) other += n
   }
   return other
