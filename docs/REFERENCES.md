@@ -437,6 +437,17 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   MELECON 1983). A primitive replaces a boundary's curves only when it costs less under
   the shared description length.
 
+- **G. Green, _An Essay on the Application of Mathematical Analysis to the
+  Theories of Electricity and Magnetism_, 1828 (Green's theorem); M.
+  Abramowitz & I. A. Stegun, _Handbook of Mathematical Functions_, 1964,
+  §25.4.29–30 (Gauss–Legendre quadrature, exact for polynomials of degree
+  2n − 1) and §25.4.5 (Simpson's rule).** The area a fitted ring encloses,
+  `½∮ x dy − y dx` over its segments: exact for lines, and for quadratics and
+  cubics by three-point Gauss–Legendre (the integrand of a cubic is a quintic),
+  an arc summed over its angle by Simpson's rule. The planar emission leaves out
+  a ring that encloses none — a sliver a pixel wide whose sides were fitted
+  onto one chord (`packages/engine/src/planar.ts` `fittedArea`, `paintsArea`).
+
 ## Shape fitting (packages/svg)
 
 - **I. Kåsa, “A circle fitting procedure and its error analysis”, _IEEE Trans.
