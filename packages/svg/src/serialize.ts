@@ -10,7 +10,7 @@ import { optimizePathData } from './optimize'
 import { cleanCommands } from './clean'
 import { fitArcs } from './arc'
 import { detectPrimitive, negligibleTilt } from './primitive'
-import type { Primitive } from './primitive'
+import type { Primitive, StrokedPrimitive } from './primitive'
 
 export interface SvgShape {
   /** May contain several M…Z subpaths. */
@@ -21,6 +21,13 @@ export interface SvgShape {
    * whatever `roundPrimitives` says, since nothing is approximated.
    */
   primitive?: Primitive
+  /**
+   * The one stroked primitive that paints exactly the ring the commands draw
+   * (an outline and its one hole, of one width; `annulusStroke`): written as
+   * that element, unfilled and stroked in the fill color, when optimizing and
+   * the fill is one opaque color.
+   */
+  strokedPrimitive?: StrokedPrimitive
   /** `'#rrggbb'` or `'none'`. Undefined ⇒ `fill="none"` when stroked, else the shape is skipped. */
   fill?: string
   fillRule?: 'nonzero' | 'evenodd'
@@ -329,6 +336,23 @@ export function shapeOut(
   if (shape.fill === undefined && shape.stroke === undefined) return null
 
   if (optimize) {
+    const ring = shape.strokedPrimitive
+    if (
+      ring !== undefined &&
+      shape.stroke === undefined &&
+      shape.fill !== undefined &&
+      shape.fill.startsWith('#') &&
+      (shape.fillOpacity === undefined || shape.fillOpacity >= 1)
+    ) {
+      const stroked: SvgShape = {
+        commands: shape.commands,
+        fill: 'none',
+        stroke: shape.fill,
+        strokeWidth: ring.width,
+        ...(shape.id !== undefined ? { id: shape.id } : {}),
+      }
+      return { kind: 'element', svg: primitiveElement(ring.primitive, stroked, precision) }
+    }
     if (shape.primitive !== undefined && shape.stroke === undefined) {
       return { kind: 'element', svg: primitiveElement(shape.primitive, shape, precision) }
     }

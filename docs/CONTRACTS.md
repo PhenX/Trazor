@@ -1139,6 +1139,10 @@ export interface SvgShape {
   // tracer knows it: written as <circle>/<ellipse>/<rect> when optimizing, even with
   // roundPrimitives off (nothing is approximated).
   primitive?: Primitive
+  // The one stroked primitive that paints exactly the ring the commands draw (an outline and
+  // its one hole, of one width; annulusStroke): written as that element, unfilled and stroked
+  // in the fill color, when optimizing and the fill is one opaque color.
+  strokedPrimitive?: StrokedPrimitive
   fill?: string // '#rrggbb' | 'none' | 'url(#id)' (a doc.defs gradient)
   fillRule?: 'nonzero' | 'evenodd'
   fillOpacity?: number // [0,1]; emitted as fill-opacity when < 1 (a translucent face's ink at its alpha)
@@ -1248,6 +1252,13 @@ export type Primitive =
   | { kind: 'circle'; cx: number; cy: number; r: number }
   | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number; angle?: number } // angle (deg) ⇒ rotated, emitted as <ellipse> + rotate transform
   | { kind: 'polygon'; points: { x: number; y: number }[] } // regularized regular polygon / star → <polygon>
+export interface StrokedPrimitive { primitive: Primitive; width: number } // midline + stroke width (px)
+// Displacement (px) within which a ring of one width is one stroke of its two outlines.
+export const STROKE_TOL = 0.1
+// The one stroked primitive painting exactly the ring between `outer` and `inner` (concentric
+// circles, or a rectangle — square or rounded — and its offset hole), or null: circles and
+// rounded rectangles are offsets of their own kind, an ellipse's offset is not an ellipse.
+export function annulusStroke(outer: Primitive, inner: Primitive, tol?: number): StrokedPrimitive | null
 // The primitive a single closed subpath represents, or null. `allowRound` gates
 // the sub-pixel circle/ellipse and regular-polygon/star matches; rectangles are always exact.
 export function detectPrimitive(

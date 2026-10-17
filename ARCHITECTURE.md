@@ -92,7 +92,10 @@ decode (consumer)
 - On the **planar chain**, every layering leaves out a ring whose fitted segments enclose no area
   (`packages/engine/src/planar.ts` `paintsArea`, Green's theorem over the fitted lines, curves and arcs): a sliver a
   pixel wide whose sides were fitted onto one chord paints nothing, and written out it would only add a subpath and a
-  paint color.
+  paint color. A face (or a stacked sheet) whose outline and one hole are whole-edge primitives offset by one width — a
+  frame, a rim, an outline icon's square or circle — is written for screen output as one stroked `<rect>` or
+  `<circle>` on its midline (`@trazor/svg` `annulusStroke`, after inkvec), which is how the artist drew it; a
+  millimetre document keeps the filled ring, since a cutter or a laser reads a stroke as a line to cut along.
 
 ## Package responsibilities
 

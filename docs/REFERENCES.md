@@ -500,6 +500,18 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   a robust bisection on the root of its one-variable characteristic function.
   The exact orthogonal distance a whole-ring ellipse is judged by
   (`packages/trace/src/potrace/runfit.ts` `ellipseDistance`).
+- **logolabs, “inkvec” — a ring of one width as one stroke
+  (`crates/inkvec-cli/src/primitive.rs` `annulus_stroke`, `STROKE_TOL`, and
+  `emit.rs` `annulus_strokes`), with W3C, “Scalable Vector Graphics (SVG) 1.1”,
+  §11.4 (a stroke paints the band half its width either side of the outline,
+  its corners by the `miter` join).** A face whose outline and one hole are
+  whole primitives, one the other offset by a uniform width — concentric
+  circles, or a rectangle and its offset hole, the outer corner `r + t/2` and
+  the inner `max(r − t/2, 0)` — is the stroke of the midline primitive, held to
+  0.1 px displacement of either outline (a corner's apex moves `(√2 − 1)` times
+  a radius change). Written for screen output only
+  (`packages/svg/src/primitive.ts` `annulusStroke`, `packages/svg/src/serialize.ts`
+  `shapeOut`, `packages/engine/src/planar.ts` `ringStroke`).
 - **W3C, “Scalable Vector Graphics (SVG) 1.1”, Appendix F.6 — “The elliptical arc
   implementation notes”.** Endpoint↔center parameterization of the `A` command
   (out-of-range radii correction, center and swept-angle formulas). Implements

@@ -873,3 +873,99 @@ export function detectPrimitive(
   if (ops.length < 3) return null
   return detectRegularPolygon(loop.start, ops, precision)
 }
+
+/**
+ * How far, in px, a stroke's two edges may land from the two fitted outlines of
+ * a ring drawn as that one stroke ({@link annulusStroke}): a few times the
+ * 0.02–0.06 px the fitted boundaries are good to, and far below the pixel or
+ * more by which a ring that is not of one width misses (inkvec `STROKE_TOL`).
+ */
+export const STROKE_TOL = 0.1
+
+/** A primitive drawn as a stroke: its midline and the stroke's width, in px. */
+export interface StrokedPrimitive {
+  primitive: Primitive
+  width: number
+}
+
+/**
+ * The one stroked primitive that paints exactly the ring between `outer` and
+ * `inner` — an outline and its one hole, of one width — as its midline and
+ * width, when there is one within `tol` px; null otherwise (inkvec
+ * `annulus_stroke`). A ring of one width is a stroke, which is how an artist
+ * draws a frame or a rim, and it leaves its inside empty, so the hole stays a
+ * hole in a handful of numbers. Circles are offsets of circles and rounded
+ * rectangles of rounded rectangles (outer corner `r + t/2`, inner
+ * `max(r − t/2, 0)`, square under a mitred join at `r = 0`); an ellipse's offset
+ * is not an ellipse, so it never is one.
+ *
+ * - Circles: width `t = r_o − r_i`, midline the circle of radius
+ *   `(r_o + r_i)/2` about the centers' midpoint, which moves each outline by
+ *   half the centers' distance.
+ * - Rectangles (rounded or square, on the axes): the four side gaps must all be
+ *   positive; `t` is their mean, and each side moves by `|s − t|/2`. A corner of
+ *   radius `ρ` has its apex `(√2 − 1)·ρ` in from its square's corner, so a radius
+ *   changed by `Δρ` moves the outline there by `(√2 − 1)·|Δρ|`. The stroke's
+ *   radius is the two radii's mean where the inner corner is visibly round, else
+ *   `r_o − t/2` so the outer corner is exact; both outlines under
+ *   `tol/(√2 − 1)` make square corners.
+ */
+export function annulusStroke(
+  outer: Primitive,
+  inner: Primitive,
+  tol = STROKE_TOL,
+): StrokedPrimitive | null {
+  if (outer.kind === 'circle' && inner.kind === 'circle') {
+    const t = outer.r - inner.r
+    if (t <= 0 || Math.hypot(outer.cx - inner.cx, outer.cy - inner.cy) / 2 > tol) return null
+    return {
+      primitive: {
+        kind: 'circle',
+        cx: (outer.cx + inner.cx) / 2,
+        cy: (outer.cy + inner.cy) / 2,
+        r: (outer.r + inner.r) / 2,
+      },
+      width: t,
+    }
+  }
+  const o = boxOf(outer)
+  const i = boxOf(inner)
+  if (o === null || i === null) return null
+  const sides = [
+    i.x - o.x,
+    i.y - o.y,
+    o.x + o.width - (i.x + i.width),
+    o.y + o.height - (i.y + i.height),
+  ]
+  if (sides.some((s) => s <= 0)) return null
+  const t = (sides[0] + sides[1] + sides[2] + sides[3]) / 4
+  let worst = Math.max(...sides.map((s) => Math.abs(s - t) / 2))
+  const corner = Math.SQRT2 - 1
+  const ro = Math.max(o.r, 0)
+  const ri = Math.max(i.r, 0)
+  let r = 0
+  if (ro < tol / corner && ri < tol / corner) worst = Math.max(worst, Math.max(ro, ri) * corner)
+  else {
+    r = ri > tol / corner ? (ro + ri) / 2 : ro - t / 2
+    if (r <= 0) return null
+    const po = r + t / 2
+    const pi = Math.max(r - t / 2, 0)
+    worst = Math.max(worst, Math.max(Math.abs(po - ro), Math.abs(pi - ri)) * corner)
+  }
+  const x0 = (o.x + i.x) / 2
+  const y0 = (o.y + i.y) / 2
+  const x1 = (o.x + o.width + i.x + i.width) / 2
+  const y1 = (o.y + o.height + i.y + i.height) / 2
+  if (worst > tol || 2 * r > Math.min(x1 - x0, y1 - y0)) return null
+  const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  return { primitive: r > 0 ? { kind: 'rrect', ...box, r } : { kind: 'rect', ...box }, width: t }
+}
+
+/** A rectangle primitive as a box with its corner radius (0 when square); null for any other kind. */
+function boxOf(
+  p: Primitive,
+): { x: number; y: number; width: number; height: number; r: number } | null {
+  if (p.kind === 'rect') return { x: p.x, y: p.y, width: p.width, height: p.height, r: 0 }
+  if (p.kind === 'rrect') return { x: p.x, y: p.y, width: p.width, height: p.height, r: p.r }
+  return null
+}

@@ -115,7 +115,7 @@ import type {
   TracedShape,
 } from '@trazor/trace'
 import { analyzeSvg, fitArcs, serializeSvg } from '@trazor/svg'
-import type { Primitive, ShapeOut, SvgGradient, SvgShape } from '@trazor/svg'
+import type { Primitive, ShapeOut, StrokedPrimitive, SvgGradient, SvgShape } from '@trazor/svg'
 import { balancedOwners } from './helper-pool'
 import type {
   HelperDispatchSpec,
@@ -138,6 +138,7 @@ import {
   paintsArea,
   placePrimitive,
   ringPrimitive,
+  ringStroke,
   stackedLayers,
   tracePlanar,
 } from './planar'
@@ -680,6 +681,15 @@ function placeGradient<T extends GradientPaint>(g: T, s: number, d: number): T {
     : { ...g, cx: g.cx * s + d, cy: g.cy * s + d, r: g.r * s }
 }
 
+/**
+ * Whether a ring of one width may be written as one stroked primitive: only
+ * for optimized screen output — a cutter or a laser reads a stroke as a line to
+ * cut along, not as the filled ring it paints.
+ */
+function screenStrokes(settings: VectorizeSettings): boolean {
+  return settings.optimizeSvg && settings.unit === 'px'
+}
+
 /** The supersampling factor a run applies, within the working-pixel budget (`supersampleWithinBudget`). */
 function supersampleFactor(source: RasterImage, s: VectorizeSettings): number {
   return supersampleWithinBudget(source.width, source.height, s.maxDimension, s.supersample)
@@ -1033,6 +1043,14 @@ export async function vectorize(
         ...(shape.strokeWidth !== undefined ? { strokeWidth: shape.strokeWidth * s } : {}),
         ...(shape.primitive !== undefined
           ? { primitive: placePrimitive(shape.primitive, s, -pad) }
+          : {}),
+        ...(shape.strokedPrimitive !== undefined
+          ? {
+              strokedPrimitive: {
+                primitive: placePrimitive(shape.strokedPrimitive.primitive, s, -pad),
+                width: shape.strokedPrimitive.width * s,
+              },
+            }
           : {}),
       }
     }
@@ -1828,6 +1846,7 @@ async function colorPipeline(
       layerShapes: readonly PathCommand[][],
       parts: readonly (ShapeOut | null)[] | undefined,
       primitives?: readonly (Primitive | null)[],
+      strokes?: readonly (StrokedPrimitive | null)[],
     ): Promise<void> => {
       const layerId = done
       let at = 0
@@ -1835,6 +1854,7 @@ async function colorPipeline(
         if (layerShapes.length > 0) addColors(usedPalette, p.colors)
         for (let k = 0; k < layerShapes.length; k++) {
           const primitive = primitives?.[k] ?? null
+          const stroked = screenStrokes(settings) ? (strokes?.[k] ?? null) : null
           shapes.push({
             commands: layerShapes[k],
             fill: p.fill,
@@ -1843,6 +1863,7 @@ async function colorPipeline(
             ...(p.opacity !== undefined ? { fillOpacity: p.opacity } : {}),
             ...(p.unfoldable ? { unfoldable: true } : {}),
             ...(primitive !== null ? { primitive } : {}),
+            ...(stroked !== null ? { strokedPrimitive: stroked } : {}),
           })
           if (parts) shapeParts.push(parts[at] ?? null)
           at++
@@ -1907,6 +1928,7 @@ async function colorPipeline(
           layer.shapes.map((sh) => sh.commands),
           undefined,
           layer.shapes.map((sh) => sh.primitive),
+          layer.shapes.map((sh) => sh.stroked),
         )
       }
     } else if (helpers) {
@@ -2968,17 +2990,21 @@ async function inkPipeline(
     inkFaces.sort((a, b) => faces.area[b] - faces.area[a] || a - b)
     for (const f of inkFaces) {
       const commands: PathCommand[] = []
-      for (const ring of geo.rings[f]) {
+      const rings = geo.rings[f].filter((ring) => {
         const ringCmds = planarRingCommands(ring, fits)
-        if (paintsArea(ringCmds)) commands.push(...ringCmds)
-      }
-      const rings = geo.rings[f]
+        if (!paintsArea(ringCmds)) return false
+        commands.push(...ringCmds)
+        return true
+      })
       const primitive = rings.length === 1 ? ringPrimitive(rings[0], fits) : null
+      const stroked =
+        screenStrokes(settings) && rings.length === 2 ? ringStroke(rings[0], rings[1], fits) : null
       shapes.push({
         commands,
         fill: settings.fillColor,
         fillRule: 'evenodd',
         ...(primitive !== null ? { primitive } : {}),
+        ...(stroked !== null ? { strokedPrimitive: stroked } : {}),
       })
     }
     run.progress(1)

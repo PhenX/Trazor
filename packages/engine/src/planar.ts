@@ -25,7 +25,8 @@ import {
   splitFaces,
   OUTSIDE,
 } from '@trazor/trace'
-import type { Primitive } from '@trazor/svg'
+import { annulusStroke } from '@trazor/svg'
+import type { Primitive, StrokedPrimitive } from '@trazor/svg'
 import type {
   BandKernel,
   EdgePrimitive,
@@ -316,6 +317,21 @@ export function ringPrimitive(ring: FaceRing, fits: readonly FittedEdge[]): Prim
   if (ring.edges.length !== 1) return null
   const prim = fits[ring.edges[0]].primitive
   return prim === undefined ? null : svgPrimitive(prim)
+}
+
+/**
+ * The stroked primitive a face's outer ring and its one hole draw together
+ * (`annulusStroke`): both rings single whole-primitive edges, one the other
+ * offset by a uniform width.
+ */
+export function ringStroke(
+  outer: FaceRing,
+  hole: FaceRing,
+  fits: readonly FittedEdge[],
+): StrokedPrimitive | null {
+  const o = ringPrimitive(outer, fits)
+  const h = o === null ? null : ringPrimitive(hole, fits)
+  return o === null || h === null ? null : annulusStroke(o, h)
 }
 
 /**
@@ -774,16 +790,16 @@ export function fittedArea(commands: readonly PathCommand[]): number {
  */
 function groupRings(
   all: readonly { commands: PathCommand[]; poly: Float64Array; primitive: Primitive | null }[],
-): { commands: PathCommand[]; primitive: Primitive | null }[] {
+): StackedShape[] {
   const rings = all.filter((r) => paintsArea(r.commands))
   const areas = rings.map((r) => polygonArea2(r.poly))
   const outers: number[] = []
   for (let i = 0; i < rings.length; i++) if (areas[i] < 0) outers.push(i)
   const groups = new Map<number, PathCommand[]>()
-  const holes = new Map<number, number>()
+  const holes = new Map<number, number[]>()
   for (const o of outers) {
     groups.set(o, [...rings[o].commands])
-    holes.set(o, 0)
+    holes.set(o, [])
   }
   for (let h = 0; h < rings.length; h++) {
     if (areas[h] < 0) continue
@@ -796,12 +812,29 @@ function groupRings(
     }
     if (best < 0) continue
     for (const c of rings[h].commands) groups.get(best)?.push(c)
-    holes.set(best, (holes.get(best) ?? 0) + 1)
+    holes.get(best)?.push(h)
   }
-  return outers.map((o) => ({
-    commands: groups.get(o) as PathCommand[],
-    primitive: holes.get(o) === 0 ? rings[o].primitive : null,
-  }))
+  return outers.map((o) => {
+    const inside = holes.get(o) as number[]
+    const outer = rings[o].primitive
+    const hole = inside.length === 1 ? rings[inside[0]].primitive : null
+    return {
+      commands: groups.get(o) as PathCommand[],
+      primitive: inside.length === 0 ? outer : null,
+      stroked: outer !== null && hole !== null ? annulusStroke(outer, hole) : null,
+    }
+  })
+}
+
+/**
+ * One stacked shape: an outer ring and the holes inside it, with the primitive
+ * it draws when it is one whole-primitive ring, or the stroked primitive when
+ * it is a ring of one width between two ({@link ringStroke}).
+ */
+export interface StackedShape {
+  commands: PathCommand[]
+  primitive: Primitive | null
+  stroked: StrokedPrimitive | null
 }
 
 /**
@@ -1232,7 +1265,7 @@ export function stackedLayers(
   islands: readonly { label: number; faces: number[] }[],
   setBack?: SetBack,
   alone?: (label: number) => boolean,
-): { label: number; shapes: { commands: PathCommand[]; primitive: Primitive | null }[] }[] {
+): { label: number; shapes: StackedShape[] }[] {
   const { map } = geo
   const { faces, edges } = map
   const position = new Int32Array(Math.max(1, ...order.map((l) => l + 1))).fill(-1)
@@ -1264,10 +1297,7 @@ export function stackedLayers(
       adj[fill[e.right]++] = e.left
     }
   }
-  const out: {
-    label: number
-    shapes: { commands: PathCommand[]; primitive: Primitive | null }[]
-  }[] = []
+  const out: { label: number; shapes: StackedShape[] }[] = []
   const inRegion = new Uint8Array(faces.count)
   const stack: number[] = []
   for (let k = 0; k < order.length; k++) {
