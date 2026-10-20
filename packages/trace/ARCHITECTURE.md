@@ -140,7 +140,9 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    arms): a piece of a sample or two cannot place two arms by itself, and its free fit — a negative arm, or one several
    chords long — would otherwise swing the shared directions. The spline is held to the mode's band, narrowed on a clean
    edge: the refined samples' RMS residual about the DP's fit measures the edge's noise, and below half σ the band
-   narrows with it, to half. A DP line that is a straight edge of the drawing — inside that band, no line beside it
+   narrows with it, to half. A DP segment outside the DP's own band — its best effort where nothing was admissible, as
+   along a straight edge whose lattice staircase leaves corners past the band — stays as it is, so the spline does not
+   bend through those corners. A DP line that is a straight edge of the drawing — inside that band, no line beside it
    turning away, no neighbouring arc whose circle runs through its samples, no bow above the noise — stays a line, and a
    DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin their
    knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic piece
