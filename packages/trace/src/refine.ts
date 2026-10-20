@@ -86,6 +86,12 @@ const MAX_POINT_SIGMA = 2
  */
 const LOCATED_SIGMA = 0.5
 /**
+ * Most points in a row the search could not place, between two that located
+ * the edge, held at its reach: the corners of one staircase step (a step of
+ * up to three pixels, a slope down to a third).
+ */
+const STEP_RUN = 3
+/**
  * A coverage this close to 0 or 1 is a fully outside/inside pixel that carries no
  * sub-pixel information: a hard edge shows only these, and moving a point off the
  * lattice with no anti-aliased evidence would only bend the straight runs that
@@ -275,8 +281,11 @@ export function refineRingToField(
 
   const out: FlatPoints = new Array(ring.length)
   if (sigma) sigma.length = n
-  // Points left in place whose ½ level lies past the search's reach.
-  const beyond: number[] = []
+  // Points left in place whose ½ level lies past the search's reach, and the
+  // points the field refused.
+  const beyond = new Uint8Array(n)
+  const refused = new Uint8Array(n)
+  let anyBeyond = false
   for (let i = 0; i < n; i++) {
     const px = ring[i * 2]
     const py = ring[i * 2 + 1]
@@ -312,23 +321,48 @@ export function refineRingToField(
     if (sigma && measure && ((shift !== null && shift !== 0) || measure.refused)) {
       sigma[i] = measure.sigma
     }
-    if (measure?.beyond) beyond.push(i)
+    if (measure?.beyond) {
+      beyond[i] = 1
+      anyBeyond = true
+    }
+    if (measure?.refused) refused[i] = 1
     const back = setback ? setback[i % period] : 0
     if (shift === null && back === 0) continue
     const move = (shift ?? 0) + back
     out[i * 2] = px + nx * move
     out[i * 2 + 1] = py + ny * move
   }
-  if (sigma && vertices && beyond.length > 0) {
-    // A staircase corner along a polygon edge, between two neighbours that
-    // located the edge, is held at the search's reach.
+  if (sigma && vertices && anyBeyond) {
+    // The corners of a staircase step along a polygon edge — up to STEP_RUN
+    // points in a row the search could not place, between two neighbours that
+    // located the edge — are held at the search's reach. A point whose probes
+    // read partial coverage is no hard edge on the grid: one not held so is
+    // held at least as loosely as a lattice point.
     const isVertex = new Uint8Array(n)
     for (const v of vertices) if (v < n) isVertex[v] = 1
-    const located = (j: number): boolean =>
-      (out[j * 2] !== ring[j * 2] || out[j * 2 + 1] !== ring[j * 2 + 1]) && sigma[j] < LOCATED_SIGMA
-    for (const i of beyond) {
-      if (isVertex[i]) continue
-      if (located(neighbor(i - 1)) && located(neighbor(i + 1))) sigma[i] = MAX_SHIFT
+    const moved = (j: number): boolean =>
+      out[j * 2] !== ring[j * 2] || out[j * 2 + 1] !== ring[j * 2 + 1]
+    const located = (j: number): boolean => moved(j) && sigma[j] < LOCATED_SIGMA
+    const unplaced = (j: number): boolean =>
+      isVertex[j] === 0 && !moved(j) && (beyond[j] === 1 || refused[j] === 1)
+    const held: number[] = []
+    for (let i = 0; i < n; i++) {
+      if (beyond[i] === 0 || isVertex[i] === 1) continue
+      let back = 0
+      while (back < STEP_RUN && unplaced(neighbor(i - back - 1))) back++
+      let ahead = 0
+      while (ahead < STEP_RUN && unplaced(neighbor(i + ahead + 1))) ahead++
+      if (
+        back + ahead < STEP_RUN &&
+        located(neighbor(i - back - 1)) &&
+        located(neighbor(i + ahead + 1))
+      ) {
+        held.push(i)
+      }
+    }
+    for (const i of held) sigma[i] = MAX_SHIFT
+    for (let i = 0; i < n; i++) {
+      if (beyond[i] === 1 && !(sigma[i] >= LOCATED_SIGMA)) sigma[i] = LOCATED_SIGMA
     }
   }
   return out
@@ -402,6 +436,48 @@ function measuredCrossing(
   measure.sigma = Math.min(Math.hypot(away, measure.sigma), MAX_SHIFT)
   measure.refused = true
   return false
+}
+
+/** Whether some probed coverage lies on each side of ½. */
+function crossesHalf(a: readonly number[]): boolean {
+  let below = false
+  let above = false
+  for (const v of a) {
+    if (v < 0.5) below = true
+    else if (v > 0.5) above = true
+  }
+  return below && above
+}
+
+/**
+ * The probed coverage `a` (sorted along the normal by `order`) with each value
+ * the field filled in, next to a measured probe, read between that probe's two
+ * colors as its edge would continue there ({@link SignedField.along}); null
+ * when none could be read.
+ */
+function continuedCoverage(
+  measure: PointMeasure,
+  a: readonly number[],
+  pix: readonly number[],
+  order: readonly number[],
+): number[] | null {
+  const along = measure.along
+  if (!along) return null
+  const at = (k: number): [number, number] => [pix[order[k] * 2], pix[order[k] * 2 + 1]]
+  const measured = (k: number): boolean => !Number.isNaN(measure.uncertainty(...at(k)))
+  const out = a.slice()
+  let read = false
+  for (let k = 0; k < a.length; k++) {
+    if (measured(k)) continue
+    const r = k > 0 && measured(k - 1) ? k - 1 : k + 1 < a.length && measured(k + 1) ? k + 1 : -1
+    if (r < 0) continue
+    const v = along(...at(k), ...at(r))
+    if (Number.isNaN(v)) continue
+    const c = v + 0.5
+    out[k] = c < 0 ? 0 : c > 1 ? 1 : c
+    read = true
+  }
+  return read ? out : null
 }
 
 /**
@@ -501,6 +577,17 @@ function solveNormal(
   if (u[m - 1] > u[0] && Math.abs(a[m - 1] - a[0]) > 0.05) dir = Math.sign(a[m - 1] - a[0])
 
   if (measure && !measuredCrossing(measure, { px, py, nx, ny, w, h }, a, u, pix, order)) return null
+  // A crossing only the values filled in beyond the rim make is none: read as
+  // the measured pixel beside them would continue (`along`), they may stay on
+  // its side of ½ — the inside of a soft line the label pass widened past its
+  // ½ level, which the field takes as fully covered.
+  if (measure?.along && crossesHalf(a)) {
+    const continued = continuedCoverage(measure, a, pix, order)
+    if (continued && !crossesHalf(continued)) {
+      measure.beyond = true
+      return null
+    }
+  }
 
   const partial = (v: number): boolean => v > PARTIAL_LO && v < PARTIAL_HI
   let hit: number | null = null

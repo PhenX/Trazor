@@ -3149,7 +3149,10 @@ function fitFreeCubic(
  * τ the G1 refit holds a span to: the mode's, narrowed on a clean edge. The RMS
  * residual of the refined samples about the DP's fit (in σ) measures the edge's
  * noise; below half σ the band narrows with it, to {@link G1_BAND_MIN}. Lattice
- * samples carry the staircase rather than the edge's noise and do not count.
+ * samples carry the staircase rather than the edge's noise and do not count,
+ * and the band never narrows past one the DP's own fit keeps them inside: a
+ * staircase corner held as loosely as the search's reach would otherwise fall
+ * outside it, and the refit break the span at every one.
  */
 function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptions): number {
   const refined = sig.map((v) => (v >= SIGMA_LATTICE ? Infinity : v))
@@ -3160,7 +3163,15 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
     for (let i = sg.a + 1; i < sg.b; i++) if (sig[i] < SIGMA_LATTICE) n++
   }
   if (n < G1_NOISE_SAMPLES) return opts.tau
-  return opts.tau * Math.max(G1_BAND_MIN, Math.min(1, G1_NOISE_GAIN * Math.sqrt(chi2 / n)))
+  const narrowed =
+    opts.tau * Math.max(G1_BAND_MIN, Math.min(1, G1_NOISE_GAIN * Math.sqrt(chi2 / n)))
+  const lattice = sig.map((v) => (v >= SIGMA_LATTICE ? v : Infinity))
+  let kept = 0
+  for (const sg of segs) {
+    const need = segDeviation(pts, lattice, sg, opts).worst * opts.tau
+    if (need > kept) kept = need
+  }
+  return Math.max(narrowed, Math.min(kept, opts.tau))
 }
 
 /**

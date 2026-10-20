@@ -893,9 +893,11 @@ export function ringPolygon(
 // ring point with such a field, is the point's positional uncertainty from those two pixels (their
 // coverage noise over the coverage step between them, in quadrature with a 0.05 px model error,
 // ≤ 2 px; a refused point's adds its distance to the ½ level the ramp extrapolates to, ≤ 1 px, the
-// search's reach), `NaN` where they are not both measured; a point left in place inside an edge of the
-// optimal polygon whose probes read partial coverage but none across ½, between two neighbours moved
-// at σ < ½ px, is given the reach, 1 px. Returns a new array, parallel to `ring`.
+// search's reach), `NaN` where they are not both measured; a point left in place whose probes read
+// partial coverage but none across ½ (or cross it only through filled-in values that `along` reads on
+// the same side) is given at least ½ px, and the reach, 1 px, inside an edge of the optimal polygon in a
+// run of up to three such points between two neighbours moved at σ < ½ px. Returns a new array,
+// parallel to `ring`.
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,

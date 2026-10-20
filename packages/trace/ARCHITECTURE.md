@@ -84,19 +84,21 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    to that where it is looser, and a sample the field refused to move — its two pixels on the same side of ½ and none
    past them crossing it, a ramp the label pass cut away from its ½ level — stays on the lattice, held as loosely as
    its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A staircase corner
-   inside a polygon edge whose probes read partial coverage but none across ½, between two neighbours the search moved
-   onto the edge at σ under ½ px, lies past the reach of the edge they located (a soft line the label pass widened):
-   it stays on the lattice held at that reach, so the fit follows its neighbours instead of turning out to each such
-   corner. A corner is a polygon vertex (read on the unadjusted polygon) turning at least 45° (inkvec
-   `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
-   (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
-   the stub's middle. The samples must turn there too: around a small round — a stroke's cap — the lattice polygon
-   turns ~45° at every vertex while the refined samples run smooth, and a corner there draws the cap as a pointed
-   arch. So each side's tangent at the vertex is read from that side's samples, up to the neighbouring vertex and a
-   tangent window's reach, the vertex's own anti-aliasing chamfer left out: the tangent of the circle they fit within
-   the measurement model (a straight side fits a huge one), else the widest Savitzky–Golay window the model accepts
-   (`sideTangents`), and the two must turn by 45° as well. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
-   rounded corner the polygon split
+   inside a polygon edge whose probes read partial coverage but none across ½ — or cross it only through the values
+   the field filled in beyond the rim, which read as the measured pixel beside them would continue (`along`) stay on
+   its side — lies past the reach of the edge its neighbours located (a soft line the label pass widened). Up to three
+   such corners in a row, between two neighbours the search moved onto the edge at σ under ½ px, stay on the lattice
+   held at that reach, so the fit follows the neighbours instead of turning out to each corner; any other is held at
+   least as loosely as a lattice point, never as a hard edge on the grid. A corner is a polygon vertex (read on the
+   unadjusted polygon) turning at least 45° (inkvec `CORNER_DEGREES`) that `cornerAt` also calls a corner, so
+   `smoothing` keeps its say; two vertices a chamfer stub apart (≤ 2.5 px, the anti-aliasing's cut across one sharp
+   corner, each turning part of the way) are judged as one vertex at the stub's middle. The samples must turn there too:
+   around a small round — a stroke's cap — the lattice polygon turns ~45° at every vertex while the refined samples run
+   smooth, and a corner there draws the cap as a pointed arch. So each side's tangent at the vertex is read from that
+   side's samples, up to the neighbouring vertex and a tangent window's reach, the vertex's own anti-aliasing chamfer
+   left out: the tangent of the circle they fit within the measurement model (a straight side fits a huge one), else the
+   widest Savitzky–Golay window the model accepts (`sideTangents`), and the two must turn by 45° as well. A corner is a
+   forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
    line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`) and adjacent
    lines one line explains, and a ring
@@ -144,23 +146,25 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    arms): a piece of a sample or two cannot place two arms by itself, and its free fit — a negative arm, or one several
    chords long — would otherwise swing the shared directions. The spline is held to the mode's band, narrowed on a clean
    edge: the refined samples' RMS residual about the DP's fit measures the edge's noise, and below half σ the band
-   narrows with it, to half. A DP segment outside the DP's own band — its best effort where nothing was admissible, as
-   along a straight edge whose lattice staircase leaves corners past the band — stays as it is, so the spline does not
-   bend through those corners, and pins its own end directions so its neighbours meet it smoothly. A DP line that is a
-   straight edge of the drawing — inside that band, no line beside it turning away, no neighbouring arc whose circle
-   runs through its samples, no bow above the noise — stays a line, and a DP arc inside the band keeps its circle unless
-   it meets such a line or another kept arc at a turn; both pin their knots' directions, so their neighbours meet them
-   smoothly. An arc that gives up its circle becomes one cubic piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples, carries
-   an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a fallback
-   ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the
-   step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule
-   let through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own segments.
-   Each repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve reaching
-   further moves admissible pieces out of the band for the next round to repair. Knots are then removed wherever the
-   merged piece stays inside the band and the description length does not grow — the outer directions kept, or
-   re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more, kept
-   when every piece stays inside the band and χ² does not grow. A cutout chain is refit once, like any span, so an edge
-   two regions share stays one fit.
+   narrows with it, to half — never past one that keeps the lattice samples inside the DP's own fit, so a staircase
+   corner held at the search's reach does not break the spline at every corner. A DP segment outside the DP's own
+   band — its best effort where nothing was admissible, as along a straight edge whose lattice staircase leaves corners
+   past the band — stays as it is, so the spline does not bend through those corners, and pins its own end directions so
+   its neighbours meet it smoothly. A DP line that is a straight edge of the drawing — inside that band, no line beside
+   it turning away, no neighbouring arc whose circle runs through its samples, no bow above the noise — stays a line,
+   and a DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin
+   their knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic
+   piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples,
+   carries an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a
+   fallback ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its
+   ends, so the step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the
+   corner rule let through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own
+   segments. Each repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve
+   reaching further moves admissible pieces out of the band for the next round to repair. Knots are then removed
+   wherever the merged piece stays inside the band and the description length does not grow — the outer directions kept,
+   or re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more,
+   kept when every piece stays inside the band and χ² does not grow. A cutout chain is refit once, like any span, so an
+   edge two regions share stays one fit.
 
    The DP is kept browser-fast without changing what it draws. A span prices an
    arc or a cubic only when a curve could actually beat the pinned line — inkvec's
