@@ -83,8 +83,11 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    it (noise over contrast over the coverage step, inkvec's `position_sigma`): a snapped sample on a soft edge is held
    to that where it is looser, and a sample the field refused to move — its two pixels on the same side of ½ and none
    past them crossing it, a ramp the label pass cut away from its ½ level — stays on the lattice, held as loosely as
-   its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A corner is a polygon
-   vertex (read on the unadjusted polygon) turning at least 45° (inkvec
+   its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A staircase corner
+   inside a polygon edge whose probes read partial coverage but none across ½, between two neighbours the search moved
+   onto the edge at σ under ½ px, lies past the reach of the edge they located (a soft line the label pass widened):
+   it stays on the lattice held at that reach, so the fit follows its neighbours instead of turning out to each such
+   corner. A corner is a polygon vertex (read on the unadjusted polygon) turning at least 45° (inkvec
    `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
    (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
    the stub's middle. The samples must turn there too: around a small round — a stroke's cap — the lattice polygon

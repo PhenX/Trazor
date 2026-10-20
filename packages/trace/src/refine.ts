@@ -81,6 +81,11 @@ const MAX_SHIFT = 1.0
 /** Largest positional uncertainty (px) a refined point is given (inkvec `vertex_sigma`'s clamp). */
 const MAX_POINT_SIGMA = 2
 /**
+ * Positional σ (px) under which a point the search moved has located its edge:
+ * tighter than the ½ px a lattice point carries.
+ */
+const LOCATED_SIGMA = 0.5
+/**
  * A coverage this close to 0 or 1 is a fully outside/inside pixel that carries no
  * sub-pixel information: a hard edge shows only these, and moving a point off the
  * lattice with no anti-aliased evidence would only bend the straight runs that
@@ -150,7 +155,12 @@ const TIE_NUDGE = 1e-6
  * error (inkvec `CoverageField::position_sigma`), so a point on a soft edge is
  * held loosely and one on a crisp edge tightly; a refused point's adds the
  * distance to the ½ level the ramp extrapolates to, up to the search's one
- * pixel of reach.
+ * pixel of reach. A point inside an edge of the optimal polygon whose probes
+ * read partial coverage but none across ½, between two neighbours the search
+ * moved onto the edge at a σ under {@link LOCATED_SIGMA}, is a staircase corner
+ * the label pass put past the reach of the edge its neighbours located: it
+ * stays in place at σ the full reach, so a fit follows its neighbours rather
+ * than turning out to it.
  */
 export function refineRingToField(
   ring: FlatPoints,
@@ -166,7 +176,7 @@ export function refineRingToField(
   const uncertainty = signed?.uncertainty?.bind(signed)
   const along = signed?.along?.bind(signed)
   const measure: PointMeasure | undefined = uncertainty
-    ? { uncertainty, along, sigma: Number.NaN, refused: false }
+    ? { uncertainty, along, sigma: Number.NaN, refused: false, beyond: false }
     : undefined
   /** Centered field value at integer pixel (x, y), coordinates clamped to grid. */
   const at = (x: number, y: number): number => {
@@ -265,6 +275,8 @@ export function refineRingToField(
 
   const out: FlatPoints = new Array(ring.length)
   if (sigma) sigma.length = n
+  // Points left in place whose ½ level lies past the search's reach.
+  const beyond: number[] = []
   for (let i = 0; i < n; i++) {
     const px = ring[i * 2]
     const py = ring[i * 2 + 1]
@@ -291,6 +303,7 @@ export function refineRingToField(
     if (measure) {
       measure.sigma = Number.NaN
       measure.refused = false
+      measure.beyond = false
     }
     const shift = solveNormal(coverageAt, px, py, nx, ny, w, h, measure)
     // A point the search moved keeps the σ it was measured at, a point the
@@ -299,11 +312,24 @@ export function refineRingToField(
     if (sigma && measure && ((shift !== null && shift !== 0) || measure.refused)) {
       sigma[i] = measure.sigma
     }
+    if (measure?.beyond) beyond.push(i)
     const back = setback ? setback[i % period] : 0
     if (shift === null && back === 0) continue
     const move = (shift ?? 0) + back
     out[i * 2] = px + nx * move
     out[i * 2 + 1] = py + ny * move
+  }
+  if (sigma && vertices && beyond.length > 0) {
+    // A staircase corner along a polygon edge, between two neighbours that
+    // located the edge, is held at the search's reach.
+    const isVertex = new Uint8Array(n)
+    for (const v of vertices) if (v < n) isVertex[v] = 1
+    const located = (j: number): boolean =>
+      (out[j * 2] !== ring[j * 2] || out[j * 2 + 1] !== ring[j * 2 + 1]) && sigma[j] < LOCATED_SIGMA
+    for (const i of beyond) {
+      if (isVertex[i]) continue
+      if (located(neighbor(i - 1)) && located(neighbor(i + 1))) sigma[i] = MAX_SHIFT
+    }
   }
   return out
 }
@@ -408,6 +434,8 @@ interface PointMeasure {
   sigma: number
   /** Whether the search refused the point: no ½ crossing the image shows at it. */
   refused: boolean
+  /** Whether the probes read partial coverage but none across ½: the ½ level lies past the search's reach. */
+  beyond: boolean
 }
 
 /**
@@ -417,7 +445,8 @@ interface PointMeasure {
  * (`planar.rs`): probe coverage at the pixel centres nearest ±1, ±½, 0 px along
  * the normal, bracket the ½ crossing, and invert a clean step exactly. With
  * `measure`, the two probed pixels nearest the point on either side decide
- * whether the image shows a crossing here at all, and set its σ
+ * whether the image shows a crossing here at all, and set its σ; a point left
+ * in place whose probes all read on one side of ½ is marked `beyond`
  * ({@link refineRingToField}).
  */
 function solveNormal(
@@ -544,7 +573,10 @@ function solveNormal(
       havePrev = true
     }
   }
-  if (hit === null) return null
+  if (hit === null) {
+    if (measure) measure.beyond = a.every((v) => v < 0.5) || a.every((v) => v > 0.5)
+    return null
+  }
   return hit > MAX_SHIFT ? MAX_SHIFT : hit < -MAX_SHIFT ? -MAX_SHIFT : hit
 }
 

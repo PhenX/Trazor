@@ -151,7 +151,8 @@ export function runTau(): number {
  * `measured` (per ring point, from the refinement) is a point's own positional
  * uncertainty where the field measured it: a moved point on a soft edge is
  * held to that, never tighter than {@link SIGMA_REFINED}, and one the field
- * refused to move to that, never tighter than {@link SIGMA_LATTICE}.
+ * left in place with a σ of its own (a refused point, or a staircase corner
+ * past the search's reach) to that, never tighter than {@link SIGMA_LATTICE}.
  */
 export function ringSigmas(
   lattice: FlatPoints,

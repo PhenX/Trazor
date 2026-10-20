@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
-import { decomposeMask, refineRingToField, ringPolygon, traceMask } from '@trazor/trace'
+import type { SignedField } from '@trazor/trace'
+import {
+  decomposeMask,
+  polygonToCommands,
+  refineRingToField,
+  ringPolygon,
+  traceMask,
+} from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,
@@ -170,5 +177,83 @@ describe('sub-pixel boundary refinement', () => {
     const a = JSON.stringify(traceMask(mask, { ...OPTS, coverage: field }))
     const b = JSON.stringify(traceMask(mask, { ...OPTS, coverage: field }))
     expect(a).toBe(b)
+  })
+})
+
+describe('sub-pixel refinement on a soft edge the labels overreach', () => {
+  const S = 48
+  const nx = Math.cos((48 * Math.PI) / 180)
+  const ny = Math.sin((48 * Math.PI) / 180)
+  /** Signed distance (px) from a straight edge at 48°, positive inside. */
+  const dist = (x: number, y: number): number => x * nx + y * ny - (0.5 * S * (nx + ny) + 0.3)
+  /** Coverage of a soft edge, ½ + d / 2.5 px, read at a pixel's centre. */
+  const coverage = (x: number, y: number): number =>
+    Math.min(1, Math.max(0, 0.5 + dist(x + 0.5, y + 0.5) / 2.5))
+
+  /**
+   * The mask holds every pixel covered at least 0.12, so its staircase runs a
+   * pixel or so outside the ½ level: the inner corners lie within the
+   * search's reach of it, the outer corners past it. Every value is measured.
+   */
+  function overreach(): { ring: number[]; field: SignedField } {
+    const data = new Uint8Array(S * S)
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) data[y * S + x] = coverage(x, y) >= 0.12 ? 1 : 0
+    }
+    const field: SignedField = {
+      width: S,
+      height: S,
+      at: (x, y) => coverage(x, y) - 0.5,
+      uncertainty: () => 0.01,
+    }
+    const outer = decomposeMask({ width: S, height: S, data }, 'minority', 1).find(
+      (p) => p.area > 0,
+    )
+    if (!outer) throw new Error('no outer ring')
+    return { ring: outer.points, field }
+  }
+
+  /** Whether (x, y) is on the slanted side, clear of the image border. */
+  const onSide = (x: number, y: number): boolean =>
+    x > 6 && y > 6 && x < S - 6 && y < S - 6 && Math.abs(dist(x, y)) < 2
+
+  it('holds a staircase corner past the search’s reach at that reach', () => {
+    const { ring, field } = overreach()
+    const fit = ringPolygon(ring, field)
+    expect(fit).not.toBeNull()
+    const geom = fit?.geom ?? []
+    const sigma = fit?.sigma ?? []
+    // Points left in place: their distance outside the edge and their σ.
+    const kept: { d: number; sigma: number }[] = []
+    // Points moved: their distance from the edge.
+    const moved: number[] = []
+    for (let i = 0; i < ring.length >> 1; i++) {
+      const [x, y] = [ring[i * 2], ring[i * 2 + 1]]
+      if (!onSide(x, y)) continue
+      if (geom[i * 2] === x && geom[i * 2 + 1] === y) kept.push({ d: dist(x, y), sigma: sigma[i] })
+      else moved.push(Math.abs(dist(geom[i * 2], geom[i * 2 + 1])))
+    }
+    expect(kept.length).toBeGreaterThan(20)
+    for (const k of kept) {
+      expect(k.d).toBeLessThan(-1)
+      expect(k.sigma).toBe(1)
+    }
+    expect(moved.length).toBeGreaterThan(20)
+    expect(Math.max(...moved)).toBeLessThan(0.05)
+  })
+
+  it('fits the side along the edge, not out to each corner', () => {
+    const { ring, field } = overreach()
+    const commands = polygonToCommands(ring, ringPolygon(ring, field), {
+      curveMode: 'spline',
+      smoothing: 0.8,
+      curveOptimize: true,
+      optTolerance: 0.2,
+      cornerThreshold: 100,
+    })
+    const off = anchors(commands)
+      .filter(([x, y]) => onSide(x, y))
+      .map(([x, y]) => Math.abs(dist(x, y)))
+    expect(Math.max(0, ...off)).toBeLessThan(0.25)
   })
 })
