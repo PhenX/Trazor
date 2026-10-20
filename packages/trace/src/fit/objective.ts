@@ -391,9 +391,10 @@ function fitLine(xs: number[], ys: number[], ws: number[]): FittedLine | null {
 
 /**
  * The best-fit line of the points from index `a` to `b`, walking (and wrapping
- * on a closed polyline) the actual points. The samples within
- * {@link CORNER_CHAMFER} of either end sit on the chamfer, inside the true
- * edge, and are dropped when at least three remain without them.
+ * on a closed polyline) the actual points, directed from `a` towards `b`. The
+ * samples within {@link CORNER_CHAMFER} of either end sit on the chamfer,
+ * inside the true edge, and are dropped when at least three remain without
+ * them.
  */
 function segmentLine(poly: Polyline, a: number, b: number): FittedLine | null {
   const n = polylineSize(poly)
@@ -426,7 +427,12 @@ function segmentLine(poly: Polyline, a: number, b: number): FittedLine | null {
       tw.push(ws[q])
     }
   }
-  return tx.length >= 3 ? fitLine(tx, ty, tw) : fitLine(xs, ys, ws)
+  const line = tx.length >= 3 ? fitLine(tx, ty, tw) : fitLine(xs, ys, ws)
+  if (line && line.dx * (bx - ax) + line.dy * (by - ay) < 0) {
+    line.dx = -line.dx
+    line.dy = -line.dy
+  }
+  return line
 }
 
 /** As {@link adjustVerticesAt} with every vertex treated as a corner. */

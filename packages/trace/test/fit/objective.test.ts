@@ -328,6 +328,19 @@ describe('corners', () => {
     expect([none[2], none[3]]).toEqual([10, 0])
   })
 
+  it('keep the tight reach between nearly collinear lines whichever way they lean', () => {
+    // One side walked upwards and split at (0.5, 10): below it leans one way,
+    // above it the other, ~3.4° apart, their intersection 1.7 px along the side.
+    const below = Array.from({ length: 10 }, (_, k): [number, number] => {
+      const y = 20 - k
+      return [0.6 + 0.05 * (y - 10), y]
+    })
+    const above = run([0.5, 10], [0.6, 0], 10)
+    const poly = uniformPolyline(flat([...below, ...above]), 0.05, false)
+    const adj = adjustVerticesAt(poly, [0, 10, 20], 0.75, () => true)
+    expect([adj[2], adj[3]]).toEqual([0.5, 10])
+  })
+
   it('wrap round an opened loop, moving only the corners asked for', () => {
     const c: [number, number][] = [
       [0, 0],
