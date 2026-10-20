@@ -33,7 +33,8 @@ import { fitCircle } from '../fit/primitives'
  * G1 cubic) jointly. `smoothing`/`cornerThreshold` keep their meaning as the
  * corner prior (a corner is a forced breakpoint; a non-corner join keeps the
  * shared data tangent, so it stays G1). After the DP a single merge pass folds
- * adjacent cubics one cubic explains (inkvec `merge_free_cubics`), and outside
+ * adjacent cubics one cubic explains (inkvec `merge_free_cubics`) and adjacent
+ * lines one line explains, and outside
  * geometric mode the span is refit as a G1 spline, so a chord the DP drew
  * across a curve does not leave a kink at either end ({@link g1Refit}).
  *
@@ -784,7 +785,7 @@ export function fitOpenRuns(
  * apex, or the shared seam tangent of a smooth loop). Candidates: the interior
  * polygon vertices `splits`, the discrete-curvature sign changes, and a coarse
  * stride. The DP picks the segmentation and per-span model jointly under
- * `0.5·χ² + λ·params`, then a single pass merges adjacent cubics.
+ * `0.5·χ² + λ·params`, then a single pass merges adjacent cubics and lines.
  */
 function emitSpanDP(
   out: PathCommand[],
@@ -873,7 +874,7 @@ function spanSegments(
   }
   segs.reverse()
   if (costOut) costOut[0] = best[K]
-  mergeFreeCubics(pts, sig, segs, opts)
+  mergeAdjacent(pts, sig, segs, opts)
   if (!geometricMode(opts) && segs.length > 1) {
     const tau = g1Tau(pts, sig, segs, opts)
     const smooth = g1Refit(pts, sig, segs, periodic, tau < opts.tau ? { ...opts, tau } : opts, opts)
@@ -1075,16 +1076,12 @@ function spanCost(
  * short cubics or arcs — the fragmentation an organic boundary provokes — is
  * folded back into one cubic here. A pair is merged only when the single cubic
  * is admissible AND cheaper (6 params vs the pair's 12), so a genuine circular
- * arc a cubic cannot cover (over ~90°) is left as an arc. Iterated to a fixpoint,
- * longest-first per position.
+ * arc a cubic cannot cover (over ~90°) is left as an arc. Two adjacent lines are
+ * folded into one line the same way, so a straight edge the DP split at its reach
+ * is one line again. Iterated to a fixpoint, longest-first per position.
  */
 const MERGE_ROUNDS = 6
-function mergeFreeCubics(
-  pts: FlatPoints,
-  sig: number[],
-  segs: SegFit[],
-  opts: RunFitOptions,
-): void {
+function mergeAdjacent(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptions): void {
   for (let round = 0; round < MERGE_ROUNDS; round++) {
     let changed = false
     let i = 0
@@ -1105,6 +1102,17 @@ function mergeFreeCubics(
         const oldQual = 0.5 * oldChi2 + opts.lambda * oldParams
         if (d.worst <= 1 && merQual < oldQual) {
           segs.splice(i, 2, { a: s0.a, b: s1.b, kind: 'cubic', cubic: merged })
+          changed = true
+          continue
+        }
+      } else if (s0.kind === 'line' && s1.kind === 'line') {
+        const d = lineDeviation(pts, sig, s0.a, s1.b, opts)
+        const oldChi2 = modelChi2(pts, sig, s0, opts) + modelChi2(pts, sig, s1, opts)
+        if (
+          d.worst <= 1 &&
+          0.5 * d.chi2 + opts.lambda * PARAMS_LINE < 0.5 * oldChi2 + opts.lambda * 2 * PARAMS_LINE
+        ) {
+          segs.splice(i, 2, { a: s0.a, b: s1.b, kind: 'line' })
           changed = true
           continue
         }

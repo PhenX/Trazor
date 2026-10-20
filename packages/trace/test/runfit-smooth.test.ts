@@ -218,6 +218,35 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     expect(worstDeviation(cmds, sd)).toBeLessThan(0.3)
   })
 
+  it('keeps a long straight side one line on a large canvas', () => {
+    // A large canvas narrows the DP's reach to a few candidates, so it covers
+    // each side with a chain of short collinear lines; the merge pass makes each
+    // side one line again.
+    const a = 0.31
+    const sd = (x: number, y: number): number => {
+      const u = (x - 600.3) * Math.cos(a) + (y - 599.6) * Math.sin(a)
+      const v = -(x - 600.3) * Math.sin(a) + (y - 599.6) * Math.cos(a)
+      const qx = Math.abs(u) - 300
+      const qy = Math.abs(v) - 200
+      return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0)
+    }
+    const corners = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ].map(([i, j]) => [
+      600.3 + i * 300 * Math.cos(a) - j * 200 * Math.sin(a),
+      599.6 + i * 300 * Math.sin(a) + j * 200 * Math.cos(a),
+    ])
+    const alongSides = (x: number, y: number): boolean =>
+      corners.every(([cx, cy]) => Math.hypot(x - cx, y - cy) > 4)
+    const { mask, field } = fieldOf(1200, sd)
+    const cmds = trace(mask, field, ILLUSTRATION)
+    expect(cmds.length).toBeLessThanOrEqual(8)
+    expect(worstDeviation(cmds, sd, alongSides)).toBeLessThan(0.2)
+  })
+
   it('follows a small bump on a clean edge rather than cutting it with a chord', () => {
     // A bump 0.3px high on the top side of a clean rounded rectangle: the DP's
     // band lets one chord cross it, but the refit holds a clean edge to a

@@ -95,7 +95,8 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    (`sideTangents`), and the two must turn by 45° as well. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
    rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
-   line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`), and a ring
+   line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`) and adjacent
+   lines one line explains, and a ring
    is one circle when that is the better description: a geometric circle fit whose reduced χ² stays within τ², that
    goes once round its center, and whose `0.5·χ² + 3λ` undercuts the DP's cost (inkvec's whole-primitive rule — a few
    2.5σ samples do not veto a true circle, a real notch keeps its segments). Outside geometric mode a ring measured
