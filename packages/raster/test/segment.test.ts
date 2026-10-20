@@ -503,6 +503,29 @@ describe('segmentRegions — rescuing marker-less thin features', () => {
     expect(paletteL(seg, crease)).toBeLessThan(paletteL(seg, skin) - 0.15)
   })
 
+  it('rescues a grey glyph whose paper is too noisy to be flat, below a dark rim', () => {
+    // A clock numeral under the dial's rim: a 2px grey stroke on white, a black
+    // band above it, and between the two a strip of paper whose compression
+    // noise keeps it from flat. A walk up from the stroke crosses that paper to
+    // the black band, but the paper is the stroke's side there: it is a grey
+    // glyph on white, not a rim between black and white, and survives as its
+    // own region.
+    const w = 40
+    const img = rasterOf(w, 40, (x, y) => {
+      if (y >= 4 && y < 10) return BLACK
+      if (y >= 10 && y < 16) return (x + y) % 2 === 0 ? WHITE : [243, 243, 243, 255]
+      if ((y === 16 || y === 17) && x >= 15 && x < 25) return [112, 112, 112, 255]
+      return WHITE
+    })
+    const seg = segmentRegions(img)
+    expect(seg.labels.count).toBe(3)
+    const stroke = seg.labels.data[16 * w + 20]
+    expect(stroke).not.toBe(seg.labels.data[30 * w + 5])
+    expect(stroke).not.toBe(seg.labels.data[6 * w + 5])
+    expect(paletteL(seg, stroke)).toBeGreaterThan(0.4)
+    expect(paletteL(seg, stroke)).toBeLessThan(0.7)
+  })
+
   it('leaves a low-contrast thin feature to the flood (only high-contrast is rescued)', () => {
     // A faint bar (ΔE well under the rescue contrast gate) is one the flood
     // renders acceptably; it must not be seeded as its own region.

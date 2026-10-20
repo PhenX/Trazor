@@ -1064,6 +1064,30 @@ function rescueMarkerlessFeatures(
   }
 
   /**
+   * The first step, short of the marker `k` steps away, at which a walk from
+   * (x, y) along (dx, dy) meets a pixel off blob `id` within `RESCUE_ONE_FIELD`
+   * of marker `other`'s color; 0 if none.
+   */
+  const metFirst = (
+    id: number,
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    k: number,
+    other: number,
+  ): number => {
+    const oL = markerColor(other, promL, mL)
+    const oA = markerColor(other, promA, mA)
+    const oB = markerColor(other, promB, mB)
+    for (let t = 1; t < k; t++) {
+      const q = (y + dy * t) * w + x + dx * t
+      if (blobId[q] !== id && distToMean(ok, q, oL, oA, oB) < RESCUE_ONE_FIELD) return t
+    }
+    return 0
+  }
+
+  /**
    * Judge blob `id` against the sides of its pixels over the current `region`:
    * the first markers met walking out in opposite directions. A pixel is an
    * *extreme* on an axis when its blob is at least `RESCUE_MIN_CONTRAST` from
@@ -1105,15 +1129,36 @@ function rescueMarkerlessFeatures(
       // or a mixture of them (a rim), and one mixture axis vetoes the pixel: a
       // rim ring is given away by its across-axis whatever its along-axis says,
       // while a real line has no axis that calls it a mixture.
+      //
+      // A walk runs to the first marker, and a field whose noise kept it from
+      // flat runs on unmarked to whatever lies beyond it (a glyph's paper to
+      // the dial's rim). Where the walk to one side crosses the other side's
+      // color first, that side is met there: the other side's field.
       let tested = 0
       let agreed = 0
       let edge = false
       for (let axis = 0; axis < 2; axis++) {
-        const f1 = axis === 0 ? walk(px, py, -1, 0) : walk(px, py, 0, -1)
-        const k1 = walked
-        const f2 = axis === 0 ? walk(px, py, 1, 0) : walk(px, py, 0, 1)
-        const k2 = walked
+        const dx = axis === 0 ? 1 : 0
+        const dy = axis === 0 ? 0 : 1
+        let f1 = walk(px, py, -dx, -dy)
+        let k1 = walked
+        let f2 = walk(px, py, dx, dy)
+        let k2 = walked
         if (f1 < 0 || f2 < 0) continue
+        if (f1 !== f2) {
+          const g1 = f1
+          const g2 = f2
+          const t1 = metFirst(id, px, py, -dx, -dy, k1, g2)
+          const t2 = metFirst(id, px, py, dx, dy, k2, g1)
+          if (t1 > 0) {
+            f1 = g2
+            k1 = t1
+          }
+          if (t2 > 0) {
+            f2 = g1
+            k2 = t2
+          }
+        }
         const d1 = toBlob(f1)
         const d2 = toBlob(f2)
         const near = d1 < d2 ? d1 : d2
