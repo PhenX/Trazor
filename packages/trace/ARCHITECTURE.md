@@ -142,11 +142,11 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    edge: the refined samples' RMS residual about the DP's fit measures the edge's noise, and below half σ the band
    narrows with it, to half. A DP segment outside the DP's own band — its best effort where nothing was admissible, as
    along a straight edge whose lattice staircase leaves corners past the band — stays as it is, so the spline does not
-   bend through those corners. A DP line that is a straight edge of the drawing — inside that band, no line beside it
-   turning away, no neighbouring arc whose circle runs through its samples, no bow above the noise — stays a line, and a
-   DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin their
-   knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic piece
-   per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples, carries
+   bend through those corners, and pins its own end directions so its neighbours meet it smoothly. A DP line that is a
+   straight edge of the drawing — inside that band, no line beside it turning away, no neighbouring arc whose circle
+   runs through its samples, no bow above the noise — stays a line, and a DP arc inside the band keeps its circle unless
+   it meets such a line or another kept arc at a turn; both pin their knots' directions, so their neighbours meet them
+   smoothly. An arc that gives up its circle becomes one cubic piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples, carries
    an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a fallback
    ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the
    step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule

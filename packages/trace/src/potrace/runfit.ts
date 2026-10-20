@@ -3292,7 +3292,8 @@ function g1Refit(
     const sg = segs[q]
     // A segment the DP took outside its own band had nothing admissible to
     // explain its samples (a lattice staircase's protruding corners along a
-    // straight edge): the spline would bend through them, so it stays the DP's.
+    // straight edge): the spline would bend through them, so it stays the DP's,
+    // and pins its own end directions so its neighbours meet it smoothly.
     if (segDeviation(pts, sig, sg, dpOpts).worst > 1) {
       pieces[q].kind = 'fixed'
       pieces[q].seg = sg
@@ -3501,11 +3502,10 @@ function g1Refit(
         const ds =
           p.kind === 'line'
             ? unit2(pts[b * 2] - pts[a * 2], pts[b * 2 + 1] - pts[a * 2 + 1])
-            : p.kind === 'arc' && p.seg
+            : p.seg
               ? segStartDir(pts, p.seg)
               : dOut[q]
-        const de =
-          p.kind === 'line' ? ds : p.kind === 'arc' && p.seg ? segEndDir(pts, p.seg) : dIn[q + 1]
+        const de = p.kind === 'line' ? ds : p.seg ? segEndDir(pts, p.seg) : dIn[q + 1]
         if (ds && de) {
           pin[s] += 1
           pinX[s] += ds[0]
