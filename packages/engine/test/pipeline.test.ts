@@ -86,6 +86,33 @@ function thickPlus(): RasterImage {
   return img
 }
 
+/**
+ * A blue trapezoid on white, anti-aliased (4×4 coverage samples a pixel): two
+ * sides slanted 2:5, so their rim pixels quantize into a staircase.
+ */
+function antialiasedTrapezoid(): RasterImage {
+  const img = createRaster(100, 80)
+  fillRaster(img, 255, 255, 255)
+  const inside = (x: number, y: number): boolean =>
+    y > 10.3 && y < 70.4 && x > 20 + (70 - y) * 0.4 && x < 80 - (70 - y) * 0.4
+  for (let y = 0; y < 80; y++) {
+    for (let x = 0; x < 100; x++) {
+      let n = 0
+      for (let j = 0; j < 4; j++) {
+        for (let i = 0; i < 4; i++) if (inside(x + (i + 0.5) / 4, y + (j + 0.5) / 4)) n++
+      }
+      const f = n / 16
+      setPixel(
+        img,
+        x,
+        y,
+        ...([20, 60, 200].map((c) => Math.round(255 + (c - 255) * f)) as [number, number, number]),
+      )
+    }
+  }
+  return img
+}
+
 function settings(patch: Partial<VectorizeSettings>): VectorizeSettings {
   return normalizeSettings({ maxDimension: 0, minRegionArea: 2, ...patch })
 }
@@ -168,6 +195,15 @@ describe('native engine pipeline', () => {
     // On by default.
     const byDefault = await vectorize(thickPlus(), settings({ mode: 'bw' }))
     expect(byDefault.svg).toBe(optimized.svg)
+  })
+
+  it('traces the slanted sides of an anti-aliased trapezoid as straight lines', async () => {
+    // Each staircase step of a slanted side leaves a lattice corner just past the
+    // fit's band; the side stays a line rather than a spline bending through them.
+    const { svg } = await vectorize(antialiasedTrapezoid(), settings({ mode: 'color' }))
+    const d = /<path d="([^"]*)" fill="#(?!ffffff)/.exec(svg)?.[1]
+    expect(d).toBeDefined()
+    expect(d!.match(/[A-Za-z]/g)!.length).toBeLessThanOrEqual(16)
   })
 
   it('preserveDetails keeps a small high-contrast dot the flat filter removes', async () => {

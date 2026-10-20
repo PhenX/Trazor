@@ -33,7 +33,8 @@ import { fitCircle } from '../fit/primitives'
  * G1 cubic) jointly. `smoothing`/`cornerThreshold` keep their meaning as the
  * corner prior (a corner is a forced breakpoint; a non-corner join keeps the
  * shared data tangent, so it stays G1). After the DP a single merge pass folds
- * adjacent cubics one cubic explains (inkvec `merge_free_cubics`), and outside
+ * adjacent cubics one cubic explains (inkvec `merge_free_cubics`) and adjacent
+ * lines one line explains, and outside
  * geometric mode the span is refit as a G1 spline, so a chord the DP drew
  * across a curve does not leave a kink at either end ({@link g1Refit}).
  *
@@ -784,7 +785,7 @@ export function fitOpenRuns(
  * apex, or the shared seam tangent of a smooth loop). Candidates: the interior
  * polygon vertices `splits`, the discrete-curvature sign changes, and a coarse
  * stride. The DP picks the segmentation and per-span model jointly under
- * `0.5·χ² + λ·params`, then a single pass merges adjacent cubics.
+ * `0.5·χ² + λ·params`, then a single pass merges adjacent cubics and lines.
  */
 function emitSpanDP(
   out: PathCommand[],
@@ -873,10 +874,10 @@ function spanSegments(
   }
   segs.reverse()
   if (costOut) costOut[0] = best[K]
-  mergeFreeCubics(pts, sig, segs, opts)
+  mergeAdjacent(pts, sig, segs, opts)
   if (!geometricMode(opts) && segs.length > 1) {
     const tau = g1Tau(pts, sig, segs, opts)
-    const smooth = g1Refit(pts, sig, segs, periodic, tau < opts.tau ? { ...opts, tau } : opts)
+    const smooth = g1Refit(pts, sig, segs, periodic, tau < opts.tau ? { ...opts, tau } : opts, opts)
     if (smooth) return smooth
   }
   return segs
@@ -1075,16 +1076,12 @@ function spanCost(
  * short cubics or arcs — the fragmentation an organic boundary provokes — is
  * folded back into one cubic here. A pair is merged only when the single cubic
  * is admissible AND cheaper (6 params vs the pair's 12), so a genuine circular
- * arc a cubic cannot cover (over ~90°) is left as an arc. Iterated to a fixpoint,
- * longest-first per position.
+ * arc a cubic cannot cover (over ~90°) is left as an arc. Two adjacent lines are
+ * folded into one line the same way, so a straight edge the DP split at its reach
+ * is one line again. Iterated to a fixpoint, longest-first per position.
  */
 const MERGE_ROUNDS = 6
-function mergeFreeCubics(
-  pts: FlatPoints,
-  sig: number[],
-  segs: SegFit[],
-  opts: RunFitOptions,
-): void {
+function mergeAdjacent(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptions): void {
   for (let round = 0; round < MERGE_ROUNDS; round++) {
     let changed = false
     let i = 0
@@ -1108,6 +1105,17 @@ function mergeFreeCubics(
           changed = true
           continue
         }
+      } else if (s0.kind === 'line' && s1.kind === 'line') {
+        const d = lineDeviation(pts, sig, s0.a, s1.b, opts)
+        const oldChi2 = modelChi2(pts, sig, s0, opts) + modelChi2(pts, sig, s1, opts)
+        if (
+          d.worst <= 1 &&
+          0.5 * d.chi2 + opts.lambda * PARAMS_LINE < 0.5 * oldChi2 + opts.lambda * 2 * PARAMS_LINE
+        ) {
+          segs.splice(i, 2, { a: s0.a, b: s1.b, kind: 'line' })
+          changed = true
+          continue
+        }
       }
       i++
     }
@@ -1117,9 +1125,14 @@ function mergeFreeCubics(
 
 /** χ² of a fitted segment against its samples (0 for a line's pinned chord ends aside). */
 function modelChi2(pts: FlatPoints, sig: number[], s: SegFit, opts: RunFitOptions): number {
-  if (s.kind === 'arc' && s.circle) return circleDeviation(pts, sig, s.a, s.b, s.circle, opts).chi2
-  if (s.kind === 'cubic' && s.cubic) return cubicDeviation(pts, sig, s.a, s.b, s.cubic, opts).chi2
-  return lineDeviation(pts, sig, s.a, s.b, opts).chi2
+  return segDeviation(pts, sig, s, opts).chi2
+}
+
+/** A fitted segment's deviation from its samples. */
+function segDeviation(pts: FlatPoints, sig: number[], s: SegFit, opts: RunFitOptions): Dev {
+  if (s.kind === 'arc' && s.circle) return circleDeviation(pts, sig, s.a, s.b, s.circle, opts)
+  if (s.kind === 'cubic' && s.cubic) return cubicDeviation(pts, sig, s.a, s.b, s.cubic, opts)
+  return lineDeviation(pts, sig, s.a, s.b, opts)
 }
 
 /** Append one fitted segment's commands. */
@@ -3161,7 +3174,10 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
  * corner inside it by construction, every join inside is made G1, the model of
  * Plass & Stone (1983, piecewise parametric cubics with tangent continuity):
  *
- * 1. The DP's breakpoints become knots. A DP line that is a straight edge of the
+ * 1. The DP's breakpoints become knots. A DP segment outside the DP's own band —
+ *    its best effort where nothing was admissible, as along a straight edge whose
+ *    lattice staircase leaves corners past the band — stays as it is. A DP line
+ *    that is a straight edge of the
  *    drawing — inside the refit's band, no line beside it turning away, no
  *    neighbouring arc whose circle runs through its samples, its samples not
  *    bowed like a chord across a curve — stays a chord, and a DP arc inside the
@@ -3197,6 +3213,8 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
  *    piece stays inside the band and χ² does not grow.
  *
  * `periodic`: the span is a whole smooth loop, its seam a knot like the others.
+ * `dpOpts`: the options the DP ran with; a DP segment outside their band (its
+ * best effort where no model was admissible) is kept as it is.
  * Returns null when there is nothing to refit (the caller keeps the DP's).
  */
 function g1Refit(
@@ -3205,6 +3223,7 @@ function g1Refit(
   segs: SegFit[],
   periodic: boolean,
   opts: RunFitOptions,
+  dpOpts: RunFitOptions,
 ): SegFit[] | null {
   const M0 = segs.length
   if (M0 < 2) return null
@@ -3279,6 +3298,15 @@ function g1Refit(
   // DP's on a clean edge ({@link g1Tau}): one outside it is refit as the spline.
   for (let q = 0; q < M0; q++) {
     const sg = segs[q]
+    // A segment the DP took outside its own band had nothing admissible to
+    // explain its samples (a lattice staircase's protruding corners along a
+    // straight edge): the spline would bend through them, so it stays the DP's,
+    // and pins its own end directions so its neighbours meet it smoothly.
+    if (segDeviation(pts, sig, sg, dpOpts).worst > 1) {
+      pieces[q].kind = 'fixed'
+      pieces[q].seg = sg
+      continue
+    }
     if (sg.kind === 'arc' && sg.circle) {
       if (circleDeviation(pts, sig, sg.a, sg.b, sg.circle, opts).worst > 1) continue
       pieces[q].kind = 'arc'
@@ -3482,11 +3510,10 @@ function g1Refit(
         const ds =
           p.kind === 'line'
             ? unit2(pts[b * 2] - pts[a * 2], pts[b * 2 + 1] - pts[a * 2 + 1])
-            : p.kind === 'arc' && p.seg
+            : p.seg
               ? segStartDir(pts, p.seg)
               : dOut[q]
-        const de =
-          p.kind === 'line' ? ds : p.kind === 'arc' && p.seg ? segEndDir(pts, p.seg) : dIn[q + 1]
+        const de = p.kind === 'line' ? ds : p.seg ? segEndDir(pts, p.seg) : dIn[q + 1]
         if (ds && de) {
           pin[s] += 1
           pinX[s] += ds[0]
