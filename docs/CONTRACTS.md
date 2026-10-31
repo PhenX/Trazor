@@ -296,9 +296,14 @@ export function returnSeamPixels(
 // compressed edge smears its chroma). A hair (nowhere 3 px thick) goes on that; a thicker band must also
 // spread its coverage like a ramp (P80 − P20 ≥ 0.2) and hold no flat core (`gradient` < `flatThreshold`
 // on ≤ 5 % of it), so a stroke in an intermediate color stays. Each pixel goes to A where its coverage
-// of A is ≥ ½, else to B; two passes. Mutates `labels`; returns the pixels moved. segmentRegions runs it
-// last, with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel —
-// the width and the hair test are read in source pixels.
+// of A is ≥ ½, else to B; two passes. A thin hair bordered only by one lighter field and by darker
+// outlines (each ≤ a quarter of its border) whose outline contacts span half its extent and whose
+// darkest pixel reaches 0.9 of an outline's lightness against the field is a stroke of that outline's
+// ink: its pixels go to the outline it meets most among those it reaches (a pixel along another
+// outline to that outline or the field by its coverage), unless its label also paints a component
+// that is no such stroke. Mutates `labels`; returns the pixels moved. segmentRegions runs it last,
+// with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel — the
+// width and the hair test are read in source pixels.
 export function dissolveBlendBands(
   image: RasterImage,
   labels: LabelMap,
@@ -479,9 +484,10 @@ export function fitRegionGradients(
   across keeps its color.
 - After the merge, a seam a third region captured goes back to the two regions
   it separates (`returnSeamPixels`), and a thin band of blend colors grown along
-  a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
-  region those passes empty is dropped and the labels renumbered in order, so
-  they stay compact.
+  a soft edge dissolves into the two it runs between, while a hair running
+  across one field from outline to outline goes to the outline whose ink it is
+  (`dissolveBlendBands`); a region those passes empty is dropped and the labels
+  renumbered in order, so they stay compact.
 - On an image enlarged `scale` times (supersampling), every size and width is
   read in source pixels — a flat core's minimum, the size-aware merge bound,
   the rescue's reach and rim allowance, a seam run, a blend band — so an

@@ -42,7 +42,9 @@
  *      marker seeded there grows along the whole ramp as a band of the blend
  *      color (a rosy line between an orange field and a blue outline). A thin
  *      band like that, whose pixels are blends of the two regions it runs
- *      between, dissolves back into them (`dissolveBlendBands`).
+ *      between, dissolves back into them; a hair that runs across one field
+ *      from outline to outline, a stroke of their ink too thin to reach full
+ *      coverage, goes to the outline whose ink it is (`dissolveBlendBands`).
  *
  * Deterministic: fixed scan and neighbor order throughout, priority-queue ties
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The

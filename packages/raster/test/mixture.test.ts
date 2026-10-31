@@ -273,4 +273,107 @@ describe('dissolveBlendBands', () => {
     const gradient = new Float32Array(W * H).fill(1)
     expect(dissolveBlendBands(image, labels, palette, gradient, FLAT)).toBe(0)
   })
+
+  describe('strokes of an outline across one field', () => {
+    // 24×22: a cream field (label 0) under a brown outline (label 1, rows 0–2)
+    // and over a navy one (label 3, rows 19–21). The test draws hairs of label 2
+    // in blends of an outline over the cream.
+    const SW = 24
+    const SH = 22
+    const CREAM: Rgba = [244, 240, 200, 255]
+    const BROWN: Rgba = [56, 24, 19, 255]
+    const NAVY: Rgba = [7, 9, 19, 255]
+    /** `ink` over the cream at coverage `a`. */
+    const over = (ink: Rgba, a: number): Rgba => [
+      Math.round(ink[0] * a + CREAM[0] * (1 - a)),
+      Math.round(ink[1] * a + CREAM[1] * (1 - a)),
+      Math.round(ink[2] * a + CREAM[2] * (1 - a)),
+      255,
+    ]
+    /**
+     * The scene with label 2 on the pixels `hair` colors, and the palette with
+     * label 2 at the mean of those pixels (`inks`).
+     */
+    function strokeScene(hair: (x: number, y: number) => Rgba | undefined): {
+      image: ReturnType<typeof rasterOf>
+      labels: LabelMap
+      inks: Uint8Array
+      gradient: Float32Array
+    } {
+      const ground = (y: number): Rgba => (y < 3 ? BROWN : y >= 19 ? NAVY : CREAM)
+      const image = rasterOf(SW, SH, (x, y) => hair(x, y) ?? ground(y))
+      const data = new Int32Array(SW * SH)
+      const sum = [0, 0, 0]
+      let count = 0
+      for (let y = 0; y < SH; y++) {
+        for (let x = 0; x < SW; x++) {
+          const c = hair(x, y)
+          data[y * SW + x] = c ? 2 : y < 3 ? 1 : y >= 19 ? 3 : 0
+          if (!c) continue
+          for (let i = 0; i < 3; i++) sum[i] += c[i]
+          count++
+        }
+      }
+      const mean = sum.map((v) => Math.round(v / count))
+      const inks = Uint8Array.from([
+        ...CREAM.slice(0, 3),
+        ...BROWN.slice(0, 3),
+        ...mean,
+        ...NAVY.slice(0, 3),
+      ])
+      const labels: LabelMap = { width: SW, height: SH, data, count: 4 }
+      return { image, labels, inks, gradient: new Float32Array(SW * SH).fill(1) }
+    }
+    /**
+     * A two-pixel hair down columns 11–12 from row 3 to row `end`: the brown
+     * outline's ink at coverage `a` (`b` on its right column), reaching 0.95
+     * where it leaves the brown; on row 18 it meets the navy and blends with it.
+     */
+    const separator =
+      (end: number, a: number, b: number) =>
+      (x: number, y: number): Rgba | undefined => {
+        if ((x !== 11 && x !== 12) || y < 3 || y > end) return undefined
+        if (y === 18) return over(NAVY, x === 11 ? 0.7 : 0.3)
+        if (y === 3) return over(BROWN, x === 11 ? 0.95 : 0.8)
+        return over(BROWN, x === 11 ? a : b)
+      }
+    const at = (labels: LabelMap, x: number, y: number): number => labels.data[y * SW + x]
+
+    it('paints a hair that runs from outline to outline in the ink it reaches', () => {
+      // The outlines hold 4 of its 36 border pixels, too few for a band; its
+      // darkest pixel reaches the brown's lightness, never the navy's.
+      const { image, labels, inks, gradient } = strokeScene(separator(18, 0.6, 0.4))
+      expect(dissolveBlendBands(image, labels, inks, gradient, FLAT)).toBe(32)
+      expect(census(labels)[2]).toBe(0)
+      for (let y = 3; y < 18; y++) {
+        expect(at(labels, 11, y)).toBe(1)
+        expect(at(labels, 12, y)).toBe(1)
+      }
+      // The row along the navy is that outline's rim, split by its coverage.
+      expect(at(labels, 11, 18)).toBe(3)
+      expect(at(labels, 12, 18)).toBe(0)
+    })
+
+    it('keeps a hair that meets an outline only at its tip', () => {
+      const { image, labels, inks, gradient } = strokeScene(separator(12, 0.6, 0.4))
+      expect(dissolveBlendBands(image, labels, inks, gradient, FLAT)).toBe(0)
+    })
+
+    it('keeps a hair whose darkest pixel never reaches an outline', () => {
+      const { image, labels, inks, gradient } = strokeScene((x, y) =>
+        (x === 11 || x === 12) && y >= 3 && y <= 18 ? over(BROWN, 0.5) : undefined,
+      )
+      expect(dissolveBlendBands(image, labels, inks, gradient, FLAT)).toBe(0)
+    })
+
+    it('keeps a hair whose color also paints a glyph of its own', () => {
+      // A second piece of label 2, a short stroke inside the cream: the color is
+      // an ink of the drawing, and the hair a stroke drawn in it.
+      const stroke = separator(18, 0.6, 0.4)
+      const { image, labels, inks, gradient } = strokeScene((x, y) =>
+        (x === 4 || x === 5) && y >= 8 && y <= 13 ? over(BROWN, 0.6) : stroke(x, y),
+      )
+      expect(dissolveBlendBands(image, labels, inks, gradient, FLAT)).toBe(0)
+    })
+  })
 })
