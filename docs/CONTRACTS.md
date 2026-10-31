@@ -915,8 +915,12 @@ export function ringPolygon(
 // search's reach), `NaN` where they are not both measured; a point left in place whose probes read
 // partial coverage but none across ½ (or cross it only through filled-in values that `along` reads on
 // the same side) is given at least ½ px, and the reach, 1 px, inside an edge of the optimal polygon in a
-// run of up to three such points between two neighbours moved at σ < ½ px. Returns a new array,
-// parallel to `ring`.
+// run of up to three such points between two neighbours moved at σ < ½ px, or of up to seven where the
+// next such point beyond each neighbour lies within ½ px of the line through the two; a neighbour moved
+// with a `NaN` σ counts where it lies within ½ px of the line through the nearest points moved at
+// σ < ½ px on either side, and is then given their larger σ (or its distance from their line, if
+// larger). Those two wider runs are not held where the field's `underlaid` reports the pixel outside the
+// point. Returns a new array, parallel to `ring`.
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
@@ -929,13 +933,16 @@ export function refineRingToField(
 // coverage noise of a value (image noise over the contrast of the colors it was unmixed between),
 // `NaN` for a value the field fills in rather than reads from the image; `along(x, y, rx, ry)`, where
 // present, reads pixel (x, y) between the two colors the field reads pixel (rx, ry) between (`NaN`
-// where (rx, ry) is not read from the image).
+// where (rx, ry) is not read from the image); `underlaid(x, y)`, where present, tells whether pixel
+// (x, y), outside the boundary, holds a label painted more than one stacked layer below the one inside,
+// so a layer painted between them runs its own edge beneath this one, set back from the lattice.
 export interface SignedField {
   width: number
   height: number
   at(x: number, y: number): number
   uncertainty?(x: number, y: number): number
   along?(x: number, y: number, rx: number, ry: number): number
+  underlaid?(x: number, y: number): boolean
 }
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
@@ -946,7 +953,10 @@ export interface SignedField {
 // base layer: each inside pixel's own). Its `uncertainty` is the image noise (Immerkær's Laplacian
 // estimate of the working image's luma) over the contrast of the projected pair, the noise alone for
 // an alpha reading, and `NaN` for a pixel with no neighbour across the mask or two coincident colors;
-// its `along` reads any pixel between the pair a rim pixel is read between.
+// its `along` reads any pixel between the pair a rim pixel is read between. With `position` (each
+// label's paint position among the stacked base layers, −1 none) and `layer` (this base layer's), its
+// `underlaid` is true at a pixel outside the mask whose label paints below `layer − 1`; without them
+// (an island) it is false.
 export interface LayerFieldSource {
   width: number
   height: number
@@ -956,6 +966,8 @@ export interface LayerFieldSource {
   paletteRgb: Uint8Array // per-label RGB
   label: number
   alpha?: GrayImage // alphaCoverageField
+  position?: Int32Array // paint position per label among the base layers (−1 = none)
+  layer?: number // this base layer's paint position
 }
 export function layerField(src: LayerFieldSource): SignedField
 // Coverage of pixel `pi` (byte offset into RGBA) by palette color `ai` against `bi` (byte offsets):

@@ -429,6 +429,8 @@ export function installHelperHandler(scope: WorkerScope): void {
       paletteRgb: refine.paletteRgb,
       label: island >= 0 ? st.islandLabels[island] : -1,
       alpha: translucent ? undefined : refine.alpha,
+      position: island >= 0 ? undefined : st.position,
+      layer: island >= 0 ? undefined : unit,
     })
   }
 

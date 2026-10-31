@@ -1789,6 +1789,7 @@ async function colorPipeline(
       stackLabels: Int32Array,
       label: number,
       translucent: boolean,
+      stacking?: { position: Int32Array; layer: number },
     ): SignedField | undefined =>
       refinesEdges
         ? layerField({
@@ -1800,6 +1801,8 @@ async function colorPipeline(
             paletteRgb,
             label,
             alpha: translucent ? undefined : alphaField,
+            position: stacking?.position,
+            layer: stacking?.layer,
           })
         : undefined
 
@@ -2000,6 +2003,7 @@ async function colorPipeline(
             plan.stackLabels,
             island ? label : -1,
             opacityOf(label) !== undefined,
+            island ? undefined : { position, layer: position[label] },
           )
           // A base layer's edge under a sheet above it is set back beneath the
           // sheet; an island is painted over everything and hides nothing.

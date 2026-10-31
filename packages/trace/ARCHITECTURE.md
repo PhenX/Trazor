@@ -76,7 +76,9 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    optimal-polygon vertices (Selinger §2.2) as breakpoints, the discrete-curvature sign changes and a coarse stride inside
    a long polygon edge — and over the O(k²) spans of that candidate graph picks the segmentation and the per-span model
    (line / circular arc / G1 cubic) jointly under `0.5·χ² + λ·params` (χ² weighted by per-point `1/σ²`, `λ = ln(extent /
-precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective).
+precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective;
+   an arc only when its radius is at least each interior sample's band, so a lattice corner held to a pixel never
+   bends a circle under a pixel through it, drawn the long way round as a bead).
    `σ` is 0.1 px where a sample was snapped onto the sub-pixel edge, 0.06 px on an axis-aligned stretch of a refined
    ring's polygon that stayed on the lattice (a hard edge the drawing put on the grid, or the image border), ½ px
    elsewhere on the lattice. A stacked layer's field measures each point's own uncertainty from the two pixels beside
@@ -88,7 +90,14 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    the field filled in beyond the rim, which read as the measured pixel beside them would continue (`along`) stay on
    its side — lies past the reach of the edge its neighbours located (a soft line the label pass widened). Up to three
    such corners in a row, between two neighbours the search moved onto the edge at σ under ½ px, stay on the lattice
-   held at that reach, so the fit follows the neighbours instead of turning out to each corner; any other is held at
+   held at that reach, so the fit follows the neighbours instead of turning out to each corner; so do up to seven where
+   the next located point beyond each neighbour lies within ½ px of the line through the two (the edge runs straight
+   across the longer step of a shallower slope). A neighbour the search moved through a value the field filled in has
+   no σ of its own; it counts as located where it lies within ½ px of the line through the nearest points measured on
+   either side, and closing a held run it is held as tightly as they are, or as its distance from their line. Those two
+   wider runs are not held where the field reports the pixel outside the corner underlaid (`SignedField.underlaid`):
+   a stacked layer painted between this layer and that label runs its own edge a pixel back from these lattice corners,
+   and an outline drawn along the located edge, further in, would leave it showing. Any other such corner is held at
    least as loosely as a lattice point, never as a hard edge on the grid. A corner is a polygon vertex (read on the
    unadjusted polygon) turning at least 45° (inkvec `CORNER_DEGREES`) that `cornerAt` also calls a corner, so
    `smoothing` keeps its say; two vertices a chamfer stub apart (≤ 2.5 px, the anti-aliasing's cut across one sharp

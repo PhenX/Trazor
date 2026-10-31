@@ -314,6 +314,43 @@ describe('run-fit dynamic program', () => {
     expect(worst).toBeLessThan(0.5)
   })
 
+  it('draws no circle smaller than a lattice corner’s band through it', () => {
+    // A thin strand's end: two straight sides 0.6 px apart, the hairpin
+    // between them through one lattice corner left 1.6 px out and held at σ ½.
+    // The circle through the hairpin's three samples is under a pixel across,
+    // and the arc drawn the long way round through the corner beads the end.
+    const samples: [number, number, number][] = []
+    for (let x = 8; x >= 0; x--) samples.push([x, 0, 0.1])
+    samples.push([-1.6, -0.3, 0.5])
+    for (let x = 0; x <= 8; x++) samples.push([x + 0.1, -0.6, 0.1])
+    const geom = samples.flatMap(([x, y]) => [x, y])
+    const sigma = samples.map(([, , s]) => s)
+    const n = samples.length
+    const cmds = fitOpenRuns(geom, sigma, [0, 8, 10, n - 1], {
+      alphamax: (0.25 * 4) / 3,
+      lambda: descriptionLambda(1600),
+      tau: runTau(),
+      band: runBand(0.2),
+      reach: mergeReach(true),
+      stride: candidateStride(true),
+      extent: 1600,
+    })
+    // Distance of the drawn outline from the polyline through the samples.
+    const off = (x: number, y: number): number => {
+      let best = Infinity
+      for (let i = 0; i + 1 < n; i++) {
+        const [ax, ay] = samples[i]
+        const dx = samples[i + 1][0] - ax
+        const dy = samples[i + 1][1] - ay
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+        best = Math.min(best, Math.hypot(ax + dx * t - x, ay + dy * t - y))
+      }
+      return best
+    }
+    const pts = samplePath([{ type: 'M', x: geom[0], y: geom[1] } as PathCommand, ...cmds])
+    expect(Math.max(...pts.map(([x, y]) => off(x, y)))).toBeLessThan(0.3)
+  })
+
   it('is deterministic', () => {
     const { mask, field } = diskMaskField(128, 64, 64, 40)
     const a = JSON.stringify(trace(mask, field))

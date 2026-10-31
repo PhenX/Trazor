@@ -1321,7 +1321,11 @@ function spanCost(
   if (tryCurve) {
     const circle = fitCircleThrough(pts, first, last)
     let arcOK = false
-    if (circle && arcSweepMonotone(pts, first, last, circle)) {
+    if (
+      circle &&
+      arcSweepMonotone(pts, first, last, circle) &&
+      arcResolved(sig, first, last, circle, opts)
+    ) {
       const cd = circleDeviation(pts, sig, first, last, circle, opts)
       if (cd.worst <= 1) {
         arcOK = true
@@ -1496,6 +1500,23 @@ function lineDeviation(
     if (w > worst) worst = w
   }
   return { chi2, worst }
+}
+
+/**
+ * Whether the samples an arc bends through are held tightly enough to show a
+ * circle that small: its radius at least each interior sample's band. A
+ * lattice corner held to a pixel fits any circle under a pixel, and one drawn
+ * the long way round through it beads the outline.
+ */
+function arcResolved(
+  sig: number[],
+  first: number,
+  last: number,
+  c: Circle,
+  opts: RunFitOptions,
+): boolean {
+  for (let i = first + 1; i < last; i++) if (c.r < bandAt(sig, i, opts)) return false
+  return true
 }
 
 /** Radial residuals of the interior samples from the fitted circle. */

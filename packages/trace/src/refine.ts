@@ -31,6 +31,13 @@ export interface SignedField {
    * the image or the colors coincide.
    */
   along?(x: number, y: number, rx: number, ry: number): number
+  /**
+   * Whether pixel (x, y), outside the boundary, holds a label painted more
+   * than one stacked layer below the one inside: a layer painted between the
+   * two then runs its own edge beneath this one, set back from the lattice.
+   * Absent, no edge is.
+   */
+  underlaid?(x: number, y: number): boolean
 }
 
 /**
@@ -91,6 +98,16 @@ const LOCATED_SIGMA = 0.5
  * up to three pixels, a slope down to a third).
  */
 const STEP_RUN = 3
+/**
+ * Most points in a row the search could not place held at its reach where the
+ * edge its neighbours located runs straight across them: the corners of a
+ * longer step, a slope down to a seventh.
+ */
+const LONG_RUN = 7
+/** Points searched to either side for the located points a point's crossing is checked against. */
+const LINE_REACH = 4
+/** Largest distance (px) from the line through two located points at which a point lies on their edge. */
+const ON_LINE = 0.5
 /**
  * A coverage this close to 0 or 1 is a fully outside/inside pixel that carries no
  * sub-pixel information: a hard edge shows only these, and moving a point off the
@@ -166,7 +183,13 @@ const TIE_NUDGE = 1e-6
  * moved onto the edge at a σ under {@link LOCATED_SIGMA}, is a staircase corner
  * the label pass put past the reach of the edge its neighbours located: it
  * stays in place at σ the full reach, so a fit follows its neighbours rather
- * than turning out to it.
+ * than turning out to it. So do up to {@link LONG_RUN} such corners in a row
+ * where the next located point beyond each neighbour lies on the line through
+ * the two, and a run closed by a neighbour moved through a value the field
+ * filled in (no σ of its own) that lies on the line through the nearest
+ * points measured on either side — that neighbour then held as tightly as
+ * they are, or as its distance from their line — except where the field
+ * reports the pixel outside the corner {@link SignedField.underlaid}.
  */
 export function refineRingToField(
   ring: FlatPoints,
@@ -181,6 +204,7 @@ export function refineRingToField(
   const signed = data === null ? (field as SignedField) : undefined
   const uncertainty = signed?.uncertainty?.bind(signed)
   const along = signed?.along?.bind(signed)
+  const underlaid = signed?.underlaid?.bind(signed)
   const measure: PointMeasure | undefined = uncertainty
     ? { uncertainty, along, sigma: Number.NaN, refused: false, beyond: false }
     : undefined
@@ -285,6 +309,7 @@ export function refineRingToField(
   // points the field refused.
   const beyond = new Uint8Array(n)
   const refused = new Uint8Array(n)
+  const under = new Uint8Array(n)
   let anyBeyond = false
   for (let i = 0; i < n; i++) {
     const px = ring[i * 2]
@@ -326,6 +351,11 @@ export function refineRingToField(
       anyBeyond = true
     }
     if (measure?.refused) refused[i] = 1
+    if (underlaid) {
+      const ox = Math.round(px - nx * 0.5 - 0.5)
+      const oy = Math.round(py - ny * 0.5 - 0.5)
+      if (ox >= 0 && oy >= 0 && ox < w && oy < h && underlaid(ox, oy)) under[i] = 1
+    }
     const back = setback ? setback[i % period] : 0
     if (shift === null && back === 0) continue
     const move = (shift ?? 0) + back
@@ -335,31 +365,91 @@ export function refineRingToField(
   if (sigma && vertices && anyBeyond) {
     // The corners of a staircase step along a polygon edge — up to STEP_RUN
     // points in a row the search could not place, between two neighbours that
-    // located the edge — are held at the search's reach. A point whose probes
-    // read partial coverage is no hard edge on the grid: one not held so is
-    // held at least as loosely as a lattice point.
+    // located the edge, or up to LONG_RUN where that edge runs straight across
+    // them — are held at the search's reach. A point whose probes read partial
+    // coverage is no hard edge on the grid: one not held so is held at least
+    // as loosely as a lattice point.
     const isVertex = new Uint8Array(n)
     for (const v of vertices) if (v < n) isVertex[v] = 1
     const moved = (j: number): boolean =>
       out[j * 2] !== ring[j * 2] || out[j * 2 + 1] !== ring[j * 2 + 1]
-    const located = (j: number): boolean => moved(j) && sigma[j] < LOCATED_SIGMA
+    const measuredOn = (j: number): boolean => moved(j) && sigma[j] < LOCATED_SIGMA
+    // A point moved through a value the field filled in carries no σ of its
+    // own; it located the edge as well where it lies on the line through the
+    // nearest points measured on it to either side, and closing a run it is
+    // held as tightly as the looser of them, or its distance from that line.
+    const agreed = new Float64Array(n).fill(Number.NaN)
+    for (let j = 0; j < n; j++) {
+      if (!moved(j) || !Number.isNaN(sigma[j])) continue
+      let a = -1
+      for (let k = 1; k <= LINE_REACH && a < 0; k++) {
+        if (measuredOn(neighbor(j - k))) a = neighbor(j - k)
+      }
+      let b = -1
+      for (let k = 1; k <= LINE_REACH && b < 0; k++) {
+        if (measuredOn(neighbor(j + k))) b = neighbor(j + k)
+      }
+      if (a < 0 || b < 0 || a === b) continue
+      const dx = out[b * 2] - out[a * 2]
+      const dy = out[b * 2 + 1] - out[a * 2 + 1]
+      const l = Math.hypot(dx, dy)
+      if (l < 1e-9) continue
+      const off = ((out[j * 2] - out[a * 2]) * dy - (out[j * 2 + 1] - out[a * 2 + 1]) * dx) / l
+      if (Math.abs(off) <= ON_LINE) {
+        agreed[j] = Math.max(sigma[a], sigma[b], Math.abs(off))
+      }
+    }
+    const located = (j: number): boolean => measuredOn(j) || !Number.isNaN(agreed[j])
     const unplaced = (j: number): boolean =>
       isVertex[j] === 0 && !moved(j) && (beyond[j] === 1 || refused[j] === 1)
+    /** The nearest located point beyond `j`, `dir` (±1) the way away from the run it closes. */
+    const outer = (j: number, dir: number): number => {
+      for (let k = 1; k <= LINE_REACH; k++) {
+        const q = neighbor(j + dir * k)
+        if (located(q)) return q
+      }
+      return -1
+    }
+    /**
+     * Whether the edge runs straight across the run between located `a` and
+     * `b`: the next located point beyond each lies on the line through the two.
+     */
+    const straightAcross = (a: number, b: number): boolean => {
+      const a2 = outer(a, -1)
+      const b2 = outer(b, 1)
+      if (a2 < 0 || b2 < 0) return false
+      const dx = out[b * 2] - out[a * 2]
+      const dy = out[b * 2 + 1] - out[a * 2 + 1]
+      const l = Math.hypot(dx, dy)
+      if (l < 1e-9) return false
+      const off = (j: number): number =>
+        Math.abs((out[j * 2] - out[a * 2]) * dy - (out[j * 2 + 1] - out[a * 2 + 1]) * dx) / l
+      return off(a2) <= ON_LINE && off(b2) <= ON_LINE
+    }
     const held: number[] = []
+    const ends = new Set<number>()
     for (let i = 0; i < n; i++) {
       if (beyond[i] === 0 || isVertex[i] === 1) continue
       let back = 0
-      while (back < STEP_RUN && unplaced(neighbor(i - back - 1))) back++
+      while (back < LONG_RUN && unplaced(neighbor(i - back - 1))) back++
       let ahead = 0
-      while (ahead < STEP_RUN && unplaced(neighbor(i + ahead + 1))) ahead++
-      if (
-        back + ahead < STEP_RUN &&
-        located(neighbor(i - back - 1)) &&
-        located(neighbor(i + ahead + 1))
-      ) {
-        held.push(i)
+      while (ahead < LONG_RUN && unplaced(neighbor(i + ahead + 1))) ahead++
+      const a = neighbor(i - back - 1)
+      const b = neighbor(i + ahead + 1)
+      if (back + ahead >= LONG_RUN) continue
+      if (back + ahead >= STEP_RUN || !measuredOn(a) || !measuredOn(b)) {
+        // A longer run, or one closed by a point moved through a filled
+        // value, only where no layer painted below runs its own edge, set
+        // back from the lattice, beneath this one: a fit along the located
+        // edge would leave that edge showing.
+        if (under[i] === 1 || !located(a) || !located(b)) continue
+        if (back + ahead >= STEP_RUN && !straightAcross(a, b)) continue
       }
+      held.push(i)
+      ends.add(a)
+      ends.add(b)
     }
+    for (const j of ends) if (!Number.isNaN(agreed[j])) sigma[j] = agreed[j]
     for (const i of held) sigma[i] = MAX_SHIFT
     for (let i = 0; i < n; i++) {
       if (beyond[i] === 1 && !(sigma[i] >= LOCATED_SIGMA)) sigma[i] = LOCATED_SIGMA
@@ -713,6 +803,14 @@ export interface LayerFieldSource {
    * labeled side: the exterior edge. Absent, the exterior is a hard edge.
    */
   alpha?: GrayImage
+  /**
+   * Each label's paint position among the stacked base layers (−1 for none)
+   * and the base layer's own, which tell where its mask meets a label painted
+   * more than one layer below it ({@link SignedField.underlaid}). Absent (an
+   * island), no edge is underlaid.
+   */
+  position?: Int32Array
+  layer?: number
 }
 
 /**
@@ -738,10 +836,23 @@ export interface LayerFieldSource {
  * the pair a pixel was projected between (the noise alone for an alpha
  * reading), and `NaN` where the value is filled in: a pixel with no neighbor
  * across the mask, or two coincident colors. {@link SignedField.along} reads
- * any pixel between the pair a rim pixel was projected between.
+ * any pixel between the pair a rim pixel was projected between. Given the base
+ * layers' paint positions, {@link SignedField.underlaid} reports a pixel
+ * outside the mask whose label paints more than one layer below this one.
  */
 export function layerField(src: LayerFieldSource): SignedField {
-  const { width: w, height: h, mask, labels, pixels, paletteRgb, label, alpha } = src
+  const {
+    width: w,
+    height: h,
+    mask,
+    labels,
+    pixels,
+    paletteRgb,
+    label,
+    alpha,
+    position,
+    layer,
+  } = src
   const alphaData = alpha?.data
   /** Pixel `p`'s coverage by `own` against `other`, centered: −0.5 at `other`, +0.5 at `own`. */
   const project = (p: number, own: number, other: number, hard: number): number => {
@@ -821,6 +932,12 @@ export function layerField(src: LayerFieldSource): SignedField {
       if (own < 0) return Number.NaN
       const c = coverageOf(pixels, (y * w + x) * 4, paletteRgb, own * 3, other * 3)
       return c < 0 ? Number.NaN : c - 0.5
+    },
+    underlaid(x: number, y: number): boolean {
+      if (position === undefined || layer === undefined) return false
+      const p = y * w + x
+      const l = labels[p]
+      return mask[p] === 0 && l >= 0 && position[l] >= 0 && position[l] < layer - 1
     },
     uncertainty(x: number, y: number): number {
       const p = y * w + x
