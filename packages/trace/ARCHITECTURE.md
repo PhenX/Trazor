@@ -98,7 +98,12 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    where the observed coverage over a window around it (`RingFit.tips`, kept by the polygon stage for each short polygon
    edge that turns as a pair, `tipWindows`) is rendered closer by the outline with the tip than by the one with the two
    corners, in absolute difference over the pixels near the measured edge and every pixel the tip reaches into (a
-   sliver drawn over pixels that show none costs the area it covers). The samples must turn there too:
+   sliver drawn over pixels that show none costs the area it covers). The same judgement holds a tip on a ring small
+   enough for a whole-ring coverage patch when that tip is a guess on a blunt stroke end (`bluntEnd`): an edge beyond the
+   stub too short to keep three samples off its chamfers, bending away at its far vertex by half a corner's turn, on a
+   shape no wider than a chamfer stub where it ends, which widens away from the stub less than half as fast as the two
+   edges meeting at the tip — the converging sides of a numeral's blunt foot a pixel or two wide meet well past it.
+   The samples must turn there too:
    around a small round — a stroke's cap — the lattice polygon turns ~45° at every vertex while the refined samples run
    smooth, and a corner there draws the cap as a pointed arch. So each side's tangent at the vertex is read from that
    side's samples, up to the neighbouring vertex and a tangent window's reach, the vertex's own anti-aliasing chamfer

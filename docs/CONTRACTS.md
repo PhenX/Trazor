@@ -854,7 +854,8 @@ export function closedPathToCommands(
 // left between two neighbouring polygon vertices (at most 2.5 source px apart, turning 45° as one), by
 // the stub's first vertex: a ring with only two corners collapses such a stub into one tip only where
 // the outline with the tip renders that window closer (absolute difference) than the one with the two
-// corners.
+// corners, and so does a ring with a whole-ring `coverage` patch where its tip is a guess on a blunt
+// stroke end at most 2.5 source px wide.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints

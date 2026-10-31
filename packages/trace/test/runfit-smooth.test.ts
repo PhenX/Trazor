@@ -473,3 +473,91 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     expect(joinTurns(cmds).filter((t) => t > 45)).toHaveLength(4)
   })
 })
+
+/** Distance (px) from (x, y) to the polygon `vs` where the point lies outside it, else 0. */
+const outsidePolygon =
+  (vs: [number, number][]) =>
+  (x: number, y: number): number => {
+    let odd = false
+    let d = Infinity
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+      const [xi, yi] = vs[i]
+      const [xj, yj] = vs[j]
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd
+      const l2 = (xi - xj) ** 2 + (yi - yj) ** 2
+      const t = Math.max(0, Math.min(1, ((x - xj) * (xi - xj) + (y - yj) * (yi - yj)) / l2))
+      d = Math.min(d, Math.hypot(x - xj - t * (xi - xj), y - yj - t * (yi - yj)))
+    }
+    return odd ? 0 : d
+  }
+
+/** Trace a mask's outer ring against `field` on a grid `scale` times finer than the path's units. */
+function traceScaled(mask: BinaryMask, field: GrayImage, scale: number): PathCommand[] {
+  const outer = decomposeMask(mask, 'minority', 1).find((p) => p.area > 0)
+  if (!outer) throw new Error('no outer ring')
+  return polygonToCommands(outer.points, ringPolygon(outer.points, field, undefined, scale), {
+    curveMode: 'spline',
+    smoothing: ILLUSTRATION,
+    curveOptimize: true,
+    optTolerance: 0.2,
+    coverage: field,
+    cornerThreshold: 100,
+    scale,
+  })
+}
+
+describe('illustration mode — the end of a thin stroke', () => {
+  it.each([
+    [0.25, 0.7],
+    [0.45, 0.65],
+    [0.65, 0.65],
+    [0.85, 0.45],
+  ])(
+    'ends a blunt stroke where its pixels end, not where its sides would meet (offset %f, %f)',
+    (dx, dy) => {
+      // A numeral's "1" on a 2× grid: a stroke under two source pixels wide whose
+      // left side bends down to its squared-off foot. The anti-aliasing cuts each
+      // end into a stub between two corners, and an edge beyond a stub is too
+      // short to clear its chamfers: its line and the other side's meet a source
+      // pixel or two past the stroke, where the pixels show only paper.
+      const one: [number, number][] = [
+        [18.2, 12.1],
+        [21.6, 12.2],
+        [22.7, 13.9],
+        [18.1, 27.0],
+        [16.0, 26.1],
+        [15.9, 23.2],
+        [19.2, 17.0],
+        [18.8, 14.0],
+      ]
+      const vs = one.map(([x, y]): [number, number] => [x + dx, y + dy])
+      const { mask, field } = polygonFieldOf(40, vs)
+      expect(worstDeviation(traceScaled(mask, field, 2), outsidePolygon(vs))).toBeLessThan(0.6)
+    },
+  )
+
+  it('keeps the point of a thin thorn', () => {
+    for (const [dx, dy, angle, scale] of [
+      [0, 0, 0.3, 2],
+      [0.25, 0.7, 1.2, 2],
+      [0.7, 0.1, 2, 2],
+      [0.1, 0.4, 0.3, 1],
+    ]) {
+      const cx = 20.3 + dx
+      const cy = 20.6 + dy
+      const ux = Math.cos(angle)
+      const uy = Math.sin(angle)
+      const apex: [number, number] = [cx + 8 * ux, cy + 8 * uy]
+      const { mask, field } = polygonFieldOf(40, [
+        apex,
+        [cx - 5 * ux - 3 * uy, cy - 5 * uy + 3 * ux],
+        [cx - 5 * ux + 3 * uy, cy - 5 * uy - 3 * ux],
+      ])
+      let miss = Infinity
+      for (const c of traceScaled(mask, field, scale)) {
+        if (c.type !== 'Z') miss = Math.min(miss, Math.hypot(c.x - apex[0], c.y - apex[1]))
+      }
+      expect(miss).toBeLessThan(0.5)
+    }
+  })
+})
