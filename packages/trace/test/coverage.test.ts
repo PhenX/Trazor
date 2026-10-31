@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
 import { decomposeMask, ringPolygon } from '@trazor/trace'
-import { pathCoverageError } from '../src/coverage'
+import { coverageWindows, pathCoverageError } from '../src/coverage'
 
 /** Mask and centered area-coverage field (8×8 samples a pixel) of the region `inside` holds on. */
 function areaFieldOf(
@@ -80,5 +80,27 @@ describe('coverage patch of a refined ring', () => {
     expect(exact).toBeLessThan(0.02)
     expect(pathCoverageError(circlePath(20.6, 19.6, 6.2), patch)).toBeGreaterThan(10 * exact)
     expect(pathCoverageError(circlePath(20.3, 19.6, 5.9), patch)).toBeGreaterThan(10 * exact)
+  })
+
+  it('reads a window of a ring as its whole-ring patch reads the same pixels', () => {
+    const { mask, field } = areaFieldOf(40, (x, y) => Math.hypot(x - 20.3, y - 19.6) <= 9.4)
+    const outer = decomposeMask(mask, 'minority', 1).find((p) => p.area > 0)!
+    const fit = ringPolygon(outer.points, field)!
+    const whole = fit.coverage!
+    const ring = [...outer.points, outer.points[0], outer.points[1]]
+    const [window, clear] = coverageWindows(ring, fit.geom, field, [
+      [24, 10, 33, 19],
+      [0, 0, 6, 6],
+    ])
+    expect(window).toMatchObject({ x0: 24, y0: 10, w: 9, h: 9 })
+    for (let y = 0; y < window!.h; y++) {
+      for (let x = 0; x < window!.w; x++) {
+        const k = (window!.y0 + y - whole.y0) * whole.w + window!.x0 + x - whole.x0
+        expect(window!.data[y * window!.w + x]).toBe(whole.data[k])
+        expect(window!.weight[y * window!.w + x]).toBe(whole.weight[k])
+      }
+    }
+    // A window no measured sample reaches carries nothing to compare.
+    expect(clear).toBeUndefined()
   })
 })

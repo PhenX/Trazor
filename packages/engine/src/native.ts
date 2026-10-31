@@ -2015,7 +2015,9 @@ async function colorPipeline(
                   scale: settings.supersample,
                 }
               : undefined
-          const polygons = wantPolygons ? layerPolygons(paths, field, hidden) : undefined
+          const polygons = wantPolygons
+            ? layerPolygons(paths, field, hidden, settings.supersample)
+            : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
           await paintLayer(label, paths, polygons)
@@ -2041,12 +2043,13 @@ async function colorPipeline(
  * edges and the transparency coverage); without one they depend on the rings
  * alone. With `hidden` — a base layer's stacking — each ring's edges that run
  * under a sheet painted above it are set back beneath that sheet
- * (`sheetSetback`).
+ * (`sheetSetback`). `scale` is the working pixels per source pixel.
  */
 function layerPolygons(
   paths: CrackPath[],
   field?: SignedField,
   hidden?: LayerStacking,
+  scale = 1,
 ): (RingFit | null)[] {
   return paths.map((p) =>
     ringPolygon(
@@ -2064,6 +2067,7 @@ function layerPolygons(
             hidden.scale,
           )
         : undefined,
+      scale,
     ),
   )
 }
@@ -3092,7 +3096,9 @@ async function inkPipeline(
         if (polygons) {
           cacheStats(cache!).polyHits++
         } else {
-          polygons = paths.map((p) => ringPolygon(p.points, coverage))
+          polygons = paths.map((p) =>
+            ringPolygon(p.points, coverage, undefined, settings.supersample),
+          )
           if (entry) {
             entry.polygons = polygons
             cacheStats(cache!).polyMisses++

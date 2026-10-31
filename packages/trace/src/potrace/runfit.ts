@@ -1,5 +1,5 @@
 import type { PathCommand } from '@trazor/core'
-import { pathCoverageError } from '../coverage'
+import { pathCoverage, pathCoverageError } from '../coverage'
 import type { CoveragePatch } from '../coverage'
 import type { FlatPoints } from '../paths'
 import { fitCubicSegment, refineParam } from '../fit'
@@ -67,6 +67,19 @@ export interface RunFitOptions {
    * coverage no worse.
    */
   coverage?: CoveragePatch
+  /**
+   * The observed coverage around the stubs a sharp tip may have left between
+   * two polygon vertices ({@link tipWindows}), by the stub's first vertex: a
+   * ring with only two corners collapses its stub into one tip only where this
+   * shows the tip.
+   */
+  tips?: readonly TipCoverage[]
+}
+
+/** The observed coverage around the stub from polygon vertex `vertex` to the next. */
+export interface TipCoverage {
+  vertex: number
+  patch: CoveragePatch
 }
 
 /** Parameter counts priced by the description length (inkvec `curves.rs`). */
@@ -422,26 +435,62 @@ export function fitClosedRuns(
     apexCache.set(cv, a)
     return a
   }
-  const [x0, y0] = apex(cornerVerts[0])
-  out.push({ type: 'M', x: x0, y: y0 })
-  // The corner spans' description, priced to weigh a whole-ring primitive against.
-  const splitCost = [0]
-  for (let c = 0; c < cornerVerts.length; c++) {
-    const cvA = cornerVerts[c]
-    const cvB = cornerVerts[(c + 1) % cornerVerts.length]
-    const [ax, ay] = apex(cvA)
-    const [bx, by] = apex(cvB)
-    if (ax === bx && ay === by && cornerVerts.length > 1) continue // a collapsed tip's stub
-    const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
-    pts[0] = ax
-    pts[1] = ay
-    pts[pts.length - 2] = bx
-    pts[pts.length - 1] = by
-    const t0 = forwardTangent(pts, 0)
-    const t1 = forwardTangent(pts, pts.length / 2 - 1)
-    emitSpanDP(out, pts, sig, splits, t0, t1, opts, splitCost)
+  // The runs between the corners at `apexOf`'s apexes, their description added
+  // to `cost`. The run from corner `stub` to the next is a collapsed tip's stub
+  // and drops out; with no `stub`, so does any run whose two apexes coincide.
+  const cornerRuns = (
+    apexOf: (cv: number) => [number, number],
+    stub: number,
+    cost: number[],
+  ): PathCommand[] => {
+    const [x0, y0] = apexOf(cornerVerts[0])
+    const runs: PathCommand[] = [{ type: 'M', x: x0, y: y0 }]
+    for (let c = 0; c < cornerVerts.length; c++) {
+      const cvA = cornerVerts[c]
+      const cvB = cornerVerts[(c + 1) % cornerVerts.length]
+      const [ax, ay] = apexOf(cvA)
+      const [bx, by] = apexOf(cvB)
+      if (stub >= 0 ? c === stub : ax === bx && ay === by && cornerVerts.length > 1) continue
+      const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
+      pts[0] = ax
+      pts[1] = ay
+      pts[pts.length - 2] = bx
+      pts[pts.length - 1] = by
+      const t0 = forwardTangent(pts, 0)
+      const t1 = forwardTangent(pts, pts.length / 2 - 1)
+      emitSpanDP(runs, pts, sig, splits, t0, t1, opts, cost)
+    }
+    runs.push({ type: 'Z' })
+    return runs
   }
-  out.push({ type: 'Z' })
+  // The corner spans' description, priced to weigh a whole-ring primitive against.
+  let splitCost = [0]
+  out.push(...cornerRuns(apex, -1, splitCost))
+  // A ring with only two corners may as well be a round whose lattice polygon
+  // turns sharply at two vertices a stub apart, and the meeting point of the
+  // edges beyond them squares it off. The stub collapses into one tip only
+  // where the coverage observed around it shows the tip: the outline with the
+  // tip renders it closer than the one with the two corners, over the pixels
+  // near the measured edge and every pixel the tip reaches into
+  // ({@link coverageMisfit}).
+  for (let c = 0; c < cornerVerts.length && cornerVerts.length === 2; c++) {
+    const cvA = cornerVerts[c]
+    const cvB = cornerVerts[(c + 1) % 2]
+    const window = opts.tips?.find((t) => t.vertex === cvA)?.patch
+    if (!window) continue
+    const hit = tipApex(geom, sigma, vertices, n, mv, cornerVerts, c)
+    if (!hit) continue
+    const tipOf = (cv: number): [number, number] => (cv === cvA || cv === cvB ? hit : apex(cv))
+    const tipCost = [0]
+    const tipped = cornerRuns(tipOf, c, tipCost)
+    const patch = withTipPixels(window, apex(cvA), hit, apex(cvB))
+    if (coverageMisfit(tipped, patch) < coverageMisfit(out, patch)) {
+      out.length = 0
+      out.push(...tipped)
+      splitCost = tipCost
+    }
+    break
+  }
   // Outside geometric mode a ring the corner rule cut up may still be one ellipse
   // or circle: a small round the lattice polygon renders as a few sharp turns.
   if (!geometricMode(opts) && measuredRing(sigma, n)) {
@@ -658,6 +707,114 @@ function tipApex(
   const mx = (ax + bx) / 2
   const my = (ay + by) / 2
   return Math.hypot(hx - mx, hy - my) <= allowed ? [hx, hy] : null
+}
+
+/** Farthest (px) {@link tipApex} takes a tip from its stub's middle. */
+const TIP_APEX_MAX = 3.5
+
+/**
+ * The windows (`[x0, y0, x1, y1]`, integer lattice corners) around each stub a
+ * sharp tip may have left on a ring's optimal polygon, by the stub's first
+ * vertex: two neighbouring vertices of `geom` (the refined ring on the working
+ * grid, first point repeated last; `vertices` its optimal polygon's indices,
+ * first repeated last) at most CHAMFER_SPAN apart that turn by at least
+ * CORNER_TURN_DEG as one, read at the stub's middle as the corner rule reads a
+ * chamfer pair. Each window reaches as far as a tip there may lie, plus the
+ * pixels around it. `scale` is the working pixels per source pixel.
+ */
+export function tipWindows(
+  geom: FlatPoints,
+  vertices: number[],
+  scale: number,
+): { vertex: number; box: number[] }[] {
+  const mv = vertices.length - 1
+  const out: { vertex: number; box: number[] }[] = []
+  if (mv < 4) return out
+  const vx = (i: number): number => geom[vertices[(i + mv) % mv] * 2]
+  const vy = (i: number): number => geom[vertices[(i + mv) % mv] * 2 + 1]
+  const reach = TIP_APEX_MAX * scale + TIP_REACH + 1
+  for (let i = 0; i < mv; i++) {
+    if (Math.hypot(vx(i + 1) - vx(i), vy(i + 1) - vy(i)) > CHAMFER_SPAN * scale) continue
+    const mx = (vx(i) + vx(i + 1)) / 2
+    const my = (vy(i) + vy(i + 1)) / 2
+    if (turnDeg(vx(i - 1), vy(i - 1), mx, my, vx(i + 2), vy(i + 2)) < CORNER_TURN_DEG) continue
+    out.push({
+      vertex: i,
+      box: [
+        Math.floor(mx - reach),
+        Math.floor(my - reach),
+        Math.ceil(mx + reach),
+        Math.ceil(my + reach),
+      ],
+    })
+  }
+  return out
+}
+
+/**
+ * `patch` with every pixel within the patch's comparison reach of the triangle
+ * `a`, `h`, `b` (path units) weighed as well: the pixels a tip at `h` covers
+ * that the corners at `a` and `b` leave out, which may lie beyond the reach of
+ * any measured sample.
+ */
+function withTipPixels(
+  patch: CoveragePatch,
+  a: [number, number],
+  h: [number, number],
+  b: [number, number],
+): CoveragePatch {
+  const unit = patch.unit ?? 1
+  const tri = [a, h, b].map(([x, y]) => [x * unit - patch.x0, y * unit - patch.y0])
+  const weight = patch.weight.slice()
+  const lo = (k: 0 | 1): number =>
+    Math.max(0, Math.floor(Math.min(tri[0][k], tri[1][k], tri[2][k]) - TIP_REACH))
+  const hi = (k: 0 | 1, size: number): number =>
+    Math.min(size - 1, Math.ceil(Math.max(tri[0][k], tri[1][k], tri[2][k]) + TIP_REACH))
+  for (let y = lo(1); y <= hi(1, patch.h); y++) {
+    for (let x = lo(0); x <= hi(0, patch.w); x++) {
+      if (triangleDistance(tri, x + 0.5, y + 0.5) <= TIP_REACH) weight[y * patch.w + x] = 1
+    }
+  }
+  return { ...patch, weight }
+}
+
+/**
+ * Sum over the patch's weighted pixels of the absolute difference between the
+ * coverage `cmds` renders and the observed coverage: a sliver drawn over
+ * pixels that show none costs the area it covers.
+ */
+function coverageMisfit(cmds: PathCommand[], patch: CoveragePatch): number {
+  const cover = pathCoverage(cmds, patch)
+  let misfit = 0
+  for (let i = 0; i < patch.w * patch.h; i++) {
+    if (patch.weight[i]) misfit += Math.abs(cover[i] - patch.data[i])
+  }
+  return misfit
+}
+
+/** Distance (patch px) from a tip's triangle within which a pixel's coverage is compared. */
+const TIP_REACH = 1.5
+
+/** Distance from (x, y) to the filled triangle `tri`, 0 inside. */
+function triangleDistance(tri: number[][], x: number, y: number): number {
+  let d = Infinity
+  let sign = 0
+  let inside = true
+  for (let k = 0; k < 3; k++) {
+    const [ax, ay] = tri[k]
+    const [bx, by] = tri[(k + 1) % 3]
+    const ex = bx - ax
+    const ey = by - ay
+    const len2 = ex * ex + ey * ey
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2)) : 0
+    d = Math.min(d, Math.hypot(x - ax - t * ex, y - ay - t * ey))
+    const side = Math.sign(ex * (y - ay) - ey * (x - ax))
+    if (side !== 0) {
+      if (sign === 0) sign = side
+      else if (side !== sign) inside = false
+    }
+  }
+  return inside ? 0 : d
 }
 
 /**

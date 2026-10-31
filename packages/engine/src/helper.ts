@@ -400,6 +400,7 @@ export function installHelperHandler(scope: WorkerScope): void {
                   curve.scale,
                 )
               : undefined,
+            curve.scale,
           ),
         )
       }
@@ -440,7 +441,10 @@ export function installHelperHandler(scope: WorkerScope): void {
     let polygon: RingFit | null = null
     if (curve.curveMode !== 'pixel') {
       const held = st.polygons[local]
-      polygon = held === undefined ? ringPolygon(runAt(st.msg.rings, local), st.coverage) : held
+      polygon =
+        held === undefined
+          ? ringPolygon(runAt(st.msg.rings, local), st.coverage, undefined, curve.scale)
+          : held
       st.polygons[local] = polygon
     }
     // The lattice ring is read only where there is no polygon to fit (pixel

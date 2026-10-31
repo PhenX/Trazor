@@ -849,7 +849,12 @@ export function closedPathToCommands(
 // lattice at its own σ, from 0.5 to 1; `refined` is whether `geom` was snapped to a sub-pixel field;
 // `extent` is the field's longer side (px, 0 when unknown) for the fitter's description-length weight
 // λ; `coverage` is the observed coverage around a refined ring at most 64 px across, which a
-// whole-ring circle or ellipse must render no worse than the fitted outline it replaces.
+// whole-ring circle or ellipse must render no worse than the fitted outline it replaces; `tips` is the
+// observed coverage of a refined ring of any size over a window around each stub a sharp tip may have
+// left between two neighbouring polygon vertices (at most 2.5 source px apart, turning 45° as one), by
+// the stub's first vertex: a ring with only two corners collapses such a stub into one tip only where
+// the outline with the tip renders that window closer (absolute difference) than the one with the two
+// corners.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
@@ -858,6 +863,11 @@ export interface RingFit {
   refined: boolean
   extent: number
   coverage?: CoveragePatch
+  tips?: TipCoverage[]
+}
+export interface TipCoverage {
+  vertex: number // the stub runs from this polygon vertex to the next
+  patch: CoveragePatch
 }
 // The field read as the coverage of what a ring encloses (its sign taken from the ring's own edges, so a
 // hole's patch is the hole's coverage), over the ring's lattice box plus 2 px: `data[(y − y0)·w + x − x0]`
@@ -880,11 +890,13 @@ export interface CoveragePatch {
 // threshold — so a caller may compute it once and re-fit it many times.
 // `setback` (per ring point, with a field; see refineRingToField) sets an edge hidden under a sheet
 // painted above it back beneath the sheet; such a point is fitted no tighter than a lattice point and
-// stays out of the coverage patch.
+// stays out of the coverage patches. `scale` (working pixels per source pixel the ring will be fitted
+// at, 1 when absent) sizes the tip windows.
 export function ringPolygon(
   ring: FlatPoints,
   field?: GrayImage | SignedField,
   setback?: ArrayLike<number>,
+  scale?: number,
 ): RingFit | null
 // Move each lattice boundary point onto the field's coverage = ½ level set by a search along the local
 // normal (inkvec `refine_subpixel`), a clean step inverted through the exact half-plane coverage of a

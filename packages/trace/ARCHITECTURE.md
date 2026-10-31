@@ -92,7 +92,13 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    least as loosely as a lattice point, never as a hard edge on the grid. A corner is a polygon vertex (read on the
    unadjusted polygon) turning at least 45° (inkvec `CORNER_DEGREES`) that `cornerAt` also calls a corner, so
    `smoothing` keeps its say; two vertices a chamfer stub apart (≤ 2.5 px, the anti-aliasing's cut across one sharp
-   corner, each turning part of the way) are judged as one vertex at the stub's middle. The samples must turn there too:
+   corner, each turning part of the way) are judged as one vertex at the stub's middle, and take one apex where the
+   edges beyond the stub meet, the stub dropping out (`tipApex`). On a ring with only two corners the pair may as well
+   be the shoulders of a round the polygon cut short, which that apex would square off: the stub collapses there only
+   where the observed coverage over a window around it (`RingFit.tips`, kept by the polygon stage for each short polygon
+   edge that turns as a pair, `tipWindows`) is rendered closer by the outline with the tip than by the one with the two
+   corners, in absolute difference over the pixels near the measured edge and every pixel the tip reaches into (a
+   sliver drawn over pixels that show none costs the area it covers). The samples must turn there too:
    around a small round — a stroke's cap — the lattice polygon turns ~45° at every vertex while the refined samples run
    smooth, and a corner there draws the cap as a pointed arch. So each side's tangent at the vertex is read from that
    side's samples, up to the neighbouring vertex and a tangent window's reach, the vertex's own anti-aliasing chamfer

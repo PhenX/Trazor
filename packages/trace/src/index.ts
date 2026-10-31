@@ -8,6 +8,7 @@ export {
 } from './closed'
 export type { RingFit, TraceCurveOptions, TraceMaskOptions, TracedShape } from './closed'
 export type { CoveragePatch } from './coverage'
+export type { TipCoverage } from './potrace/runfit'
 export {
   assembleFaces,
   assembleRegions,
