@@ -2662,6 +2662,8 @@ const G1_ROUNDS = 3
 const G1_LOCAL = 2
 /** Rounds of splitting the pieces the spline cannot keep inside the band. */
 const G1_SPLIT_ROUNDS = 4
+/** Farthest (samples) a split moves off a loosely held worst sample onto a tighter one. */
+const G1_KNOT_SHIFT = 2
 /** Rounds of the per-piece fallback ladder. */
 const G1_FALLBACK_ROUNDS = 8
 /** Rounds of knot removal. */
@@ -3207,7 +3209,10 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
  *    alternated.
  * 3. A piece the spline cannot keep inside the band — or that takes a wrong
  *    shape: an arm longer than its chord, a turn past a quarter circle, a loop
- *    between two samples — is split at its worst sample. A piece that still
+ *    between two samples — is split at its worst sample, or at the nearest
+ *    sample held no looser than a lattice point within two of a worst sample
+ *    held looser (a staircase corner the refinement left past its reach, or
+ *    refused), since a knot is pinned on its sample. A piece that still
  *    fails climbs a ladder, a step per round: a staircase step of the lattice
  *    merges into a smooth neighbour; a long piece is split again, clear of its
  *    ends; a chord if a chord is admissible (its neighbours then meet it
@@ -3672,7 +3677,10 @@ function g1Refit(
     }
   }
   const bad = (): boolean => pieces.some((p) => p.worst > 1)
-  // The sample of piece q farthest (in bands) from it, `margin` intervals clear of its ends.
+  // The sample of piece q farthest (in bands) from it, `margin` intervals clear
+  // of its ends. A knot is pinned on its sample, so where that sample is held
+  // looser than a lattice point (one the refinement left past its reach, or
+  // refused), the nearest within G1_KNOT_SHIFT held no looser takes the knot.
   const worstSample = (q: number, margin = 2): number => {
     const p = pieces[q]
     const a = knots[q]
@@ -3685,6 +3693,12 @@ function g1Refit(
       if (w > bestW) {
         bestW = w
         best = i
+      }
+    }
+    if (best < 0 || !(sig[best] > SIGMA_LATTICE)) return best
+    for (let d = 1; d <= G1_KNOT_SHIFT; d++) {
+      for (const i of [best - d, best + d]) {
+        if (i >= a + margin && i <= b - margin && sig[i] <= SIGMA_LATTICE) return i
       }
     }
     return best

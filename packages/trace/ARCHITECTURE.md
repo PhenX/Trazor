@@ -155,11 +155,13 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    and a DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin
    their knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic
    piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples,
-   carries an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a
-   fallback ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its
-   ends, so the step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the
-   corner rule let through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own
-   segments. Each repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve
+   carries an arm longer than its chord or turns past a quarter circle — is split at its worst sample (a knot is pinned
+   on its sample, so a worst sample held looser than a lattice point, a staircase corner left past the search's reach or
+   a refused point, passes the knot to the nearest sample within two held no looser), then climbs a fallback ladder: a
+   lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the step rule
+   cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule let
+   through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own segments. Each
+   repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve
    reaching further moves admissible pieces out of the band for the next round to repair. Knots are then removed
    wherever the merged piece stays inside the band and the description length does not grow — the outer directions kept,
    or re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more,

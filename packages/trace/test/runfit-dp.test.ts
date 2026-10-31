@@ -278,6 +278,42 @@ describe('run-fit dynamic program', () => {
     expect(JSON.stringify(full)).toBe(JSON.stringify(none))
   })
 
+  it('pins no knot on a staircase corner held at the search’s reach', () => {
+    // A soft wavy edge whose samples lie on it at 0.1 px, but for two staircase
+    // corners left 1.1 and 1.3 px outside it and held at σ 1 px, as the
+    // refinement leaves the corners of a soft line the label pass widened.
+    const edge = (x: number): number =>
+      100 + 4.74 * Math.sin(0.0467 * x + 0.557) + 1.2 * Math.sin(0.2497 * x)
+    const geom: number[] = []
+    const sigma: number[] = []
+    for (let i = 0; i < 67; i++) {
+      geom.push(100 + i, edge(i))
+      sigma.push(0.1)
+    }
+    for (const [i, d] of [
+      [24, 1.284],
+      [39, 1.111],
+    ]) {
+      const slope = (edge(i + 0.01) - edge(i - 0.01)) / 0.02
+      const l = Math.hypot(1, slope)
+      geom[i * 2] -= (slope / l) * d
+      geom[i * 2 + 1] += d / l
+      sigma[i] = 1
+    }
+    const cmds = fitOpenRuns(geom, sigma, [0, 66], {
+      alphamax: (0.8 * 4) / 3,
+      lambda: descriptionLambda(1600),
+      tau: runTau(),
+      band: runBand(0.2),
+      reach: mergeReach(true),
+      stride: candidateStride(true),
+      extent: 1600,
+    })
+    const pts = samplePath([{ type: 'M', x: geom[0], y: geom[1] } as PathCommand, ...cmds])
+    const worst = Math.max(...pts.map(([x, y]) => Math.abs(y - edge(x - 100))))
+    expect(worst).toBeLessThan(0.5)
+  })
+
   it('is deterministic', () => {
     const { mask, field } = diskMaskField(128, 64, 64, 40)
     const a = JSON.stringify(trace(mask, field))
