@@ -1919,17 +1919,23 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
-// Scan routes, each with its reason codes. An achromatic line-art scan carrying gray tone on
-// bright paper, or an ink print whose solid blacks darken it while white paper and black ink still
-// cover most of it, traces as illustration in grayscale: 4 tones, speck floor 4
-// (`pickInkGrayscale`, `inkGrayscale`). A printed color page scan on the photo route (busy edges,
-// no exactly-flat pixel, no smooth ramp) keeps the photo settings with speck floor 4 (`printScan`).
+// Scan routes, each with its reason codes. A drawing on toned paper (the analyzer's ground* and
+// mark* fields: one narrow tinted paper peak and a clearly darker mark; toneAxisResidual: every
+// color on the paper–ink line; midToneArea: mid-tones that stay thin) traces as illustration in
+// color: quantize to 8 entries, bilateral denoise with no blur, speck floor 4, smoothing 0.6, and
+// the palette folded (autoPaletteSize) when midToneShare reads it near two-tone (`pickTonedInk`,
+// `tonedInk`, `tonedTwoTone`). An achromatic line-art scan carrying gray tone on bright paper, or
+// an ink print whose solid blacks darken it while white paper and black ink still cover most of it,
+// traces as illustration in grayscale: 4 tones, speck floor 4 (`pickInkGrayscale`,
+// `inkGrayscale`). A printed color page scan on the photo route (busy edges, no exactly-flat pixel,
+// no smooth ramp) keeps the photo settings with speck floor 4 (`printScan`).
 // The geometry chain: color, grayscale or bw art on stacked layers not grouped by color, from an
-// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
-// geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation
-// 'regions') whose longest side is at most 512 px with frontEnd 'ink' and gradients on (reason
-// `planarCartoon`; a larger cartoon stays classic), other art the same (reason
-// `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within them).
+// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan or a drawing on
+// toned paper), gets geometry 'planar' — bw with no front end chosen (reason `planarBw`), a
+// cartoon (segmentation 'regions') whose longest side is at most 512 px with frontEnd 'ink' and
+// gradients on (reason `planarCartoon`; a larger cartoon stays classic), other art the same
+// (reason `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within
+// them).
 // Black & white art traced at more than 640 × 640 pixels, centerline, cutout, nested and grouped
 // output keep the classic chain.
 export interface PaletteSuggestion {

@@ -365,6 +365,55 @@ function noisyCartoon() {
   return img
 }
 
+/**
+ * A sheet of toned paper, 240 px square, with grain (±6 levels, the same on
+ * every channel) — cream, or neutral gray for `gray` — carrying:
+ * - `lines`: clean brown-black pen lines with one-pixel soft rims, nothing else;
+ * - `hatched`: the lines plus a block of one-pixel hatching at half coverage (a
+ *   drawing's mid-tones: thin, broken by paper between the strokes);
+ * - `gray`: the hatched drawing on gray paper in gray ink;
+ * - `print`: the lines plus a red and a blue fill (a colored print on the paper);
+ * - `photo`: a card mount around a smooth sepia picture (a ramp from the ink's
+ *   brown to the mount's cream with soft bands across it) — every tone on the
+ *   paper–ink line, but held in smooth areas.
+ */
+function tonedSheet(kind: 'lines' | 'hatched' | 'gray' | 'print' | 'photo') {
+  const n = 240
+  const img = createRaster(n, n)
+  const rnd = mulberry32(17)
+  const paper = kind === 'gray' ? [214, 214, 214] : [232, 218, 188]
+  const ink = kind === 'gray' ? [40, 40, 40] : [52, 40, 30]
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      let t = 0
+      if (kind === 'photo') {
+        if (x >= 50 && x < 190 && y >= 50 && y < 190) {
+          t = 0.15 + 0.7 * ((x - 50) / 140) * (0.6 + 0.4 * Math.sin(y / 9))
+        }
+      } else {
+        for (let k = 0; k < 6; k++) {
+          const cy = 30 + k * 36 + 8 * Math.sin(x / 15 + k)
+          t = Math.max(t, Math.min(1, Math.max(0, 1.6 - Math.abs(y + 0.5 - cy))))
+        }
+        if ((kind === 'hatched' || kind === 'gray') && x >= 40 && x < 200 && y >= 60 && y < 160) {
+          if (x % 3 === 0) t = Math.max(t, 0.55)
+        }
+      }
+      const grain = Math.round((rnd() - 0.5) * 12)
+      let c = paper.map((p, i) => mixByte(p, ink[i], t) + grain)
+      if (kind === 'print' && y >= 70 && y < 110 && x >= 30 && x < 110) c = [190, 60, 50]
+      if (kind === 'print' && y >= 140 && y < 180 && x >= 130 && x < 210) c = [60, 90, 170]
+      setPixel(
+        img,
+        x,
+        y,
+        ...(c.map((v) => Math.max(0, Math.min(255, v))) as [number, number, number]),
+      )
+    }
+  }
+  return img
+}
+
 describe('analyzeImage', () => {
   it('measures a flat logo as non-photographic with few colors', () => {
     const a = analyzeImage(flatLogo())
@@ -483,6 +532,40 @@ describe('analyzeImage', () => {
     const a = analyzeImage(grayFillBlackOutline())
     expect(a.minorTonesArea).toBeGreaterThan(0.02)
     expect(a.inkHex).toBe('#3f3f3f')
+  })
+  it('reads the ground and the mark of a drawing on toned paper off the lightness histogram', () => {
+    const a = analyzeImage(tonedSheet('hatched'))
+    // The paper's grain spans two coarse bins, which the dominant tones read as
+    // paper and ink; the histogram's mode is the paper, its darkest third the ink.
+    expect(a.groundLightness).toBeGreaterThan(0.85)
+    expect(a.groundLightness).toBeLessThan(0.93)
+    expect(a.groundChroma).toBeGreaterThan(0.02)
+    expect(a.groundSpread).toBeLessThan(0.04)
+    expect(a.groundShare).toBeGreaterThan(0.5)
+    expect(a.groundLightness - a.markLightness).toBeGreaterThan(0.4)
+    const [gr, gg, gb] = [1, 3, 5].map((i) => parseInt(a.groundHex.slice(i, i + 2), 16))
+    expect(Math.abs(gr - 232) + Math.abs(gg - 218) + Math.abs(gb - 188)).toBeLessThan(12)
+    expect(parseInt(a.markHex.slice(1, 3), 16)).toBeLessThan(110)
+    // Every color is a mix of that paper and that ink.
+    expect(a.toneAxisResidual).toBeLessThan(0.01)
+    // Its mid-tones are hatching: plenty of them, but none in smooth areas.
+    expect(a.midToneShare).toBeGreaterThan(0.07)
+    expect(a.midToneArea).toBeLessThan(0.005)
+  })
+
+  it('measures off-axis color, smooth mid-tone areas and clean two-tone lines', () => {
+    // A colored print strays off the paper–ink line.
+    expect(analyzeImage(tonedSheet('print')).toneAxisResidual).toBeGreaterThan(0.05)
+    // A mounted sepia picture keeps its tones on the line, in smooth areas.
+    const photo = analyzeImage(tonedSheet('photo'))
+    expect(photo.toneAxisResidual).toBeLessThan(0.01)
+    expect(photo.midToneArea).toBeGreaterThan(0.05)
+    // Clean pen lines: their only mid-tones are their rims.
+    expect(analyzeImage(tonedSheet('lines')).midToneShare).toBeLessThan(0.05)
+    // A white ground is neither toned nor darker than white.
+    const white = analyzeImage(flatLogo())
+    expect(white.groundLightness).toBeGreaterThan(0.97)
+    expect(white.groundChroma).toBeLessThan(0.005)
   })
 })
 
@@ -705,6 +788,107 @@ describe('recommendSettings', () => {
   })
 })
 
+describe('recommendSettings — drawings on toned paper', () => {
+  it('traces a drawing on toned paper in its own paper and ink colors, unblurred', () => {
+    const rec = recommendSettings(analyzeImage(tonedSheet('hatched')))
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.rationaleKeys.some((k) => k.code === 'pickTonedInk')).toBe(true)
+    expect(rec.patch.mode).toBe('color')
+    expect(rec.patch.segmentation).toBe('quantize')
+    // Hatching carries mid-tones, so the palette keeps every entry for them.
+    expect(rec.patch.paletteSize).toBe(8)
+    expect(rec.patch.autoPaletteSize).toBe(false)
+    expect(rec.patch.denoise).toBe('bilateral')
+    expect(rec.patch.blurRadius).toBe(0)
+    expect(rec.patch.minRegionArea).toBe(4)
+    // The classic chain, at native size.
+    expect(rec.patch.geometry).toBeUndefined()
+    expect(rec.patch.maxDimension).toBeUndefined()
+  })
+
+  it('folds the palette of clean two-tone lines on toned paper', () => {
+    const rec = recommendSettings(analyzeImage(tonedSheet('lines')))
+    expect(rec.rationaleKeys.some((k) => k.code === 'pickTonedInk')).toBe(true)
+    expect(rec.patch.autoPaletteSize).toBe(true)
+    expect(rec.rationaleKeys.some((k) => k.code === 'tonedTwoTone')).toBe(true)
+  })
+
+  it('leaves a mounted sepia picture, a colored print and gray paper to their own routes', () => {
+    for (const kind of ['photo', 'print', 'gray'] as const) {
+      const rec = recommendSettings(analyzeImage(tonedSheet(kind)))
+      expect(rec.rationaleKeys.some((k) => k.code === 'pickTonedInk')).toBe(false)
+    }
+  })
+
+  // A drawing on toned paper as measured; each override fails one test.
+  const toned = (over: Partial<ImageAnalysis> = {}): ImageAnalysis => ({
+    width: 760,
+    height: 540,
+    pixels: 410_400,
+    hasAlpha: false,
+    distinctColors: 20000,
+    rimColors: 19000,
+    entropyBits: 8,
+    edgeDensity: 0.1,
+    microGradientDensity: 0.8,
+    flatDensity: 0.005,
+    flatArea: 0.4,
+    rampArea: 0,
+    fineArea: 0.1,
+    twoToneCoverage: 0.68,
+    photoScore: 1,
+    pixelArtScore: 0,
+    dominantHex: ['#d0b090', '#f0d0b0'],
+    meanLightness: 0.78,
+    contrast: 0.16,
+    colorfulness: 0.047,
+    coloredFraction: 0.6,
+    minorTonesArea: 0,
+    inkHex: '#dab999',
+    paperHex: '#e5c9ab',
+    edgeWidth: 1.25,
+    groundHex: '#e5c8a9',
+    groundLightness: 0.85,
+    groundChroma: 0.053,
+    groundSpread: 0.023,
+    groundShare: 0.62,
+    markHex: '#39332e',
+    markLightness: 0.33,
+    toneAxisResidual: 0.011,
+    midToneShare: 0.1,
+    midToneArea: 0.003,
+    ...over,
+  })
+  const caught = (a: ImageAnalysis) =>
+    recommendSettings(a).rationaleKeys.some((k) => k.code === 'pickTonedInk')
+
+  it('catches the measured drawing and no near variant of it', () => {
+    expect(caught(toned())).toBe(true)
+    // Smooth mid-tone areas: a photograph or a film still, mounted or not.
+    expect(caught(toned({ midToneArea: 0.04 }))).toBe(false)
+    // Broad tones around the ground: an unmounted photograph.
+    expect(caught(toned({ groundSpread: 0.13 }))).toBe(false)
+    // Off the paper–ink line: a colored print on the same paper.
+    expect(caught(toned({ toneAxisResidual: 0.035 }))).toBe(false)
+    // A white or a gray ground.
+    expect(caught(toned({ groundLightness: 0.99, groundChroma: 0.02 }))).toBe(false)
+    expect(caught(toned({ groundChroma: 0.004 }))).toBe(false)
+    // No mark clearly darker than the paper.
+    expect(caught(toned({ markLightness: 0.7 }))).toBe(false)
+    // A paper peak too small to be the sheet.
+    expect(caught(toned({ groundShare: 0.2 }))).toBe(false)
+    // Transparency, or clean flat art.
+    expect(caught(toned({ hasAlpha: true }))).toBe(false)
+    expect(caught(toned({ flatDensity: 0.6, microGradientDensity: 0.2 }))).toBe(false)
+  })
+
+  it('applies only to the automatic choice', () => {
+    const rec = recommendSettings(toned(), 'photo')
+    expect(rec.profileId).toBe('photo')
+    expect(rec.rationaleKeys.some((k) => k.code === 'tonedInk')).toBe(false)
+  })
+})
+
 describe('recommendSettings — ink scans on white paper', () => {
   // A JPEG'd pen-and-ink cover (the measures of a Beardsley print): white paper
   // and black ink cover most of it, but its large solid blacks pull the mean
@@ -736,6 +920,16 @@ describe('recommendSettings — ink scans on white paper', () => {
     inkHex: '#1b1b1b',
     paperHex: '#fdfdfd',
     edgeWidth: 1.07,
+    groundHex: '#fdfdfd',
+    groundLightness: 0.99,
+    groundChroma: 0,
+    groundSpread: 0.012,
+    groundShare: 0.3,
+    markHex: '#131313',
+    markLightness: 0.18,
+    toneAxisResidual: 0,
+    midToneShare: 0.06,
+    midToneArea: 0,
     ...over,
   })
 
@@ -781,7 +975,8 @@ describe('recommendSettings — ink scans on white paper', () => {
 describe('recommendSettings — printed page scans', () => {
   // A colored newsprint comic scanned from yellowed paper (the measures of a
   // Bécassine page): paper grain and JPEG leave no exactly-flat pixel and no
-  // smooth ramp, and its edges are busy, so it is not flat art.
+  // smooth ramp, its edges are busy, and its colors stray off the paper–ink
+  // line, so it is neither a drawing on toned paper nor flat art.
   const printed = (over: Partial<ImageAnalysis> = {}): ImageAnalysis => ({
     width: 1001,
     height: 446,
@@ -808,6 +1003,16 @@ describe('recommendSettings — printed page scans', () => {
     inkHex: '#c9b9a6',
     paperHex: '#d6cbb6',
     edgeWidth: 1.44,
+    groundHex: '#d3c9b3',
+    groundLightness: 0.84,
+    groundChroma: 0.033,
+    groundSpread: 0.035,
+    groundShare: 0.37,
+    markHex: '#262720',
+    markLightness: 0.27,
+    toneAxisResidual: 0.032,
+    midToneShare: 0.25,
+    midToneArea: 0.019,
     ...over,
   })
   const codes = (a: ImageAnalysis, goal?: 'photo') =>
@@ -817,6 +1022,7 @@ describe('recommendSettings — printed page scans', () => {
     const rec = recommendSettings(printed())
     expect(rec.profileId).toBe('photo')
     expect(codes(printed())).toContain('printScan')
+    expect(codes(printed())).not.toContain('pickTonedInk')
     expect(rec.patch.minRegionArea).toBe(4)
     // Everything else stays the photo route's: color, denoised, posterized.
     expect(rec.patch.mode).toBe('color')
@@ -875,6 +1081,16 @@ describe('recommendSettings — region-growing gates', () => {
     inkHex: '#000000',
     paperHex: '#ffffff',
     edgeWidth: 1,
+    groundHex: '#ffffff',
+    groundLightness: 1,
+    groundChroma: 0,
+    groundSpread: 0.01,
+    groundShare: 0.5,
+    markHex: '#000000',
+    markLightness: 0,
+    toneAxisResidual: 0,
+    midToneShare: 0,
+    midToneArea: 0,
     ...over,
   })
 

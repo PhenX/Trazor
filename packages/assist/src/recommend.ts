@@ -327,6 +327,96 @@ function isTonalLineArt(a: ImageAnalysis): boolean {
 }
 
 /**
+ * A drawing on toned paper: ink, pencil or wash on a cream, tan or tinted
+ * ground, scanned or photographed. Paper grain and JPEG noise give such a scan
+ * every photographic tell (`photoScore` 1, thousands of colors, no flat
+ * interiors), the paper's faint chroma straddles the grayscale cut, and the two
+ * commonest coarse bins are both paper, so `inkHex` ≈ `paperHex`. What sets it
+ * apart is read off the lightness histogram instead: one narrow paper peak
+ * holding a large share of the image, a tinted paper (white and gray grounds are
+ * left to the black & white, tonal and photo rules), a mark clearly darker than
+ * it, every color a mix of that one paper and that one ink (`toneAxisResidual`:
+ * a colored print or a painted fill strays off the paper–ink line), and
+ * mid-tones that stay thin — stroke rims, hatching, brushed wash — instead of
+ * filling smooth areas (`midToneArea`). A sepia portrait, a toned film still
+ * and a print of either in its card mount can pass every other test (the mount
+ * is a narrow paper peak too) but fail that one, unless cropped close to a
+ * high-key or flat-shaded subject. A busy photograph (foliage, ice, a crowd)
+ * does not fill smooth areas either: it is told apart by tones that spread,
+ * stray off one hue or sit on a dark ground, and one toned to a single hue on a
+ * light ground (its card mount, or pale clothing or ice in a close crop) is
+ * taken for a drawing; such photographs trace about as well here as on the
+ * photo route. A toned paper must keep its color, which grayscale or a
+ * black-on-white threshold would throw away.
+ */
+const TONED_MIN_GROUND_SHARE = 0.3
+/**
+ * Widest ground peak (half width at half maximum, in Oklab lightness) read as
+ * paper. Grain and JPEG noise widen a paper's peak to 0.02–0.07 (a dense etching
+ * scanned small and recompressed); an unmounted photograph's tones often
+ * spread 0.1 and more.
+ */
+const TONED_MAX_GROUND_SPREAD = 0.08
+const TONED_MIN_GROUND_LIGHTNESS = 0.7
+const TONED_MAX_GROUND_LIGHTNESS = 0.97
+/** Ground chroma from which a paper is toned (aged paper reads about 0.013–0.07), not white or gray. */
+const TONED_MIN_GROUND_CHROMA = 0.012
+const TONED_MIN_MARK_GAP = 0.2
+/**
+ * Most off-axis color a duotone carries. Ink and paper alone read up to about
+ * 0.022 (a stained or unevenly toned sheet), a small colored stamp or note on
+ * them about as much; a colored print on the same paper (a comic, a
+ * watercolored patent drawing, gilt and painted ornament) mostly reads 0.03 and
+ * more. The 90th percentile ignores color on less than a tenth of the image, so
+ * a sheet with a few small washes passes, and its washes then compete with the
+ * paper and ink for the palette's entries.
+ */
+const TONED_MAX_AXIS_RESIDUAL = 0.026
+/**
+ * Largest share of the image a drawing holds in smooth mid-tone areas
+ * (`midToneArea`). Drawings on toned paper read under 0.006 (0.012 rescaled and
+ * recompressed); portraits, toned film stills and other photographs with
+ * smooth tones read about 0.02 and more, mounted or not; busy photographs
+ * (foliage, grass, ice) read 0.005–0.015 and are left to the other tests.
+ */
+const TONED_MAX_MID_TONE_AREA = 0.015
+
+/** Whether the image reads as a drawing on toned paper, traced in its own paper and ink colors. */
+function isInkOnToned(a: ImageAnalysis): boolean {
+  return (
+    !a.hasAlpha &&
+    !isCleanFlatArt(a) &&
+    !isCartoon(a) &&
+    a.groundShare >= TONED_MIN_GROUND_SHARE &&
+    a.groundSpread <= TONED_MAX_GROUND_SPREAD &&
+    a.groundLightness >= TONED_MIN_GROUND_LIGHTNESS &&
+    a.groundLightness <= TONED_MAX_GROUND_LIGHTNESS &&
+    a.groundChroma >= TONED_MIN_GROUND_CHROMA &&
+    a.groundLightness - a.markLightness >= TONED_MIN_MARK_GAP &&
+    a.toneAxisResidual <= TONED_MAX_AXIS_RESIDUAL &&
+    a.midToneArea <= TONED_MAX_MID_TONE_AREA
+  )
+}
+
+/** Inks a toned scan is traced with: paper, its texture's darker tones, and the ink's tones. */
+const TONED_PALETTE = 8
+/**
+ * Mid-tone share (`midToneShare`) under which a toned drawing is near two-tone:
+ * clean ink lines whose only mid-tones are their rims, such as a coloring page
+ * or a pen drawing without hatching or wash. Its palette folds to the colors it
+ * holds (`autoPaletteSize`): a fixed palette would spend most of its entries on
+ * paper grain and on near-identical inks, each traced as its own layer of
+ * flecks. A drawing with hairlines, pencil, hatching or wash reads 0.07 and more
+ * and keeps the whole palette, because folding a paper-grain entry also hands
+ * the faint strokes it holds to the paper.
+ */
+const TONED_TWO_TONE_MAX_MID_SHARE = 0.05
+/** Speck floor for a toned scan: a hairline's break is a few pixels, paper grain survives as a second paper tone. */
+const TONED_MIN_REGION = 4
+/** Smoothing for a toned scan: a calligraphic hairline's taper is real, the illustration profile's 0.8 rounds it off. */
+const TONED_SMOOTHING = 0.6
+
+/**
  * Photographic-looking texture (noise, blocking, ringing) sitting on top of a
  * few dominant flat colors — a compressed or rescaled flat graphic (a JPEG
  * logo, a screenshot) rather than a true photograph, whose colors spread out
@@ -442,6 +532,34 @@ export function recommendSettings(
     r.add('pixelExact', `Kept the ${a.distinctColors} original colors exactly.`, {
       count: a.distinctColors,
     })
+    return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+  }
+
+  // A drawing on toned paper keeps its paper and its ink: a few colors along
+  // the paper–ink line, measured by k-means, denoised without blur (a blur melts
+  // hairlines into the paper), a small speck floor, at native size on the
+  // classic chain.
+  if (goal === 'auto' && isInkOnToned(a)) {
+    patch.mode = 'color'
+    patch.segmentation = 'quantize'
+    patch.paletteSize = TONED_PALETTE
+    patch.autoPaletteSize = a.midToneShare < TONED_TWO_TONE_MAX_MID_SHARE
+    patch.colorCoherence = 0.5
+    patch.denoise = 'bilateral'
+    patch.blurRadius = 0
+    patch.minRegionArea = TONED_MIN_REGION
+    patch.smoothing = TONED_SMOOTHING
+    r.add(
+      'tonedInk',
+      'Ink on toned paper — the paper and ink colors kept, strokes traced unblurred.',
+    )
+    if (patch.autoPaletteSize) {
+      r.add(
+        'tonedTwoTone',
+        'Clean lines with almost no mid-tones — the palette folds the paper grain and duplicate inks into the colors the drawing holds.',
+      )
+    }
+    traceSize(a, patch, r)
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -675,6 +793,10 @@ function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   if (a.pixelArtScore >= 0.7) {
     r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
     return 'pixel-art'
+  }
+  if (isInkOnToned(a)) {
+    r.add('pickTonedInk', 'A drawing on toned paper — traced in its own paper and ink colors.')
+    return 'illustration'
   }
   // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
   // two-color mark (navy on white, say) keeps its color through a flat profile.

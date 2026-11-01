@@ -103,6 +103,58 @@ export interface ImageAnalysis {
    * recover.
    */
   edgeWidth: number
+  /**
+   * The paper of a drawing or scan, read off the Oklab-lightness histogram: its
+   * main mode (the lightness most samples share), painted the mean color of the
+   * samples within `groundSpread` of it. Unlike {@link paperHex} — the lighter of
+   * the two commonest coarse RGB bins — a textured or JPEG'd paper that straddles
+   * a bin boundary cannot fill both dominant tones and hide the ink.
+   */
+  groundHex: string
+  /** Oklab lightness of the ground's mode. */
+  groundLightness: number
+  /** Mean Oklab chroma of the ground samples (0 for white or gray paper). */
+  groundChroma: number
+  /** Half width at half maximum of the ground's lightness peak: a paper is narrow, a photo's tones broad. */
+  groundSpread: number
+  /** Fraction of samples within `groundSpread` of the ground's lightness. */
+  groundShare: number
+  /**
+   * The ink drawn on the ground: mean color of the darkest third of the samples
+   * darker than the ground by more than `max(0.12, 4·groundSpread)` (their cores,
+   * not their anti-aliased rims); the ground's color when there are none.
+   */
+  markHex: string
+  /** Oklab lightness of {@link markHex}. */
+  markLightness: number
+  /**
+   * 90th percentile of each sample's Oklab chroma-plane distance from the segment
+   * between the ground and the mark: near 0 when every color is a mix of one
+   * paper and one ink (a duotone — ink, pencil or wash on toned paper), large
+   * when the image carries other hues (a colored print, a photo, a painted fill).
+   * Read off a histogram up to `RESIDUAL_MAX` (0.25), where it saturates.
+   */
+  toneAxisResidual: number
+  /**
+   * Fraction of samples a quarter to three quarters of the way from the
+   * ground's lightness to the mark's: the anti-aliased rims, hairlines, pencil,
+   * hatching and wash of a drawing. Clean two-tone ink on its paper holds few
+   * (its strokes' thin rims only); 0 when there is no mark.
+   */
+  midToneShare: number
+  /**
+   * Fraction of samples inside mid-tone areas: {@link midToneShare} samples
+   * whose four neighbors are mid-tones too, in a 2×2 block whose mean color
+   * stays within `MID_TONE_MAX_GRAD` of the next blocks'. A drawing's
+   * mid-tones are the rims of its strokes, its hatching and its brushed or
+   * rubbed washes — thin or broken, so near 0. A photograph or a film still
+   * with smooth tones holds them as areas (skin, sky, a studio backdrop, a
+   * painted fill), and so does a toned print of one, card mount and all; a busy
+   * photograph (foliage, grass, ice, a crowd) breaks them up much as a drawing
+   * does. Block means, not single samples, decide the smoothness, so film grain
+   * or sensor noise does not hide such an area.
+   */
+  midToneArea: number
 }
 
 /** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
@@ -193,6 +245,16 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   let sumL = 0
   let sumL2 = 0
   let sumChroma = 0
+  // Per-sample Oklab and RGB on the sample grid, for the ground / mark reading.
+  const samples: Samples = {
+    L: new Float32Array(gw * gh),
+    a: new Float32Array(gw * gh),
+    b: new Float32Array(gw * gh),
+    rgb: new Uint8Array(gw * gh * 3),
+    lightHist: new Uint32Array(GROUND_BINS),
+    gw,
+    gh,
+  }
 
   for (let gy = 0; gy < gh; gy++) {
     const y = gy * step
@@ -211,6 +273,14 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
       if (colorSet.size < 65536) colorSet.add(colorKey)
       hist[((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)]++
       const [L, oa, ob] = rgbToOklab(r / 255, g / 255, b / 255)
+      const s = gy * gw + gx
+      samples.L[s] = L
+      samples.a[s] = oa
+      samples.b[s] = ob
+      samples.rgb[s * 3] = r
+      samples.rgb[s * 3 + 1] = g
+      samples.rgb[s * 3 + 2] = b
+      samples.lightHist[lightBin(L)]++
       const coarseKey = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
       if (coarseN[coarseKey] === 0) coarseKeys.push(coarseKey)
       coarseN[coarseKey]++
@@ -386,7 +456,274 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     inkHex: ink.hex,
     paperHex: paper.hex,
     edgeWidth: edgeWidthOf(image),
+    ...groundAndMark(samples),
   }
+}
+
+/** Oklab-lightness histogram bins the ground is read from. */
+const GROUND_BINS = 256
+/** Half-width (bins) of the box the lightness histogram is smoothed with before its mode is taken. */
+const GROUND_SMOOTH = 3
+/** Least lightness gap between the ground and a sample counted as ink. */
+const MARK_MIN_GAP = 0.12
+/** Histogram bins, over 0..`RESIDUAL_MAX`, the tone-axis residual's percentile is read from. */
+const RESIDUAL_BINS = 1024
+/** Largest tone-axis residual told apart (Oklab chroma-plane distance); farther samples share the last bin. */
+const RESIDUAL_MAX = 0.25
+/**
+ * L1 RGB difference (0..765) between a 2×2 block's mean color and its right or
+ * lower neighbor block's up to which the block is smooth for `midToneArea`: the
+ * analyzer's smooth-area step (`SMOOTH_MAX_GRAD`), taken on block means so
+ * grain and JPEG noise average out while a stroke's rim still steps past it.
+ */
+const MID_TONE_MAX_GRAD = 12
+
+/** The sample grid's colors and Oklab lightness histogram (`GROUND_BINS`). */
+interface Samples {
+  L: Float32Array
+  a: Float32Array
+  b: Float32Array
+  rgb: Uint8Array
+  lightHist: Uint32Array
+  gw: number
+  gh: number
+}
+
+/** The `GROUND_BINS` histogram bin of an Oklab lightness. */
+function lightBin(L: number): number {
+  return Math.min(GROUND_BINS - 1, Math.max(0, Math.floor(L * GROUND_BINS)))
+}
+
+type GroundMark = Pick<
+  ImageAnalysis,
+  | 'groundHex'
+  | 'groundLightness'
+  | 'groundChroma'
+  | 'groundSpread'
+  | 'groundShare'
+  | 'markHex'
+  | 'markLightness'
+  | 'toneAxisResidual'
+  | 'midToneShare'
+  | 'midToneArea'
+>
+
+/**
+ * The ground (paper) and mark (ink) of the samples, how far their colors stray
+ * from the line between them, and how much of the image sits in smooth
+ * mid-tone areas between them.
+ */
+function groundAndMark(samples: Samples): GroundMark {
+  const { L: sL, a: sA, b: sB, rgb, lightHist: hist, gw, gh } = samples
+  const n = gw * gh
+  if (n === 0) {
+    return {
+      groundHex: '#ffffff',
+      groundLightness: 1,
+      groundChroma: 0,
+      groundSpread: 0,
+      groundShare: 0,
+      markHex: '#ffffff',
+      markLightness: 1,
+      toneAxisResidual: 0,
+      midToneShare: 0,
+      midToneArea: 0,
+    }
+  }
+  // The ground is the mode of the box-smoothed histogram; its spread the half
+  // width at half maximum; its lightness the mean of the raw bins around it.
+  const B = GROUND_BINS
+  const sm = new Float64Array(B)
+  for (let k = 0; k < B; k++) {
+    let v = 0
+    for (let d = -GROUND_SMOOTH; d <= GROUND_SMOOTH; d++) {
+      const j = k + d
+      if (j >= 0 && j < B) v += hist[j]
+    }
+    sm[k] = v
+  }
+  let mode = 0
+  for (let k = 1; k < B; k++) if (sm[k] > sm[mode]) mode = k
+  let lo = mode
+  while (lo > 0 && sm[lo] > sm[mode] / 2) lo--
+  let hi = mode
+  while (hi < B - 1 && sm[hi] > sm[mode] / 2) hi++
+  const spread = Math.max(1, mode - lo, hi - mode) / B
+  let cw = 0
+  let cs = 0
+  for (let d = -GROUND_SMOOTH; d <= GROUND_SMOOTH; d++) {
+    const j = mode + d
+    if (j >= 0 && j < B) {
+      cw += hist[j]
+      cs += hist[j] * (j + 0.5)
+    }
+  }
+  const groundL = cs / cw / B
+  const inkBelow = groundL - Math.max(MARK_MIN_GAP, 4 * spread)
+
+  let pr = 0
+  let pg = 0
+  let pb = 0
+  let pL = 0
+  let pa = 0
+  let pbb = 0
+  let pc = 0
+  let pn = 0
+  let inkN = 0
+  for (let s = 0; s < n; s++) {
+    const L = sL[s]
+    if (Math.abs(L - groundL) <= spread) {
+      pr += rgb[3 * s]
+      pg += rgb[3 * s + 1]
+      pb += rgb[3 * s + 2]
+      pL += L
+      pa += sA[s]
+      pbb += sB[s]
+      pc += Math.sqrt(sA[s] * sA[s] + sB[s] * sB[s])
+      pn++
+    }
+    if (L < inkBelow) inkN++
+  }
+  pn = Math.max(1, pn)
+  const ground = [pL / pn, pa / pn, pbb / pn]
+  const groundHex = rgbToHex(Math.round(pr / pn), Math.round(pg / pn), Math.round(pb / pn))
+
+  // The mark is the darkest third of the ink samples, found on the histogram:
+  // every sample in a bin below the cut, and the cut bin's samples weighted to
+  // make up the third.
+  let markHex = groundHex
+  let mark = ground
+  if (inkN > 0) {
+    const want = Math.ceil(inkN / 3)
+    let cut = 0
+    let below = 0
+    while (below + hist[cut] < want) below += hist[cut++]
+    const cutWeight = (want - below) / hist[cut]
+    let ir = 0
+    let ig = 0
+    let ib = 0
+    let iL = 0
+    let ia = 0
+    let ibb = 0
+    for (let s = 0; s < n; s++) {
+      const k = lightBin(sL[s])
+      if (k > cut) continue
+      const w = k < cut ? 1 : cutWeight
+      ir += w * rgb[3 * s]
+      ig += w * rgb[3 * s + 1]
+      ib += w * rgb[3 * s + 2]
+      iL += w * sL[s]
+      ia += w * sA[s]
+      ibb += w * sB[s]
+    }
+    markHex = rgbToHex(Math.round(ir / want), Math.round(ig / want), Math.round(ib / want))
+    mark = [iL / want, ia / want, ibb / want]
+  }
+
+  // Tone-axis residual: the 90th percentile, off a histogram, of each sample's
+  // chroma-plane distance from the ground–mark segment.
+  const D = [mark[0] - ground[0], mark[1] - ground[1], mark[2] - ground[2]]
+  const dd = D[0] * D[0] + D[1] * D[1] + D[2] * D[2] || 1
+  const offHist = new Uint32Array(RESIDUAL_BINS)
+  for (let s = 0; s < n; s++) {
+    const v0 = sL[s] - ground[0]
+    const v1 = sA[s] - ground[1]
+    const v2 = sB[s] - ground[2]
+    const t = clamp((v0 * D[0] + v1 * D[1] + v2 * D[2]) / dd, 0, 1)
+    const e1 = v1 - t * D[1]
+    const e2 = v2 - t * D[2]
+    const off = Math.sqrt(e1 * e1 + e2 * e2)
+    offHist[Math.min(RESIDUAL_BINS - 1, Math.floor((off / RESIDUAL_MAX) * RESIDUAL_BINS))]++
+  }
+  const rank = Math.floor(0.9 * (n - 1)) + 1
+  let k90 = 0
+  for (let acc = offHist[0]; acc < rank; acc += offHist[++k90]);
+
+  return {
+    groundHex,
+    groundLightness: groundL,
+    groundChroma: pc / pn,
+    groundSpread: spread,
+    groundShare: pn / n,
+    markHex,
+    markLightness: mark[0],
+    toneAxisResidual: ((k90 + 0.5) * RESIDUAL_MAX) / RESIDUAL_BINS,
+    ...midTones(samples, groundL, inkN > 0 ? mark[0] : groundL),
+  }
+}
+
+/**
+ * {@link ImageAnalysis.midToneShare}, the share of samples a quarter to three
+ * quarters of the way from `groundL` down to `markL`, and
+ * {@link ImageAnalysis.midToneArea}, the share of samples that are such
+ * mid-tones with four mid-tone grid neighbors, in a 2×2 block smooth against
+ * the next blocks.
+ */
+function midTones(
+  samples: Samples,
+  groundL: number,
+  markL: number,
+): Pick<ImageAnalysis, 'midToneShare' | 'midToneArea'> {
+  const { L: sL, rgb, gw, gh } = samples
+  if (markL >= groundL) return { midToneShare: 0, midToneArea: 0 }
+  const midHi = groundL - 0.25 * (groundL - markL)
+  const midLo = groundL - 0.75 * (groundL - markL)
+  const mid = new Uint8Array(gw * gh)
+  let midN = 0
+  for (let s = 0; s < gw * gh; s++) {
+    if (sL[s] >= midLo && sL[s] <= midHi) {
+      mid[s] = 1
+      midN++
+    }
+  }
+  // Mean color of each 2×2 block (the last odd row or column is left out), then
+  // whether it is within MID_TONE_MAX_GRAD of its right and lower blocks.
+  const bw = gw >> 1
+  const bh = gh >> 1
+  const mean = new Float32Array(bw * bh * 3)
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const s = 2 * by * gw + 2 * bx
+      const o = (by * bw + bx) * 3
+      for (let c = 0; c < 3; c++) {
+        mean[o + c] =
+          (rgb[3 * s + c] +
+            rgb[3 * (s + 1) + c] +
+            rgb[3 * (s + gw) + c] +
+            rgb[3 * (s + gw + 1) + c]) /
+          4
+      }
+    }
+  }
+  const step = (o: number, q: number): number =>
+    Math.abs(mean[o] - mean[q]) +
+    Math.abs(mean[o + 1] - mean[q + 1]) +
+    Math.abs(mean[o + 2] - mean[q + 2])
+  let area = 0
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const o = (by * bw + bx) * 3
+      if (bx + 1 < bw && step(o, o + 3) > MID_TONE_MAX_GRAD) continue
+      if (by + 1 < bh && step(o, o + bw * 3) > MID_TONE_MAX_GRAD) continue
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          const x = 2 * bx + dx
+          const y = 2 * by + dy
+          const s = y * gw + x
+          if (
+            mid[s] === 1 &&
+            (x === 0 || mid[s - 1] === 1) &&
+            (x + 1 === gw || mid[s + 1] === 1) &&
+            (y === 0 || mid[s - gw] === 1) &&
+            (y + 1 === gh || mid[s + gw] === 1)
+          ) {
+            area++
+          }
+        }
+      }
+    }
+  }
+  return { midToneShare: midN / (gw * gh), midToneArea: area / (gw * gh) }
 }
 
 /** The coarse bin (`COARSE_BINS`, 3 bits a channel) of a packed `0xrrggbb` color. */
