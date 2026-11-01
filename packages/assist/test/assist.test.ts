@@ -705,6 +705,79 @@ describe('recommendSettings', () => {
   })
 })
 
+describe('recommendSettings — ink scans on white paper', () => {
+  // A JPEG'd pen-and-ink cover (the measures of a Beardsley print): white paper
+  // and black ink cover most of it, but its large solid blacks pull the mean
+  // lightness under the bright-paper bound, and JPEG spreads its two tones over
+  // 256 grays, so it is not cleanly bilevel.
+  const inkPrint = (over: Partial<ImageAnalysis> = {}): ImageAnalysis => ({
+    width: 501,
+    height: 777,
+    pixels: 389_277,
+    hasAlpha: false,
+    distinctColors: 256,
+    rimColors: 199,
+    entropyBits: 2.37,
+    edgeDensity: 0.21,
+    microGradientDensity: 0.45,
+    flatDensity: 0.12,
+    flatArea: 0.55,
+    rampArea: 0,
+    fineArea: 0.043,
+    twoToneCoverage: 0.86,
+    photoScore: 0.99,
+    pixelArtScore: 0,
+    dominantHex: ['#f0f0f0', '#101010', '#303030', '#d0d0d0'],
+    meanLightness: 0.59,
+    contrast: 0.37,
+    colorfulness: 0,
+    coloredFraction: 0,
+    minorTonesArea: 0.008,
+    inkHex: '#1b1b1b',
+    paperHex: '#fdfdfd',
+    edgeWidth: 1.07,
+    ...over,
+  })
+
+  it('traces an ink print with large solid blacks as a tonal ink scan, not a photo', () => {
+    const rec = recommendSettings(inkPrint())
+    expect(rec.profileId).toBe('illustration')
+    expect(rec.rationaleKeys.some((k) => k.code === 'pickInkGrayscale')).toBe(true)
+    expect(rec.patch.mode).toBe('grayscale')
+    expect(rec.patch.paletteSize).toBe(4)
+    // Photo cleanup would blur and merge its hairlines away.
+    expect(rec.patch.denoise).toBeUndefined()
+  })
+
+  it('keeps hairline fragments of a tonal ink scan: a speck floor of a few pixels', () => {
+    const rec = recommendSettings(inkPrint({ meanLightness: 0.72 }))
+    expect(rec.patch.mode).toBe('grayscale')
+    expect(rec.patch.minRegionArea).toBe(4)
+  })
+
+  it('needs white paper, black ink and two dominant tones for a dark print to read as a scan', () => {
+    // A grayscale photo spreads over many tones; a page that is mostly ink, gray
+    // paper or gray ink is not a print on white paper either.
+    const profiles = [
+      { twoToneCoverage: 0.55 },
+      { meanLightness: 0.42 },
+      { paperHex: '#c8c8c8' },
+      { inkHex: '#727272' },
+    ].map((over: Partial<ImageAnalysis>) => recommendSettings(inkPrint(over)).profileId)
+    expect(profiles).toEqual(['photo', 'photo', 'photo', 'photo'])
+  })
+
+  it('leaves a print with flat interiors to region growing', () => {
+    // The same cover after a stronger JPEG pass: enough exactly-flat interior
+    // for region growing to seed from, which keeps it on the cartoon route.
+    const rec = recommendSettings(
+      inkPrint({ flatDensity: 0.21, flatArea: 0.52, fineArea: 0.037, microGradientDensity: 0.42 }),
+    )
+    expect(rec.patch.segmentation).toBe('regions')
+    expect(rec.patch.mode).toBe('color')
+  })
+})
+
 describe('recommendSettings — printed page scans', () => {
   // A colored newsprint comic scanned from yellowed paper (the measures of a
   // Bécassine page): paper grain and JPEG leave no exactly-flat pixel and no

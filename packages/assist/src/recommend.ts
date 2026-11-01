@@ -5,6 +5,7 @@ import {
   clampInt,
   getProfile,
   hexToRgb,
+  oklabLightness,
   srgbToLinear,
   supersampleWithinBudget,
 } from '@trazor/core'
@@ -104,8 +105,17 @@ const EDGE_ALPHA_THRESHOLD = 128
  */
 const INK_TONE_LEVELS = 4
 
-/** Speck floor for a tonal ink scan — drops the paper's residual JPEG specks. */
-const INK_TONE_MIN_REGION = 16
+/**
+ * Speck floor for a tonal ink scan, in px². JPEG spreads a hairline over the
+ * ink level and a gray one, so the tone count cuts it into fragments of a few
+ * pixels each; a larger floor merges those fragments into the paper, and a
+ * face's contour, a letter's stroke or a balloon's outline turns into dashes.
+ * The few tone levels already keep the paper's texture to one level. Measured
+ * on the ground-truth gate against a floor of 16: a pen-and-ink plate GMSD
+ * 0.279 → 0.196, a newspaper strip 0.241 → 0.147, a locomotive drawing
+ * 0.226 → 0.191.
+ */
+const INK_TONE_MIN_REGION = 4
 
 /**
  * Cartoon-style art — flat fills meeting at crisp, anti-aliased edges — is
@@ -247,18 +257,62 @@ function isBilevelInk(a: ImageAnalysis): boolean {
   )
 }
 
+/** Mean lightness (Oklab) above which an achromatic scan reads as marks on a bright paper ground. */
+const PAPER_GROUND_MIN_LIGHTNESS = 0.7
+
+/**
+ * An ink print with large solid blacks (a cover, a poster plate) reads darker
+ * than `PAPER_GROUND_MIN_LIGHTNESS` yet still lies on a paper ground: its two
+ * dominant tones cover at least `INK_PRINT_MIN_TWO_TONE` of it, the lighter is
+ * paper of at least `INK_PRINT_MIN_PAPER` (Oklab L), the darker ink of at most
+ * `INK_PRINT_MAX_INK`, and the ink does not take over the page (mean lightness
+ * above `INK_PRINT_MIN_LIGHTNESS`). A grayscale photograph spreads over many
+ * tones, so its two dominant ones never cover that much. Such a print traced
+ * as a photo splits each JPEG'd hairline over its 32 levels and drops the
+ * pieces under its 10 px² floor; measured on the ground-truth gate on a
+ * pen-and-ink cover, the tonal route moves GMSD 0.207 → 0.133 and missed edges
+ * 0.695 → 0.469.
+ */
+const INK_PRINT_MIN_TWO_TONE = 0.75
+const INK_PRINT_MIN_PAPER = 0.95
+const INK_PRINT_MAX_INK = 0.3
+const INK_PRINT_MIN_LIGHTNESS = 0.5
+
+/** Oklab lightness of a hex color. */
+function hexLightness(hex: string): number {
+  return oklabLightness(...(hexToRgb(hex) ?? [0, 0, 0]))
+}
+
+/**
+ * Marks on a bright paper ground: a light image overall, or an ink print whose
+ * solid blacks darken it while white paper and black ink still make up most of
+ * it (see `INK_PRINT_MIN_TWO_TONE`). A print with the exactly-flat interiors
+ * region growing seeds from ({@link isCartoon}) keeps that route, which grows
+ * each hairline between its two real neighbors.
+ */
+function hasPaperGround(a: ImageAnalysis): boolean {
+  if (a.meanLightness > PAPER_GROUND_MIN_LIGHTNESS) return true
+  return (
+    !isCartoon(a) &&
+    a.meanLightness > INK_PRINT_MIN_LIGHTNESS &&
+    a.twoToneCoverage >= INK_PRINT_MIN_TWO_TONE &&
+    hexLightness(a.paperHex) >= INK_PRINT_MIN_PAPER &&
+    hexLightness(a.inkHex) <= INK_PRINT_MAX_INK
+  )
+}
+
 /**
  * Achromatic line-art scan carrying real gray tone: an ink drawing, engraving or
  * technical/patent scan on bright paper — busy edges, a limited tone count, no
  * color — that is not cleanly bilevel ({@link isBilevelInk}). What separates it
- * from a mid-toned grayscale photo is the bright paper ground and the sparse
- * tone count; what separates it from clean two-tone ink is the mid-gray it
- * carries (faint pencil, engraved hatching, a JPEG'd rule). A bw threshold
- * collapses that mid-gray into solid ink — thickening every stroke and flooding
- * hatched areas black — so this is traced as grayscale tonal layers, which keep
- * each stroke at its true darkness. Clean flat art (a gray icon whose mid-gray
- * is its anti-aliased rim) and art on a transparent ground are not scans: they
- * keep their own flat inks.
+ * from a mid-toned grayscale photo is the bright paper ground
+ * ({@link hasPaperGround}) and the sparse tone count; what separates it from
+ * clean two-tone ink is the mid-gray it carries (faint pencil, engraved
+ * hatching, a JPEG'd rule). A bw threshold collapses that mid-gray into solid
+ * ink — thickening every stroke and flooding hatched areas black — so this is
+ * traced as grayscale tonal layers, which keep each stroke at its true
+ * darkness. Clean flat art (a gray icon whose mid-gray is its anti-aliased rim)
+ * and art on a transparent ground are not scans: they keep their own flat inks.
  */
 function isTonalLineArt(a: ImageAnalysis): boolean {
   return (
@@ -266,7 +320,7 @@ function isTonalLineArt(a: ImageAnalysis): boolean {
     !isBilevelInk(a) &&
     !isCleanFlatArt(a) &&
     !a.hasAlpha &&
-    a.meanLightness > 0.7 &&
+    hasPaperGround(a) &&
     a.edgeDensity > 0.1 &&
     a.distinctColors <= 4096
   )
