@@ -117,6 +117,13 @@ const INK_TONE_LEVELS = 4
  */
 const INK_TONE_MIN_REGION = 4
 
+/** Most colors a palette holds (`paletteSize`'s bound): pixel art with more shares the closest shades. */
+const PIXEL_PALETTE_MAX = 64
+/** Most pixel-grid colors the analyzer counts (`gridColors`); past it the count is a lower bound. */
+const PIXEL_PALETTE_COUNTED = 256
+/** Canvas (pixels at its own scale) up to which pixel art is a small sprite or tile. */
+const PIXEL_SMALL_CANVAS = 128 * 128
+
 /**
  * Cartoon-style art — flat fills meeting at crisp, anti-aliased edges — is
  * traced by region growing: each fill grows from its flat interior, so a soft
@@ -528,10 +535,27 @@ export function recommendSettings(
   }
 
   if (profileId === 'pixel-art') {
-    patch.paletteSize = clampInt(Math.max(2, a.distinctColors), 2, 64)
-    r.add('pixelExact', `Kept the ${a.distinctColors} original colors exactly.`, {
-      count: a.distinctColors,
-    })
+    // The sampled count can miss a rare color of a large image; the pixel grid
+    // counts every color of its crop.
+    const colors = Math.max(
+      2,
+      a.distinctColors,
+      a.gridColors <= PIXEL_PALETTE_COUNTED ? a.gridColors : 0,
+    )
+    if (colors <= PIXEL_PALETTE_MAX) {
+      patch.paletteSize = colors
+      r.add('pixelExact', `Kept the ${colors} original colors exactly.`, { count: colors })
+    } else {
+      // More colors than a palette holds: keep every entry rather than let the
+      // count fold further.
+      patch.paletteSize = PIXEL_PALETTE_MAX
+      patch.autoPaletteSize = false
+      r.add(
+        'pixelPalette',
+        `${colors} colors, more than a palette holds — the closest shades share one of ${PIXEL_PALETTE_MAX}.`,
+        { count: colors, max: PIXEL_PALETTE_MAX },
+      )
+    }
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -791,7 +815,15 @@ function encodedLuma(hex: string): number {
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
   if (a.pixelArtScore >= 0.7) {
-    r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
+    const native = Math.ceil(a.width / a.pixelScale) * Math.ceil(a.height / a.pixelScale)
+    if (native <= PIXEL_SMALL_CANVAS) {
+      r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
+    } else {
+      r.add(
+        'pickPixelGrid',
+        'Hard-edged colors laid in regions of a few pixels — traced pixel by pixel as pixel art.',
+      )
+    }
     return 'pixel-art'
   }
   if (isInkOnToned(a)) {

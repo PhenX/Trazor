@@ -42,6 +42,47 @@ function sprite() {
 }
 
 /**
+ * A sheet of `cols` × `rows` pixel-art sprites, 14 pixels apart on a dark
+ * ground, drawn on the pixel grid: a one-pixel outline, a body in two shades of
+ * one of `hues` colors, an eye and a highlight pixel. `scale` repeats every
+ * pixel into a scale × scale block (a nearest-neighbour enlargement).
+ */
+function spriteSheet(cols: number, rows: number, opts: { hues?: number; scale?: number } = {}) {
+  const hues = opts.hues ?? 3
+  const scale = opts.scale ?? 1
+  const cell = 14
+  const img = createRaster(cols * cell * scale, rows * cell * scale)
+  fillRaster(img, 34, 30, 52)
+  const put = (x: number, y: number, c: readonly number[]) => {
+    for (let dy = 0; dy < scale; dy++) {
+      for (let dx = 0; dx < scale; dx++)
+        setPixel(img, x * scale + dx, y * scale + dy, c[0], c[1], c[2])
+    }
+  }
+  const inside = (x: number, y: number) => (x - 5.5) ** 2 / 30 + (y - 5.5) ** 2 / 22 <= 1
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const h = (i + j * cols) % hues
+      const body = [60 + ((h * 53) % 180), 90 + ((h * 97) % 150), 120 + ((h * 31) % 120)]
+      const shade = body.map((v) => Math.round(v * 0.7))
+      const ox = i * cell + 1
+      const oy = j * cell + 1
+      for (let y = 0; y < 12; y++) {
+        for (let x = 0; x < 12; x++) {
+          if (!inside(x, y)) continue
+          const rim =
+            !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)
+          put(ox + x, oy + y, rim ? [16, 12, 20] : y >= 7 ? shade : body)
+        }
+      }
+      put(ox + 4, oy + 4, [240, 240, 240])
+      put(ox + 7, oy + 3, [250, 220, 120])
+    }
+  }
+  return img
+}
+
+/**
  * A black disk on a fully transparent canvas with an anti-aliased rim: the ink
  * color under partial alpha, the empty pixels stored as (0, 0, 0, 0).
  */
@@ -589,6 +630,76 @@ describe('recommendSettings', () => {
     expect(rec.patch.background).toBe('transparent')
   })
 
+  it('reads a larger sprite sheet off its pixel grid as pixel art', () => {
+    // 168 × 140 pixels: past the small-canvas bound, so the grid's own tells
+    // decide — no anti-aliased rim, paint laid in regions of a few pixels.
+    const a = analyzeImage(spriteSheet(12, 10))
+    expect(a.pixelScale).toBe(1)
+    expect(a.gridColors).toBe(10)
+    expect(a.blendRimShare).toBeLessThan(0.4)
+    expect(a.meanRegionArea).toBeLessThan(64)
+    expect(a.pixelArtScore).toBeGreaterThanOrEqual(0.7)
+    const rec = recommendSettings(a)
+    expect(rec.profileId).toBe('pixel-art')
+    expect(rec.rationaleKeys.map((k) => k.code)).toContain('pickPixelGrid')
+    expect(rec.patch.curveMode).toBe('pixel')
+    expect(rec.patch.paletteSize).toBe(10)
+  })
+
+  it('reads a pixel-art enlargement at its own scale', () => {
+    // A small sheet repeated 3 × 3: a 252 px canvas that is an 84 px one.
+    const a = analyzeImage(spriteSheet(6, 6, { scale: 3 }))
+    expect(a.pixelScale).toBe(3)
+    const rec = recommendSettings(a)
+    expect(rec.profileId).toBe('pixel-art')
+    expect(rec.rationaleKeys.map((k) => k.code)).toContain('pickPixelArt')
+  })
+
+  it('shares the closest shades of pixel art past a palette', () => {
+    const rec = recommendSettings(analyzeImage(spriteSheet(12, 10, { hues: 50 })))
+    expect(rec.profileId).toBe('pixel-art')
+    expect(rec.rationaleKeys.map((k) => k.code)).toContain('pixelPalette')
+    expect(rec.patch.paletteSize).toBe(64)
+    expect(rec.patch.autoPaletteSize).toBe(false)
+  })
+
+  it('keeps large hard-edged shapes, two-color hatching and anti-aliased art off the pixel route', () => {
+    // A logo in three hard-edged colors, but painted in large regions.
+    const logo = createRaster(360, 240)
+    fillRaster(logo, 255, 255, 255)
+    for (let y = 0; y < 240; y++) {
+      for (let x = 0; x < 360; x++) {
+        if (Math.hypot(x + 0.5 - 120, y + 0.5 - 120) <= 80) setPixel(logo, x, y, 210, 30, 40)
+        else if (x >= 220 && x < 330 && y >= 60 && y < 180) setPixel(logo, x, y, 20, 60, 160)
+      }
+    }
+    const l = analyzeImage(logo)
+    expect(l.meanRegionArea).toBeGreaterThan(64)
+    expect(recommendSettings(l).profileId).not.toBe('pixel-art')
+    // One-pixel hatching in two colors: a scan or a threshold, not a palette.
+    const hatch = createRaster(240, 240)
+    fillRaster(hatch, 255, 255, 255)
+    for (let y = 0; y < 240; y++) {
+      for (let x = 0; x < 240; x++) if ((x + y) % 4 === 0) setPixel(hatch, x, y, 0, 0, 0)
+    }
+    expect(analyzeImage(hatch).pixelArtScore).toBeLessThan(0.7)
+    // Small anti-aliased discs: every rim pixel a blend of the disc and the paper.
+    const discs = createRaster(240, 240)
+    fillRaster(discs, 255, 255, 255)
+    for (let y = 0; y < 240; y++) {
+      for (let x = 0; x < 240; x++) {
+        const d = Math.hypot((x % 12) + 0.5 - 6.13, (y % 12) + 0.5 - 5.91)
+        const c = Math.max(0, Math.min(1, 4.37 - d))
+        if (c > 0)
+          setPixel(discs, x, y, mixByte(255, 30, c), mixByte(255, 90, c), mixByte(255, 200, c))
+      }
+    }
+    const d = analyzeImage(discs)
+    expect(d.gridRimColors * 2).toBeGreaterThan(d.gridColors)
+    expect(d.blendRimShare).toBeGreaterThanOrEqual(0.4)
+    expect(d.pixelArtScore).toBeLessThan(0.7)
+  })
+
   it('honors an explicit goal profile', () => {
     const rec = recommendSettings(analyzeImage(flatLogo()), 'vinyl-cut')
     expect(rec.profileId).toBe('vinyl-cut')
@@ -838,6 +949,13 @@ describe('recommendSettings — drawings on toned paper', () => {
     twoToneCoverage: 0.68,
     photoScore: 1,
     pixelArtScore: 0,
+    pixelScale: 1,
+    gridColors: 257,
+    gridRimColors: 257,
+    blendRimShare: 1,
+    fineRegionShare: 0,
+    softStepShare: 1,
+    meanRegionArea: 410_400,
     dominantHex: ['#d0b090', '#f0d0b0'],
     meanLightness: 0.78,
     contrast: 0.16,
@@ -911,6 +1029,13 @@ describe('recommendSettings — ink scans on white paper', () => {
     twoToneCoverage: 0.86,
     photoScore: 0.99,
     pixelArtScore: 0,
+    pixelScale: 1,
+    gridColors: 257,
+    gridRimColors: 257,
+    blendRimShare: 1,
+    fineRegionShare: 0,
+    softStepShare: 1,
+    meanRegionArea: 389_277,
     dominantHex: ['#f0f0f0', '#101010', '#303030', '#d0d0d0'],
     meanLightness: 0.59,
     contrast: 0.37,
@@ -994,6 +1119,13 @@ describe('recommendSettings — printed page scans', () => {
     twoToneCoverage: 0.42,
     photoScore: 1,
     pixelArtScore: 0,
+    pixelScale: 1,
+    gridColors: 257,
+    gridRimColors: 257,
+    blendRimShare: 1,
+    fineRegionShare: 0,
+    softStepShare: 1,
+    meanRegionArea: 446_446,
     dominantHex: ['#d0d0b0', '#d0b0b0', '#b0b0b0', '#d0b090', '#101010', '#707050'],
     meanLightness: 0.67,
     contrast: 0.2,
@@ -1072,6 +1204,13 @@ describe('recommendSettings — region-growing gates', () => {
     twoToneCoverage: 0.3,
     photoScore: 0.7,
     pixelArtScore: 0,
+    pixelScale: 1,
+    gridColors: 257,
+    gridRimColors: 257,
+    blendRimShare: 1,
+    fineRegionShare: 0,
+    softStepShare: 1,
+    meanRegionArea: 480_000,
     dominantHex: ['#808080'],
     meanLightness: 0.6,
     contrast: 0.2,

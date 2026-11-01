@@ -1919,6 +1919,14 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
+// Pixel art (`pixelArtScore` ≥ 0.7) traces with the pixel-art profile, on exact pixel boundaries: a
+// small canvas, counted at its own scale before a nearest-neighbour enlargement (`pixelScale`),
+// in a hard palette (`pickPixelArt`), or any canvas whose pixel grid reads as drawn pixel by pixel
+// — 3 to 192 colors, rims that are details rather than anti-aliased or dithered blends
+// (`gridRimColors`, `blendRimShare`), color changes between distinct shades (`softStepShare`) and
+// paint in regions of a few pixels (`meanRegionArea`, `fineRegionShare`) (`pickPixelGrid`). Its
+// colors are kept exactly up to 64 (`pixelExact`); past that the closest shades share 64
+// (`pixelPalette`).
 // Scan routes, each with its reason codes. A drawing on toned paper (the analyzer's ground* and
 // mark* fields: one narrow tinted paper peak and a clearly darker mark; toneAxisResidual: every
 // color on the paper–ink line; midToneArea: mid-tones that stay thin) traces as illustration in
