@@ -1919,6 +1919,9 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
+// Scan routes, each with its reason codes. A printed color page scan on the photo route (busy
+// edges, no exactly-flat pixel, no smooth ramp) keeps the photo settings with speck floor 4
+// (`printScan`).
 // The geometry chain: color, grayscale or bw art on stacked layers not grouped by color, from an
 // undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
 // geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation

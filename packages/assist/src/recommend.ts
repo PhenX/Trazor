@@ -291,6 +291,45 @@ function isCompressedFlat(a: ImageAnalysis): boolean {
 }
 
 /**
+ * A printed page scanned from paper — a newsprint comic, a colored print: busy
+ * ink edges over fills with no exactly-flat pixel (paper grain, JPEG, a dot
+ * screen) and no smooth ramp, in color. On the web corpus it is the seven
+ * newsprint comic scans the photo rule takes and one colored calligraphy panel.
+ * A photograph with smooth areas (sky, skin, a backdrop) fails the ramp bound
+ * (`rampArea` 0.24–0.63), a painted film still at full size the edge bound
+ * (0.07–0.11), digital art the flat bound. A busy photograph with no smooth
+ * area (an albumen stereo view, a crowd, a cabinet card in its printed mount)
+ * passes, as does a painted still scaled to half size; the smaller floor traces
+ * those as well or a little better, for about 15% more path parameters.
+ */
+const PRINT_MAX_FLAT_DENSITY = 0.05
+const PRINT_MAX_RAMP_AREA = 0.08
+const PRINT_MIN_EDGE_DENSITY = 0.15
+/**
+ * Speck floor for a printed scan on the photo route: the photo profile's 10 px²
+ * merges a lettering stroke or a hatching line a pixel or two wide (soft from a
+ * downscale) into the paper, so captions dissolve and frame rules break into
+ * dashes. The bilateral denoise keeps the paper grain from coming back as
+ * specks at this floor. Measured on the ground-truth gate over the seven
+ * newsprint scans: ΔE00 5.29 → 5.02, GMSD 0.160 → 0.130, missed edges
+ * 1.17 → 1.04, for 21% more path parameters.
+ */
+const PRINT_MIN_REGION = 4
+
+/** Whether the image reads as a printed color page scanned from paper. */
+function isPrintedScan(a: ImageAnalysis): boolean {
+  return (
+    a.photoScore > 0.6 &&
+    !isCleanFlatArt(a) &&
+    !isCartoon(a) &&
+    !isAchromatic(a) &&
+    a.flatDensity < PRINT_MAX_FLAT_DENSITY &&
+    a.rampArea < PRINT_MAX_RAMP_AREA &&
+    a.edgeDensity >= PRINT_MIN_EDGE_DENSITY
+  )
+}
+
+/**
  * Rule-based settings recommendation from measured image statistics. Fully
  * local and instant — no models involved. When `goal` names a profile, the
  * profile is kept and only data-driven fields are tuned.
@@ -480,6 +519,16 @@ export function recommendSettings(
     r.add(
       'compressed',
       'Compression artifacts — denoise, light blur and speckle merge recover clean shapes.',
+    )
+  }
+
+  // A printed page scan on the photo route keeps its fine lettering and
+  // hatching: the photo speck floor would merge them into the paper.
+  if (goal === 'auto' && profileId === 'photo' && isPrintedScan(a)) {
+    patch.minRegionArea = PRINT_MIN_REGION
+    r.add(
+      'printScan',
+      'Printed page scan — fine lettering and hatching kept as regions of their own.',
     )
   }
 

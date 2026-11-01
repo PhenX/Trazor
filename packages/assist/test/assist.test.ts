@@ -705,6 +705,74 @@ describe('recommendSettings', () => {
   })
 })
 
+describe('recommendSettings — printed page scans', () => {
+  // A colored newsprint comic scanned from yellowed paper (the measures of a
+  // Bécassine page): paper grain and JPEG leave no exactly-flat pixel and no
+  // smooth ramp, and its edges are busy, so it is not flat art.
+  const printed = (over: Partial<ImageAnalysis> = {}): ImageAnalysis => ({
+    width: 1001,
+    height: 446,
+    pixels: 446_446,
+    hasAlpha: false,
+    distinctColors: 65536,
+    rimColors: 65254,
+    entropyBits: 5.78,
+    edgeDensity: 0.217,
+    microGradientDensity: 0.745,
+    flatDensity: 0.0012,
+    flatArea: 0.37,
+    rampArea: 0.001,
+    fineArea: 0.064,
+    twoToneCoverage: 0.42,
+    photoScore: 1,
+    pixelArtScore: 0,
+    dominantHex: ['#d0d0b0', '#d0b0b0', '#b0b0b0', '#d0b090', '#101010', '#707050'],
+    meanLightness: 0.67,
+    contrast: 0.2,
+    colorfulness: 0.032,
+    coloredFraction: 0.098,
+    minorTonesArea: 0.0008,
+    inkHex: '#c9b9a6',
+    paperHex: '#d6cbb6',
+    edgeWidth: 1.44,
+    ...over,
+  })
+  const codes = (a: ImageAnalysis, goal?: 'photo') =>
+    recommendSettings(a, goal).rationaleKeys.map((k) => k.code)
+
+  it('keeps the lettering and hatching of a printed page scan with a small speck floor', () => {
+    const rec = recommendSettings(printed())
+    expect(rec.profileId).toBe('photo')
+    expect(codes(printed())).toContain('printScan')
+    expect(rec.patch.minRegionArea).toBe(4)
+    // Everything else stays the photo route's: color, denoised, posterized.
+    expect(rec.patch.mode).toBe('color')
+    expect(rec.patch.denoise).toBe('bilateral')
+    expect(rec.patch.paletteSize).toBe(32)
+    expect(rec.patch.autoPaletteSize).toBe(true)
+  })
+
+  it('needs busy edges, no flat interiors, no smooth ramp and color', () => {
+    for (const over of [
+      { edgeDensity: 0.1 },
+      { flatDensity: 0.08 },
+      { rampArea: 0.2 },
+      { colorfulness: 0.01, coloredFraction: 0.01 },
+    ]) {
+      const rec = recommendSettings(printed(over))
+      expect(rec.profileId).toBe('photo')
+      expect(codes(printed(over))).not.toContain('printScan')
+      // The photo profile's own speck floor.
+      expect(rec.patch.minRegionArea).toBe(10)
+    }
+  })
+
+  it('applies only to the automatic choice', () => {
+    expect(codes(printed(), 'photo')).not.toContain('printScan')
+    expect(recommendSettings(printed(), 'photo').patch.minRegionArea).toBe(10)
+  })
+})
+
 describe('recommendSettings — region-growing gates', () => {
   // Clean flat art with many anti-aliased colors and no gradient — the case
   // region growing is for. Overrides flip one gate at a time.
