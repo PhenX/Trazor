@@ -142,6 +142,25 @@ Conventional Commits, `type(scope): subject`:
 
 Do not put a model identifier anywhere in a commit message, PR title/body, or code comment.
 
+### Adversarial review before a pull request
+
+**No code reaches a pull request, or a branch that will become one, without an adversarial review.** The author's own
+checks do not count: someone who did not write the change tries to break it.
+
+- **Independent.** A separate agent or person reviews, never the author re-reading. Hand it the diff and the task, not
+  your reasoning or your evidence — a reviewer given the author's conclusions confirms them.
+- **Trying to refute.** It reads the diff for bugs (empty, tiny and huge inputs, ordering, determinism, a threshold on
+  the wrong field), re-runs the decisive measurements itself, and probes inputs the author did not. For a quality or
+  routing change that means images built to fool it: rescaled, recompressed, cropped, and other kinds of art that
+  share the tell the change measures.
+- **Every finding gets an outcome** before the push: fixed, or answered with the evidence that refutes it. A finding
+  that stands unfixed is stated in the pull request.
+- **Once, on the finished change** — after typecheck, lint and tests pass — and again if the fixes it prompted are
+  more than local.
+- **Recorded.** The pull request description says what the review tried and what it found.
+
+A change to documentation, comments or plans alone needs none.
+
 ### Documentation
 
 - Update the affected doc **in the same commit** as the code change.
