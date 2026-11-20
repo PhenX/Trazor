@@ -60,14 +60,18 @@ export interface ImageAnalysis {
   twoToneCoverage: number
   /** 0..1 likelihood the image is photographic. */
   photoScore: number
-  /** 0..1 likelihood the image is pixel art, at its own scale or enlarged by repeating pixels. */
+  /**
+   * 0..1 likelihood the image is pixel art on a small canvas, counted at its own
+   * scale when it is enlarged by repeating pixels. `PIXEL_ART_SCORE` and more is
+   * pixel art; a larger canvas is told by `pixelGrid`.
+   */
   pixelArtScore: number
   /**
-   * Side of the square blocks a nearest-neighbour enlargement repeats each
+   * Side of the square blocks a nearest-neighbor enlargement repeats each
    * pixel into: 3 for pixel art shown at 300%, 1 for an image at its own
-   * scale. Read off the color runs between edges, whose lengths an enlargement
-   * makes multiples of the block. The pixel-grid measures below are taken on
-   * one sample per block.
+   * scale, read up to `PIXEL_SCALE_MAX`. Read off the color runs between edges,
+   * whose lengths an enlargement makes multiples of the block. The pixel-grid
+   * measures below are taken on one sample per block.
    */
   pixelScale: number
   /** Distinct colors on the pixel grid (over white), counted up to `GRID_COLORS_MAX` + 1. */
@@ -99,6 +103,28 @@ export interface ImageAnalysis {
   fineRegionShare: number
   /** Pixel-grid samples per 4-connected same-color region; the grid's size when not measured. */
   meanRegionArea: number
+  /**
+   * Whether the canvas is drawn on the pixel grid (`isPixelGrid`): pixel art
+   * of any size, told by its hard palette, its aliased edges and its paint laid
+   * in regions of a few pixels.
+   */
+  pixelGrid: boolean
+  /**
+   * Distinct colors of the whole canvas over white, counted exactly up to
+   * `PIXEL_COLORS_MAX` + 1, on a canvas that reads as pixel art
+   * (`pixelArtScore` or `pixelGrid`); 0 on any other. The palette a
+   * pixel-exact trace needs: `distinctColors` is sampled and `gridColors` reads
+   * a crop, and either can miss a color.
+   */
+  pixelColors: number
+  /**
+   * Corners of the same-color regions of the whole canvas over white: its
+   * 2 × 2 windows where an edge between two colors turns or meets another.
+   * Each is a point of the paths a pixel-exact trace draws, whatever the
+   * enlargement, so the count is what that trace costs. Counted on a canvas
+   * that reads as pixel art (`pixelArtScore` or `pixelGrid`); 0 on any other.
+   */
+  pixelCorners: number
   dominantHex: string[]
   meanLightness: number
   /** Std-dev of Oklab lightness. */
@@ -459,10 +485,8 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   // nearly all fill flat runs is one: a small anti-aliased icon has the canvas
   // but not the palette (a 128 px icon may hold only 30 colors, yet most of
   // them are rim colors that never fill a flat run). A larger canvas is pixel
-  // art when its pixel grid shows the same two tells (`isPixelGrid`): its
-  // non-flat colors are details rather than blends, and it is painted in
-  // regions of a few pixels — a sprite sheet, a tile map, a game scene. A large
-  // hard-edged logo has the palette but paints it in large regions, and is not.
+  // art when its pixel grid shows it (`isPixelGrid`, reported as `pixelGrid`):
+  // a sprite sheet, a tile map, a game scene.
   const rimColors = Math.max(0, colorSet.size - flatColorSet.size)
   const hardPalette = colorSet.size <= 32 && rimColors * 2 <= colorSet.size
   const grid = pixelGridOf(image)
@@ -471,8 +495,11 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   if (nativePixels <= 128 * 128) pixelArtScore += 0.45
   if (hardPalette) pixelArtScore += 0.4
   if (microGradientDensity < 0.02) pixelArtScore += 0.15
-  if (isPixelGrid(grid)) pixelArtScore = Math.max(pixelArtScore, PIXEL_GRID_SCORE)
   pixelArtScore = clamp(pixelArtScore, 0, 1)
+  const edgeWidth = edgeWidthOf(image)
+  const pixelGrid = isPixelGrid(grid, edgeWidth)
+  const canvas =
+    pixelGrid || pixelArtScore >= PIXEL_ART_SCORE ? pixelCanvasOf(image, PIXEL_COLORS_MAX) : null
 
   return {
     width,
@@ -499,8 +526,11 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     minorTonesArea,
     inkHex: ink.hex,
     paperHex: paper.hex,
-    edgeWidth: edgeWidthOf(image),
+    edgeWidth,
     ...grid,
+    pixelGrid,
+    pixelColors: canvas?.colors ?? 0,
+    pixelCorners: canvas?.corners ?? 0,
     ...groundAndMark(samples),
   }
 }
@@ -808,9 +838,16 @@ function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined
   return other
 }
 
+/** `pixelArtScore` from which a small canvas is pixel art. */
+export const PIXEL_ART_SCORE = 0.7
+/** Most colors of a pixel-art canvas counted exactly (`pixelColors`). */
+const PIXEL_COLORS_MAX = 4096
 /** Side of the central crop the pixel grid is read on: pixel art is local, and a crop keeps it as it is. */
 const PIXEL_GRID_CROP = 1024
-/** Largest enlargement block recognized; longer runs with a common divisor are a coincidence of a few long edges. */
+/**
+ * Largest enlargement block recognized: pixel art shown at up to 800%. Longer
+ * runs with a common divisor are a coincidence of a few long edges.
+ */
 const PIXEL_SCALE_MAX = 8
 /** Interior runs needed before their common divisor is read as an enlargement block. */
 const PIXEL_SCALE_MIN_RUNS = 32
@@ -830,34 +867,68 @@ const SOFT_STEP = 24
 /**
  * A canvas drawn on the pixel grid: three or more colors (a two-color raster
  * is a scan or a threshold, traced smooth), up to `PIXEL_GRID_MAX_COLORS` (the
- * richest pixel art measured holds 130; a quantized image fills its 8-bit
- * palette, 246 and more), no anti-aliasing (see `isAntiAliased`), distinct
- * shades (at most `PIXEL_GRID_MAX_SOFT` of the color changes small steps:
- * pixel art reads up to 0.03, a dithered, grainy or smoothly shaded image 0.11
- * and more), and paint laid in regions of a few pixels — `PIXEL_GRID_MAX_REGION`
- * samples a region on average, or `PIXEL_GRID_MIN_FINE` of the grid in regions
- * of `FINE_REGION_MAX` samples or fewer. Measured on the web corpus: pixel art
+ * richest pixel art measured holds 130; an image quantized to 256 colors fills
+ * its palette, 246 and more), no anti-aliasing (see `isAntiAliased`), edges a
+ * pixel sharp (`PIXEL_GRID_MAX_EDGE`, or `PIXEL_GRID_MAX_SHADED_EDGE` under
+ * paint shaded pixel by pixel), distinct shades (at most
+ * `PIXEL_GRID_MAX_SOFT` of the color changes small steps: pixel art reads up
+ * to 0.03; grain, a smooth gradient or a 256-color dither 0.11 and more), and
+ * paint laid in regions of a few pixels — `PIXEL_GRID_MAX_REGION` samples a
+ * region on average, or `PIXEL_GRID_MIN_FINE` of the grid in regions of
+ * `FINE_REGION_MAX` samples or fewer. Measured on the web corpus: pixel art
  * reads a mean region of 2–49 or a fine share of 0.06–1; flat vector art
- * rendered without anti-aliasing a mean region of 100 and more and a fine
- * share under 0.03, except dense art (a coat of arms: 31, 0.07), which is then
- * traced as the pixels it is. Sprites scattered over a large plain background
- * read like flat art and keep their route.
+ * rendered 1024 px wide without anti-aliasing a mean region of 100 and more
+ * and a fine share under 0.03, except dense art (a coat of arms: 31, 0.07).
+ * Rendered 256 px wide or less, the shapes of such art are a few pixels across
+ * and read as pixel art, which they then are. Sprites scattered over a large
+ * plain background read like flat art and keep their route.
+ *
+ * Not told apart: an aliased image in few colors whose speckle is not pixel
+ * art — an image posterized to a few levels, or dithered between the far
+ * entries of a small fixed palette — reads the same on every measure here and
+ * is traced as the pixels it is.
  */
 const PIXEL_GRID_MIN_COLORS = 3
 const PIXEL_GRID_MAX_COLORS = 192
 /**
- * Anti-aliasing reads two ways on the pixel grid. Either most of the palette is
- * rim colors and at least `AA_MIN_BLEND` of the rim pixels are blends
- * (anti-aliased art reads 0.65 and more, pixel art 0–0.42 with in-between
- * shades its artist placed), or the rims blend throughout — at least
- * `DITHER_MIN_BLEND` across `DITHER_MIN_RIM_COLORS` or more rim colors — as an
- * anti-aliased image does after its palette was cut and dithered (a GIF);
- * a pixel-art crop that cut a shade's flat corners away leaves one or two such
- * colors.
+ * Anti-aliasing on the pixel grid: most of the palette is rim colors and at
+ * least `AA_MIN_BLEND` of the rim pixels are blends. Anti-aliased art at full
+ * size reads 0.65 and more; pixel art reads 0–0.42, with most of its palette
+ * flat. It tells an anti-aliased image whose pixels were picked without
+ * blending them again — reduced by nearest neighbor, or cut to a palette of 64
+ * colors and more — where every edge is a pixel sharp and the colors still
+ * blend.
  */
 const AA_MIN_BLEND = 0.4
-const DITHER_MIN_BLEND = 0.6
-const DITHER_MIN_RIM_COLORS = 8
+/**
+ * Widest edges of a canvas drawn on the pixel grid (`edgeWidth`): pixel art
+ * steps from one pixel to the next and reads 0.58 to 0.80. An image
+ * anti-aliased or scanned before its colors were cut to a few — a palettized
+ * logo, a scan at a few gray levels — keeps the ramps of its edges in the
+ * shades left, and reads wider.
+ */
+const PIXEL_GRID_MAX_EDGE = 0.8
+/**
+ * Widest edges under paint shaded pixel by pixel (`isShadedByPixel`): a sheet
+ * of portraits whose every surface steps through its shades a pixel or two at
+ * a time reads 0.84, wider than an outline though no pixel of it is a blend.
+ */
+const PIXEL_GRID_MAX_SHADED_EDGE = 0.86
+/**
+ * Paint shaded pixel by pixel: at most `SHADED_MAX_REGION` samples a region on
+ * average, at least `SHADED_MIN_FINE` of the grid in regions of
+ * `FINE_REGION_MAX` samples or fewer, and at most one color in
+ * `SHADED_PALETTE_PER_RIM` a rim color. The portraits read 6.5, 0.33 and no
+ * rim color. An image dithered to a fixed palette is as fine, but half of its
+ * colors and more exist only inside the dither's pattern and never fill a
+ * flat corner. Of 94 palettized, dithered and posterized images with edges
+ * this wide that pass every other test, 2 read as such paint. The measures
+ * are taken over the whole grid: a sheet whose portraits stand apart on their
+ * own ground (gutters of 8 pixels, a border) reads coarser and is not taken.
+ */
+const SHADED_MAX_REGION = 8
+const SHADED_MIN_FINE = 0.3
+const SHADED_PALETTE_PER_RIM = 4
 const PIXEL_GRID_MAX_SOFT = 0.08
 const PIXEL_GRID_MAX_REGION = 64
 const PIXEL_GRID_MIN_FINE = 0.04
@@ -867,8 +938,6 @@ const PIXEL_GRID_MIN_FINE = 0.04
  * anti-aliasing, which rims every edge.
  */
 const RIM_MIN_SHARE = 0.005
-/** `pixelArtScore` of a canvas drawn on the pixel grid. */
-const PIXEL_GRID_SCORE = 0.85
 
 type PixelGrid = Pick<
   ImageAnalysis,
@@ -882,20 +951,62 @@ type PixelGrid = Pick<
 >
 
 function isAntiAliased(g: PixelGrid): boolean {
+  return g.gridRimColors * 2 > g.gridColors && g.blendRimShare >= AA_MIN_BLEND
+}
+
+function isShadedByPixel(g: PixelGrid): boolean {
   return (
-    (g.gridRimColors * 2 > g.gridColors && g.blendRimShare >= AA_MIN_BLEND) ||
-    (g.gridRimColors >= DITHER_MIN_RIM_COLORS && g.blendRimShare >= DITHER_MIN_BLEND)
+    g.meanRegionArea <= SHADED_MAX_REGION &&
+    g.fineRegionShare >= SHADED_MIN_FINE &&
+    g.gridRimColors * SHADED_PALETTE_PER_RIM <= g.gridColors
   )
 }
 
-function isPixelGrid(g: PixelGrid): boolean {
+function isPixelGrid(g: PixelGrid, edgeWidth: number): boolean {
   return (
     g.gridColors >= PIXEL_GRID_MIN_COLORS &&
     g.gridColors <= PIXEL_GRID_MAX_COLORS &&
     !isAntiAliased(g) &&
+    (edgeWidth <= PIXEL_GRID_MAX_EDGE ||
+      (edgeWidth <= PIXEL_GRID_MAX_SHADED_EDGE && isShadedByPixel(g))) &&
     g.softStepShare <= PIXEL_GRID_MAX_SOFT &&
     (g.meanRegionArea <= PIXEL_GRID_MAX_REGION || g.fineRegionShare >= PIXEL_GRID_MIN_FINE)
   )
+}
+
+/**
+ * The whole canvas over white: its distinct colors, counted exactly up to
+ * `maxColors` + 1, and the corners of its same-color regions — the 2 × 2
+ * windows that are neither two equal rows nor two equal columns.
+ */
+function pixelCanvasOf(image: RasterImage, maxColors: number): { colors: number; corners: number } {
+  const { width, height, data } = image
+  const seen = new Set<number>()
+  let last = -1
+  let corners = 0
+  let above = new Int32Array(width)
+  let row = new Int32Array(width)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0, i = y * width * 4; x < width; x++, i += 4) {
+      const a = data[i + 3]
+      const key =
+        (overWhite(data[i], a) << 16) | (overWhite(data[i + 1], a) << 8) | overWhite(data[i + 2], a)
+      row[x] = key
+      if (key !== last) {
+        last = key
+        if (seen.size <= maxColors) seen.add(key)
+      }
+      if (x > 0 && y > 0) {
+        const rows = above[x - 1] === above[x] && row[x - 1] === key
+        const columns = above[x - 1] === row[x - 1] && above[x] === key
+        if (!rows && !columns) corners++
+      }
+    }
+    const swap = above
+    above = row
+    row = swap
+  }
+  return { colors: seen.size, corners }
 }
 
 function gcd(a: number, b: number): number {
@@ -925,12 +1036,9 @@ function pixelGridOf(image: RasterImage): PixelGrid {
   }
 
   // The enlargement block: the common divisor of the interior runs (bounded by
-  // a color change on both sides) along every row and column, and where the
-  // first block starts.
+  // a color change on both sides) along every row and column.
   let block = 0
   let runs = 0
-  let phaseX = 0
-  let phaseY = 0
   for (let y = 0; y < ch && block !== 1; y++) {
     let start = -1
     for (let x = 1; x < cw; x++) {
@@ -938,7 +1046,7 @@ function pixelGridOf(image: RasterImage): PixelGrid {
       if (start >= 0) {
         block = gcd(block, x - start)
         runs++
-      } else if (block === 0) phaseX = x
+      }
       start = x
     }
   }
@@ -949,24 +1057,23 @@ function pixelGridOf(image: RasterImage): PixelGrid {
       if (start >= 0) {
         block = gcd(block, y - start)
         runs++
-      } else if (block === 0) phaseY = y
+      }
       start = y
     }
   }
   const scale = block >= 2 && block <= PIXEL_SCALE_MAX && runs >= PIXEL_SCALE_MIN_RUNS ? block : 1
-  const ox = scale > 1 ? phaseX % scale : 0
-  const oy = scale > 1 ? phaseY % scale : 0
-  const gw = Math.max(1, Math.floor((cw - ox) / scale))
-  const gh = Math.max(1, Math.floor((ch - oy) / scale))
+  const gw = Math.max(1, Math.floor(cw / scale))
+  const gh = Math.max(1, Math.floor(ch / scale))
   const n = gw * gh
 
-  // One sample per block, as an index into the grid's palette.
+  // One sample per block, as an index into the grid's palette. Wherever the
+  // blocks start, pixels `scale` apart lie in neighboring blocks.
   const index = new Map<number, number>()
   const palette: number[] = []
   const g = new Uint16Array(n)
   for (let y = 0; y < gh; y++) {
     for (let x = 0; x < gw; x++) {
-      const k = key[(oy + y * scale) * cw + ox + x * scale]
+      const k = key[y * scale * cw + x * scale]
       let c = index.get(k)
       if (c === undefined) {
         if (palette.length === GRID_COLORS_MAX) {

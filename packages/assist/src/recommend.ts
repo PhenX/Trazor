@@ -1,6 +1,7 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
 import {
   DEFAULT_SETTINGS,
+  SUPERSAMPLE_BUDGET_SIDE,
   clamp,
   clampInt,
   getProfile,
@@ -9,6 +10,7 @@ import {
   srgbToLinear,
   supersampleWithinBudget,
 } from '@trazor/core'
+import { PIXEL_ART_SCORE } from './analyze'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -121,8 +123,27 @@ const INK_TONE_MIN_REGION = 4
 const PIXEL_PALETTE_MAX = 64
 /** Most pixel-grid colors the analyzer counts (`gridColors`); past it the count is a lower bound. */
 const PIXEL_PALETTE_COUNTED = 256
-/** Canvas (pixels at its own scale) up to which pixel art is a small sprite or tile. */
-const PIXEL_SMALL_CANVAS = 128 * 128
+/**
+ * Most region corners (`pixelCorners`) and most pixels a canvas that reads as
+ * pixel art may hold and still be traced pixel by pixel. The pixel-art profile
+ * traces at full size whatever the canvas, every corner a point of a path, and
+ * memory follows the corners first: 1 to 2 GB a million (0.6 GB for the
+ * 364 000 of a 1380 × 1380 tile map, traced in 2 s; 1.0 GB for the 398 000 of
+ * 700 × 700 pixels of three-color noise), then the pixels, 16 to 25 MB a
+ * million (0.6 GB for a tile map of 202 000 corners enlarged to 4096 × 4096,
+ * the most pixels the engine works on anywhere: `SUPERSAMPLE_BUDGET_SIDE`),
+ * then the length of the boundaries. Both bounds met at once take 0.8 GB on
+ * the tile map and 1.1 GB on the noise, and the heaviest canvas found within
+ * them, one-pixel rows of long dashes on 4096 × 4096, 1.5 GB; a 3072 × 3072
+ * tile map of 1.6 million corners took 2 GB. An enlargement adds pixels and no
+ * corner. The pixel art of the web corpus holds 127 000 corners at most (a
+ * 640 × 480 isometric scene; an 832 × 1344 sprite sheet 118 000), and a small
+ * canvas 16 129, the windows of 128 × 128 pixels, where its enlargement was
+ * read right. Past either bound the canvas takes the route it would if it did
+ * not read as pixel art, at that route's size.
+ */
+const PIXEL_ART_MAX_CORNERS = 400_000
+const PIXEL_ART_MAX_PIXELS = SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE
 
 /**
  * Cartoon-style art — flat fills meeting at crisp, anti-aliased edges — is
@@ -535,19 +556,21 @@ export function recommendSettings(
   }
 
   if (profileId === 'pixel-art') {
-    // The sampled count can miss a rare color of a large image; the pixel grid
-    // counts every color of its crop.
-    const colors = Math.max(
-      2,
-      a.distinctColors,
-      a.gridColors <= PIXEL_PALETTE_COUNTED ? a.gridColors : 0,
-    )
-    if (colors <= PIXEL_PALETTE_MAX) {
+    // The canvas's own count when it read as pixel art. A pixel-art goal set
+    // on another image has none: the sampled count and the grid's, which can
+    // each miss a color, bound it from below.
+    const colors =
+      a.pixelColors > 0
+        ? a.pixelColors
+        : Math.max(2, a.distinctColors, a.gridColors <= PIXEL_PALETTE_COUNTED ? a.gridColors : 0)
+    if (a.pixelColors > 0 && colors <= PIXEL_PALETTE_MAX) {
       patch.paletteSize = colors
       r.add('pixelExact', `Kept the ${colors} original colors exactly.`, { count: colors })
+    } else if (colors <= PIXEL_PALETTE_MAX) {
+      patch.paletteSize = colors
     } else {
-      // More colors than a palette holds: keep every entry rather than let the
-      // count fold further.
+      // More colors than a palette holds: a full palette, none of its entries
+      // folded by an automatic count.
       patch.paletteSize = PIXEL_PALETTE_MAX
       patch.autoPaletteSize = false
       r.add(
@@ -814,17 +837,23 @@ function encodedLuma(hex: string): number {
 }
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
-  if (a.pixelArtScore >= 0.7) {
-    const native = Math.ceil(a.width / a.pixelScale) * Math.ceil(a.height / a.pixelScale)
-    if (native <= PIXEL_SMALL_CANVAS) {
-      r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
-    } else {
-      r.add(
-        'pickPixelGrid',
-        'Hard-edged colors laid in regions of a few pixels — traced pixel by pixel as pixel art.',
-      )
+  const small = a.pixelArtScore >= PIXEL_ART_SCORE
+  if (small || a.pixelGrid) {
+    if (a.pixelCorners <= PIXEL_ART_MAX_CORNERS && a.width * a.height <= PIXEL_ART_MAX_PIXELS) {
+      if (small) {
+        r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
+      } else {
+        r.add(
+          'pickPixelGrid',
+          'Hard-edged colors laid in regions of a few pixels — traced pixel by pixel as pixel art.',
+        )
+      }
+      return 'pixel-art'
     }
-    return 'pixel-art'
+    r.add(
+      'pixelGridLarge',
+      'Reads as pixel art, but is too large or too detailed to trace pixel by pixel.',
+    )
   }
   if (isInkOnToned(a)) {
     r.add('pickTonedInk', 'A drawing on toned paper — traced in its own paper and ink colors.')

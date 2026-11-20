@@ -1920,14 +1920,24 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
-// Pixel art (`pixelArtScore` ≥ 0.7) traces with the pixel-art profile, on exact pixel boundaries: a
-// small canvas, counted at its own scale before a nearest-neighbour enlargement (`pixelScale`),
-// in a hard palette (`pickPixelArt`), or any canvas whose pixel grid reads as drawn pixel by pixel
-// — 3 to 192 colors, rims that are details rather than anti-aliased or dithered blends
-// (`gridRimColors`, `blendRimShare`), color changes between distinct shades (`softStepShare`) and
-// paint in regions of a few pixels (`meanRegionArea`, `fineRegionShare`) (`pickPixelGrid`). Its
-// colors are kept exactly up to 64 (`pixelExact`); past that the closest shades share 64
-// (`pixelPalette`).
+// Pixel art traces with the pixel-art profile, on exact pixel boundaries. Two rules pick it. A
+// small canvas (128 × 128 at its own scale, before a nearest-neighbor enlargement of up to 8×:
+// `pixelScale`) in a hard palette: `pixelArtScore` ≥ 0.7, `pickPixelArt`. Or a canvas of any
+// size drawn on the pixel grid (`pixelGrid`): 3 to 192 colors, rims that are details rather
+// than anti-aliased blends (`gridRimColors`, `blendRimShare`), edges a pixel sharp
+// (`edgeWidth` ≤ 0.8, or ≤ 0.86 under paint shaded pixel by pixel: `meanRegionArea` ≤ 8,
+// `fineRegionShare` ≥ 0.3 and at most a quarter of the grid colors rim colors), color changes
+// between distinct shades (`softStepShare`) and paint in regions of a few pixels
+// (`meanRegionArea`, `fineRegionShare`): `pickPixelGrid`. The profile traces at full size,
+// every corner of a same-color region a point of a path, so both rules hold up to 400 000
+// corners (`pixelCorners`: the 2 × 2 windows of the whole canvas where an edge between two
+// colors turns or meets another, as many at any enlargement) and 4096² pixels; past either
+// the canvas takes the route it would otherwise, with the reason `pixelGridLarge`. The palette
+// is the canvas's own count (`pixelColors`, every pixel read): kept exactly up to 64
+// (`pixelExact`); past that a palette of 64 trained on every pixel, the closest shades sharing
+// an entry (`pixelPalette`). An aliased image in few colors with speckle that is not pixel art
+// (posterized to a few levels, dithered between the far entries of a small fixed palette) is
+// not told apart, and is traced as its pixels.
 // Scan routes, each with its reason codes. A drawing on toned paper (the analyzer's ground* and
 // mark* fields: one narrow tinted paper peak and a clearly darker mark; toneAxisResidual: every
 // color on the paper–ink line; midToneArea: mid-tones that stay thin) traces as illustration in
