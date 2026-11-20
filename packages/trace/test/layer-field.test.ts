@@ -162,6 +162,27 @@ describe('layerField', () => {
     expect(field.at(8, 5)).toBe(0.5)
   })
 
+  it('reports an edge over a label painted more than one layer below as underlaid', () => {
+    const src = scene()
+    // Red paints at position 0; the blue layer at position 2 has a layer
+    // (position 1) painted between them, at position 1 none.
+    const position = new Int32Array([0, 2])
+    const field = layerField({ width: W, height: H, ...src, label: -1, position, layer: 2 })
+    expect(field.underlaid?.(7, 5)).toBe(true)
+    expect(field.underlaid?.(8, 5)).toBe(false)
+    const next = layerField({
+      width: W,
+      height: H,
+      ...src,
+      label: -1,
+      position: new Int32Array([0, 1]),
+      layer: 1,
+    })
+    expect(next.underlaid?.(7, 5)).toBe(false)
+    // An island carries no stacking: nothing is set back beneath it.
+    expect(layerField({ width: W, height: H, ...src, label: 1 }).underlaid?.(7, 5)).toBe(false)
+  })
+
   it('is deterministic', () => {
     const src = scene()
     const a = layerField({ width: W, height: H, ...src, label: -1 })

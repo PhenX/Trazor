@@ -76,24 +76,49 @@ Implemented from Selinger 2003, clean-room. For one crack ring:
    optimal-polygon vertices (Selinger §2.2) as breakpoints, the discrete-curvature sign changes and a coarse stride inside
    a long polygon edge — and over the O(k²) spans of that candidate graph picks the segmentation and the per-span model
    (line / circular arc / G1 cubic) jointly under `0.5·χ² + λ·params` (χ² weighted by per-point `1/σ²`, `λ = ln(extent /
-precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective).
+precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies within `τ·σ`, `τ = 2` — inkvec's objective;
+   an arc only when its radius is at least each interior sample's band, so a lattice corner held to a pixel never
+   bends a circle under a pixel through it, drawn the long way round as a bead).
    `σ` is 0.1 px where a sample was snapped onto the sub-pixel edge, 0.06 px on an axis-aligned stretch of a refined
    ring's polygon that stayed on the lattice (a hard edge the drawing put on the grid, or the image border), ½ px
    elsewhere on the lattice. A stacked layer's field measures each point's own uncertainty from the two pixels beside
    it (noise over contrast over the coverage step, inkvec's `position_sigma`): a snapped sample on a soft edge is held
    to that where it is looser, and a sample the field refused to move — its two pixels on the same side of ½ and none
    past them crossing it, a ramp the label pass cut away from its ½ level — stays on the lattice, held as loosely as
-   its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A corner is a polygon
-   vertex (read on the unadjusted polygon) turning at least 45° (inkvec
-   `CORNER_DEGREES`) that `cornerAt` also calls a corner, so `smoothing` keeps its say; two vertices a chamfer stub apart
-   (≤ 2.5 px, the anti-aliasing's cut across one sharp corner, each turning part of the way) are judged as one vertex at
-   the stub's middle. The samples must turn there too: around a small round — a stroke's cap — the lattice polygon
-   turns ~45° at every vertex while the refined samples run smooth, and a corner there draws the cap as a pointed
-   arch. So each side's tangent at the vertex is read from that side's samples, up to the neighbouring vertex and a
-   tangent window's reach, the vertex's own anti-aliasing chamfer left out: the tangent of the circle they fit within
-   the measurement model (a straight side fits a huge one), else the widest Savitzky–Golay window the model accepts
-   (`sideTangents`), and the two must turn by 45° as well. A corner is a forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A
-   rounded corner the polygon split
+   its distance to that level, never tighter than ½ px nor looser than the search's 1 px reach. A staircase corner
+   inside a polygon edge whose probes read partial coverage but none across ½ — or cross it only through the values
+   the field filled in beyond the rim, which read as the measured pixel beside them would continue (`along`) stay on
+   its side — lies past the reach of the edge its neighbours located (a soft line the label pass widened). Up to three
+   such corners in a row, between two neighbours the search moved onto the edge at σ under ½ px, stay on the lattice
+   held at that reach, so the fit follows the neighbours instead of turning out to each corner; so do up to seven where
+   the next located point beyond each neighbour lies within ½ px of the line through the two (the edge runs straight
+   across the longer step of a shallower slope). A neighbour the search moved through a value the field filled in has
+   no σ of its own; it counts as located where it lies within ½ px of the line through the nearest points measured on
+   either side, and closing a held run it is held as tightly as they are, or as its distance from their line. Those two
+   wider runs are not held where the field reports the pixel outside the corner underlaid (`SignedField.underlaid`):
+   a stacked layer painted between this layer and that label runs its own edge a pixel back from these lattice corners,
+   and an outline drawn along the located edge, further in, would leave it showing. Any other such corner is held at
+   least as loosely as a lattice point, never as a hard edge on the grid. A corner is a polygon vertex (read on the
+   unadjusted polygon) turning at least 45° (inkvec `CORNER_DEGREES`) that `cornerAt` also calls a corner, so
+   `smoothing` keeps its say; two vertices a chamfer stub apart (≤ 2.5 px, the anti-aliasing's cut across one sharp
+   corner, each turning part of the way) are judged as one vertex at the stub's middle, and take one apex where the
+   edges beyond the stub meet, the stub dropping out (`tipApex`). On a ring with only two corners the pair may as well
+   be the shoulders of a round the polygon cut short, which that apex would square off: the stub collapses there only
+   where the observed coverage over a window around it (`RingFit.tips`, kept by the polygon stage for each short polygon
+   edge that turns as a pair, `tipWindows`) is rendered closer by the outline with the tip than by the one with the two
+   corners, in absolute difference over the pixels near the measured edge and every pixel the tip reaches into (a
+   sliver drawn over pixels that show none costs the area it covers). The same judgement holds a tip on a ring small
+   enough for a whole-ring coverage patch when that tip is a guess on a blunt stroke end (`bluntEnd`): an edge beyond the
+   stub too short to keep three samples off its chamfers, bending away at its far vertex by half a corner's turn, on a
+   shape no wider than a chamfer stub where it ends, which widens away from the stub less than half as fast as the two
+   edges meeting at the tip — the converging sides of a numeral's blunt foot a pixel or two wide meet well past it.
+   The samples must turn there too:
+   around a small round — a stroke's cap — the lattice polygon turns ~45° at every vertex while the refined samples run
+   smooth, and a corner there draws the cap as a pointed arch. So each side's tangent at the vertex is read from that
+   side's samples, up to the neighbouring vertex and a tangent window's reach, the vertex's own anti-aliasing chamfer
+   left out: the tangent of the circle they fit within the measurement model (a straight side fits a huge one), else the
+   widest Savitzky–Golay window the model accepts (`sideTangents`), and the two must turn by 45° as well. A corner is a
+   forced breakpoint, a non-corner join keeps the shared data tangent so it stays G1. A rounded corner the polygon split
    into chords becomes one arc; a long arc becomes one arc rather than cubics with line stubs; a jittery straight run one
    line. After the DP a single pass merges adjacent curves one cubic explains (inkvec `merge_free_cubics`) and adjacent
    lines one line explains, and a ring
@@ -141,23 +166,27 @@ precision) ≈ 8.5` at 512 px, a span admissible only when every sample lies wit
    arms): a piece of a sample or two cannot place two arms by itself, and its free fit — a negative arm, or one several
    chords long — would otherwise swing the shared directions. The spline is held to the mode's band, narrowed on a clean
    edge: the refined samples' RMS residual about the DP's fit measures the edge's noise, and below half σ the band
-   narrows with it, to half. A DP segment outside the DP's own band — its best effort where nothing was admissible, as
-   along a straight edge whose lattice staircase leaves corners past the band — stays as it is, so the spline does not
-   bend through those corners, and pins its own end directions so its neighbours meet it smoothly. A DP line that is a
-   straight edge of the drawing — inside that band, no line beside it turning away, no neighbouring arc whose circle
-   runs through its samples, no bow above the noise — stays a line, and a DP arc inside the band keeps its circle unless
-   it meets such a line or another kept arc at a turn; both pin their knots' directions, so their neighbours meet them
-   smoothly. An arc that gives up its circle becomes one cubic piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples, carries
-   an arm longer than its chord or turns past a quarter circle — is split at its worst sample, then climbs a fallback
-   ladder: a lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the
-   step rule cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule
-   let through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own segments.
-   Each repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve reaching
-   further moves admissible pieces out of the band for the next round to repair. Knots are then removed wherever the
-   merged piece stays inside the band and the description length does not grow — the outer directions kept, or
-   re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more, kept
-   when every piece stays inside the band and χ² does not grow. A cutout chain is refit once, like any span, so an edge
-   two regions share stays one fit.
+   narrows with it, to half — never past one that keeps the lattice samples inside the DP's own fit, so a staircase
+   corner held at the search's reach does not break the spline at every corner. A DP segment outside the DP's own
+   band — its best effort where nothing was admissible, as along a straight edge whose lattice staircase leaves corners
+   past the band — stays as it is, so the spline does not bend through those corners, and pins its own end directions so
+   its neighbours meet it smoothly. A DP line that is a straight edge of the drawing — inside that band, no line beside
+   it turning away, no neighbouring arc whose circle runs through its samples, no bow above the noise — stays a line,
+   and a DP arc inside the band keeps its circle unless it meets such a line or another kept arc at a turn; both pin
+   their knots' directions, so their neighbours meet them smoothly. An arc that gives up its circle becomes one cubic
+   piece per quarter turn. A piece the spline cannot keep inside the band — or that throws a loop between two samples,
+   carries an arm longer than its chord or turns past a quarter circle — is split at its worst sample (a knot is pinned
+   on its sample, so a worst sample held looser than a lattice point, a staircase corner left past the search's reach or
+   a refused point, passes the knot to the nearest sample within two held no looser), then climbs a fallback ladder: a
+   lattice staircase step merges into a smooth neighbour, a long piece splits again (clear of its ends, so the step rule
+   cannot merge the new knot back), then a pinned chord, free directions at its knots (a turn the corner rule let
+   through becomes a corner), the chords through its samples; whatever still fails keeps the DP's own segments. Each
+   repair is re-solved only within two pieces of it: the knot directions couple neighbours, and a solve
+   reaching further moves admissible pieces out of the band for the next round to repair. Knots are then removed
+   wherever the merged piece stays inside the band and the description length does not grow — the outer directions kept,
+   or re-chosen by a free fit with the smooth neighbours refit to meet them — and the whole span is solved once more,
+   kept when every piece stays inside the band and χ² does not grow. A cutout chain is refit once, like any span, so an
+   edge two regions share stays one fit.
 
    The DP is kept browser-fast without changing what it draws. A span prices an
    arc or a cubic only when a curve could actually beat the pinned line — inkvec's

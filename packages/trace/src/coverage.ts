@@ -62,24 +62,56 @@ export function coveragePatch(
   let minY = Infinity
   let maxX = -Infinity
   let maxY = -Infinity
-  let area2 = 0
   for (let i = 0; i < n; i++) {
-    const x = ring[i * 2]
-    const y = ring[i * 2 + 1]
-    minX = Math.min(minX, x)
-    maxX = Math.max(maxX, x)
-    minY = Math.min(minY, y)
-    maxY = Math.max(maxY, y)
-    const j = (i + 1) % n
-    area2 += x * ring[j * 2 + 1] - ring[j * 2] * y
+    minX = Math.min(minX, ring[i * 2])
+    maxX = Math.max(maxX, ring[i * 2])
+    minY = Math.min(minY, ring[i * 2 + 1])
+    maxY = Math.max(maxY, ring[i * 2 + 1])
   }
   const x0 = Math.max(0, minX - PATCH_MARGIN)
   const y0 = Math.max(0, minY - PATCH_MARGIN)
   const x1 = Math.min(f.width, maxX + PATCH_MARGIN)
   const y1 = Math.min(f.height, maxY + PATCH_MARGIN)
-  const w = x1 - x0
-  const h = y1 - y0
-  if (w <= 0 || h <= 0 || w > PATCH_MAX || h > PATCH_MAX) return undefined
+  if (x1 - x0 <= 0 || y1 - y0 <= 0 || x1 - x0 > PATCH_MAX || y1 - y0 > PATCH_MAX) return undefined
+  return patchOver(ring, geom, f, enclosedSign(ring, f), x0, y0, x1, y1)
+}
+
+/**
+ * Coverage patches of a ring of any size over the windows `boxes` (each
+ * `[x0, y0, x1, y1]`, integer pixel corners, clipped to the field), read as
+ * {@link coveragePatch} reads the whole ring's; undefined for a window the
+ * field measured none of the ring in.
+ */
+export function coverageWindows(
+  ring: FlatPoints,
+  geom: FlatPoints,
+  field: GrayImage | SignedField,
+  boxes: readonly (readonly number[])[],
+): (CoveragePatch | undefined)[] {
+  const f = signedFieldOf(field)
+  if (boxes.length === 0 || ring.length >> 1 < 4) return boxes.map(() => undefined)
+  const sign = enclosedSign(ring, f)
+  return boxes.map(([bx0, by0, bx1, by1]) => {
+    const x0 = Math.max(0, bx0)
+    const y0 = Math.max(0, by0)
+    const x1 = Math.min(f.width, bx1)
+    const y1 = Math.min(f.height, by1)
+    if (x1 - x0 <= 0 || y1 - y0 <= 0) return undefined
+    return patchOver(ring, geom, f, sign, x0, y0, x1, y1)
+  })
+}
+
+/**
+ * The sign that reads `f` as the coverage of what the lattice ring encloses:
+ * the enclosed side is whichever side of its edges the field reads higher.
+ */
+function enclosedSign(ring: FlatPoints, f: SignedField): number {
+  const n = ring.length >> 1
+  let area2 = 0
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    area2 += ring[i * 2] * ring[j * 2 + 1] - ring[j * 2] * ring[i * 2 + 1]
+  }
   const at = (x: number, y: number): number =>
     f.at(x < 0 ? 0 : x >= f.width ? f.width - 1 : x, y < 0 ? 0 : y >= f.height ? f.height - 1 : y)
   // Every unit step of the ring separates a pixel on its right from one on its
@@ -109,29 +141,50 @@ export function coveragePatch(
       lean += insideRight ? d : -d
     }
   }
-  const sign = lean < 0 ? -1 : 1
+  return lean < 0 ? -1 : 1
+}
+
+/**
+ * The patch of the field over pixels `x0..x1` × `y0..y1` read with `sign`,
+ * weighed near the samples of `geom` moved off the lattice `ring`; undefined
+ * when none of them is.
+ */
+function patchOver(
+  ring: FlatPoints,
+  geom: FlatPoints,
+  f: SignedField,
+  sign: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): CoveragePatch | undefined {
+  const w = x1 - x0
+  const h = y1 - y0
   const data = new Float32Array(w * h)
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const c = 0.5 + sign * at(x0 + x, y0 + y)
+      const c = 0.5 + sign * f.at(x0 + x, y0 + y)
       data[y * w + x] = c < 0 ? 0 : c > 1 ? 1 : c
     }
   }
   const weight = new Uint8Array(w * h)
   let measured = false
-  const m = Math.min(n, geom.length >> 1)
+  const m = Math.min(ring.length >> 1, geom.length >> 1)
   for (let i = 0; i < m; i++) {
     const gx = geom[i * 2]
     const gy = geom[i * 2 + 1]
     if (gx === ring[i * 2] && gy === ring[i * 2 + 1]) continue
-    measured = true
     const lx = Math.max(0, Math.ceil(gx - PATCH_REACH - 0.5) - x0)
     const hx = Math.min(w - 1, Math.floor(gx + PATCH_REACH - 0.5) - x0)
     const ly = Math.max(0, Math.ceil(gy - PATCH_REACH - 0.5) - y0)
     const hy = Math.min(h - 1, Math.floor(gy + PATCH_REACH - 0.5) - y0)
     for (let y = ly; y <= hy; y++) {
       for (let x = lx; x <= hx; x++) {
-        if (Math.hypot(x0 + x + 0.5 - gx, y0 + y + 0.5 - gy) <= PATCH_REACH) weight[y * w + x] = 1
+        if (Math.hypot(x0 + x + 0.5 - gx, y0 + y + 0.5 - gy) <= PATCH_REACH) {
+          weight[y * w + x] = 1
+          measured = true
+        }
       }
     }
   }
@@ -145,12 +198,28 @@ const COVERAGE_CURVE_STEPS = 16
 
 /**
  * Sum over the patch's weighted pixels of the squared difference between the
- * coverage a closed path renders (even-odd) and the observed coverage. The path
- * is flattened and each pixel's area integrated exactly along
- * {@link COVERAGE_ROWS} sub-rows.
+ * coverage a closed path renders (even-odd, {@link pathCoverage}) and the
+ * observed coverage.
  */
 export function pathCoverageError(cmds: readonly PathCommand[], patch: CoveragePatch): number {
-  const { x0, y0, w, h, data, weight } = patch
+  const { w, h, data, weight } = patch
+  const cover = pathCoverage(cmds, patch)
+  let err = 0
+  for (let i = 0; i < w * h; i++) {
+    if (weight[i] === 0) continue
+    const d = cover[i] - data[i]
+    err += d * d
+  }
+  return err
+}
+
+/**
+ * The coverage a closed path renders (even-odd) over the patch's pixels,
+ * parallel to its `data`. The path is flattened and each pixel's area
+ * integrated exactly along {@link COVERAGE_ROWS} sub-rows.
+ */
+export function pathCoverage(cmds: readonly PathCommand[], patch: CoveragePatch): Float64Array {
+  const { x0, y0, w, h } = patch
   const unit = patch.unit ?? 1
   // Edges (patch-relative), each subpath closed back on its start.
   const edges: number[] = []
@@ -224,11 +293,5 @@ export function pathCoverageError(cmds: readonly PathCommand[], patch: CoverageP
       }
     }
   }
-  let err = 0
-  for (let i = 0; i < w * h; i++) {
-    if (weight[i] === 0) continue
-    const d = cover[i] - data[i]
-    err += d * d
-  }
-  return err
+  return cover
 }

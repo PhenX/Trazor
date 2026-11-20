@@ -12,7 +12,9 @@
  * Pipeline (marker-controlled watershed, Meyer 1991; Vincent & Soille 1991):
  *   1. Oklab gradient magnitude per pixel.
  *   2. Flat interiors (gradient below `flatThreshold`) are the markers — one
- *      region per 4-connected component, seeded with its mean color.
+ *      region per 4-connected component, seeded with its mean color. A marker
+ *      that holds two fills of the drawing, joined across a seam whose steps
+ *      all stay under the threshold, is split into them (`splitExactFills`).
  *   2b. A feature too thin to hold a flat interior (a hairline glyph like an "&",
  *      a fur stroke, a contour line) gets no marker in step 2 and would be
  *      swallowed by the flood; each such blob that is a color extreme between
@@ -32,7 +34,9 @@
  *      colors; `maxRegions` then caps the count, folding the pairs whose union
  *      costs the least total squared color error (Ward 1963) until it is met
  *      (or, with `keepVisibleColors`, until the cheapest fold left would show,
- *      within twice the budget).
+ *      within its ceiling (`visibleCeiling`: twice the budget, 64 for a
+ *      budget of 24 and more); the fills step 2 split apart raise the budget
+ *      by as many, within that same bound).
  *   5. The flood claims each pixel for the cheapest region already touching it,
  *      so a third region that reaches a seam from one end — its color nearer the
  *      blend than either side's — can run along it as a line a pixel wide; a
@@ -42,13 +46,23 @@
  *      marker seeded there grows along the whole ramp as a band of the blend
  *      color (a rosy line between an orange field and a blue outline). A thin
  *      band like that, whose pixels are blends of the two regions it runs
- *      between, dissolves back into them (`dissolveBlendBands`).
+ *      between, dissolves back into them; a hair that runs across one field
+ *      from outline to outline, a stroke of their ink too thin to reach full
+ *      coverage, goes to the outline whose ink it is (`dissolveBlendBands`).
  *
  * Deterministic: fixed scan and neighbor order throughout, priority-queue ties
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
  * result mirrors {@link QuantizeResult} so the engine consumes it identically.
  */
-import { ciede2000, createLabelMap, oklabToRgb, rgbToHex, rgbToLab } from '@trazor/core'
+import {
+  ciede2000,
+  createLabelMap,
+  getProfile,
+  oklabToRgb,
+  rgbToHex,
+  rgbToLab,
+  rgbToOklab,
+} from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 import { dissolveBlendBands, returnSeamPixels } from './mixture'
@@ -85,9 +99,10 @@ export interface SegmentOptions {
    * Stop the `maxRegions` cap at the first fold an eye would see: when the
    * cheapest fold left joins two regions at least `CAP_VISIBLE_DE00` apart,
    * neither of them a speck, the cap stops and the count stays above it — never
-   * above twice `maxRegions` (at most `CAP_VISIBLE_LIMIT`), past which it folds
-   * on as the hard cap does. Its folds are a prefix of the hard cap's own. Off,
-   * the cap is hard.
+   * above twice `maxRegions`, or `CAP_VISIBLE_LIMIT` for a budget of
+   * `CAP_RICH_BUDGET` and more, past which it folds on as the hard cap does. Its folds are a prefix of the hard cap's own. The
+   * colors a marker split into its fills holds beyond one are the drawing's and
+   * raise the cap by as many, within that same bound. Off, the cap is hard.
    */
   keepVisibleColors?: boolean
   /** Only in-mask pixels (`data[i] !== 0`) are segmented; the rest get label -1. */
@@ -141,6 +156,53 @@ const PRISTINE_SHARE = 0.85
 const PRISTINE_FLOOR = 0.005
 
 /**
+ * Source pixels of one tone, each equal to its four neighbors, a marker must
+ * hold for that tone to be a fill the drawing painted: more than a compression
+ * block left flat or a resampler left equal.
+ */
+const EXACT_FILL_MIN = 64
+
+/** Exact colors past which a marker is continuous tone and is not read for fills. */
+const EXACT_COLORS_MAX = 512
+
+/** Most fills one marker is split into: what a byte per pixel numbers. */
+const FILLS_MAX = 255
+
+/**
+ * Widest transition between two exact fills of one marker, in source pixels,
+ * that is their seam. An anti-aliased boundary a pixel wide measures 3 to 5
+ * between the exact pixels on its two sides (7 to 10 working pixels enlarged
+ * 2×, where the cubic spreads it and a pixel beside it is no longer equal to
+ * its neighbors). Across a wider one a soft shape fades into its field, and
+ * the two stay one marker.
+ */
+const SEAM_MAX_WIDTH = 6
+
+/**
+ * Share of a marker's pixels its fills must hold for it to be split. One
+ * mostly of other tones is continuous tone (the shades of a map, a gradient
+ * with a flat stretch at each end): split, most of it would go back to the
+ * flood, to be shared out between two of its tones.
+ */
+const FILL_SHARE_MIN = 0.5
+
+/**
+ * What a pixel a split marker gave up holds in the region map until the
+ * flood, where it lies in a piece of `RELEASED_MIN` source pixels and more:
+ * unmarked to the flood, and nothing for the rescue to seed a feature from.
+ */
+const RELEASED = -2
+
+/**
+ * Source pixels from which a piece a split marker gave up is left to the flood
+ * alone. The rescue looks for thin features among unmarked pixels: a piece the
+ * size of a fill (`EXACT_FILL_MIN`) is the seam or the shading of the fills
+ * around it, which the flood shares out between them, and a smaller one can be
+ * a third tone a few pixels across.
+ */
+const RELEASED_MIN = 64
+
+/**
  * Scale of the merge's size term: a region's bound is `SRM_SCALE / sqrt(|R|)`
  * (Nock & Nielsen 2004), times the size bias and the supersampling factor.
  */
@@ -180,6 +242,23 @@ const CAP_VISIBLE_HEADROOM = 2
 
 /** Most colors `keepVisibleColors` keeps: the largest budget the settings allow. */
 const CAP_VISIBLE_LIMIT = 64
+
+/**
+ * Budget from which the count may stay up to `CAP_VISIBLE_LIMIT`: the
+ * illustration profile's, which the recommender gives rich color whatever the
+ * drawing holds (a cartoon of sixty visibly distinct colors and one of thirty
+ * get the same), so twice it is no measure of the drawing. A budget under it is
+ * most often the count of a clean drawing's flat colors, and the colors past
+ * twice such a count are rim blends about a pixel wide (on flags of 4 and of 16
+ * flat colors, 26 of the 28 a ceiling of 64 would add).
+ */
+const CAP_RICH_BUDGET = getProfile('illustration').patch.paletteSize ?? Infinity
+
+/** Most colors `keepVisibleColors` leaves under a budget of `maxRegions`. */
+function visibleCeiling(maxRegions: number): number {
+  if (maxRegions >= CAP_RICH_BUDGET) return Math.max(maxRegions, CAP_VISIBLE_LIMIT)
+  return Math.min(CAP_VISIBLE_HEADROOM * maxRegions, CAP_VISIBLE_LIMIT)
+}
 
 /**
  * CIEDE2000 below which two regions are the same ink whatever their evidence
@@ -290,6 +369,353 @@ function distToMean(ok: Float32Array, i: number, mL: number, mA: number, mB: num
   const da = ok[o + 1] - mA
   const db = ok[o + 2] - mB
   return Math.sqrt(dl * dl + da * da + db * db)
+}
+
+/** A marker to write: its id, the marker it was split out of and its mean color. */
+interface MarkerStat {
+  id: number
+  from: number
+  mL: number
+  mA: number
+  mB: number
+}
+
+/**
+ * Single linkage of colors (Sneath 1957): two of the Oklab triples in `lab`
+ * are one tone when a chain of colors, each within `link` of the next, joins
+ * them. Returns each color's tone, numbered by the tone's first color. Two
+ * colors within `link` are within it in lightness, so each is compared with
+ * those that follow it by lightness up to there.
+ */
+export function linkTones(lab: Float64Array, link: number): Int32Array {
+  const count = lab.length / 3
+  const tone = new Int32Array(count)
+  for (let i = 0; i < count; i++) tone[i] = i
+  const find = (x: number): number => {
+    let r = x
+    while (tone[r] !== r) r = tone[r]
+    tone[x] = r
+    return r
+  }
+  const byLightness = Array.from(tone).toSorted((a, b) => lab[a * 3] - lab[b * 3] || a - b)
+  for (let s = 0; s < count; s++) {
+    const i = byLightness[s]
+    for (let u = s + 1; u < count; u++) {
+      const j = byLightness[u]
+      const dL = lab[j * 3] - lab[i * 3]
+      if (dL >= link) break
+      const dA = lab[j * 3 + 1] - lab[i * 3 + 1]
+      const dB = lab[j * 3 + 2] - lab[i * 3 + 2]
+      if (dL * dL + dA * dA + dB * dB >= link * link) continue
+      const a = find(i)
+      const b = find(j)
+      if (a !== b) tone[Math.max(a, b)] = Math.min(a, b)
+    }
+  }
+  for (let i = 0; i < count; i++) tone[i] = find(i)
+  return tone
+}
+
+/**
+ * Splits each marker that holds two fills of the drawing. Across an
+ * anti-aliased boundary whose two sides differ by less than twice
+ * `flatThreshold`, every step from one source pixel to the next can stay under
+ * it, so the flat pixels of one fill reach the other's, and both grow as one
+ * marker painted their mean. A fill is told by its exact pixels (equal to their
+ * four neighbors, gradient 0): a marker's exact colors link into tones (single
+ * linkage at half `flatThreshold`, so the bands of a gradient chain into one),
+ * and the tones of at least `EXACT_FILL_MIN` source pixels that stand
+ * `flatThreshold` apart are its fills, where the merge would keep them apart:
+ * no closer than its near-duplicate `floor`, and `SAME_INK_DE00` apart in
+ * CIEDE2000 (Oklab spreads the darkest values, and the near-blacks of one
+ * black are one ink). With two or more that hold `FILL_SHARE_MIN` of the
+ * marker and meet across a transition of at most `SEAM_MAX_WIDTH` source
+ * pixels (the median run of the marker's pixels between an exact pixel of one
+ * fill and the next exact pixel, of another, along a row or a column), the
+ * marker becomes the 4-connected components of the pixels within half
+ * `flatThreshold` of each fill, each component with an exact pixel a marker.
+ * Its other pixels, the seams and any shading, go back to the flood; a piece
+ * of them under `RELEASED_MIN` source pixels, a small third tone, to the
+ * rescue first.
+ *
+ * Exact pixels are the evidence, so a copy that holds none where two fills
+ * meet keeps them fused: a lossy one (the median run between the exact pixels
+ * on the two sides of its seam is 9 to 18 pixels at its own size), or one
+ * enlarged 2× by a cubic or a windowed sinc before it came here (7 to 9). A
+ * seam just under the limit at its own size can measure over it enlarged 2×.
+ * Returns the markers to write: the first component of a marker keeps its id,
+ * the others number on from `regionCount`.
+ */
+function splitExactFills(
+  data: Uint8ClampedArray,
+  ok: Float32Array,
+  grad: Float32Array,
+  region: Int32Array,
+  w: number,
+  h: number,
+  regionCount: number,
+  flatThreshold: number,
+  floor: number,
+  scale: number,
+): MarkerStat[] {
+  const n = w * h
+  // The extent of each marker's exact colors: one under `flatThreshold` across holds one fill.
+  const lo = new Float32Array(regionCount * 3).fill(Infinity)
+  const hi = new Float32Array(regionCount * 3).fill(-Infinity)
+  for (let p = 0; p < n; p++) {
+    const r = region[p]
+    if (r < 0 || grad[p] !== 0) continue
+    for (let c = 0; c < 3; c++) {
+      const v = ok[p * 3 + c]
+      if (v < lo[r * 3 + c]) lo[r * 3 + c] = v
+      if (v > hi[r * 3 + c]) hi[r * 3 + c] = v
+    }
+  }
+  const slot = new Int32Array(regionCount).fill(-1)
+  let slots = 0
+  for (let r = 0; r < regionCount; r++) {
+    if (lo[r * 3] > hi[r * 3]) continue
+    const d = Math.hypot(
+      hi[r * 3] - lo[r * 3],
+      hi[r * 3 + 1] - lo[r * 3 + 1],
+      hi[r * 3 + 2] - lo[r * 3 + 2],
+    )
+    if (d >= flatThreshold) slot[r] = slots++
+  }
+  if (slots === 0) return []
+
+  // Those markers' exact colors with their pixel counts, tallied by runs along the rows.
+  const colors: Map<number, number>[] = Array.from({ length: slots }, () => new Map())
+  let runSlot = -1
+  let runKey = -1
+  let run = 0
+  const flush = (): void => {
+    if (run > 0) colors[runSlot].set(runKey, (colors[runSlot].get(runKey) ?? 0) + run)
+    run = 0
+  }
+  for (let p = 0; p < n; p++) {
+    const r = region[p]
+    const sl = r < 0 || grad[p] !== 0 ? -1 : slot[r]
+    const key = sl < 0 ? -1 : (data[p * 4] << 16) | (data[p * 4 + 1] << 8) | data[p * 4 + 2]
+    if (sl !== runSlot || key !== runKey) {
+      flush()
+      runSlot = sl
+      runKey = key
+    }
+    if (sl >= 0) run++
+  }
+  flush()
+
+  // Each marker's fills, as Oklab triples.
+  const fills: number[][] = []
+  const minFill = EXACT_FILL_MIN * scale * scale
+  const link = flatThreshold / 2
+  const apart = Math.max(flatThreshold, floor)
+  let any = false
+  for (let sl = 0; sl < slots; sl++) {
+    fills.push([])
+    const keys = [...colors[sl].keys()]
+    if (keys.length < 2 || keys.length > EXACT_COLORS_MAX) continue
+    const lab = new Float64Array(keys.length * 3)
+    for (let i = 0; i < keys.length; i++) {
+      const [L, A, B] = rgbToOklab(
+        ((keys[i] >> 16) & 255) / 255,
+        ((keys[i] >> 8) & 255) / 255,
+        (keys[i] & 255) / 255,
+      )
+      lab[i * 3] = L
+      lab[i * 3 + 1] = A
+      lab[i * 3 + 2] = B
+    }
+    const tone = linkTones(lab, link)
+    // Tone sums: pixel count, then the count-weighted Oklab.
+    const sums = new Map<number, number[]>()
+    for (let i = 0; i < keys.length; i++) {
+      const count = colors[sl].get(keys[i]) as number
+      const t = tone[i]
+      const sum = sums.get(t) ?? [0, 0, 0, 0]
+      sum[0] += count
+      sum[1] += count * lab[i * 3]
+      sum[2] += count * lab[i * 3 + 1]
+      sum[3] += count * lab[i * 3 + 2]
+      sums.set(t, sum)
+    }
+    const tones = [...sums.entries()]
+      .filter(([, sum]) => sum[0] >= minFill)
+      .toSorted((a, b) => b[1][0] - a[1][0] || a[0] - b[0])
+    for (const [, sum] of tones) {
+      const L = sum[1] / sum[0]
+      const A = sum[2] / sum[0]
+      const B = sum[3] / sum[0]
+      const own = fills[sl]
+      let distinct = true
+      for (let f = 0; f < own.length; f += 3) {
+        if (
+          Math.hypot(own[f] - L, own[f + 1] - A, own[f + 2] - B) < apart ||
+          oklabDe00(own[f], own[f + 1], own[f + 2], L, A, B) < SAME_INK_DE00
+        ) {
+          distinct = false
+        }
+      }
+      if (distinct && own.length < FILLS_MAX * 3) own.push(L, A, B)
+    }
+    if (fills[sl].length < 6) fills[sl] = []
+    else any = true
+  }
+  if (!any) return []
+
+  // Each pixel of those markers within `link` of one of its fills takes it
+  // (1-based; fills stand twice `link` apart, so at most one is); one further
+  // from every fill is seam or shading and takes none. Found once a color.
+  const fill = new Uint8Array(n)
+  const found: Map<number, number>[] = fills.map(() => new Map())
+  const held = new Int32Array(slots)
+  const total = new Int32Array(slots)
+  for (let p = 0; p < n; p++) {
+    const r = region[p]
+    const sl = r < 0 ? -1 : slot[r]
+    if (sl < 0 || fills[sl].length === 0) continue
+    const key = (data[p * 4] << 16) | (data[p * 4 + 1] << 8) | data[p * 4 + 2]
+    let f = found[sl].get(key)
+    if (f === undefined) {
+      f = 0
+      const own = fills[sl]
+      for (let k = 0; k < own.length && f === 0; k += 3) {
+        const d = Math.hypot(
+          ok[p * 3] - own[k],
+          ok[p * 3 + 1] - own[k + 1],
+          ok[p * 3 + 2] - own[k + 2],
+        )
+        if (d < link) f = k / 3 + 1
+      }
+      found[sl].set(key, f)
+    }
+    fill[p] = f
+    total[sl]++
+    if (f !== 0) held[sl]++
+  }
+
+  // How wide the fills of each marker meet: along every row and column, the
+  // pixels of the marker between an exact pixel of one fill and the next exact
+  // pixel, when that one is of another fill.
+  const widths: number[][] = Array.from({ length: slots }, () => [])
+  const meet = (count: number, first: number, stride: number): void => {
+    let from = -1
+    let fromFill = 0
+    for (let k = 0, p = first; k < count; k++, p += stride) {
+      const r = region[p]
+      // Two markers never touch, so a run ends where it leaves its marker.
+      if (r < 0 || slot[r] < 0 || fills[slot[r]].length === 0) fromFill = 0
+      if (r < 0 || grad[p] !== 0) continue
+      if (fill[p] === 0) {
+        fromFill = 0
+        continue
+      }
+      if (fromFill !== 0 && fill[p] !== fromFill) widths[slot[r]].push(k - from - 1)
+      from = k
+      fromFill = fill[p]
+    }
+  }
+  for (let y = 0; y < h; y++) meet(w, y * w, 1)
+  for (let x = 0; x < w; x++) meet(h, x, w)
+  const split = new Uint8Array(slots)
+  for (let sl = 0; sl < slots; sl++) {
+    const ws = widths[sl]
+    if (ws.length === 0 || held[sl] < FILL_SHARE_MIN * total[sl]) continue
+    ws.sort((a, b) => a - b)
+    if (ws[ws.length >> 1] <= SEAM_MAX_WIDTH * scale) split[sl] = 1
+  }
+
+  // The components of each fill become the markers.
+  const out: MarkerStat[] = []
+  const kept = new Uint8Array(regionCount)
+  const queue = new Int32Array(n)
+  let next = regionCount
+  // A pixel its marker gave up holds `LOOSE`; one of marker `r` not yet in a
+  // component, `PENDING - r`.
+  const LOOSE = RELEASED - 1
+  const PENDING = LOOSE - 1
+  for (let p = 0; p < n; p++) {
+    const r = region[p]
+    if (r >= 0 && slot[r] >= 0 && split[slot[r]] === 1) {
+      region[p] = fill[p] === 0 ? LOOSE : PENDING - r
+    }
+  }
+  for (let s = 0; s < n; s++) {
+    if (region[s] > PENDING) continue
+    const from = region[s]
+    const r = PENDING - from
+    const f = fill[s]
+    let head = 0
+    let tail = 0
+    queue[tail++] = s
+    region[s] = LOOSE
+    let sumL = 0
+    let sumA = 0
+    let sumB = 0
+    let exact = false
+    while (head < tail) {
+      const p = queue[head++]
+      sumL += ok[p * 3]
+      sumA += ok[p * 3 + 1]
+      sumB += ok[p * 3 + 2]
+      if (grad[p] === 0) exact = true
+      const x = p % w
+      if (x > 0 && region[p - 1] === from && fill[p - 1] === f) {
+        region[p - 1] = LOOSE
+        queue[tail++] = p - 1
+      }
+      if (x < w - 1 && region[p + 1] === from && fill[p + 1] === f) {
+        region[p + 1] = LOOSE
+        queue[tail++] = p + 1
+      }
+      if (p >= w && region[p - w] === from && fill[p - w] === f) {
+        region[p - w] = LOOSE
+        queue[tail++] = p - w
+      }
+      if (p < n - w && region[p + w] === from && fill[p + w] === f) {
+        region[p + w] = LOOSE
+        queue[tail++] = p + w
+      }
+    }
+    if (!exact) continue
+    const id = kept[r] === 0 ? r : next++
+    kept[r] = 1
+    for (let k = 0; k < tail; k++) region[queue[k]] = id
+    out.push({ id, from: r, mL: sumL / tail, mA: sumA / tail, mB: sumB / tail })
+  }
+  // What the markers gave up: a piece of `RELEASED_MIN` source pixels and more
+  // is `RELEASED`, a smaller one unmarked.
+  const least = RELEASED_MIN * scale * scale
+  for (let s = 0; s < n; s++) {
+    if (region[s] !== LOOSE) continue
+    let head = 0
+    let tail = 0
+    queue[tail++] = s
+    region[s] = RELEASED
+    while (head < tail) {
+      const p = queue[head++]
+      const x = p % w
+      if (x > 0 && region[p - 1] === LOOSE) {
+        region[p - 1] = RELEASED
+        queue[tail++] = p - 1
+      }
+      if (x < w - 1 && region[p + 1] === LOOSE) {
+        region[p + 1] = RELEASED
+        queue[tail++] = p + 1
+      }
+      if (p >= w && region[p - w] === LOOSE) {
+        region[p - w] = RELEASED
+        queue[tail++] = p - w
+      }
+      if (p < n - w && region[p + w] === LOOSE) {
+        region[p + w] = RELEASED
+        queue[tail++] = p + w
+      }
+    }
+    if (tail < least) for (let k = 0; k < tail; k++) region[queue[k]] = -1
+  }
+  return out
 }
 
 export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): SegmentResult {
@@ -433,6 +859,27 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     return singleRegion(image, mask, n)
   }
 
+  // A marker that holds two fills of the drawing, joined across their seam, is two markers.
+  const refilled = splitExactFills(
+    image.data,
+    ok,
+    grad,
+    region,
+    w,
+    h,
+    regionCount,
+    flatThreshold,
+    floor,
+    scale,
+  )
+  for (const m of refilled) {
+    regionCount = Math.max(regionCount, m.id + 1)
+    grow(m.id)
+    mL[m.id] = m.mL
+    mA[m.id] = m.mA
+    mB[m.id] = m.mB
+  }
+
   // ---- 2b. Rescue marker-less features (thin glyphs, dots) as their own markers ----
   // A feature too thin to hold a flat core would otherwise be dissolved by the
   // flood into the field around it; give each such isolated component its own
@@ -467,6 +914,10 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
   }
 
   // ---- 3. Priority flood: grow markers over edge/ramp pixels ----
+  // What the split markers released is unmarked to it.
+  if (refilled.length > 0) {
+    for (let p = 0; p < n; p++) if (region[p] === RELEASED) region[p] = -1
+  }
   floodRegions(ok, region, w, n, mask, mL, mA, mB)
 
   // Recompute means/sizes over the grown regions, keeping both the sum over every
@@ -659,6 +1110,7 @@ export function segmentRegions(image: RasterImage, opts: SegmentOptions = {}): S
     minArea,
     maxRegions,
     keepVisible,
+    refilled,
     scale,
   )
 
@@ -1064,6 +1516,30 @@ function rescueMarkerlessFeatures(
   }
 
   /**
+   * The first step, short of the marker `k` steps away, at which a walk from
+   * (x, y) along (dx, dy) meets a pixel off blob `id` within `RESCUE_ONE_FIELD`
+   * of marker `other`'s color; 0 if none.
+   */
+  const metFirst = (
+    id: number,
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    k: number,
+    other: number,
+  ): number => {
+    const oL = markerColor(other, promL, mL)
+    const oA = markerColor(other, promA, mA)
+    const oB = markerColor(other, promB, mB)
+    for (let t = 1; t < k; t++) {
+      const q = (y + dy * t) * w + x + dx * t
+      if (blobId[q] !== id && distToMean(ok, q, oL, oA, oB) < RESCUE_ONE_FIELD) return t
+    }
+    return 0
+  }
+
+  /**
    * Judge blob `id` against the sides of its pixels over the current `region`:
    * the first markers met walking out in opposite directions. A pixel is an
    * *extreme* on an axis when its blob is at least `RESCUE_MIN_CONTRAST` from
@@ -1105,15 +1581,36 @@ function rescueMarkerlessFeatures(
       // or a mixture of them (a rim), and one mixture axis vetoes the pixel: a
       // rim ring is given away by its across-axis whatever its along-axis says,
       // while a real line has no axis that calls it a mixture.
+      //
+      // A walk runs to the first marker, and a field whose noise kept it from
+      // flat runs on unmarked to whatever lies beyond it (a glyph's paper to
+      // the dial's rim). Where the walk to one side crosses the other side's
+      // color first, that side is met there: the other side's field.
       let tested = 0
       let agreed = 0
       let edge = false
       for (let axis = 0; axis < 2; axis++) {
-        const f1 = axis === 0 ? walk(px, py, -1, 0) : walk(px, py, 0, -1)
-        const k1 = walked
-        const f2 = axis === 0 ? walk(px, py, 1, 0) : walk(px, py, 0, 1)
-        const k2 = walked
+        const dx = axis === 0 ? 1 : 0
+        const dy = axis === 0 ? 0 : 1
+        let f1 = walk(px, py, -dx, -dy)
+        let k1 = walked
+        let f2 = walk(px, py, dx, dy)
+        let k2 = walked
         if (f1 < 0 || f2 < 0) continue
+        if (f1 !== f2) {
+          const g1 = f1
+          const g2 = f2
+          const t1 = metFirst(id, px, py, -dx, -dy, k1, g2)
+          const t2 = metFirst(id, px, py, dx, dy, k2, g1)
+          if (t1 > 0) {
+            f1 = g2
+            k1 = t1
+          }
+          if (t2 > 0) {
+            f2 = g1
+            k2 = t2
+          }
+        }
         const d1 = toBlob(f1)
         const d2 = toBlob(f2)
         const near = d1 < d2 ? d1 : d2
@@ -1164,6 +1661,34 @@ function oklabDe00(l1: number, a1: number, b1: number, l2: number, a2: number, b
 }
 
 /**
+ * How many colors the markers split into their fills hold beyond one each,
+ * after merging: the regions (roots of `find`) their components ended up in,
+ * less one for each set of those regions that markers tie together — the
+ * fills of one marker, and of any marker sharing a region with it, would have
+ * been one color unsplit. Fills that merged back into one region count for
+ * nothing.
+ */
+function splitColors(split: MarkerStat[], find: (region: number) => number): number {
+  const first = new Map<number, number>()
+  const tie = new Map<number, number>()
+  const top = (region: number): number => {
+    let r = region
+    while (tie.get(r) !== r) r = tie.get(r) as number
+    return r
+  }
+  for (const m of split) {
+    const root = find(m.id)
+    if (!tie.has(root)) tie.set(root, root)
+    const other = first.get(m.from)
+    if (other === undefined) first.set(m.from, root)
+    else tie.set(top(other), top(root))
+  }
+  let sets = 0
+  for (const [root, to] of tie) if (to === root) sets++
+  return tie.size - sets
+}
+
+/**
  * Agglomerative region-adjacency-graph merge. Union-find over regions; each
  * round folds every adjacent pair whose ΔE is under `mergeThreshold` or where
  * either side is below `minArea`, closest pair first. A round ranks and judges
@@ -1189,8 +1714,9 @@ function oklabDe00(l1: number, a1: number, b1: number, l2: number, a2: number, b
  * so two regions that would paint the same become one palette entry. The cap
  * folds pairs by least added squared color error (Ward) until the count is
  * met, however different the remaining hues are — or, under `keepVisible`,
- * until the cheapest fold left would repaint a feature, within twice the
- * budget.
+ * until the cheapest fold left would repaint a feature, within the budget's
+ * ceiling (`visibleCeiling`), the budget raised by the colors the markers of
+ * `split` hold beyond one each (`splitColors`).
  * Returns the parent array (each region's representative root).
  */
 function mergeRegions(
@@ -1221,6 +1747,7 @@ function mergeRegions(
   minArea: number,
   maxRegions: number,
   keepVisible: boolean,
+  split: MarkerStat[],
   scale: number,
 ): Int32Array {
   const parent = new Int32Array(regionCount)
@@ -1436,13 +1963,16 @@ function mergeRegions(
   // are within the consolidation distance even when they do not touch, regions
   // rendered in colors no eye tells apart (under `SAME_INK_DE00`: Oklab spreads
   // the darkest values, so #000000 and #010101 lie further apart there than the
-  // distance allows while CIEDE2000 puts them 0.3 apart), and a rare ink into the
-  // region of the same ink — two separate black outlines become one palette
-  // color. Greedy by descending size,
-  // so the largest region of a color is the representative. Perceptual-distance
-  // gated, so it can never merge genuinely different colors (a blue strap into a
-  // black outline). Under size-aware merging it uses the near-duplicate `floor`
-  // so it consolidates true duplicates without re-merging the close-but-distinct
+  // distance allows while CIEDE2000 puts them 0.3 apart), and a rare ink no
+  // flat core speaks for into the region of the same ink — two separate black
+  // outlines become one palette color. Greedy by descending size, so the
+  // largest region of a color is the representative. The first two tests are
+  // gated on the distance between the colors the regions paint, so they never
+  // merge genuinely different ones (a blue strap into a black outline); the
+  // third reads a region's votes, which a union hands on from the part it
+  // drops, so a coreless region can still join the ink of a fragment it took
+  // in. Under size-aware merging the pass uses the near-duplicate `floor` so it
+  // consolidates true duplicates without re-merging the close-but-distinct
   // dominant colors the adjacency pass deliberately kept apart.
   const consolidateDist = sizeBias > 0 ? floor : mergeThreshold
   const roots: number[] = []
@@ -1453,11 +1983,15 @@ function mergeRegions(
     let repFor = -1
     for (const rep of reps) {
       // A rare ink's fragment cut off from the rest of its ink (a strand of
-      // hair between two outlines) joins it: its votes are for that ink.
+      // hair between two outlines) joins it: its votes are for that ink. They
+      // speak only where no flat core does: a fill that took in such a fragment
+      // carries its votes and is still the color of its own core.
       if (
         meanDelta(r, rep) < consolidateDist ||
         renderedDe00(r, rep) < SAME_INK_DE00 ||
-        (represented[r] > 0 && inkDe00(r, rep) < SAME_INK_DE00)
+        (represented[r] > 0 &&
+          !coreSpeaks(coreN[r], size[r], scale * scale) &&
+          inkDe00(r, rep) < SAME_INK_DE00)
       ) {
         repFor = rep
         break
@@ -1479,13 +2013,24 @@ function mergeRegions(
   // large distinct hues fold last, so a budget spends its damage where it shows
   // least. Under `keepVisible` the cap stops at the first fold that would
   // repaint a feature — a pair at least `CAP_VISIBLE_DE00` apart, neither of
-  // them a speck (`CAP_SPECK_AREA`) — once the count is within
-  // `CAP_VISIBLE_HEADROOM` times the cap (and `CAP_VISIBLE_LIMIT`): its folds
-  // are a prefix of the hard cap's own, cut short where they would start to
-  // show, and the count may stay above the cap.
+  // them a speck (`CAP_SPECK_AREA`) — once the count is within the cap's
+  // ceiling (`visibleCeiling`): its folds are a prefix of the hard cap's own,
+  // cut short where they would start to show, and the count may stay above the
+  // cap.
   // Each root tracks its cheapest partner; a merge refreshes the merged root
   // and every root whose partner it consumed. Ties break on the lower id.
-  if (maxRegions > 0 && activeRegions > maxRegions) {
+  // A budget the engine spends for itself is raised by the colors the split
+  // markers still hold beyond one each, within the same bound. Past that bound
+  // the cap folds by cost alone, as it does without a split: the extra color of
+  // a split marker can then cost a small feature its own, and split fills,
+  // close colors, fold when theirs is the cheapest fold left with the count
+  // within the bound and above the budget.
+  const ceiling = visibleCeiling(maxRegions)
+  const budget =
+    maxRegions > 0 && keepVisible
+      ? Math.min(maxRegions + splitColors(split, find), ceiling)
+      : maxRegions
+  if (budget > 0 && activeRegions > budget) {
     const capRoots: number[] = []
     for (let i = 0; i < regionCount; i++) if (find(i) === i && size[i] > 0) capRoots.push(i)
     const active = new Uint8Array(regionCount)
@@ -1493,10 +2038,6 @@ function mergeRegions(
     const partner = new Int32Array(regionCount).fill(-1)
     const partnerCost = new Float64Array(regionCount).fill(Infinity)
     const speck = CAP_SPECK_AREA * scale * scale
-    const ceiling = Math.max(
-      maxRegions,
-      Math.min(CAP_VISIBLE_HEADROOM * maxRegions, CAP_VISIBLE_LIMIT),
-    )
     const wardCost = (a: number, b: number): number => {
       const d = meanDelta(a, b)
       return ((size[a] * size[b]) / (size[a] + size[b])) * d * d
@@ -1516,7 +2057,7 @@ function mergeRegions(
       partnerCost[a] = bestCost
     }
     for (const r of capRoots) refresh(r)
-    while (activeRegions > maxRegions) {
+    while (activeRegions > budget) {
       let a = -1
       for (const r of capRoots) {
         if (active[r] === 0 || partner[r] < 0) continue

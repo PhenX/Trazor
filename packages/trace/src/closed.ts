@@ -12,10 +12,12 @@ import {
   ringSigmas,
   runBand,
   runTau,
+  tipWindows,
 } from './potrace/runfit'
+import type { TipCoverage } from './potrace/runfit'
 import { computeSums } from './potrace/sums'
 import type { FlatPoints } from './paths'
-import { coveragePatch } from './coverage'
+import { coveragePatch, coverageWindows } from './coverage'
 import type { CoveragePatch } from './coverage'
 import { refineRingToField } from './refine'
 import type { SignedField } from './refine'
@@ -86,6 +88,13 @@ export interface RingFit {
    * circle or ellipse must render no worse than the outline it replaces.
    */
   coverage?: CoveragePatch
+  /**
+   * The observed coverage around each stub a sharp tip may have left between
+   * two neighbouring polygon vertices of a refined ring, by the stub's first
+   * vertex, which a ring with only two corners must show the tip in before the
+   * stub collapses into it.
+   */
+  tips?: TipCoverage[]
 }
 
 /**
@@ -157,7 +166,11 @@ export function closedPathToCommands(
   field?: SignedField,
 ): PathCommand[] {
   if (opts.curveMode === 'pixel') return pixelCommands(ring)
-  return polygonToCommands(ring, ringPolygon(ring, field ?? opts.coverage), opts)
+  return polygonToCommands(
+    ring,
+    ringPolygon(ring, field ?? opts.coverage, undefined, opts.scale),
+    opts,
+  )
 }
 
 /**
@@ -182,13 +195,16 @@ const POLYGON_AREA_FLOOR = 0.75
  * `setback` (per ring point, with a `field`; {@link refineRingToField}) sets an
  * edge that runs hidden under a sheet painted above it back beneath that sheet.
  * Such a point is fitted no tighter than a lattice point — where it lies under
- * the sheet does not show — and stays out of the coverage patch, whose observed
- * edge is the sheet's own.
+ * the sheet does not show — and stays out of the coverage patches, whose
+ * observed edge is the sheet's own. `scale` is the working pixels per source
+ * pixel the ring will be fitted at (1 when absent), which sizes the windows
+ * around a possible tip's stub.
  */
 export function ringPolygon(
   ring: FlatPoints,
   field?: GrayImage | SignedField,
   setback?: ArrayLike<number>,
+  scale = 1,
 ): RingFit | null {
   // Extended array: append the start point so the DP sees an open anchored path.
   const ext = ring.slice()
@@ -228,8 +244,23 @@ export function ringPolygon(
     refined: field !== undefined,
     extent,
   }
-  const coverage = field ? coveragePatch(ext, measuredOnly(ext, geom, setback), field) : undefined
+  if (!field) return fit
+  const measuredGeom = measuredOnly(ext, geom, setback)
+  const coverage = coveragePatch(ext, measuredGeom, field)
   if (coverage) fit.coverage = coverage
+  const windows = tipWindows(geom, vertexIdx, scale)
+  const patches = coverageWindows(
+    ext,
+    measuredGeom,
+    field,
+    windows.map((t) => t.box),
+  )
+  const tips: TipCoverage[] = []
+  windows.forEach((t, k) => {
+    const patch = patches[k]
+    if (patch) tips.push({ vertex: t.vertex, patch })
+  })
+  if (tips.length > 0) fit.tips = tips
   return fit
 }
 
@@ -295,6 +326,10 @@ export function polygonToCommands(
       stride: Math.round(candidateStride(opts.curveOptimize) * scale),
       extent: fit.extent / scale,
       coverage: fit.coverage && scale !== 1 ? { ...fit.coverage, unit: scale } : fit.coverage,
+      tips:
+        fit.tips && scale !== 1
+          ? fit.tips.map((t) => ({ vertex: t.vertex, patch: { ...t.patch, unit: scale } }))
+          : fit.tips,
     },
   )
   // A ring too short for a meaningful run fit falls back to the exact lattice.

@@ -1,5 +1,5 @@
 import type { PathCommand } from '@trazor/core'
-import { pathCoverageError } from '../coverage'
+import { pathCoverage, pathCoverageError } from '../coverage'
 import type { CoveragePatch } from '../coverage'
 import type { FlatPoints } from '../paths'
 import { fitCubicSegment, refineParam } from '../fit'
@@ -67,6 +67,20 @@ export interface RunFitOptions {
    * coverage no worse.
    */
   coverage?: CoveragePatch
+  /**
+   * The observed coverage around the stubs a sharp tip may have left between
+   * two polygon vertices ({@link tipWindows}), by the stub's first vertex: a
+   * ring with only two corners collapses its stub into one tip only where this
+   * shows the tip, and so does a stroke end a chamfer stub wide whose tip is a
+   * guess ({@link bluntEnd}).
+   */
+  tips?: readonly TipCoverage[]
+}
+
+/** The observed coverage around the stub from polygon vertex `vertex` to the next. */
+export interface TipCoverage {
+  vertex: number
+  patch: CoveragePatch
 }
 
 /** Parameter counts priced by the description length (inkvec `curves.rs`). */
@@ -151,7 +165,8 @@ export function runTau(): number {
  * `measured` (per ring point, from the refinement) is a point's own positional
  * uncertainty where the field measured it: a moved point on a soft edge is
  * held to that, never tighter than {@link SIGMA_REFINED}, and one the field
- * refused to move to that, never tighter than {@link SIGMA_LATTICE}.
+ * left in place with a σ of its own (a refused point, or a staircase corner
+ * past the search's reach) to that, never tighter than {@link SIGMA_LATTICE}.
  */
 export function ringSigmas(
   lattice: FlatPoints,
@@ -421,26 +436,91 @@ export function fitClosedRuns(
     apexCache.set(cv, a)
     return a
   }
-  const [x0, y0] = apex(cornerVerts[0])
-  out.push({ type: 'M', x: x0, y: y0 })
+  // The runs between the corners at `apexOf`'s apexes, their description added
+  // to `cost`. The run from corner `stub` to the next is a collapsed tip's stub
+  // and drops out; with no `stub`, so does any run whose two apexes coincide.
+  const cornerRuns = (
+    apexOf: (cv: number) => [number, number],
+    stub: number,
+    cost: number[],
+  ): PathCommand[] => {
+    const [x0, y0] = apexOf(cornerVerts[0])
+    const runs: PathCommand[] = [{ type: 'M', x: x0, y: y0 }]
+    for (let c = 0; c < cornerVerts.length; c++) {
+      const cvA = cornerVerts[c]
+      const cvB = cornerVerts[(c + 1) % cornerVerts.length]
+      const [ax, ay] = apexOf(cvA)
+      const [bx, by] = apexOf(cvB)
+      if (stub >= 0 ? c === stub : ax === bx && ay === by && cornerVerts.length > 1) continue
+      const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
+      pts[0] = ax
+      pts[1] = ay
+      pts[pts.length - 2] = bx
+      pts[pts.length - 1] = by
+      const t0 = forwardTangent(pts, 0)
+      const t1 = forwardTangent(pts, pts.length / 2 - 1)
+      emitSpanDP(runs, pts, sig, splits, t0, t1, opts, cost)
+    }
+    runs.push({ type: 'Z' })
+    return runs
+  }
   // The corner spans' description, priced to weigh a whole-ring primitive against.
-  const splitCost = [0]
-  for (let c = 0; c < cornerVerts.length; c++) {
+  let splitCost = [0]
+  out.push(...cornerRuns(apex, -1, splitCost))
+  // On a ring small enough for a whole-ring coverage patch, the end of a
+  // stroke no wider than a chamfer stub, whose tip comes from an edge too short
+  // to clear its chamfers and whose sides do not narrow towards it
+  // ({@link bluntEnd}), may as well be blunt: the anti-aliasing of its corners
+  // bends that edge's line to meet the other well past the pixels. Such a tip
+  // stays only where the coverage observed around the stub shows it, judged as
+  // on a ring with only two corners.
+  for (let c = 0; opts.coverage && c < cornerVerts.length && cornerVerts.length > 2; c++) {
     const cvA = cornerVerts[c]
     const cvB = cornerVerts[(c + 1) % cornerVerts.length]
-    const [ax, ay] = apex(cvA)
-    const [bx, by] = apex(cvB)
-    if (ax === bx && ay === by && cornerVerts.length > 1) continue // a collapsed tip's stub
-    const { pts, sig, splits } = spanData(geom, sigma, vertices, n, mv, cvA, cvB)
-    pts[0] = ax
-    pts[1] = ay
-    pts[pts.length - 2] = bx
-    pts[pts.length - 1] = by
-    const t0 = forwardTangent(pts, 0)
-    const t1 = forwardTangent(pts, pts.length / 2 - 1)
-    emitSpanDP(out, pts, sig, splits, t0, t1, opts, splitCost)
+    const hit = apexCache.get(cvA)
+    if (!hit || apexCache.get(cvB) !== hit) continue
+    const window = opts.tips?.find((t) => t.vertex === cvA)?.patch
+    if (!window || !bluntEnd(geom, sigma, vertices, n, mv, cvA, cvB, hit)) continue
+    const cornerApex = (cv: number): [number, number] =>
+      sharpApex(geom, sigma, vertices, n, mv, cv, [polygon[cv * 2], polygon[cv * 2 + 1]])
+    const a = cornerApex(cvA)
+    const b = cornerApex(cvB)
+    const stubCost = [0]
+    const stubbed = cornerRuns((cv) => (cv === cvA ? a : cv === cvB ? b : apex(cv)), -1, stubCost)
+    const patch = withTipPixels(window, a, hit, b)
+    if (coverageMisfit(stubbed, patch) < coverageMisfit(out, patch)) {
+      apexCache.set(cvA, a)
+      apexCache.set(cvB, b)
+      out.length = 0
+      out.push(...stubbed)
+      splitCost = stubCost
+    }
   }
-  out.push({ type: 'Z' })
+  // A ring with only two corners may as well be a round whose lattice polygon
+  // turns sharply at two vertices a stub apart, and the meeting point of the
+  // edges beyond them squares it off. The stub collapses into one tip only
+  // where the coverage observed around it shows the tip: the outline with the
+  // tip renders it closer than the one with the two corners, over the pixels
+  // near the measured edge and every pixel the tip reaches into
+  // ({@link coverageMisfit}).
+  for (let c = 0; c < cornerVerts.length && cornerVerts.length === 2; c++) {
+    const cvA = cornerVerts[c]
+    const cvB = cornerVerts[(c + 1) % 2]
+    const window = opts.tips?.find((t) => t.vertex === cvA)?.patch
+    if (!window) continue
+    const hit = tipApex(geom, sigma, vertices, n, mv, cornerVerts, c)
+    if (!hit) continue
+    const tipOf = (cv: number): [number, number] => (cv === cvA || cv === cvB ? hit : apex(cv))
+    const tipCost = [0]
+    const tipped = cornerRuns(tipOf, c, tipCost)
+    const patch = withTipPixels(window, apex(cvA), hit, apex(cvB))
+    if (coverageMisfit(tipped, patch) < coverageMisfit(out, patch)) {
+      out.length = 0
+      out.push(...tipped)
+      splitCost = tipCost
+    }
+    break
+  }
   // Outside geometric mode a ring the corner rule cut up may still be one ellipse
   // or circle: a small round the lattice polygon renders as a few sharp turns.
   if (!geometricMode(opts) && measuredRing(sigma, n)) {
@@ -546,7 +626,35 @@ const CORNER_CHAMFER = 1
 /** Turn from which two edge lines' meeting may cross the chamfer (inkvec CORNER_TURN_MIN). */
 const CORNER_TURN_MIN = Math.PI / 6
 
-/** σ-weighted total-least-squares line over cyclic samples a..b, the chamfer at both ends dropped. */
+/** Fewest samples off its chamfers an edge needs for a line of its own. */
+const EDGE_MIN_SAMPLES = 3
+
+/** The cyclic samples a..b, those within CORNER_CHAMFER of either end left out when `trim`. */
+function edgeSamples(geom: FlatPoints, a: number, b: number, n: number, trim: boolean): number[] {
+  const ax = geom[a * 2]
+  const ay = geom[a * 2 + 1]
+  const bx = geom[b * 2]
+  const by = geom[b * 2 + 1]
+  const steps = (b - a + n) % n
+  const idx: number[] = []
+  for (let s = 0; s <= steps; s++) {
+    const i = (a + s) % n
+    const x = geom[i * 2]
+    const y = geom[i * 2 + 1]
+    if (
+      trim &&
+      (Math.hypot(x - ax, y - ay) <= CORNER_CHAMFER || Math.hypot(x - bx, y - by) <= CORNER_CHAMFER)
+    )
+      continue
+    idx.push(i)
+  }
+  return idx
+}
+
+/**
+ * σ-weighted total-least-squares line over cyclic samples a..b, the chamfer at
+ * both ends dropped (kept on an edge too short to leave EDGE_MIN_SAMPLES).
+ */
 function edgeLine(
   geom: FlatPoints,
   sigma: number[],
@@ -558,25 +666,8 @@ function edgeLine(
   const ay = geom[a * 2 + 1]
   const bx = geom[b * 2]
   const by = geom[b * 2 + 1]
-  const steps = (b - a + n) % n
-  const collect = (trim: boolean): number[] => {
-    const idx: number[] = []
-    for (let s = 0; s <= steps; s++) {
-      const i = (a + s) % n
-      const x = geom[i * 2]
-      const y = geom[i * 2 + 1]
-      if (
-        trim &&
-        (Math.hypot(x - ax, y - ay) <= CORNER_CHAMFER ||
-          Math.hypot(x - bx, y - by) <= CORNER_CHAMFER)
-      )
-        continue
-      idx.push(i)
-    }
-    return idx
-  }
-  let idx = collect(true)
-  if (idx.length < 3) idx = collect(false)
+  let idx = edgeSamples(geom, a, b, n, true)
+  if (idx.length < EDGE_MIN_SAMPLES) idx = edgeSamples(geom, a, b, n, false)
   if (idx.length < 2) return null
   let sw = 0
   let mx = 0
@@ -657,6 +748,216 @@ function tipApex(
   const mx = (ax + bx) / 2
   const my = (ay + by) / 2
   return Math.hypot(hx - mx, hy - my) <= allowed ? [hx, hy] : null
+}
+
+/** Farthest (px) {@link tipApex} takes a tip from its stub's middle. */
+const TIP_APEX_MAX = 3.5
+
+/** Depths (px) behind a stub's middle at which {@link bluntEnd} reads the width of what ends there. */
+const END_DEPTHS = [0.5, 2]
+
+/** Farthest (px along the ring) {@link bluntEnd} follows each side of a stub back. */
+const END_SIDE_REACH = 6
+
+/**
+ * Whether the tip `hit` that the chamfer stub between polygon vertices `cvA`
+ * and `cvB` (the next one) collapses into is a guess on a blunt stroke end:
+ * the edge before the stub or the edge after it is too short to leave
+ * EDGE_MIN_SAMPLES off its chamfers and bends away at its far vertex by half a
+ * corner's turn — a piece of a rounded end, not of a straight side whose line
+ * it would continue — while the shape behind the stub is no wider than a
+ * chamfer stub can span (CHAMFER_SPAN) and widens away from it less than half
+ * as fast as the two edges meeting at `hit` do: its sides do not converge to
+ * that tip.
+ */
+function bluntEnd(
+  geom: FlatPoints,
+  sigma: number[],
+  vertices: number[],
+  n: number,
+  mv: number,
+  cvA: number,
+  cvB: number,
+  hit: [number, number],
+): boolean {
+  const v = (i: number): number => vertices[(i + 2 * mv) % mv]
+  // The edge from polygon vertex `from` to the next, bending at `far` (one of
+  // its ends) between it and the edge to `beyond`.
+  const bends = (from: number, far: number, beyond: number): boolean =>
+    edgeSamples(geom, v(from), v(from + 1), n, true).length < EDGE_MIN_SAMPLES &&
+    turnDeg(
+      geom[v(beyond) * 2],
+      geom[v(beyond) * 2 + 1],
+      geom[v(far) * 2],
+      geom[v(far) * 2 + 1],
+      geom[v(far === from ? from + 1 : from) * 2],
+      geom[v(far === from ? from + 1 : from) * 2 + 1],
+    ) >=
+      CORNER_TURN_DEG / 2
+  if (!bends(cvA - 1, cvA - 1, cvA - 2) && !bends(cvB, cvB + 1, cvB + 2)) return false
+  const lp = edgeLine(geom, sigma, vertices[(cvA - 1 + mv) % mv], vertices[cvA], n)
+  const ln = edgeLine(geom, sigma, vertices[cvB], vertices[(cvB + 1) % mv], n)
+  if (!lp || !ln) return false
+  const turn = Math.atan2(Math.abs(lp.dx * ln.dy - lp.dy * ln.dx), lp.dx * ln.dx + lp.dy * ln.dy)
+  const va = vertices[cvA]
+  const vb = vertices[cvB]
+  const mx = (geom[va * 2] + geom[vb * 2]) / 2
+  const my = (geom[va * 2 + 1] + geom[vb * 2 + 1]) / 2
+  const reach = Math.hypot(hit[0] - mx, hit[1] - my)
+  if (reach < 1e-9) return false
+  const ux = (hit[0] - mx) / reach
+  const uy = (hit[1] - my) / reach
+  const widths: number[] = []
+  for (const depth of END_DEPTHS) {
+    const px = mx - depth * ux
+    const py = my - depth * uy
+    const sa = sideCrossing(geom, n, va, -1, px, py, ux, uy)
+    const sb = sideCrossing(geom, n, vb, 1, px, py, ux, uy)
+    if (sa === null || sb === null) return false
+    widths.push(Math.abs(sa - sb))
+  }
+  const [near, far] = END_DEPTHS
+  const widening = (widths[1] - widths[0]) / (far - near)
+  return widths[0] <= CHAMFER_SPAN && widening < Math.tan(0.5 * (Math.PI - turn))
+}
+
+/**
+ * Where the ring, followed from sample `start` one step `dir` at a time for at
+ * most END_SIDE_REACH, first crosses the line through (`px`, `py`) normal to
+ * (`ux`, `uy`): its offset along that line, or null.
+ */
+function sideCrossing(
+  geom: FlatPoints,
+  n: number,
+  start: number,
+  dir: number,
+  px: number,
+  py: number,
+  ux: number,
+  uy: number,
+): number | null {
+  let i = start
+  let di = (geom[i * 2] - px) * ux + (geom[i * 2 + 1] - py) * uy
+  let travelled = 0
+  for (let k = 0; k < n && travelled <= END_SIDE_REACH; k++) {
+    const j = (i + dir + n) % n
+    const dj = (geom[j * 2] - px) * ux + (geom[j * 2 + 1] - py) * uy
+    if (di === 0 || di > 0 !== dj > 0) {
+      const t = di === dj ? 0 : di / (di - dj)
+      const x = geom[i * 2] + t * (geom[j * 2] - geom[i * 2])
+      const y = geom[i * 2 + 1] + t * (geom[j * 2 + 1] - geom[i * 2 + 1])
+      return (y - py) * ux - (x - px) * uy
+    }
+    travelled += Math.hypot(geom[j * 2] - geom[i * 2], geom[j * 2 + 1] - geom[i * 2 + 1])
+    i = j
+    di = dj
+  }
+  return null
+}
+
+/**
+ * The windows (`[x0, y0, x1, y1]`, integer lattice corners) around each stub a
+ * sharp tip may have left on a ring's optimal polygon, by the stub's first
+ * vertex: two neighbouring vertices of `geom` (the refined ring on the working
+ * grid, first point repeated last; `vertices` its optimal polygon's indices,
+ * first repeated last) at most CHAMFER_SPAN apart that turn by at least
+ * CORNER_TURN_DEG as one, read at the stub's middle as the corner rule reads a
+ * chamfer pair. Each window reaches as far as a tip there may lie, plus the
+ * pixels around it. `scale` is the working pixels per source pixel.
+ */
+export function tipWindows(
+  geom: FlatPoints,
+  vertices: number[],
+  scale: number,
+): { vertex: number; box: number[] }[] {
+  const mv = vertices.length - 1
+  const out: { vertex: number; box: number[] }[] = []
+  if (mv < 4) return out
+  const vx = (i: number): number => geom[vertices[(i + mv) % mv] * 2]
+  const vy = (i: number): number => geom[vertices[(i + mv) % mv] * 2 + 1]
+  const reach = TIP_APEX_MAX * scale + TIP_REACH + 1
+  for (let i = 0; i < mv; i++) {
+    if (Math.hypot(vx(i + 1) - vx(i), vy(i + 1) - vy(i)) > CHAMFER_SPAN * scale) continue
+    const mx = (vx(i) + vx(i + 1)) / 2
+    const my = (vy(i) + vy(i + 1)) / 2
+    if (turnDeg(vx(i - 1), vy(i - 1), mx, my, vx(i + 2), vy(i + 2)) < CORNER_TURN_DEG) continue
+    out.push({
+      vertex: i,
+      box: [
+        Math.floor(mx - reach),
+        Math.floor(my - reach),
+        Math.ceil(mx + reach),
+        Math.ceil(my + reach),
+      ],
+    })
+  }
+  return out
+}
+
+/**
+ * `patch` with every pixel within the patch's comparison reach of the triangle
+ * `a`, `h`, `b` (path units) weighed as well: the pixels a tip at `h` covers
+ * that the corners at `a` and `b` leave out, which may lie beyond the reach of
+ * any measured sample.
+ */
+function withTipPixels(
+  patch: CoveragePatch,
+  a: [number, number],
+  h: [number, number],
+  b: [number, number],
+): CoveragePatch {
+  const unit = patch.unit ?? 1
+  const tri = [a, h, b].map(([x, y]) => [x * unit - patch.x0, y * unit - patch.y0])
+  const weight = patch.weight.slice()
+  const lo = (k: 0 | 1): number =>
+    Math.max(0, Math.floor(Math.min(tri[0][k], tri[1][k], tri[2][k]) - TIP_REACH))
+  const hi = (k: 0 | 1, size: number): number =>
+    Math.min(size - 1, Math.ceil(Math.max(tri[0][k], tri[1][k], tri[2][k]) + TIP_REACH))
+  for (let y = lo(1); y <= hi(1, patch.h); y++) {
+    for (let x = lo(0); x <= hi(0, patch.w); x++) {
+      if (triangleDistance(tri, x + 0.5, y + 0.5) <= TIP_REACH) weight[y * patch.w + x] = 1
+    }
+  }
+  return { ...patch, weight }
+}
+
+/**
+ * Sum over the patch's weighted pixels of the absolute difference between the
+ * coverage `cmds` renders and the observed coverage: a sliver drawn over
+ * pixels that show none costs the area it covers.
+ */
+function coverageMisfit(cmds: PathCommand[], patch: CoveragePatch): number {
+  const cover = pathCoverage(cmds, patch)
+  let misfit = 0
+  for (let i = 0; i < patch.w * patch.h; i++) {
+    if (patch.weight[i]) misfit += Math.abs(cover[i] - patch.data[i])
+  }
+  return misfit
+}
+
+/** Distance (patch px) from a tip's triangle within which a pixel's coverage is compared. */
+const TIP_REACH = 1.5
+
+/** Distance from (x, y) to the filled triangle `tri`, 0 inside. */
+function triangleDistance(tri: number[][], x: number, y: number): number {
+  let d = Infinity
+  let sign = 0
+  let inside = true
+  for (let k = 0; k < 3; k++) {
+    const [ax, ay] = tri[k]
+    const [bx, by] = tri[(k + 1) % 3]
+    const ex = bx - ax
+    const ey = by - ay
+    const len2 = ex * ex + ey * ey
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2)) : 0
+    d = Math.min(d, Math.hypot(x - ax - t * ex, y - ay - t * ey))
+    const side = Math.sign(ex * (y - ay) - ey * (x - ax))
+    if (side !== 0) {
+      if (sign === 0) sign = side
+      else if (side !== sign) inside = false
+    }
+  }
+  return inside ? 0 : d
 }
 
 /**
@@ -1020,7 +1321,11 @@ function spanCost(
   if (tryCurve) {
     const circle = fitCircleThrough(pts, first, last)
     let arcOK = false
-    if (circle && arcSweepMonotone(pts, first, last, circle)) {
+    if (
+      circle &&
+      arcSweepMonotone(pts, first, last, circle) &&
+      arcResolved(sig, first, last, circle, opts)
+    ) {
       const cd = circleDeviation(pts, sig, first, last, circle, opts)
       if (cd.worst <= 1) {
         arcOK = true
@@ -1195,6 +1500,23 @@ function lineDeviation(
     if (w > worst) worst = w
   }
   return { chi2, worst }
+}
+
+/**
+ * Whether the samples an arc bends through are held tightly enough to show a
+ * circle that small: its radius at least each interior sample's band. A
+ * lattice corner held to a pixel fits any circle under a pixel, and one drawn
+ * the long way round through it beads the outline.
+ */
+function arcResolved(
+  sig: number[],
+  first: number,
+  last: number,
+  c: Circle,
+  opts: RunFitOptions,
+): boolean {
+  for (let i = first + 1; i < last; i++) if (c.r < bandAt(sig, i, opts)) return false
+  return true
 }
 
 /** Radial residuals of the interior samples from the fitted circle. */
@@ -2661,6 +2983,8 @@ const G1_ROUNDS = 3
 const G1_LOCAL = 2
 /** Rounds of splitting the pieces the spline cannot keep inside the band. */
 const G1_SPLIT_ROUNDS = 4
+/** Farthest (samples) a split moves off a loosely held worst sample onto a tighter one. */
+const G1_KNOT_SHIFT = 2
 /** Rounds of the per-piece fallback ladder. */
 const G1_FALLBACK_ROUNDS = 8
 /** Rounds of knot removal. */
@@ -3148,7 +3472,10 @@ function fitFreeCubic(
  * τ the G1 refit holds a span to: the mode's, narrowed on a clean edge. The RMS
  * residual of the refined samples about the DP's fit (in σ) measures the edge's
  * noise; below half σ the band narrows with it, to {@link G1_BAND_MIN}. Lattice
- * samples carry the staircase rather than the edge's noise and do not count.
+ * samples carry the staircase rather than the edge's noise and do not count,
+ * and the band never narrows past one the DP's own fit keeps them inside: a
+ * staircase corner held as loosely as the search's reach would otherwise fall
+ * outside it, and the refit break the span at every one.
  */
 function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptions): number {
   const refined = sig.map((v) => (v >= SIGMA_LATTICE ? Infinity : v))
@@ -3159,7 +3486,15 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
     for (let i = sg.a + 1; i < sg.b; i++) if (sig[i] < SIGMA_LATTICE) n++
   }
   if (n < G1_NOISE_SAMPLES) return opts.tau
-  return opts.tau * Math.max(G1_BAND_MIN, Math.min(1, G1_NOISE_GAIN * Math.sqrt(chi2 / n)))
+  const narrowed =
+    opts.tau * Math.max(G1_BAND_MIN, Math.min(1, G1_NOISE_GAIN * Math.sqrt(chi2 / n)))
+  const lattice = sig.map((v) => (v >= SIGMA_LATTICE ? v : Infinity))
+  let kept = 0
+  for (const sg of segs) {
+    const need = segDeviation(pts, lattice, sg, opts).worst * opts.tau
+    if (need > kept) kept = need
+  }
+  return Math.max(narrowed, Math.min(kept, opts.tau))
 }
 
 /**
@@ -3195,7 +3530,10 @@ function g1Tau(pts: FlatPoints, sig: number[], segs: SegFit[], opts: RunFitOptio
  *    alternated.
  * 3. A piece the spline cannot keep inside the band — or that takes a wrong
  *    shape: an arm longer than its chord, a turn past a quarter circle, a loop
- *    between two samples — is split at its worst sample. A piece that still
+ *    between two samples — is split at its worst sample, or at the nearest
+ *    sample held no looser than a lattice point within two of a worst sample
+ *    held looser (a staircase corner the refinement left past its reach, or
+ *    refused), since a knot is pinned on its sample. A piece that still
  *    fails climbs a ladder, a step per round: a staircase step of the lattice
  *    merges into a smooth neighbour; a long piece is split again, clear of its
  *    ends; a chord if a chord is admissible (its neighbours then meet it
@@ -3660,7 +3998,10 @@ function g1Refit(
     }
   }
   const bad = (): boolean => pieces.some((p) => p.worst > 1)
-  // The sample of piece q farthest (in bands) from it, `margin` intervals clear of its ends.
+  // The sample of piece q farthest (in bands) from it, `margin` intervals clear
+  // of its ends. A knot is pinned on its sample, so where that sample is held
+  // looser than a lattice point (one the refinement left past its reach, or
+  // refused), the nearest within G1_KNOT_SHIFT held no looser takes the knot.
   const worstSample = (q: number, margin = 2): number => {
     const p = pieces[q]
     const a = knots[q]
@@ -3673,6 +4014,12 @@ function g1Refit(
       if (w > bestW) {
         bestW = w
         best = i
+      }
+    }
+    if (best < 0 || !(sig[best] > SIGMA_LATTICE)) return best
+    for (let d = 1; d <= G1_KNOT_SHIFT; d++) {
+      for (const i of [best - d, best + d]) {
+        if (i >= a + margin && i <= b - margin && sig[i] <= SIGMA_LATTICE) return i
       }
     }
     return best

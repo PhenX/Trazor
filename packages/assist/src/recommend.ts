@@ -1,13 +1,16 @@
 import type { ProfileId, VectorizeSettings } from '@trazor/core'
 import {
   DEFAULT_SETTINGS,
+  SUPERSAMPLE_BUDGET_SIDE,
   clamp,
   clampInt,
   getProfile,
   hexToRgb,
+  oklabLightness,
   srgbToLinear,
   supersampleWithinBudget,
 } from '@trazor/core'
+import { PIXEL_ART_SCORE } from './analyze'
 import type { ImageAnalysis } from './analyze'
 
 /**
@@ -104,8 +107,43 @@ const EDGE_ALPHA_THRESHOLD = 128
  */
 const INK_TONE_LEVELS = 4
 
-/** Speck floor for a tonal ink scan — drops the paper's residual JPEG specks. */
-const INK_TONE_MIN_REGION = 16
+/**
+ * Speck floor for a tonal ink scan, in px². JPEG spreads a hairline over the
+ * ink level and a gray one, so the tone count cuts it into fragments of a few
+ * pixels each; a larger floor merges those fragments into the paper, and a
+ * face's contour, a letter's stroke or a balloon's outline turns into dashes.
+ * The few tone levels already keep the paper's texture to one level. Measured
+ * on the ground-truth gate against a floor of 16: a pen-and-ink plate GMSD
+ * 0.279 → 0.196, a newspaper strip 0.241 → 0.147, a locomotive drawing
+ * 0.226 → 0.191.
+ */
+const INK_TONE_MIN_REGION = 4
+
+/** Most colors a palette holds (`paletteSize`'s bound): pixel art with more shares the closest shades. */
+const PIXEL_PALETTE_MAX = 64
+/** Most pixel-grid colors the analyzer counts (`gridColors`); past it the count is a lower bound. */
+const PIXEL_PALETTE_COUNTED = 256
+/**
+ * Most region corners (`pixelCorners`) and most pixels a canvas that reads as
+ * pixel art may hold and still be traced pixel by pixel. The pixel-art profile
+ * traces at full size whatever the canvas, every corner a point of a path, and
+ * memory follows the corners first: 1 to 2 GB a million (0.6 GB for the
+ * 364 000 of a 1380 × 1380 tile map, traced in 2 s; 1.0 GB for the 398 000 of
+ * 700 × 700 pixels of three-color noise), then the pixels, 16 to 25 MB a
+ * million (0.6 GB for a tile map of 202 000 corners enlarged to 4096 × 4096,
+ * the most pixels the engine works on anywhere: `SUPERSAMPLE_BUDGET_SIDE`),
+ * then the length of the boundaries. Both bounds met at once take 0.8 GB on
+ * the tile map and 1.1 GB on the noise, and the heaviest canvas found within
+ * them, one-pixel rows of long dashes on 4096 × 4096, 1.5 GB; a 3072 × 3072
+ * tile map of 1.6 million corners took 2 GB. An enlargement adds pixels and no
+ * corner. The pixel art of the web corpus holds 127 000 corners at most (a
+ * 640 × 480 isometric scene; an 832 × 1344 sprite sheet 118 000), and a small
+ * canvas 16 129, the windows of 128 × 128 pixels, where its enlargement was
+ * read right. Past either bound the canvas takes the route it would if it did
+ * not read as pixel art, at that route's size.
+ */
+const PIXEL_ART_MAX_CORNERS = 400_000
+const PIXEL_ART_MAX_PIXELS = SUPERSAMPLE_BUDGET_SIDE * SUPERSAMPLE_BUDGET_SIDE
 
 /**
  * Cartoon-style art — flat fills meeting at crisp, anti-aliased edges — is
@@ -247,18 +285,62 @@ function isBilevelInk(a: ImageAnalysis): boolean {
   )
 }
 
+/** Mean lightness (Oklab) above which an achromatic scan reads as marks on a bright paper ground. */
+const PAPER_GROUND_MIN_LIGHTNESS = 0.7
+
+/**
+ * An ink print with large solid blacks (a cover, a poster plate) reads darker
+ * than `PAPER_GROUND_MIN_LIGHTNESS` yet still lies on a paper ground: its two
+ * dominant tones cover at least `INK_PRINT_MIN_TWO_TONE` of it, the lighter is
+ * paper of at least `INK_PRINT_MIN_PAPER` (Oklab L), the darker ink of at most
+ * `INK_PRINT_MAX_INK`, and the ink does not take over the page (mean lightness
+ * above `INK_PRINT_MIN_LIGHTNESS`). A grayscale photograph spreads over many
+ * tones, so its two dominant ones never cover that much. Such a print traced
+ * as a photo splits each JPEG'd hairline over its 32 levels and drops the
+ * pieces under its 10 px² floor; measured on the ground-truth gate on a
+ * pen-and-ink cover, the tonal route moves GMSD 0.207 → 0.133 and missed edges
+ * 0.695 → 0.469.
+ */
+const INK_PRINT_MIN_TWO_TONE = 0.75
+const INK_PRINT_MIN_PAPER = 0.95
+const INK_PRINT_MAX_INK = 0.3
+const INK_PRINT_MIN_LIGHTNESS = 0.5
+
+/** Oklab lightness of a hex color. */
+function hexLightness(hex: string): number {
+  return oklabLightness(...(hexToRgb(hex) ?? [0, 0, 0]))
+}
+
+/**
+ * Marks on a bright paper ground: a light image overall, or an ink print whose
+ * solid blacks darken it while white paper and black ink still make up most of
+ * it (see `INK_PRINT_MIN_TWO_TONE`). A print with the exactly-flat interiors
+ * region growing seeds from ({@link isCartoon}) keeps that route, which grows
+ * each hairline between its two real neighbors.
+ */
+function hasPaperGround(a: ImageAnalysis): boolean {
+  if (a.meanLightness > PAPER_GROUND_MIN_LIGHTNESS) return true
+  return (
+    !isCartoon(a) &&
+    a.meanLightness > INK_PRINT_MIN_LIGHTNESS &&
+    a.twoToneCoverage >= INK_PRINT_MIN_TWO_TONE &&
+    hexLightness(a.paperHex) >= INK_PRINT_MIN_PAPER &&
+    hexLightness(a.inkHex) <= INK_PRINT_MAX_INK
+  )
+}
+
 /**
  * Achromatic line-art scan carrying real gray tone: an ink drawing, engraving or
  * technical/patent scan on bright paper — busy edges, a limited tone count, no
  * color — that is not cleanly bilevel ({@link isBilevelInk}). What separates it
- * from a mid-toned grayscale photo is the bright paper ground and the sparse
- * tone count; what separates it from clean two-tone ink is the mid-gray it
- * carries (faint pencil, engraved hatching, a JPEG'd rule). A bw threshold
- * collapses that mid-gray into solid ink — thickening every stroke and flooding
- * hatched areas black — so this is traced as grayscale tonal layers, which keep
- * each stroke at its true darkness. Clean flat art (a gray icon whose mid-gray
- * is its anti-aliased rim) and art on a transparent ground are not scans: they
- * keep their own flat inks.
+ * from a mid-toned grayscale photo is the bright paper ground
+ * ({@link hasPaperGround}) and the sparse tone count; what separates it from
+ * clean two-tone ink is the mid-gray it carries (faint pencil, engraved
+ * hatching, a JPEG'd rule). A bw threshold collapses that mid-gray into solid
+ * ink — thickening every stroke and flooding hatched areas black — so this is
+ * traced as grayscale tonal layers, which keep each stroke at its true
+ * darkness. Clean flat art (a gray icon whose mid-gray is its anti-aliased rim)
+ * and art on a transparent ground are not scans: they keep their own flat inks.
  */
 function isTonalLineArt(a: ImageAnalysis): boolean {
   return (
@@ -266,11 +348,101 @@ function isTonalLineArt(a: ImageAnalysis): boolean {
     !isBilevelInk(a) &&
     !isCleanFlatArt(a) &&
     !a.hasAlpha &&
-    a.meanLightness > 0.7 &&
+    hasPaperGround(a) &&
     a.edgeDensity > 0.1 &&
     a.distinctColors <= 4096
   )
 }
+
+/**
+ * A drawing on toned paper: ink, pencil or wash on a cream, tan or tinted
+ * ground, scanned or photographed. Paper grain and JPEG noise give such a scan
+ * every photographic tell (`photoScore` 1, thousands of colors, no flat
+ * interiors), the paper's faint chroma straddles the grayscale cut, and the two
+ * commonest coarse bins are both paper, so `inkHex` ≈ `paperHex`. What sets it
+ * apart is read off the lightness histogram instead: one narrow paper peak
+ * holding a large share of the image, a tinted paper (white and gray grounds are
+ * left to the black & white, tonal and photo rules), a mark clearly darker than
+ * it, every color a mix of that one paper and that one ink (`toneAxisResidual`:
+ * a colored print or a painted fill strays off the paper–ink line), and
+ * mid-tones that stay thin — stroke rims, hatching, brushed wash — instead of
+ * filling smooth areas (`midToneArea`). A sepia portrait, a toned film still
+ * and a print of either in its card mount can pass every other test (the mount
+ * is a narrow paper peak too) but fail that one, unless cropped close to a
+ * high-key or flat-shaded subject. A busy photograph (foliage, ice, a crowd)
+ * does not fill smooth areas either: it is told apart by tones that spread,
+ * stray off one hue or sit on a dark ground, and one toned to a single hue on a
+ * light ground (its card mount, or pale clothing or ice in a close crop) is
+ * taken for a drawing; such photographs trace about as well here as on the
+ * photo route. A toned paper must keep its color, which grayscale or a
+ * black-on-white threshold would throw away.
+ */
+const TONED_MIN_GROUND_SHARE = 0.3
+/**
+ * Widest ground peak (half width at half maximum, in Oklab lightness) read as
+ * paper. Grain and JPEG noise widen a paper's peak to 0.02–0.07 (a dense etching
+ * scanned small and recompressed); an unmounted photograph's tones often
+ * spread 0.1 and more.
+ */
+const TONED_MAX_GROUND_SPREAD = 0.08
+const TONED_MIN_GROUND_LIGHTNESS = 0.7
+const TONED_MAX_GROUND_LIGHTNESS = 0.97
+/** Ground chroma from which a paper is toned (aged paper reads about 0.013–0.07), not white or gray. */
+const TONED_MIN_GROUND_CHROMA = 0.012
+const TONED_MIN_MARK_GAP = 0.2
+/**
+ * Most off-axis color a duotone carries. Ink and paper alone read up to about
+ * 0.022 (a stained or unevenly toned sheet), a small colored stamp or note on
+ * them about as much; a colored print on the same paper (a comic, a
+ * watercolored patent drawing, gilt and painted ornament) mostly reads 0.03 and
+ * more. The 90th percentile ignores color on less than a tenth of the image, so
+ * a sheet with a few small washes passes, and its washes then compete with the
+ * paper and ink for the palette's entries.
+ */
+const TONED_MAX_AXIS_RESIDUAL = 0.026
+/**
+ * Largest share of the image a drawing holds in smooth mid-tone areas
+ * (`midToneArea`). Drawings on toned paper read under 0.006 (0.012 rescaled and
+ * recompressed); portraits, toned film stills and other photographs with
+ * smooth tones read about 0.02 and more, mounted or not; busy photographs
+ * (foliage, grass, ice) read 0.005–0.015 and are left to the other tests.
+ */
+const TONED_MAX_MID_TONE_AREA = 0.015
+
+/** Whether the image reads as a drawing on toned paper, traced in its own paper and ink colors. */
+function isInkOnToned(a: ImageAnalysis): boolean {
+  return (
+    !a.hasAlpha &&
+    !isCleanFlatArt(a) &&
+    !isCartoon(a) &&
+    a.groundShare >= TONED_MIN_GROUND_SHARE &&
+    a.groundSpread <= TONED_MAX_GROUND_SPREAD &&
+    a.groundLightness >= TONED_MIN_GROUND_LIGHTNESS &&
+    a.groundLightness <= TONED_MAX_GROUND_LIGHTNESS &&
+    a.groundChroma >= TONED_MIN_GROUND_CHROMA &&
+    a.groundLightness - a.markLightness >= TONED_MIN_MARK_GAP &&
+    a.toneAxisResidual <= TONED_MAX_AXIS_RESIDUAL &&
+    a.midToneArea <= TONED_MAX_MID_TONE_AREA
+  )
+}
+
+/** Inks a toned scan is traced with: paper, its texture's darker tones, and the ink's tones. */
+const TONED_PALETTE = 8
+/**
+ * Mid-tone share (`midToneShare`) under which a toned drawing is near two-tone:
+ * clean ink lines whose only mid-tones are their rims, such as a coloring page
+ * or a pen drawing without hatching or wash. Its palette folds to the colors it
+ * holds (`autoPaletteSize`): a fixed palette would spend most of its entries on
+ * paper grain and on near-identical inks, each traced as its own layer of
+ * flecks. A drawing with hairlines, pencil, hatching or wash reads 0.07 and more
+ * and keeps the whole palette, because folding a paper-grain entry also hands
+ * the faint strokes it holds to the paper.
+ */
+const TONED_TWO_TONE_MAX_MID_SHARE = 0.05
+/** Speck floor for a toned scan: a hairline's break is a few pixels, paper grain survives as a second paper tone. */
+const TONED_MIN_REGION = 4
+/** Smoothing for a toned scan: a calligraphic hairline's taper is real, the illustration profile's 0.8 rounds it off. */
+const TONED_SMOOTHING = 0.6
 
 /**
  * Photographic-looking texture (noise, blocking, ringing) sitting on top of a
@@ -287,6 +459,45 @@ function isCompressedFlat(a: ImageAnalysis): boolean {
     a.colorfulness >= ACHROMATIC_CHROMA &&
     !isCleanFlatArt(a) &&
     !isCartoon(a)
+  )
+}
+
+/**
+ * A printed page scanned from paper — a newsprint comic, a colored print: busy
+ * ink edges over fills with no exactly-flat pixel (paper grain, JPEG, a dot
+ * screen) and no smooth ramp, in color. On the web corpus it is the seven
+ * newsprint comic scans the photo rule takes and one colored calligraphy panel.
+ * A photograph with smooth areas (sky, skin, a backdrop) fails the ramp bound
+ * (`rampArea` 0.24–0.63), a painted film still at full size the edge bound
+ * (0.07–0.11), digital art the flat bound. A busy photograph with no smooth
+ * area (an albumen stereo view, a crowd, a cabinet card in its printed mount)
+ * passes, as does a painted still scaled to half size; the smaller floor traces
+ * those as well or a little better, for about 15% more path parameters.
+ */
+const PRINT_MAX_FLAT_DENSITY = 0.05
+const PRINT_MAX_RAMP_AREA = 0.08
+const PRINT_MIN_EDGE_DENSITY = 0.15
+/**
+ * Speck floor for a printed scan on the photo route: the photo profile's 10 px²
+ * merges a lettering stroke or a hatching line a pixel or two wide (soft from a
+ * downscale) into the paper, so captions dissolve and frame rules break into
+ * dashes. The bilateral denoise keeps the paper grain from coming back as
+ * specks at this floor. Measured on the ground-truth gate over the seven
+ * newsprint scans: ΔE00 5.29 → 5.02, GMSD 0.160 → 0.130, missed edges
+ * 1.17 → 1.04, for 21% more path parameters.
+ */
+const PRINT_MIN_REGION = 4
+
+/** Whether the image reads as a printed color page scanned from paper. */
+function isPrintedScan(a: ImageAnalysis): boolean {
+  return (
+    a.photoScore > 0.6 &&
+    !isCleanFlatArt(a) &&
+    !isCartoon(a) &&
+    !isAchromatic(a) &&
+    a.flatDensity < PRINT_MAX_FLAT_DENSITY &&
+    a.rampArea < PRINT_MAX_RAMP_AREA &&
+    a.edgeDensity >= PRINT_MIN_EDGE_DENSITY
   )
 }
 
@@ -345,10 +556,57 @@ export function recommendSettings(
   }
 
   if (profileId === 'pixel-art') {
-    patch.paletteSize = clampInt(Math.max(2, a.distinctColors), 2, 64)
-    r.add('pixelExact', `Kept the ${a.distinctColors} original colors exactly.`, {
-      count: a.distinctColors,
-    })
+    // The canvas's own count when it read as pixel art. A pixel-art goal set
+    // on another image has none: the sampled count and the grid's, which can
+    // each miss a color, bound it from below.
+    const colors =
+      a.pixelColors > 0
+        ? a.pixelColors
+        : Math.max(2, a.distinctColors, a.gridColors <= PIXEL_PALETTE_COUNTED ? a.gridColors : 0)
+    if (a.pixelColors > 0 && colors <= PIXEL_PALETTE_MAX) {
+      patch.paletteSize = colors
+      r.add('pixelExact', `Kept the ${colors} original colors exactly.`, { count: colors })
+    } else if (colors <= PIXEL_PALETTE_MAX) {
+      patch.paletteSize = colors
+    } else {
+      // More colors than a palette holds: a full palette, none of its entries
+      // folded by an automatic count.
+      patch.paletteSize = PIXEL_PALETTE_MAX
+      patch.autoPaletteSize = false
+      r.add(
+        'pixelPalette',
+        `${colors} colors, more than a palette holds — the closest shades share one of ${PIXEL_PALETTE_MAX}.`,
+        { count: colors, max: PIXEL_PALETTE_MAX },
+      )
+    }
+    return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
+  }
+
+  // A drawing on toned paper keeps its paper and its ink: a few colors along
+  // the paper–ink line, measured by k-means, denoised without blur (a blur melts
+  // hairlines into the paper), a small speck floor, at native size on the
+  // classic chain.
+  if (goal === 'auto' && isInkOnToned(a)) {
+    patch.mode = 'color'
+    patch.segmentation = 'quantize'
+    patch.paletteSize = TONED_PALETTE
+    patch.autoPaletteSize = a.midToneShare < TONED_TWO_TONE_MAX_MID_SHARE
+    patch.colorCoherence = 0.5
+    patch.denoise = 'bilateral'
+    patch.blurRadius = 0
+    patch.minRegionArea = TONED_MIN_REGION
+    patch.smoothing = TONED_SMOOTHING
+    r.add(
+      'tonedInk',
+      'Ink on toned paper — the paper and ink colors kept, strokes traced unblurred.',
+    )
+    if (patch.autoPaletteSize) {
+      r.add(
+        'tonedTwoTone',
+        'Clean lines with almost no mid-tones — the palette folds the paper grain and duplicate inks into the colors the drawing holds.',
+      )
+    }
+    traceSize(a, patch, r)
     return { profileId, patch, rationale: r.text, rationaleKeys: r.keys }
   }
 
@@ -438,7 +696,8 @@ export function recommendSettings(
     // speck floor stands (a flag's stars and a scene's small marks survive),
     // and the palette budget caps the fills that remain — hard with
     // `autoPaletteSize` off; under it, on stacked layers, a visibly distinct
-    // feature keeps its color past the cap (up to twice it).
+    // feature keeps its color past the cap (up to twice it, or 64 colors for
+    // a budget of 24 and more).
     // Gradient-heavy, sprite-fine or hard-edged art is excluded (`isCartoon`)
     // and stays on quantization, which keeps a gradient's bands and traces a
     // pixel palette exactly.
@@ -480,6 +739,16 @@ export function recommendSettings(
     r.add(
       'compressed',
       'Compression artifacts — denoise, light blur and speckle merge recover clean shapes.',
+    )
+  }
+
+  // A printed page scan on the photo route keeps its fine lettering and
+  // hatching: the photo speck floor would merge them into the paper.
+  if (goal === 'auto' && profileId === 'photo' && isPrintedScan(a)) {
+    patch.minRegionArea = PRINT_MIN_REGION
+    r.add(
+      'printScan',
+      'Printed page scan — fine lettering and hatching kept as regions of their own.',
     )
   }
 
@@ -569,9 +838,27 @@ function encodedLuma(hex: string): number {
 }
 
 function pickProfile(a: ImageAnalysis, r: Rationale): ProfileId {
-  if (a.pixelArtScore >= 0.7) {
-    r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
-    return 'pixel-art'
+  const small = a.pixelArtScore >= PIXEL_ART_SCORE
+  if (small || a.pixelGrid) {
+    if (a.pixelCorners <= PIXEL_ART_MAX_CORNERS && a.width * a.height <= PIXEL_ART_MAX_PIXELS) {
+      if (small) {
+        r.add('pickPixelArt', 'Small canvas with few flat colors — treating as pixel art.')
+      } else {
+        r.add(
+          'pickPixelGrid',
+          'Hard-edged colors laid in regions of a few pixels — traced pixel by pixel as pixel art.',
+        )
+      }
+      return 'pixel-art'
+    }
+    r.add(
+      'pixelGridLarge',
+      'Reads as pixel art, but is too large or too detailed to trace pixel by pixel.',
+    )
+  }
+  if (isInkOnToned(a)) {
+    r.add('pickTonedInk', 'A drawing on toned paper — traced in its own paper and ink colors.')
+    return 'illustration'
   }
   // Two-tone only routes to B&W when it is genuinely achromatic; a saturated
   // two-color mark (navy on white, say) keeps its color through a flat profile.

@@ -18,6 +18,7 @@
  * of the chord), never on the chord geometry alone. Deterministic: integer
  * census and a fixed pixel order.
  */
+import { oklabLightness } from '@trazor/core'
 import type { LabelMap, RasterImage } from '@trazor/core'
 
 /**
@@ -414,6 +415,21 @@ const BAND_RAMP_SPREAD = 0.2
 const BAND_FLAT_SHARE = 0.05
 
 /**
+ * Least coverage of an outline's ink, read in lightness against the field, that
+ * a hair's darkest pixel must reach for the hair to be a stroke of that ink: a
+ * stroke thins away from the outline it leaves, but where it joins it, it is the
+ * outline's ink.
+ */
+const STROKE_PEAK_COVERAGE = 0.9
+
+/**
+ * Least share of a hair's extent (its bounding box's diagonal) the pixels where
+ * it meets outlines must span: a stroke runs from one outline to another across
+ * its field, while a glyph that touches an outline meets it at one tip.
+ */
+const STROKE_SPAN = 0.5
+
+/**
  * Passes over the regions: a band's pixels can go to a neighbor that was a band
  * itself, left for the next pass to settle.
  */
@@ -438,7 +454,14 @@ const BAND_ROUNDS = 2
  * read as a ramp across it (`BAND_RAMP_SPREAD`) with no flat core
  * (`BAND_FLAT_SHARE`), so a stroke drawn in an intermediate color is kept. A
  * line within one field, or one whose color is off the segment (a dark outline
- * between two colors), is never touched.
+ * between two colors), is never touched as a band.
+ *
+ * A hair within one field that runs from outline to outline is a stroke of the
+ * outlines' ink too thin to reach full coverage — compression gives it the
+ * field's chroma, so its mean is a color of no ink — and it goes to the outline
+ * whose ink it is (see {@link strokeOfOutline}), unless its color also paints a
+ * region that is no such stroke: then it is an ink of the drawing, a glyph drawn
+ * in it that meets an outline.
  *
  * Mutates `labels`; `paletteRgb` is the RGB bytes per label, `gradient` the
  * segmenter's per-pixel gradient magnitude and `flatThreshold` its marker bound,
@@ -483,6 +506,14 @@ function dissolveBandsOnce(
   const target = new Int32Array(n).fill(-1)
   const sides = new Uint32Array(k)
   const touched = new Int32Array(k)
+  const lightness = new Float64Array(k)
+  for (let l = 0; l < k; l++) {
+    lightness[l] = oklabLightness(paletteRgb[l * 3], paletteRgb[l * 3 + 1], paletteRgb[l * 3 + 2])
+  }
+  // Each stroke pixel's outline (or the side of the rim it lies on), applied
+  // after the scan where its label paints nothing but strokes (`ownInk` unset).
+  const stroke = new Int32Array(n).fill(-1)
+  const ownInk = new Uint8Array(k)
   // A hair is nowhere three source pixels thick: no pixel has a full square of
   // its own label of that side around it.
   const r = Math.max(1, Math.round(scale))
@@ -550,6 +581,33 @@ function dissolveBandsOnce(
     }
     const sa = a >= 0 ? sides[a] : 0
     const sb = b >= 0 ? sides[b] : 0
+    // A stroke of an outline: thin, bordered by its field (lighter) and by
+    // outlines (darker), none of which runs along it.
+    let outlined =
+      b >= 0 && total === per && 2 * len <= maxWidth * per && lightness[a] > lightness[c]
+    for (let j = 0; j < touchedN && outlined; j++) {
+      const l = touched[j]
+      if (l === a) continue
+      outlined = lightness[l] < lightness[c] && sides[l] <= BAND_SIDE_SHARE * per
+    }
+    const isStroke =
+      outlined &&
+      strokeOfOutline(
+        labels,
+        px,
+        paletteRgb,
+        lightness,
+        sides,
+        touched,
+        touchedN,
+        members,
+        len,
+        c,
+        a,
+        isBlock,
+        stroke,
+      )
+    if (!isStroke) ownInk[c] = 1
     for (let j = 0; j < touchedN; j++) sides[touched[j]] = 0
     if (2 * len > maxWidth * per || b < 0) continue
     if (sa + sb < NEIGHBOR_COVERAGE * total || sb < BAND_SIDE_SHARE * (sa + sb)) continue
@@ -598,6 +656,9 @@ function dissolveBandsOnce(
     }
     for (let j = 0; j < len; j++) target[members[j]] = ts[j] >= 0.5 ? a : b
   }
+  for (let i = 0; i < n; i++) {
+    if (stroke[i] >= 0 && ownInk[data[i]] === 0) target[i] = stroke[i]
+  }
   let moved = 0
   for (let i = 0; i < n; i++) {
     if (target[i] < 0) continue
@@ -605,4 +666,113 @@ function dissolveBandsOnce(
     moved++
   }
   return moved
+}
+
+/**
+ * Whether a thin component of label `c` within field `f` (its other sides, in
+ * `sides`/`touched`, darker outlines none of which runs along it) is a stroke of
+ * an outline's ink: a hair (no pixel `isBlock`) that meets outlines at places
+ * spanning `STROKE_SPAN` of its extent, whose darkest pixel reaches
+ * `STROKE_PEAK_COVERAGE` of an outline's ink in lightness — the ink of the
+ * outline it meets most among those it reaches. Where it is, each of its pixels'
+ * destination is written to `stroke`: a pixel along another outline is that
+ * outline's rim, and goes to it or to the field by its coverage; every other
+ * pixel goes to the ink's outline.
+ */
+function strokeOfOutline(
+  labels: LabelMap,
+  px: Uint8ClampedArray,
+  paletteRgb: Uint8Array,
+  lightness: Float64Array,
+  sides: Uint32Array,
+  touched: Int32Array,
+  touchedN: number,
+  members: Int32Array,
+  len: number,
+  c: number,
+  f: number,
+  isBlock: (p: number, c: number) => boolean,
+  stroke: Int32Array,
+): boolean {
+  const { width: w, height: h, data } = labels
+  const n = w * h
+  // Its extent, the extent of the pixels where it meets an outline, and its
+  // darkest pixel.
+  let x0 = w
+  let y0 = h
+  let x1 = -1
+  let y1 = -1
+  let mx0 = w
+  let my0 = h
+  let mx1 = -1
+  let my1 = -1
+  let darkest = Infinity
+  for (let j = 0; j < len; j++) {
+    const p = members[j]
+    const x = p % w
+    const y = (p - x) / w
+    x0 = Math.min(x0, x)
+    x1 = Math.max(x1, x)
+    y0 = Math.min(y0, y)
+    y1 = Math.max(y1, y)
+    const meets =
+      (x > 0 && data[p - 1] !== c && data[p - 1] !== f) ||
+      (x < w - 1 && data[p + 1] !== c && data[p + 1] !== f) ||
+      (y > 0 && data[p - w] !== c && data[p - w] !== f) ||
+      (y < h - 1 && data[p + w] !== c && data[p + w] !== f)
+    if (meets) {
+      mx0 = Math.min(mx0, x)
+      mx1 = Math.max(mx1, x)
+      my0 = Math.min(my0, y)
+      my1 = Math.max(my1, y)
+    }
+    const o = p * 4
+    darkest = Math.min(darkest, oklabLightness(px[o], px[o + 1], px[o + 2]))
+  }
+  if (mx1 < 0 || Math.hypot(mx1 - mx0, my1 - my0) < STROKE_SPAN * Math.hypot(x1 - x0, y1 - y0)) {
+    return false
+  }
+  const lf = lightness[f]
+  let ink = -1
+  for (let j = 0; j < touchedN; j++) {
+    const l = touched[j]
+    if (l === f || (lf - darkest) / (lf - lightness[l]) < STROKE_PEAK_COVERAGE) continue
+    if (ink < 0 || sides[l] > sides[ink] || (sides[l] === sides[ink] && l < ink)) ink = l
+  }
+  if (ink < 0) return false
+  for (let j = 0; j < len; j++) if (isBlock(members[j], c)) return false
+  for (let j = 0; j < len; j++) {
+    const p = members[j]
+    const x = p % w
+    let rim = -1
+    let onInk = false
+    for (let dir = 0; dir < 4; dir++) {
+      let q: number
+      if (dir === 0) q = x > 0 ? p - 1 : -1
+      else if (dir === 1) q = x < w - 1 ? p + 1 : -1
+      else if (dir === 2) q = p >= w ? p - w : -1
+      else q = p < n - w ? p + w : -1
+      const l = q >= 0 ? data[q] : -1
+      if (l === ink) onInk = true
+      else if (l >= 0 && l !== c && l !== f && rim < 0) rim = l
+    }
+    if (onInk || rim < 0) {
+      stroke[p] = ink
+      continue
+    }
+    const o = p * 4
+    const { t } = project(
+      px[o],
+      px[o + 1],
+      px[o + 2],
+      paletteRgb[rim * 3],
+      paletteRgb[rim * 3 + 1],
+      paletteRgb[rim * 3 + 2],
+      paletteRgb[f * 3],
+      paletteRgb[f * 3 + 1],
+      paletteRgb[f * 3 + 2],
+    )
+    stroke[p] = t >= 0.5 ? rim : f
+  }
+  return true
 }

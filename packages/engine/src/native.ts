@@ -1291,7 +1291,7 @@ async function colorPipeline(
     // and cutout or nested faces. On stacked layers under `autoPaletteSize` it
     // is the engine's own budget, spent until the next fold would repaint a
     // visibly distinct feature, which keeps its color past it (at most twice
-    // the budget).
+    // the budget, or 64 colors for a budget of 24 and more).
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,
@@ -1351,15 +1351,20 @@ async function colorPipeline(
     if (canCachePal) cacheStats(cache!).palMisses++
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
-    // fixed-palette paths, which quantize resolves without clustering).
-    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
-    const clusterSample: BinaryMask = {
-      width: image.width,
-      height: image.height,
-      data: new Uint8Array(image.width * image.height),
-    }
-    for (let i = 0; i < clusterSample.data.length; i++) {
-      clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+    // fixed-palette paths, which quantize resolves without clustering). Pixel
+    // art has no such rim, and nearly all of its pixels lie on an edge: its
+    // colors are trained on every pixel.
+    let clusterSample: BinaryMask | undefined
+    if (settings.curveMode !== 'pixel') {
+      const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
+      clusterSample = {
+        width: image.width,
+        height: image.height,
+        data: new Uint8Array(image.width * image.height),
+      }
+      for (let i = 0; i < clusterSample.data.length; i++) {
+        clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+      }
     }
     const quantOpts = {
       k: settings.paletteSize,
@@ -1789,6 +1794,7 @@ async function colorPipeline(
       stackLabels: Int32Array,
       label: number,
       translucent: boolean,
+      stacking?: { position: Int32Array; layer: number },
     ): SignedField | undefined =>
       refinesEdges
         ? layerField({
@@ -1800,6 +1806,8 @@ async function colorPipeline(
             paletteRgb,
             label,
             alpha: translucent ? undefined : alphaField,
+            position: stacking?.position,
+            layer: stacking?.layer,
           })
         : undefined
 
@@ -2000,6 +2008,7 @@ async function colorPipeline(
             plan.stackLabels,
             island ? label : -1,
             opacityOf(label) !== undefined,
+            island ? undefined : { position, layer: position[label] },
           )
           // A base layer's edge under a sheet above it is set back beneath the
           // sheet; an island is painted over everything and hides nothing.
@@ -2015,7 +2024,9 @@ async function colorPipeline(
                   scale: settings.supersample,
                 }
               : undefined
-          const polygons = wantPolygons ? layerPolygons(paths, field, hidden) : undefined
+          const polygons = wantPolygons
+            ? layerPolygons(paths, field, hidden, settings.supersample)
+            : undefined
           layers?.push({ label, paths })
           if (polygonSets && polygons) polygonSets.push(polygons)
           await paintLayer(label, paths, polygons)
@@ -2041,12 +2052,13 @@ async function colorPipeline(
  * edges and the transparency coverage); without one they depend on the rings
  * alone. With `hidden` — a base layer's stacking — each ring's edges that run
  * under a sheet painted above it are set back beneath that sheet
- * (`sheetSetback`).
+ * (`sheetSetback`). `scale` is the working pixels per source pixel.
  */
 function layerPolygons(
   paths: CrackPath[],
   field?: SignedField,
   hidden?: LayerStacking,
+  scale = 1,
 ): (RingFit | null)[] {
   return paths.map((p) =>
     ringPolygon(
@@ -2064,6 +2076,7 @@ function layerPolygons(
             hidden.scale,
           )
         : undefined,
+      scale,
     ),
   )
 }
@@ -3092,7 +3105,9 @@ async function inkPipeline(
         if (polygons) {
           cacheStats(cache!).polyHits++
         } else {
-          polygons = paths.map((p) => ringPolygon(p.points, coverage))
+          polygons = paths.map((p) =>
+            ringPolygon(p.points, coverage, undefined, settings.supersample),
+          )
           if (entry) {
             entry.polygons = polygons
             cacheStats(cache!).polyMisses++

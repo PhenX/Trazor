@@ -60,8 +60,71 @@ export interface ImageAnalysis {
   twoToneCoverage: number
   /** 0..1 likelihood the image is photographic. */
   photoScore: number
-  /** 0..1 likelihood the image is (native-resolution) pixel art. */
+  /**
+   * 0..1 likelihood the image is pixel art on a small canvas, counted at its own
+   * scale when it is enlarged by repeating pixels. `PIXEL_ART_SCORE` and more is
+   * pixel art; a larger canvas is told by `pixelGrid`.
+   */
   pixelArtScore: number
+  /**
+   * Side of the square blocks a nearest-neighbor enlargement repeats each
+   * pixel into: 3 for pixel art shown at 300%, 1 for an image at its own
+   * scale, read up to `PIXEL_SCALE_MAX`. Read off the color runs between edges,
+   * whose lengths an enlargement makes multiples of the block. The pixel-grid
+   * measures below are taken on one sample per block.
+   */
+  pixelScale: number
+  /** Distinct colors on the pixel grid (over white), counted up to `GRID_COLORS_MAX` + 1. */
+  gridColors: number
+  /** Grid colors that never fill a flat corner (a sample and its right and lower neighbors). */
+  gridRimColors: number
+  /**
+   * Share of the pixel grid's rim pixels on an edge — pixels in a color that
+   * never fills a flat corner, two of whose neighbors differ — whose color lies
+   * between those neighbors': anti-aliasing, which paints an edge pixel a blend
+   * of the colors it separates. Near 1 for anti-aliased art; low for pixel art,
+   * whose non-flat colors are details (an eye, a highlight, a one-pixel
+   * stroke), not blends. Taken over at least `RIM_MIN_SHARE` of the grid, so a
+   * few rim pixels weigh little; 0 when no rim pixel is on an edge, 1 when the
+   * grid holds more than `GRID_COLORS_MAX` colors (not measured).
+   */
+  blendRimShare: number
+  /**
+   * Share of the color changes between neighboring pixel-grid samples that are
+   * small steps (under `SOFT_STEP` summed RGB levels): near 0 for pixel art,
+   * which steps between distinct shades, and high where colors blend
+   * gradually — dithering, grain, a smooth gradient. 1 when not measured.
+   */
+  softStepShare: number
+  /**
+   * Share of the pixel grid in 4-connected same-color regions of at most
+   * `FINE_REGION_MAX` samples: the details of pixel art. 0 when not measured.
+   */
+  fineRegionShare: number
+  /** Pixel-grid samples per 4-connected same-color region; the grid's size when not measured. */
+  meanRegionArea: number
+  /**
+   * Whether the canvas is drawn on the pixel grid (`isPixelGrid`): pixel art
+   * of any size, told by its hard palette, its aliased edges and its paint laid
+   * in regions of a few pixels.
+   */
+  pixelGrid: boolean
+  /**
+   * Distinct colors of the whole canvas over white, counted exactly up to
+   * `PIXEL_COLORS_MAX` + 1, on a canvas that reads as pixel art
+   * (`pixelArtScore` or `pixelGrid`); 0 on any other. The palette a
+   * pixel-exact trace needs: `distinctColors` is sampled and `gridColors` reads
+   * a crop, and either can miss a color.
+   */
+  pixelColors: number
+  /**
+   * Corners of the same-color regions of the whole canvas over white: its
+   * 2 × 2 windows where an edge between two colors turns or meets another.
+   * Each is a point of the paths a pixel-exact trace draws, whatever the
+   * enlargement, so the count is what that trace costs. Counted on a canvas
+   * that reads as pixel art (`pixelArtScore` or `pixelGrid`); 0 on any other.
+   */
+  pixelCorners: number
   dominantHex: string[]
   meanLightness: number
   /** Std-dev of Oklab lightness. */
@@ -103,6 +166,58 @@ export interface ImageAnalysis {
    * recover.
    */
   edgeWidth: number
+  /**
+   * The paper of a drawing or scan, read off the Oklab-lightness histogram: its
+   * main mode (the lightness most samples share), painted the mean color of the
+   * samples within `groundSpread` of it. Unlike {@link paperHex} — the lighter of
+   * the two commonest coarse RGB bins — a textured or JPEG'd paper that straddles
+   * a bin boundary cannot fill both dominant tones and hide the ink.
+   */
+  groundHex: string
+  /** Oklab lightness of the ground's mode. */
+  groundLightness: number
+  /** Mean Oklab chroma of the ground samples (0 for white or gray paper). */
+  groundChroma: number
+  /** Half width at half maximum of the ground's lightness peak: a paper is narrow, a photo's tones broad. */
+  groundSpread: number
+  /** Fraction of samples within `groundSpread` of the ground's lightness. */
+  groundShare: number
+  /**
+   * The ink drawn on the ground: mean color of the darkest third of the samples
+   * darker than the ground by more than `max(0.12, 4·groundSpread)` (their cores,
+   * not their anti-aliased rims); the ground's color when there are none.
+   */
+  markHex: string
+  /** Oklab lightness of {@link markHex}. */
+  markLightness: number
+  /**
+   * 90th percentile of each sample's Oklab chroma-plane distance from the segment
+   * between the ground and the mark: near 0 when every color is a mix of one
+   * paper and one ink (a duotone — ink, pencil or wash on toned paper), large
+   * when the image carries other hues (a colored print, a photo, a painted fill).
+   * Read off a histogram up to `RESIDUAL_MAX` (0.25), where it saturates.
+   */
+  toneAxisResidual: number
+  /**
+   * Fraction of samples a quarter to three quarters of the way from the
+   * ground's lightness to the mark's: the anti-aliased rims, hairlines, pencil,
+   * hatching and wash of a drawing. Clean two-tone ink on its paper holds few
+   * (its strokes' thin rims only); 0 when there is no mark.
+   */
+  midToneShare: number
+  /**
+   * Fraction of samples inside mid-tone areas: {@link midToneShare} samples
+   * whose four neighbors are mid-tones too, in a 2×2 block whose mean color
+   * stays within `MID_TONE_MAX_GRAD` of the next blocks'. A drawing's
+   * mid-tones are the rims of its strokes, its hatching and its brushed or
+   * rubbed washes — thin or broken, so near 0. A photograph or a film still
+   * with smooth tones holds them as areas (skin, sky, a studio backdrop, a
+   * painted fill), and so does a toned print of one, card mount and all; a busy
+   * photograph (foliage, grass, ice, a crowd) breaks them up much as a drawing
+   * does. Block means, not single samples, decide the smoothness, so film grain
+   * or sensor noise does not hide such an area.
+   */
+  midToneArea: number
 }
 
 /** Oklab chroma above which a pixel counts as meaningfully colored (not neutral). */
@@ -193,6 +308,16 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
   let sumL = 0
   let sumL2 = 0
   let sumChroma = 0
+  // Per-sample Oklab and RGB on the sample grid, for the ground / mark reading.
+  const samples: Samples = {
+    L: new Float32Array(gw * gh),
+    a: new Float32Array(gw * gh),
+    b: new Float32Array(gw * gh),
+    rgb: new Uint8Array(gw * gh * 3),
+    lightHist: new Uint32Array(GROUND_BINS),
+    gw,
+    gh,
+  }
 
   for (let gy = 0; gy < gh; gy++) {
     const y = gy * step
@@ -211,6 +336,14 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
       if (colorSet.size < 65536) colorSet.add(colorKey)
       hist[((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)]++
       const [L, oa, ob] = rgbToOklab(r / 255, g / 255, b / 255)
+      const s = gy * gw + gx
+      samples.L[s] = L
+      samples.a[s] = oa
+      samples.b[s] = ob
+      samples.rgb[s * 3] = r
+      samples.rgb[s * 3 + 1] = g
+      samples.rgb[s * 3 + 2] = b
+      samples.lightHist[lightBin(L)]++
       const coarseKey = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
       if (coarseN[coarseKey] === 0) coarseKeys.push(coarseKey)
       coarseN[coarseKey]++
@@ -346,19 +479,27 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     1,
   )
 
-  // Pixel art is a small canvas painted in a hard palette: every pixel is one
-  // of a few colors, with no anti-aliased rim. Both tells are needed — a small
-  // anti-aliased icon has the canvas but not the palette (a 128 px icon may
-  // hold only 30 colors, yet most of them are rim colors that never fill a flat
-  // run), a large hard-edged logo the palette but not the canvas — and neither
-  // is pixel art.
+  // Pixel art is painted in a hard palette — every pixel one of a few colors,
+  // with no anti-aliased rim — at the scale of single pixels. A small canvas
+  // (counted at its own scale, before any enlargement) in a few colors that
+  // nearly all fill flat runs is one: a small anti-aliased icon has the canvas
+  // but not the palette (a 128 px icon may hold only 30 colors, yet most of
+  // them are rim colors that never fill a flat run). A larger canvas is pixel
+  // art when its pixel grid shows it (`isPixelGrid`, reported as `pixelGrid`):
+  // a sprite sheet, a tile map, a game scene.
   const rimColors = Math.max(0, colorSet.size - flatColorSet.size)
   const hardPalette = colorSet.size <= 32 && rimColors * 2 <= colorSet.size
+  const grid = pixelGridOf(image)
+  const nativePixels = Math.ceil(width / grid.pixelScale) * Math.ceil(height / grid.pixelScale)
   let pixelArtScore = 0
-  if (pixels <= 128 * 128) pixelArtScore += 0.45
+  if (nativePixels <= 128 * 128) pixelArtScore += 0.45
   if (hardPalette) pixelArtScore += 0.4
   if (microGradientDensity < 0.02) pixelArtScore += 0.15
   pixelArtScore = clamp(pixelArtScore, 0, 1)
+  const edgeWidth = edgeWidthOf(image)
+  const pixelGrid = isPixelGrid(grid, edgeWidth)
+  const canvas =
+    pixelGrid || pixelArtScore >= PIXEL_ART_SCORE ? pixelCanvasOf(image, PIXEL_COLORS_MAX) : null
 
   return {
     width,
@@ -385,8 +526,279 @@ export function analyzeImage(image: RasterImage): ImageAnalysis {
     minorTonesArea,
     inkHex: ink.hex,
     paperHex: paper.hex,
-    edgeWidth: edgeWidthOf(image),
+    edgeWidth,
+    ...grid,
+    pixelGrid,
+    pixelColors: canvas?.colors ?? 0,
+    pixelCorners: canvas?.corners ?? 0,
+    ...groundAndMark(samples),
   }
+}
+
+/** Oklab-lightness histogram bins the ground is read from. */
+const GROUND_BINS = 256
+/** Half-width (bins) of the box the lightness histogram is smoothed with before its mode is taken. */
+const GROUND_SMOOTH = 3
+/** Least lightness gap between the ground and a sample counted as ink. */
+const MARK_MIN_GAP = 0.12
+/** Histogram bins, over 0..`RESIDUAL_MAX`, the tone-axis residual's percentile is read from. */
+const RESIDUAL_BINS = 1024
+/** Largest tone-axis residual told apart (Oklab chroma-plane distance); farther samples share the last bin. */
+const RESIDUAL_MAX = 0.25
+/**
+ * L1 RGB difference (0..765) between a 2×2 block's mean color and its right or
+ * lower neighbor block's up to which the block is smooth for `midToneArea`: the
+ * analyzer's smooth-area step (`SMOOTH_MAX_GRAD`), taken on block means so
+ * grain and JPEG noise average out while a stroke's rim still steps past it.
+ */
+const MID_TONE_MAX_GRAD = 12
+
+/** The sample grid's colors and Oklab lightness histogram (`GROUND_BINS`). */
+interface Samples {
+  L: Float32Array
+  a: Float32Array
+  b: Float32Array
+  rgb: Uint8Array
+  lightHist: Uint32Array
+  gw: number
+  gh: number
+}
+
+/** The `GROUND_BINS` histogram bin of an Oklab lightness. */
+function lightBin(L: number): number {
+  return Math.min(GROUND_BINS - 1, Math.max(0, Math.floor(L * GROUND_BINS)))
+}
+
+type GroundMark = Pick<
+  ImageAnalysis,
+  | 'groundHex'
+  | 'groundLightness'
+  | 'groundChroma'
+  | 'groundSpread'
+  | 'groundShare'
+  | 'markHex'
+  | 'markLightness'
+  | 'toneAxisResidual'
+  | 'midToneShare'
+  | 'midToneArea'
+>
+
+/**
+ * The ground (paper) and mark (ink) of the samples, how far their colors stray
+ * from the line between them, and how much of the image sits in smooth
+ * mid-tone areas between them.
+ */
+function groundAndMark(samples: Samples): GroundMark {
+  const { L: sL, a: sA, b: sB, rgb, lightHist: hist, gw, gh } = samples
+  const n = gw * gh
+  if (n === 0) {
+    return {
+      groundHex: '#ffffff',
+      groundLightness: 1,
+      groundChroma: 0,
+      groundSpread: 0,
+      groundShare: 0,
+      markHex: '#ffffff',
+      markLightness: 1,
+      toneAxisResidual: 0,
+      midToneShare: 0,
+      midToneArea: 0,
+    }
+  }
+  // The ground is the mode of the box-smoothed histogram; its spread the half
+  // width at half maximum; its lightness the mean of the raw bins around it.
+  const B = GROUND_BINS
+  const sm = new Float64Array(B)
+  for (let k = 0; k < B; k++) {
+    let v = 0
+    for (let d = -GROUND_SMOOTH; d <= GROUND_SMOOTH; d++) {
+      const j = k + d
+      if (j >= 0 && j < B) v += hist[j]
+    }
+    sm[k] = v
+  }
+  let mode = 0
+  for (let k = 1; k < B; k++) if (sm[k] > sm[mode]) mode = k
+  let lo = mode
+  while (lo > 0 && sm[lo] > sm[mode] / 2) lo--
+  let hi = mode
+  while (hi < B - 1 && sm[hi] > sm[mode] / 2) hi++
+  const spread = Math.max(1, mode - lo, hi - mode) / B
+  let cw = 0
+  let cs = 0
+  for (let d = -GROUND_SMOOTH; d <= GROUND_SMOOTH; d++) {
+    const j = mode + d
+    if (j >= 0 && j < B) {
+      cw += hist[j]
+      cs += hist[j] * (j + 0.5)
+    }
+  }
+  const groundL = cs / cw / B
+  const inkBelow = groundL - Math.max(MARK_MIN_GAP, 4 * spread)
+
+  let pr = 0
+  let pg = 0
+  let pb = 0
+  let pL = 0
+  let pa = 0
+  let pbb = 0
+  let pc = 0
+  let pn = 0
+  let inkN = 0
+  for (let s = 0; s < n; s++) {
+    const L = sL[s]
+    if (Math.abs(L - groundL) <= spread) {
+      pr += rgb[3 * s]
+      pg += rgb[3 * s + 1]
+      pb += rgb[3 * s + 2]
+      pL += L
+      pa += sA[s]
+      pbb += sB[s]
+      pc += Math.sqrt(sA[s] * sA[s] + sB[s] * sB[s])
+      pn++
+    }
+    if (L < inkBelow) inkN++
+  }
+  pn = Math.max(1, pn)
+  const ground = [pL / pn, pa / pn, pbb / pn]
+  const groundHex = rgbToHex(Math.round(pr / pn), Math.round(pg / pn), Math.round(pb / pn))
+
+  // The mark is the darkest third of the ink samples, found on the histogram:
+  // every sample in a bin below the cut, and the cut bin's samples weighted to
+  // make up the third.
+  let markHex = groundHex
+  let mark = ground
+  if (inkN > 0) {
+    const want = Math.ceil(inkN / 3)
+    let cut = 0
+    let below = 0
+    while (below + hist[cut] < want) below += hist[cut++]
+    const cutWeight = (want - below) / hist[cut]
+    let ir = 0
+    let ig = 0
+    let ib = 0
+    let iL = 0
+    let ia = 0
+    let ibb = 0
+    for (let s = 0; s < n; s++) {
+      const k = lightBin(sL[s])
+      if (k > cut) continue
+      const w = k < cut ? 1 : cutWeight
+      ir += w * rgb[3 * s]
+      ig += w * rgb[3 * s + 1]
+      ib += w * rgb[3 * s + 2]
+      iL += w * sL[s]
+      ia += w * sA[s]
+      ibb += w * sB[s]
+    }
+    markHex = rgbToHex(Math.round(ir / want), Math.round(ig / want), Math.round(ib / want))
+    mark = [iL / want, ia / want, ibb / want]
+  }
+
+  // Tone-axis residual: the 90th percentile, off a histogram, of each sample's
+  // chroma-plane distance from the ground–mark segment.
+  const D = [mark[0] - ground[0], mark[1] - ground[1], mark[2] - ground[2]]
+  const dd = D[0] * D[0] + D[1] * D[1] + D[2] * D[2] || 1
+  const offHist = new Uint32Array(RESIDUAL_BINS)
+  for (let s = 0; s < n; s++) {
+    const v0 = sL[s] - ground[0]
+    const v1 = sA[s] - ground[1]
+    const v2 = sB[s] - ground[2]
+    const t = clamp((v0 * D[0] + v1 * D[1] + v2 * D[2]) / dd, 0, 1)
+    const e1 = v1 - t * D[1]
+    const e2 = v2 - t * D[2]
+    const off = Math.sqrt(e1 * e1 + e2 * e2)
+    offHist[Math.min(RESIDUAL_BINS - 1, Math.floor((off / RESIDUAL_MAX) * RESIDUAL_BINS))]++
+  }
+  const rank = Math.floor(0.9 * (n - 1)) + 1
+  let k90 = 0
+  for (let acc = offHist[0]; acc < rank; acc += offHist[++k90]);
+
+  return {
+    groundHex,
+    groundLightness: groundL,
+    groundChroma: pc / pn,
+    groundSpread: spread,
+    groundShare: pn / n,
+    markHex,
+    markLightness: mark[0],
+    toneAxisResidual: ((k90 + 0.5) * RESIDUAL_MAX) / RESIDUAL_BINS,
+    ...midTones(samples, groundL, inkN > 0 ? mark[0] : groundL),
+  }
+}
+
+/**
+ * {@link ImageAnalysis.midToneShare}, the share of samples a quarter to three
+ * quarters of the way from `groundL` down to `markL`, and
+ * {@link ImageAnalysis.midToneArea}, the share of samples that are such
+ * mid-tones with four mid-tone grid neighbors, in a 2×2 block smooth against
+ * the next blocks.
+ */
+function midTones(
+  samples: Samples,
+  groundL: number,
+  markL: number,
+): Pick<ImageAnalysis, 'midToneShare' | 'midToneArea'> {
+  const { L: sL, rgb, gw, gh } = samples
+  if (markL >= groundL) return { midToneShare: 0, midToneArea: 0 }
+  const midHi = groundL - 0.25 * (groundL - markL)
+  const midLo = groundL - 0.75 * (groundL - markL)
+  const mid = new Uint8Array(gw * gh)
+  let midN = 0
+  for (let s = 0; s < gw * gh; s++) {
+    if (sL[s] >= midLo && sL[s] <= midHi) {
+      mid[s] = 1
+      midN++
+    }
+  }
+  // Mean color of each 2×2 block (the last odd row or column is left out), then
+  // whether it is within MID_TONE_MAX_GRAD of its right and lower blocks.
+  const bw = gw >> 1
+  const bh = gh >> 1
+  const mean = new Float32Array(bw * bh * 3)
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const s = 2 * by * gw + 2 * bx
+      const o = (by * bw + bx) * 3
+      for (let c = 0; c < 3; c++) {
+        mean[o + c] =
+          (rgb[3 * s + c] +
+            rgb[3 * (s + 1) + c] +
+            rgb[3 * (s + gw) + c] +
+            rgb[3 * (s + gw + 1) + c]) /
+          4
+      }
+    }
+  }
+  const step = (o: number, q: number): number =>
+    Math.abs(mean[o] - mean[q]) +
+    Math.abs(mean[o + 1] - mean[q + 1]) +
+    Math.abs(mean[o + 2] - mean[q + 2])
+  let area = 0
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const o = (by * bw + bx) * 3
+      if (bx + 1 < bw && step(o, o + 3) > MID_TONE_MAX_GRAD) continue
+      if (by + 1 < bh && step(o, o + bw * 3) > MID_TONE_MAX_GRAD) continue
+      for (let dy = 0; dy < 2; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          const x = 2 * bx + dx
+          const y = 2 * by + dy
+          const s = y * gw + x
+          if (
+            mid[s] === 1 &&
+            (x === 0 || mid[s - 1] === 1) &&
+            (x + 1 === gw || mid[s + 1] === 1) &&
+            (y === 0 || mid[s - gw] === 1) &&
+            (y + 1 === gh || mid[s + gw] === 1)
+          ) {
+            area++
+          }
+        }
+      }
+    }
+  }
+  return { midToneShare: midN / (gw * gh), midToneArea: area / (gw * gh) }
 }
 
 /** The coarse bin (`COARSE_BINS`, 3 bits a channel) of a packed `0xrrggbb` color. */
@@ -424,6 +836,420 @@ function otherTonesIn(flat: ReadonlyMap<number, number>, key: number | undefined
     if (ciede2000(m[0], m[1], m[2], q[0], q[1], q[2]) > rasterInk.SAME_INK_DE00) other += n
   }
   return other
+}
+
+/** `pixelArtScore` from which a small canvas is pixel art. */
+export const PIXEL_ART_SCORE = 0.7
+/** Most colors of a pixel-art canvas counted exactly (`pixelColors`). */
+const PIXEL_COLORS_MAX = 4096
+/** Side of the central crop the pixel grid is read on: pixel art is local, and a crop keeps it as it is. */
+const PIXEL_GRID_CROP = 1024
+/**
+ * Largest enlargement block recognized: pixel art shown at up to 800%. Longer
+ * runs with a common divisor are a coincidence of a few long edges.
+ */
+const PIXEL_SCALE_MAX = 8
+/** Interior runs needed before their common divisor is read as an enlargement block. */
+const PIXEL_SCALE_MIN_RUNS = 32
+/** Most distinct grid colors a hard palette holds (an 8-bit palette); past it the grid is not measured. */
+const GRID_COLORS_MAX = 256
+/** Largest same-color region (grid samples) that counts as a pixel-art detail. */
+const FINE_REGION_MAX = 16
+/** Most rim pixels tested for a blend; a larger rim is tested at a stride. */
+const BLEND_TESTS_MAX = 65536
+/** Least RGB distance between the two neighbors an anti-aliased rim pixel blends. */
+const BLEND_MIN_SPAN = 40
+/** Most RGB distance of a blend from the line between its two neighbors. */
+const BLEND_MAX_OFF = 12
+/** Summed RGB difference under which a color change is a small step (`softStepShare`). */
+const SOFT_STEP = 24
+
+/**
+ * A canvas drawn on the pixel grid: three or more colors (a two-color raster
+ * is a scan or a threshold, traced smooth), up to `PIXEL_GRID_MAX_COLORS` (the
+ * richest pixel art measured holds 130; an image quantized to 256 colors fills
+ * its palette, 246 and more), no anti-aliasing (see `isAntiAliased`), edges a
+ * pixel sharp (`PIXEL_GRID_MAX_EDGE`, or `PIXEL_GRID_MAX_SHADED_EDGE` under
+ * paint shaded pixel by pixel), distinct shades (at most
+ * `PIXEL_GRID_MAX_SOFT` of the color changes small steps: pixel art reads up
+ * to 0.03; grain, a smooth gradient or a 256-color dither 0.11 and more), and
+ * paint laid in regions of a few pixels — `PIXEL_GRID_MAX_REGION` samples a
+ * region on average, or `PIXEL_GRID_MIN_FINE` of the grid in regions of
+ * `FINE_REGION_MAX` samples or fewer. Measured on the web corpus: pixel art
+ * reads a mean region of 2–49 or a fine share of 0.06–1; flat vector art
+ * rendered 1024 px wide without anti-aliasing a mean region of 100 and more
+ * and a fine share under 0.03, except dense art (a coat of arms: 31, 0.07).
+ * Rendered 256 px wide or less, the shapes of such art are a few pixels across
+ * and read as pixel art, which they then are. Sprites scattered over a large
+ * plain background read like flat art and keep their route.
+ *
+ * Not told apart: an aliased image in few colors whose speckle is not pixel
+ * art — an image posterized to a few levels, or dithered between the far
+ * entries of a small fixed palette — reads the same on every measure here and
+ * is traced as the pixels it is.
+ */
+const PIXEL_GRID_MIN_COLORS = 3
+const PIXEL_GRID_MAX_COLORS = 192
+/**
+ * Anti-aliasing on the pixel grid: most of the palette is rim colors and at
+ * least `AA_MIN_BLEND` of the rim pixels are blends. Anti-aliased art at full
+ * size reads 0.65 and more; pixel art reads 0–0.42, with most of its palette
+ * flat. It tells an anti-aliased image whose pixels were picked without
+ * blending them again — reduced by nearest neighbor, or cut to a palette of 64
+ * colors and more — where every edge is a pixel sharp and the colors still
+ * blend.
+ */
+const AA_MIN_BLEND = 0.4
+/**
+ * Widest edges of a canvas drawn on the pixel grid (`edgeWidth`): pixel art
+ * steps from one pixel to the next and reads 0.58 to 0.80. An image
+ * anti-aliased or scanned before its colors were cut to a few — a palettized
+ * logo, a scan at a few gray levels — keeps the ramps of its edges in the
+ * shades left, and reads wider.
+ */
+const PIXEL_GRID_MAX_EDGE = 0.8
+/**
+ * Widest edges under paint shaded pixel by pixel (`isShadedByPixel`): a sheet
+ * of portraits whose every surface steps through its shades a pixel or two at
+ * a time reads 0.84, wider than an outline though no pixel of it is a blend.
+ */
+const PIXEL_GRID_MAX_SHADED_EDGE = 0.86
+/**
+ * Paint shaded pixel by pixel: at most `SHADED_MAX_REGION` samples a region on
+ * average, at least `SHADED_MIN_FINE` of the grid in regions of
+ * `FINE_REGION_MAX` samples or fewer, and at most one color in
+ * `SHADED_PALETTE_PER_RIM` a rim color. The portraits read 6.5, 0.33 and no
+ * rim color. An image dithered to a fixed palette is as fine, but half of its
+ * colors and more exist only inside the dither's pattern and never fill a
+ * flat corner. Of 94 palettized, dithered and posterized images with edges
+ * this wide that pass every other test, 2 read as such paint. The measures
+ * are taken over the whole grid: a sheet whose portraits stand apart on their
+ * own ground (gutters of 8 pixels, a border) reads coarser and is not taken.
+ */
+const SHADED_MAX_REGION = 8
+const SHADED_MIN_FINE = 0.3
+const SHADED_PALETTE_PER_RIM = 4
+const PIXEL_GRID_MAX_SOFT = 0.08
+const PIXEL_GRID_MAX_REGION = 64
+const PIXEL_GRID_MIN_FINE = 0.04
+/**
+ * Least share of the grid counted as rim when the blend share is taken: a few
+ * rim pixels (a color cut off by the crop's edge) are no evidence of
+ * anti-aliasing, which rims every edge.
+ */
+const RIM_MIN_SHARE = 0.005
+
+type PixelGrid = Pick<
+  ImageAnalysis,
+  | 'pixelScale'
+  | 'gridColors'
+  | 'gridRimColors'
+  | 'blendRimShare'
+  | 'softStepShare'
+  | 'fineRegionShare'
+  | 'meanRegionArea'
+>
+
+function isAntiAliased(g: PixelGrid): boolean {
+  return g.gridRimColors * 2 > g.gridColors && g.blendRimShare >= AA_MIN_BLEND
+}
+
+function isShadedByPixel(g: PixelGrid): boolean {
+  return (
+    g.meanRegionArea <= SHADED_MAX_REGION &&
+    g.fineRegionShare >= SHADED_MIN_FINE &&
+    g.gridRimColors * SHADED_PALETTE_PER_RIM <= g.gridColors
+  )
+}
+
+function isPixelGrid(g: PixelGrid, edgeWidth: number): boolean {
+  return (
+    g.gridColors >= PIXEL_GRID_MIN_COLORS &&
+    g.gridColors <= PIXEL_GRID_MAX_COLORS &&
+    !isAntiAliased(g) &&
+    (edgeWidth <= PIXEL_GRID_MAX_EDGE ||
+      (edgeWidth <= PIXEL_GRID_MAX_SHADED_EDGE && isShadedByPixel(g))) &&
+    g.softStepShare <= PIXEL_GRID_MAX_SOFT &&
+    (g.meanRegionArea <= PIXEL_GRID_MAX_REGION || g.fineRegionShare >= PIXEL_GRID_MIN_FINE)
+  )
+}
+
+/**
+ * The whole canvas over white: its distinct colors, counted exactly up to
+ * `maxColors` + 1, and the corners of its same-color regions — the 2 × 2
+ * windows that are neither two equal rows nor two equal columns.
+ */
+function pixelCanvasOf(image: RasterImage, maxColors: number): { colors: number; corners: number } {
+  const { width, height, data } = image
+  const seen = new Set<number>()
+  let last = -1
+  let corners = 0
+  let above = new Int32Array(width)
+  let row = new Int32Array(width)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0, i = y * width * 4; x < width; x++, i += 4) {
+      const a = data[i + 3]
+      const key =
+        (overWhite(data[i], a) << 16) | (overWhite(data[i + 1], a) << 8) | overWhite(data[i + 2], a)
+      row[x] = key
+      if (key !== last) {
+        last = key
+        if (seen.size <= maxColors) seen.add(key)
+      }
+      if (x > 0 && y > 0) {
+        const rows = above[x - 1] === above[x] && row[x - 1] === key
+        const columns = above[x - 1] === row[x - 1] && above[x] === key
+        if (!rows && !columns) corners++
+      }
+    }
+    const swap = above
+    above = row
+    row = swap
+  }
+  return { colors: seen.size, corners }
+}
+
+function gcd(a: number, b: number): number {
+  while (b !== 0) [a, b] = [b, a % b]
+  return a
+}
+
+/**
+ * The pixel grid of the central `PIXEL_GRID_CROP`² (over white): the
+ * enlargement block, then on one sample per block the colors, how many rim
+ * pixels are blends, and the sizes of the same-color regions.
+ */
+function pixelGridOf(image: RasterImage): PixelGrid {
+  const { width, height, data } = image
+  const cw = Math.min(width, PIXEL_GRID_CROP)
+  const ch = Math.min(height, PIXEL_GRID_CROP)
+  const x0 = Math.floor((width - cw) / 2)
+  const y0 = Math.floor((height - ch) / 2)
+  const key = new Int32Array(cw * ch)
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const i = ((y0 + y) * width + x0 + x) * 4
+      const a = data[i + 3]
+      key[y * cw + x] =
+        (overWhite(data[i], a) << 16) | (overWhite(data[i + 1], a) << 8) | overWhite(data[i + 2], a)
+    }
+  }
+
+  // The enlargement block: the common divisor of the interior runs (bounded by
+  // a color change on both sides) along every row and column.
+  let block = 0
+  let runs = 0
+  for (let y = 0; y < ch && block !== 1; y++) {
+    let start = -1
+    for (let x = 1; x < cw; x++) {
+      if (key[y * cw + x] === key[y * cw + x - 1]) continue
+      if (start >= 0) {
+        block = gcd(block, x - start)
+        runs++
+      }
+      start = x
+    }
+  }
+  for (let x = 0; x < cw && block !== 1; x++) {
+    let start = -1
+    for (let y = 1; y < ch; y++) {
+      if (key[y * cw + x] === key[(y - 1) * cw + x]) continue
+      if (start >= 0) {
+        block = gcd(block, y - start)
+        runs++
+      }
+      start = y
+    }
+  }
+  const scale = block >= 2 && block <= PIXEL_SCALE_MAX && runs >= PIXEL_SCALE_MIN_RUNS ? block : 1
+  const gw = Math.max(1, Math.floor(cw / scale))
+  const gh = Math.max(1, Math.floor(ch / scale))
+  const n = gw * gh
+
+  // One sample per block, as an index into the grid's palette. Wherever the
+  // blocks start, pixels `scale` apart lie in neighboring blocks.
+  const index = new Map<number, number>()
+  const palette: number[] = []
+  const g = new Uint16Array(n)
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const k = key[y * scale * cw + x * scale]
+      let c = index.get(k)
+      if (c === undefined) {
+        if (palette.length === GRID_COLORS_MAX) {
+          return {
+            pixelScale: scale,
+            gridColors: GRID_COLORS_MAX + 1,
+            gridRimColors: GRID_COLORS_MAX + 1,
+            blendRimShare: 1,
+            softStepShare: 1,
+            fineRegionShare: 0,
+            meanRegionArea: n,
+          }
+        }
+        c = palette.length
+        index.set(k, c)
+        palette.push(k)
+      }
+      g[y * gw + x] = c
+    }
+  }
+
+  // Flat colors fill a corner somewhere: a sample and its right and lower
+  // neighbors. A rim pixel on an edge (two of its eight neighbors differ
+  // enough to be told apart) is a blend when its color lies between theirs; a
+  // rim pixel without such neighbors is shading, not an edge, and not counted.
+  const flat = new Uint8Array(palette.length)
+  for (let y = 0; y + 1 < gh; y++) {
+    for (let x = 0; x + 1 < gw; x++) {
+      const s = y * gw + x
+      if (g[s] === g[s + 1] && g[s] === g[s + gw]) flat[g[s]] = 1
+    }
+  }
+  let rim = 0
+  for (let s = 0; s < n; s++) if (flat[g[s]] === 0) rim++
+  let rimColors = 0
+  for (const f of flat) if (f === 0) rimColors++
+  const stride = Math.max(1, Math.ceil(rim / BLEND_TESTS_MAX))
+  let tested = 0
+  let blends = 0
+  let seenRim = 0
+  const nb: number[] = []
+  for (let s = 0; s < n; s++) {
+    if (flat[g[s]] === 1 || seenRim++ % stride !== 0) continue
+    const x = s % gw
+    const y = (s - x) / gw
+    nb.length = 0
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx
+        const yy = y + dy
+        if ((dx !== 0 || dy !== 0) && xx >= 0 && yy >= 0 && xx < gw && yy < gh) {
+          const q = g[yy * gw + xx]
+          if (q !== g[s] && !nb.includes(q)) nb.push(q)
+        }
+      }
+    }
+    const verdict = blendOf(palette[g[s]], nb, palette)
+    if (verdict === undefined) continue
+    tested++
+    if (verdict) blends++
+  }
+
+  // Color changes between neighbors, and how many are small steps.
+  let steps = 0
+  let soft = 0
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const s = y * gw + x
+      const c = palette[g[s]]
+      if (x + 1 < gw && g[s + 1] !== g[s]) {
+        steps++
+        if (rgbStep(c, palette[g[s + 1]]) < SOFT_STEP) soft++
+      }
+      if (y + 1 < gh && g[s + gw] !== g[s]) {
+        steps++
+        if (rgbStep(c, palette[g[s + gw]]) < SOFT_STEP) soft++
+      }
+    }
+  }
+
+  // Same-color regions, 4-connected.
+  const seen = new Uint8Array(n)
+  const stack = new Int32Array(n)
+  let regions = 0
+  let fine = 0
+  for (let s0 = 0; s0 < n; s0++) {
+    if (seen[s0] === 1) continue
+    regions++
+    const c = g[s0]
+    let size = 0
+    let sp = 0
+    stack[sp++] = s0
+    seen[s0] = 1
+    while (sp > 0) {
+      const s = stack[--sp]
+      size++
+      const x = s % gw
+      if (x > 0) sp = visit(s - 1, c, g, seen, stack, sp)
+      if (x + 1 < gw) sp = visit(s + 1, c, g, seen, stack, sp)
+      if (s >= gw) sp = visit(s - gw, c, g, seen, stack, sp)
+      if (s + gw < n) sp = visit(s + gw, c, g, seen, stack, sp)
+    }
+    if (size <= FINE_REGION_MAX) fine += size
+  }
+
+  return {
+    pixelScale: scale,
+    gridColors: palette.length,
+    gridRimColors: rimColors,
+    blendRimShare: tested === 0 ? 0 : blends / Math.max(tested, RIM_MIN_SHARE * n),
+    softStepShare: steps === 0 ? 0 : soft / steps,
+    fineRegionShare: fine / n,
+    meanRegionArea: n / regions,
+  }
+}
+
+/** Push sample `q` onto the flood `stack` when it is unseen and of color `c`; returns the new stack size. */
+function visit(
+  q: number,
+  c: number,
+  g: Uint16Array,
+  seen: Uint8Array,
+  stack: Int32Array,
+  sp: number,
+): number {
+  if (seen[q] === 1 || g[q] !== c) return sp
+  seen[q] = 1
+  stack[sp] = q
+  return sp + 1
+}
+
+/** Summed absolute RGB difference of two packed colors. */
+function rgbStep(a: number, b: number): number {
+  return (
+    Math.abs((a >> 16) - (b >> 16)) +
+    Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)) +
+    Math.abs((a & 255) - (b & 255))
+  )
+}
+
+/**
+ * Whether packed color `c` lies between two of the `nb` palette colors
+ * (anti-aliasing); undefined when no two of them differ by `BLEND_MIN_SPAN`
+ * (the pixel is not on an edge).
+ */
+function blendOf(
+  c: number,
+  nb: readonly number[],
+  palette: readonly number[],
+): boolean | undefined {
+  const cr = c >> 16
+  const cg = (c >> 8) & 255
+  const cb = c & 255
+  let edge = false
+  for (let i = 0; i < nb.length; i++) {
+    const a = palette[nb[i]]
+    const ar = a >> 16
+    const ag = (a >> 8) & 255
+    const ab = a & 255
+    for (let j = i + 1; j < nb.length; j++) {
+      const b = palette[nb[j]]
+      const dr = (b >> 16) - ar
+      const dg = ((b >> 8) & 255) - ag
+      const db = (b & 255) - ab
+      const dd = dr * dr + dg * dg + db * db
+      if (dd < BLEND_MIN_SPAN * BLEND_MIN_SPAN) continue
+      edge = true
+      const t = ((cr - ar) * dr + (cg - ag) * dg + (cb - ab) * db) / dd
+      if (t < 0.08 || t > 0.92) continue
+      const er = cr - ar - t * dr
+      const eg = cg - ag - t * dg
+      const eb = cb - ab - t * db
+      if (er * er + eg * eg + eb * eb <= BLEND_MAX_OFF * BLEND_MAX_OFF) return true
+    }
+  }
+  return edge ? false : undefined
 }
 
 /** Side of the central crop the edge width is measured on: edges are local, and a crop keeps them as they are. */

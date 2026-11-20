@@ -347,6 +347,118 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     expect(Math.max(...joinTurns(cmds))).toBeGreaterThan(45)
   })
 
+  /**
+   * A drop: a disk of radius `r` and a tip `d` from its center, the tip at
+   * `rotation` about (`c`, `c` + 0.3); `round` rounds the tip off with a circle
+   * of that radius. Returns its outline and its tip's point (where the tip's two
+   * sides meet).
+   */
+  const dropOf = (
+    r: number,
+    d: number,
+    rotation: number,
+    c: number,
+    round = 0,
+  ): { outline: [number, number][]; tip: [number, number] } => {
+    const at = (x: number, y: number): [number, number] => [
+      c + x * Math.cos(rotation) - y * Math.sin(rotation),
+      c + 0.3 + x * Math.sin(rotation) + y * Math.cos(rotation),
+    ]
+    const half = Math.asin(r / d)
+    const end = d / 2 - round / Math.sin(half)
+    const side = Math.acos((r - round) / (end + d / 2))
+    const outline: [number, number][] = []
+    if (round === 0) outline.push(at(d / 2, 0))
+    else {
+      for (let k = 0; k <= 40; k++) {
+        const t = -side + (2 * side * k) / 40
+        outline.push(at(end + round * Math.cos(t), round * Math.sin(t)))
+      }
+    }
+    for (let k = 0; k <= 120; k++) {
+      const t = side + ((2 * Math.PI - 2 * side) * k) / 120
+      outline.push(at(-d / 2 + r * Math.cos(t), r * Math.sin(t)))
+    }
+    return { outline, tip: at(d / 2, 0) }
+  }
+
+  it.each([
+    [4, 12, 0.7, 48],
+    [4, 12, 2.2, 48],
+    [3, 10, 0.7, 40],
+    [3, 10, 2.7, 40],
+    [8, 40, 1.2, 80],
+    [10, 60, 1.2, 96],
+  ])(
+    'brings back the point of a drop (radius %f, length %f) the anti-aliasing cut off at rotation %f',
+    (r, d, rotation, size) => {
+      // The polygon has only two corners, a stub apart where the half-coverage
+      // contour cuts across the tip; the pixels there still show the tip, and its
+      // two sides, extended, meet on it. The last drop is too large for a
+      // whole-ring coverage patch: the pixels around the stub show it.
+      const { outline, tip } = dropOf(r, d, rotation, size / 2 + 0.3)
+      const { mask, field } = polygonFieldOf(size, outline)
+      const cmds = trace(mask, field, ILLUSTRATION, 100)
+      const anchors = cmds.flatMap((c) => (c.type === 'Z' ? [] : [[c.x, c.y]]))
+      const miss = Math.min(...anchors.map(([x, y]) => Math.hypot(x - tip[0], y - tip[1])))
+      expect(miss).toBeLessThan(0.3)
+      // The body stays: the outline keeps the drop's area.
+      const area = (pts: number[][]): number =>
+        Math.abs(
+          pts.reduce((sum, [x, y], i) => {
+            const [nx, ny] = pts[(i + 1) % pts.length]
+            return sum + x * ny - nx * y
+          }, 0),
+        ) / 2
+      expect(area(anchors)).toBeGreaterThan(0.8 * area(outline))
+    },
+  )
+
+  /** Signed distance to the closed polygon `outline`, negative inside. */
+  const outlineDistance =
+    (outline: [number, number][]) =>
+    (x: number, y: number): number => {
+      let dist = Infinity
+      let inside = false
+      for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+        const [ax, ay] = outline[j]
+        const [bx, by] = outline[i]
+        const ex = bx - ax
+        const ey = by - ay
+        const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)))
+        dist = Math.min(dist, Math.hypot(x - ax - t * ex, y - ay - t * ey))
+        if (ay > y !== by > y && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside
+      }
+      return inside ? -dist : dist
+    }
+
+  it.each([1.2, 1.7])('keeps the rounded tip of a drop round at rotation %f', (rotation) => {
+    // Its polygon turns at two vertices a stub apart as a sharp tip's does, and
+    // the two sides, extended, meet a pixel and more beyond the round. The
+    // pixels there are clear, so the stub stays.
+    const { outline } = dropOf(4, 12, rotation, 24.3, 1)
+    const { mask, field } = polygonFieldOf(48, outline)
+    const cmds = trace(mask, field, ILLUSTRATION, 100)
+    expect(worstDeviation(cmds, outlineDistance(outline))).toBeLessThan(0.8)
+  })
+
+  it.each([
+    [4, 12, 0.88, 32],
+    [5, 16, 0.49, 38],
+    [6, 24, 4.78, 48],
+  ])(
+    'draws no spike past a drop (radius %f, length %f) rounded a little at rotation %f',
+    (r, d, rotation, size) => {
+      // The two sides, extended, meet over clear pixels beyond the round, out of
+      // reach of any measured sample: the pixels the tip would cover are
+      // compared as well, so the spike costs the area it draws.
+      const { outline } = dropOf(r, d, rotation, size / 2 + 0.3, 0.6)
+      const { mask, field } = polygonFieldOf(size, outline)
+      const cmds = trace(mask, field, ILLUSTRATION, 100)
+      expect(worstDeviation(cmds, outlineDistance(outline))).toBeLessThan(0.8)
+    },
+  )
+
   it('keeps a small rectangle a rectangle', () => {
     // As small as the oval, but its sides are straight and its corners sharp:
     // no ellipse comes within the band of its samples.
@@ -359,5 +471,93 @@ describe('illustration mode — a smooth outline has no kinks', () => {
     const { mask, field } = fieldOf(40, sd)
     const cmds = trace(mask, field, ILLUSTRATION, 100)
     expect(joinTurns(cmds).filter((t) => t > 45)).toHaveLength(4)
+  })
+})
+
+/** Distance (px) from (x, y) to the polygon `vs` where the point lies outside it, else 0. */
+const outsidePolygon =
+  (vs: [number, number][]) =>
+  (x: number, y: number): number => {
+    let odd = false
+    let d = Infinity
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+      const [xi, yi] = vs[i]
+      const [xj, yj] = vs[j]
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) odd = !odd
+      const l2 = (xi - xj) ** 2 + (yi - yj) ** 2
+      const t = Math.max(0, Math.min(1, ((x - xj) * (xi - xj) + (y - yj) * (yi - yj)) / l2))
+      d = Math.min(d, Math.hypot(x - xj - t * (xi - xj), y - yj - t * (yi - yj)))
+    }
+    return odd ? 0 : d
+  }
+
+/** Trace a mask's outer ring against `field` on a grid `scale` times finer than the path's units. */
+function traceScaled(mask: BinaryMask, field: GrayImage, scale: number): PathCommand[] {
+  const outer = decomposeMask(mask, 'minority', 1).find((p) => p.area > 0)
+  if (!outer) throw new Error('no outer ring')
+  return polygonToCommands(outer.points, ringPolygon(outer.points, field, undefined, scale), {
+    curveMode: 'spline',
+    smoothing: ILLUSTRATION,
+    curveOptimize: true,
+    optTolerance: 0.2,
+    coverage: field,
+    cornerThreshold: 100,
+    scale,
+  })
+}
+
+describe('illustration mode — the end of a thin stroke', () => {
+  it.each([
+    [0.25, 0.7],
+    [0.45, 0.65],
+    [0.65, 0.65],
+    [0.85, 0.45],
+  ])(
+    'ends a blunt stroke where its pixels end, not where its sides would meet (offset %f, %f)',
+    (dx, dy) => {
+      // A numeral's "1" on a 2× grid: a stroke under two source pixels wide whose
+      // left side bends down to its squared-off foot. The anti-aliasing cuts each
+      // end into a stub between two corners, and an edge beyond a stub is too
+      // short to clear its chamfers: its line and the other side's meet a source
+      // pixel or two past the stroke, where the pixels show only paper.
+      const one: [number, number][] = [
+        [18.2, 12.1],
+        [21.6, 12.2],
+        [22.7, 13.9],
+        [18.1, 27.0],
+        [16.0, 26.1],
+        [15.9, 23.2],
+        [19.2, 17.0],
+        [18.8, 14.0],
+      ]
+      const vs = one.map(([x, y]): [number, number] => [x + dx, y + dy])
+      const { mask, field } = polygonFieldOf(40, vs)
+      expect(worstDeviation(traceScaled(mask, field, 2), outsidePolygon(vs))).toBeLessThan(0.6)
+    },
+  )
+
+  it('keeps the point of a thin thorn', () => {
+    for (const [dx, dy, angle, scale] of [
+      [0, 0, 0.3, 2],
+      [0.25, 0.7, 1.2, 2],
+      [0.7, 0.1, 2, 2],
+      [0.1, 0.4, 0.3, 1],
+    ]) {
+      const cx = 20.3 + dx
+      const cy = 20.6 + dy
+      const ux = Math.cos(angle)
+      const uy = Math.sin(angle)
+      const apex: [number, number] = [cx + 8 * ux, cy + 8 * uy]
+      const { mask, field } = polygonFieldOf(40, [
+        apex,
+        [cx - 5 * ux - 3 * uy, cy - 5 * uy + 3 * ux],
+        [cx - 5 * ux + 3 * uy, cy - 5 * uy - 3 * ux],
+      ])
+      let miss = Infinity
+      for (const c of traceScaled(mask, field, scale)) {
+        if (c.type !== 'Z') miss = Math.min(miss, Math.hypot(c.x - apex[0], c.y - apex[1]))
+      }
+      expect(miss).toBeLessThan(0.5)
+    }
   })
 })

@@ -296,9 +296,14 @@ export function returnSeamPixels(
 // compressed edge smears its chroma). A hair (nowhere 3 px thick) goes on that; a thicker band must also
 // spread its coverage like a ramp (P80 − P20 ≥ 0.2) and hold no flat core (`gradient` < `flatThreshold`
 // on ≤ 5 % of it), so a stroke in an intermediate color stays. Each pixel goes to A where its coverage
-// of A is ≥ ½, else to B; two passes. Mutates `labels`; returns the pixels moved. segmentRegions runs it
-// last, with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel —
-// the width and the hair test are read in source pixels.
+// of A is ≥ ½, else to B; two passes. A thin hair bordered only by one lighter field and by darker
+// outlines (each ≤ a quarter of its border) whose outline contacts span half its extent and whose
+// darkest pixel reaches 0.9 of an outline's lightness against the field is a stroke of that outline's
+// ink: its pixels go to the outline it meets most among those it reaches (a pixel along another
+// outline to that outline or the field by its coverage), unless its label also paints a component
+// that is no such stroke. Mutates `labels`; returns the pixels moved. segmentRegions runs it last,
+// with its own gradient and flat threshold. `scale` (default 1): working pixels per source pixel — the
+// width and the hair test are read in source pixels.
 export function dissolveBlendBands(
   image: RasterImage,
   labels: LabelMap,
@@ -372,7 +377,7 @@ export interface SegmentOptions {
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
   maxRegions?: number // cap: fold pairs by least added squared color error (Ward) until met; 0 = none
-  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions (≤ 64) remain; the count may stay above maxRegions. Off = hard cap (default)
+  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions remain, or 64 for a budget of 24 and more (never over 64); the count may stay above maxRegions. Off = hard cap (default)
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
   scale?: number // working pixels per source pixel (supersampling, default 1): gradient read a source pixel apart; sizes/widths in source pixels
 }
@@ -425,6 +430,36 @@ export function fitRegionGradients(
 - Oklab gradient = max ΔE to any 4-neighbor (`scale` pixels away on an enlarged
   image). Markers are 4-connected components of in-mask pixels with gradient <
   `flatThreshold`, each seeded with its mean.
+- A marker that holds two fills of the drawing is split into them. Two fills
+  under twice `flatThreshold` apart can meet across an anti-aliased boundary
+  whose every step stays under the threshold, and seed one marker. A fill is a
+  tone of the marker's exact pixels (gradient 0; exact colors linked at half
+  `flatThreshold`, so a gradient's bands are one tone) of at least 64 source
+  pixels, `flatThreshold` from the marker's other fills and where the merge
+  would keep the two apart: no closer than its near-duplicate floor, and
+  1.5 ΔE00 apart (Oklab spreads the darkest values: the near-blacks of one
+  black are one ink). Where the fills hold at least half the marker and meet
+  across at most 6 source pixels (the median run, along rows and columns,
+  between an exact pixel of one fill and the next exact pixel, of another, with
+  no exact pixel of a third tone between; the upper of the two middle runs of
+  an even count), each fill's pixels (within half `flatThreshold` of it) become
+  markers by 4-connected component, a component with no exact pixel left out,
+  and the marker's other pixels go to the flood — and to the rescue before it
+  where they form a piece under 64 source pixels. A marker of more than 512
+  exact colors is continuous tone and is not read; 255 fills are numbered in
+  one marker. The evidence is exact pixels: a lossy copy (its median run is 9 to
+  18 pixels at its own size) or one enlarged 2× by a cubic or a windowed sinc
+  beforehand (7 to 9) keeps its fills fused, and so does a fill that holds no 64
+  exact pixels (a band under 4 to 6 pixels wide, a disc under 12 to 14 across).
+  With `keepVisibleColors`, the cap counts
+  `maxRegions` plus the colors the split markers hold beyond one each once the
+  merge is done (the regions their fills ended up in, less one per set of
+  regions that markers tie together), within the same ceiling as the cap's
+  (below): fills the merge joined again add nothing, and fills
+  two markers share add one. Past that bound the cap folds by cost alone, as
+  without a split: a split marker's extra color can then cost a small feature
+  its own, and split fills, close colors, fold when theirs is the cheapest fold
+  left with the count within the bound and above the budget.
 - A priority flood (binary min-heap keyed by Oklab distance to the claiming
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so
@@ -461,10 +496,12 @@ export function fitRegionGradients(
   so a budget spends its damage on the smallest, closest regions first; with
   `keepVisibleColors` the cap stops at the first fold that would join a pair
   ≥ 10 ΔE00 apart, neither a speck (< 16 source pixels), once the count is
-  within twice the budget (and 64), and the count stays above it — its folds a
-  prefix of the hard cap's (the engine sets it from `autoPaletteSize` on stacked
-  layers not grouped by color; grouped, cutout and nested output keep the hard
-  cap). With
+  within twice the budget and 64 — or within 64 for a budget of 24 and more,
+  the illustration profile's `paletteSize`, which the recommender gives rich
+  color whatever the drawing holds — and the count stays above the budget: its
+  folds a prefix of the hard cap's (the engine sets it from `autoPaletteSize` on
+  stacked layers not grouped by color; grouped, cutout and nested output keep
+  the hard cap). With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
   close-but-distinct colors stay apart while small regions still fold — unless the
   smaller is a rare ink: a region the size term alone could fold whose own pixels
@@ -475,13 +512,16 @@ export function fitRegionGradients(
   ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017)
   — or, when its votes reach only half its own pixels (a claw on a large image), from
   a neighbor ≥ 10 ΔE00 from that mean —
-  and joins a non-adjacent region of that same ink. A pupil or a star a few pixels
-  across keeps its color.
+  and, where no flat core speaks for it, joins a non-adjacent region of that same
+  ink. A pupil or a star a few pixels across keeps its color. A union hands the
+  votes of the region it drops to the one it keeps when that one has none, or
+  only the weaker kind, so a region can carry the votes of a fragment it took in.
 - After the merge, a seam a third region captured goes back to the two regions
   it separates (`returnSeamPixels`), and a thin band of blend colors grown along
-  a soft edge dissolves into the two it runs between (`dissolveBlendBands`); a
-  region those passes empty is dropped and the labels renumbered in order, so
-  they stay compact.
+  a soft edge dissolves into the two it runs between, while a hair running
+  across one field from outline to outline goes to the outline whose ink it is
+  (`dissolveBlendBands`); a region those passes empty is dropped and the labels
+  renumbered in order, so they stay compact.
 - On an image enlarged `scale` times (supersampling), every size and width is
   read in source pixels — a flat core's minimum, the size-aware merge bound,
   the rescue's reach and rim allowance, a seam run, a blend band — so an
@@ -571,7 +611,8 @@ export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 
 // edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
 // (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
-// sampleMask so rim mixtures stay out of the palette. Deterministic.
+// sampleMask so rim mixtures stay out of the palette (not in pixel curve mode,
+// whose pixels are nearly all edges and none of them a rim). Deterministic.
 export function detectEdges(image: RasterImage, threshold: number, step?: number): BinaryMask // neighbors `step` px apart (default 1; a source pixel of an enlarged image)
 
 // morphology.ts — remove 8-connected foreground specks < minArea AND fill 4-connected
@@ -843,7 +884,13 @@ export function closedPathToCommands(
 // lattice at its own σ, from 0.5 to 1; `refined` is whether `geom` was snapped to a sub-pixel field;
 // `extent` is the field's longer side (px, 0 when unknown) for the fitter's description-length weight
 // λ; `coverage` is the observed coverage around a refined ring at most 64 px across, which a
-// whole-ring circle or ellipse must render no worse than the fitted outline it replaces.
+// whole-ring circle or ellipse must render no worse than the fitted outline it replaces; `tips` is the
+// observed coverage of a refined ring of any size over a window around each stub a sharp tip may have
+// left between two neighbouring polygon vertices (at most 2.5 source px apart, turning 45° as one), by
+// the stub's first vertex: a ring with only two corners collapses such a stub into one tip only where
+// the outline with the tip renders that window closer (absolute difference) than the one with the two
+// corners, and so does a ring with a whole-ring `coverage` patch where its tip is a guess on a blunt
+// stroke end at most 2.5 source px wide.
 export interface RingFit {
   polygon: FlatPoints
   geom: FlatPoints
@@ -852,6 +899,11 @@ export interface RingFit {
   refined: boolean
   extent: number
   coverage?: CoveragePatch
+  tips?: TipCoverage[]
+}
+export interface TipCoverage {
+  vertex: number // the stub runs from this polygon vertex to the next
+  patch: CoveragePatch
 }
 // The field read as the coverage of what a ring encloses (its sign taken from the ring's own edges, so a
 // hole's patch is the hole's coverage), over the ring's lattice box plus 2 px: `data[(y − y0)·w + x − x0]`
@@ -874,11 +926,13 @@ export interface CoveragePatch {
 // threshold — so a caller may compute it once and re-fit it many times.
 // `setback` (per ring point, with a field; see refineRingToField) sets an edge hidden under a sheet
 // painted above it back beneath the sheet; such a point is fitted no tighter than a lattice point and
-// stays out of the coverage patch.
+// stays out of the coverage patches. `scale` (working pixels per source pixel the ring will be fitted
+// at, 1 when absent) sizes the tip windows.
 export function ringPolygon(
   ring: FlatPoints,
   field?: GrayImage | SignedField,
   setback?: ArrayLike<number>,
+  scale?: number,
 ): RingFit | null
 // Move each lattice boundary point onto the field's coverage = ½ level set by a search along the local
 // normal (inkvec `refine_subpixel`), a clean step inverted through the exact half-plane coverage of a
@@ -893,7 +947,15 @@ export function ringPolygon(
 // ring point with such a field, is the point's positional uncertainty from those two pixels (their
 // coverage noise over the coverage step between them, in quadrature with a 0.05 px model error,
 // ≤ 2 px; a refused point's adds its distance to the ½ level the ramp extrapolates to, ≤ 1 px, the
-// search's reach), `NaN` where they are not both measured. Returns a new array, parallel to `ring`.
+// search's reach), `NaN` where they are not both measured; a point left in place whose probes read
+// partial coverage but none across ½ (or cross it only through filled-in values that `along` reads on
+// the same side) is given at least ½ px, and the reach, 1 px, inside an edge of the optimal polygon in a
+// run of up to three such points between two neighbours moved at σ < ½ px, or of up to seven where the
+// next such point beyond each neighbour lies within ½ px of the line through the two; a neighbour moved
+// with a `NaN` σ counts where it lies within ½ px of the line through the nearest points moved at
+// σ < ½ px on either side, and is then given their larger σ (or its distance from their line, if
+// larger). Those two wider runs are not held where the field's `underlaid` reports the pixel outside the
+// point. Returns a new array, parallel to `ring`.
 export function refineRingToField(
   ring: FlatPoints,
   field: GrayImage | SignedField,
@@ -906,13 +968,16 @@ export function refineRingToField(
 // coverage noise of a value (image noise over the contrast of the colors it was unmixed between),
 // `NaN` for a value the field fills in rather than reads from the image; `along(x, y, rx, ry)`, where
 // present, reads pixel (x, y) between the two colors the field reads pixel (rx, ry) between (`NaN`
-// where (rx, ry) is not read from the image).
+// where (rx, ry) is not read from the image); `underlaid(x, y)`, where present, tells whether pixel
+// (x, y), outside the boundary, holds a label painted more than one stacked layer below the one inside,
+// so a layer painted between them runs its own edge beneath this one, set back from the lattice.
 export interface SignedField {
   width: number
   height: number
   at(x: number, y: number): number
   uncertainty?(x: number, y: number): number
   along?(x: number, y: number, rx: number, ry: number): number
+  underlaid?(x: number, y: number): boolean
 }
 // Sub-pixel boundary field of one stacked layer, in [-0.5, 0.5] (positive inside `mask`): a color edge
 // reads the pixel's coverage by the label across the mask (`coverageOf`, the pair taken from its first
@@ -923,7 +988,10 @@ export interface SignedField {
 // base layer: each inside pixel's own). Its `uncertainty` is the image noise (Immerkær's Laplacian
 // estimate of the working image's luma) over the contrast of the projected pair, the noise alone for
 // an alpha reading, and `NaN` for a pixel with no neighbour across the mask or two coincident colors;
-// its `along` reads any pixel between the pair a rim pixel is read between.
+// its `along` reads any pixel between the pair a rim pixel is read between. With `position` (each
+// label's paint position among the stacked base layers, −1 none) and `layer` (this base layer's), its
+// `underlaid` is true at a pixel outside the mask whose label paints below `layer − 1`; without them
+// (an island) it is false.
 export interface LayerFieldSource {
   width: number
   height: number
@@ -933,6 +1001,8 @@ export interface LayerFieldSource {
   paletteRgb: Uint8Array // per-label RGB
   label: number
   alpha?: GrayImage // alphaCoverageField
+  position?: Int32Array // paint position per label among the base layers (−1 = none)
+  layer?: number // this base layer's paint position
 }
 export function layerField(src: LayerFieldSource): SignedField
 // Coverage of pixel `pi` (byte offset into RGBA) by palette color `ai` against `bi` (byte offsets):
@@ -1884,12 +1954,41 @@ export function recommendSettings(
   rationale: string[] // English sentences (non-UI callers, tests)
   rationaleKeys: RationaleKey[] // same reasons as codes+params, for localization
 }
+// Pixel art traces with the pixel-art profile, on exact pixel boundaries. Two rules pick it. A
+// small canvas (128 × 128 at its own scale, before a nearest-neighbor enlargement of up to 8×:
+// `pixelScale`) in a hard palette: `pixelArtScore` ≥ 0.7, `pickPixelArt`. Or a canvas of any
+// size drawn on the pixel grid (`pixelGrid`): 3 to 192 colors, rims that are details rather
+// than anti-aliased blends (`gridRimColors`, `blendRimShare`), edges a pixel sharp
+// (`edgeWidth` ≤ 0.8, or ≤ 0.86 under paint shaded pixel by pixel: `meanRegionArea` ≤ 8,
+// `fineRegionShare` ≥ 0.3 and at most a quarter of the grid colors rim colors), color changes
+// between distinct shades (`softStepShare`) and paint in regions of a few pixels
+// (`meanRegionArea`, `fineRegionShare`): `pickPixelGrid`. The profile traces at full size,
+// every corner of a same-color region a point of a path, so both rules hold up to 400 000
+// corners (`pixelCorners`: the 2 × 2 windows of the whole canvas where an edge between two
+// colors turns or meets another, as many at any enlargement) and 4096² pixels; past either
+// the canvas takes the route it would otherwise, with the reason `pixelGridLarge`. The palette
+// is the canvas's own count (`pixelColors`, every pixel read): kept exactly up to 64
+// (`pixelExact`); past that a palette of 64 trained on every pixel, the closest shades sharing
+// an entry (`pixelPalette`). An aliased image in few colors with speckle that is not pixel art
+// (posterized to a few levels, dithered between the far entries of a small fixed palette) is
+// not told apart, and is traced as its pixels.
+// Scan routes, each with its reason codes. A drawing on toned paper (the analyzer's ground* and
+// mark* fields: one narrow tinted paper peak and a clearly darker mark; toneAxisResidual: every
+// color on the paper–ink line; midToneArea: mid-tones that stay thin) traces as illustration in
+// color: quantize to 8 entries, bilateral denoise with no blur, speck floor 4, smoothing 0.6, and
+// the palette folded (autoPaletteSize) when midToneShare reads it near two-tone (`pickTonedInk`,
+// `tonedInk`, `tonedTwoTone`). An achromatic line-art scan carrying gray tone on bright paper, or
+// an ink print whose solid blacks darken it while white paper and black ink still cover most of it,
+// traces as illustration in grayscale: 4 tones, speck floor 4 (`pickInkGrayscale`,
+// `inkGrayscale`). A printed color page scan on the photo route (busy edges, no exactly-flat pixel,
+// no smooth ramp) keeps the photo settings with speck floor 4 (`printScan`).
 // The geometry chain: color, grayscale or bw art on stacked layers not grouped by color, from an
-// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan), gets
-// geometry 'planar' — bw with no front end chosen (reason `planarBw`), a cartoon (segmentation
-// 'regions') whose longest side is at most 512 px with frontEnd 'ink' and gradients on (reason
-// `planarCartoon`; a larger cartoon stays classic), other art the same (reason
-// `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within them).
+// undenoised intake (not the photo or pixel-art profile, not a tonal line-art scan or a drawing on
+// toned paper), gets geometry 'planar' — bw with no front end chosen (reason `planarBw`), a
+// cartoon (segmentation 'regions') whose longest side is at most 512 px with frontEnd 'ink' and
+// gradients on (reason `planarCartoon`; a larger cartoon stays classic), other art the same
+// (reason `planarInk`; past 640 × 640 traced pixels with `maxDimension` lowered to stay within
+// them).
 // Black & white art traced at more than 640 × 640 pixels, centerline, cutout, nested and grouped
 // output keep the classic chain.
 export interface PaletteSuggestion {

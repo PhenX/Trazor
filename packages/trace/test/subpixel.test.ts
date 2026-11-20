@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { BinaryMask, GrayImage, PathCommand } from '@trazor/core'
-import { decomposeMask, refineRingToField, ringPolygon, traceMask } from '@trazor/trace'
+import type { SignedField } from '@trazor/trace'
+import {
+  decomposeMask,
+  polygonToCommands,
+  refineRingToField,
+  ringPolygon,
+  traceMask,
+} from '@trazor/trace'
 
 const OPTS = {
   curveMode: 'spline' as const,
@@ -14,6 +21,37 @@ const OPTS = {
 function anchors(commands: PathCommand[]): [number, number][] {
   const out: [number, number][] = []
   for (const c of commands) if (c.type !== 'Z') out.push([c.x, c.y])
+  return out
+}
+
+/** Points along the drawn outline: every command sampled at `k` steps (lines and cubics). */
+function outlinePoints(commands: PathCommand[], k = 64): [number, number][] {
+  const out: [number, number][] = []
+  let px = 0
+  let py = 0
+  for (const c of commands) {
+    if (c.type === 'Z') continue
+    if (c.type === 'M') {
+      px = c.x
+      py = c.y
+      out.push([px, py])
+      continue
+    }
+    for (let j = 1; j <= k; j++) {
+      const u = j / k
+      const v = 1 - u
+      if (c.type === 'C') {
+        out.push([
+          v * v * v * px + 3 * v * v * u * c.x1 + 3 * v * u * u * c.x2 + u * u * u * c.x,
+          v * v * v * py + 3 * v * v * u * c.y1 + 3 * v * u * u * c.y2 + u * u * u * c.y,
+        ])
+      } else {
+        out.push([px + (c.x - px) * u, py + (c.y - py) * u])
+      }
+    }
+    px = c.x
+    py = c.y
+  }
   return out
 }
 
@@ -170,5 +208,217 @@ describe('sub-pixel boundary refinement', () => {
     const a = JSON.stringify(traceMask(mask, { ...OPTS, coverage: field }))
     const b = JSON.stringify(traceMask(mask, { ...OPTS, coverage: field }))
     expect(a).toBe(b)
+  })
+})
+
+describe('sub-pixel refinement on a soft edge the labels overreach', () => {
+  const S = 48
+
+  /**
+   * A soft straight edge whose normal points `deg` degrees below the x axis:
+   * coverage ½ + d / 2.5 px at signed distance d from it, read at a pixel's
+   * centre and measured everywhere. The mask holds every pixel covered at
+   * least 0.12, so its staircase runs a pixel or so outside the ½ level: the
+   * inner corners lie within the search's reach of it, the outer corners past
+   * it — one per step at 48°, two or three in a row on a shallower step.
+   */
+  function overreach(deg: number): {
+    ring: number[]
+    field: SignedField
+    dist: (x: number, y: number) => number
+  } {
+    const nx = Math.cos((deg * Math.PI) / 180)
+    const ny = Math.sin((deg * Math.PI) / 180)
+    const dist = (x: number, y: number): number => x * nx + y * ny - (0.5 * S * (nx + ny) + 0.3)
+    const coverage = (x: number, y: number): number =>
+      Math.min(1, Math.max(0, 0.5 + dist(x + 0.5, y + 0.5) / 2.5))
+    const data = new Uint8Array(S * S)
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) data[y * S + x] = coverage(x, y) >= 0.12 ? 1 : 0
+    }
+    const field: SignedField = {
+      width: S,
+      height: S,
+      at: (x, y) => coverage(x, y) - 0.5,
+      uncertainty: () => 0.01,
+    }
+    const outer = decomposeMask({ width: S, height: S, data }, 'minority', 1).find(
+      (p) => p.area > 0,
+    )
+    if (!outer) throw new Error('no outer ring')
+    return { ring: outer.points, field, dist }
+  }
+
+  /** Whether (x, y) is on the slanted side, clear of the image border. */
+  const onSide = (x: number, y: number, dist: (x: number, y: number) => number): boolean =>
+    x > 6 && y > 6 && x < S - 6 && y < S - 6 && Math.abs(dist(x, y)) < 2
+
+  it.each([48, 60, 63, 70])(
+    'holds the staircase corners past the search’s reach at it (%i°)',
+    (deg) => {
+      const { ring, field, dist } = overreach(deg)
+      const fit = ringPolygon(ring, field)
+      expect(fit).not.toBeNull()
+      const geom = fit?.geom ?? []
+      const sigma = fit?.sigma ?? []
+      // Points left in place: their distance outside the edge and their σ.
+      const kept: { d: number; sigma: number }[] = []
+      // Points moved: their distance from the edge.
+      const moved: number[] = []
+      for (let i = 0; i < ring.length >> 1; i++) {
+        const [x, y] = [ring[i * 2], ring[i * 2 + 1]]
+        if (!onSide(x, y, dist)) continue
+        if (geom[i * 2] === x && geom[i * 2 + 1] === y)
+          kept.push({ d: dist(x, y), sigma: sigma[i] })
+        else moved.push(Math.abs(dist(geom[i * 2], geom[i * 2 + 1])))
+      }
+      expect(kept.length).toBeGreaterThan(20)
+      for (const k of kept) {
+        expect(k.d).toBeLessThan(-0.9)
+        expect(k.sigma).toBe(1)
+      }
+      expect(moved.length).toBeGreaterThan(20)
+      expect(Math.max(...moved)).toBeLessThan(0.05)
+    },
+  )
+
+  it.each([48, 60, 63, 70])('fits the side along the edge, not out to each corner (%i°)', (deg) => {
+    const { ring, field, dist } = overreach(deg)
+    const commands = polygonToCommands(ring, ringPolygon(ring, field), {
+      curveMode: 'spline',
+      smoothing: 0.8,
+      curveOptimize: true,
+      optTolerance: 0.2,
+      cornerThreshold: 100,
+    })
+    const off = anchors(commands)
+      .filter(([x, y]) => onSide(x, y, dist))
+      .map(([x, y]) => Math.abs(dist(x, y)))
+    expect(Math.max(0, ...off)).toBeLessThan(0.25)
+  })
+
+  it('holds a longer run of corners where the edge its neighbours located runs straight across them', () => {
+    // At 82° a step of the staircase is seven pixels long: four to six of its
+    // outer corners in a row lie past the search's reach.
+    const { ring, field, dist } = overreach(82)
+    const commands = polygonToCommands(ring, ringPolygon(ring, field), {
+      curveMode: 'spline',
+      smoothing: 0.8,
+      curveOptimize: true,
+      optTolerance: 0.2,
+      cornerThreshold: 100,
+    })
+    const off = outlinePoints(commands)
+      .filter(([x, y]) => onSide(x, y, dist))
+      .map(([x, y]) => Math.abs(dist(x, y)))
+    expect(off.length).toBeGreaterThan(20)
+    expect(Math.max(...off)).toBeLessThan(0.25)
+  })
+})
+
+describe('sub-pixel refinement on a soft line read through filled-in values', () => {
+  const S = 64
+
+  /**
+   * A soft straight edge whose normal points `deg` degrees below the x axis,
+   * coverage ½ + d / 2.5 px at signed distance d, under a mask holding every
+   * pixel covered at least 0.2. Read as a stacked layer's field reads it: only
+   * the pixels beside the mask's boundary are measured, every other value is
+   * filled in (±½, no uncertainty), and `along` reads the edge continued. A
+   * point moved through a filled-in value has no σ of its own; the outer
+   * corners between such points lie past the search's reach. With
+   * `underlaid`, every pixel outside the mask is reported as one a layer
+   * painted below runs its own edge beneath.
+   */
+  function filledEdge(
+    deg: number,
+    underlaid = false,
+  ): { ring: number[]; field: SignedField; dist: (x: number, y: number) => number } {
+    const nx = Math.cos((deg * Math.PI) / 180)
+    const ny = Math.sin((deg * Math.PI) / 180)
+    const dist = (x: number, y: number): number => x * nx + y * ny - (0.5 * S * (nx + ny) + 0.3)
+    const coverage = (x: number, y: number): number =>
+      Math.min(1, Math.max(0, 0.5 + dist(x + 0.5, y + 0.5) / 2.5))
+    const mask = new Uint8Array(S * S)
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) mask[y * S + x] = coverage(x, y) >= 0.2 ? 1 : 0
+    }
+    const inside = (x: number, y: number): number =>
+      x < 0 || y < 0 || x >= S || y >= S ? 0 : mask[y * S + x]
+    const rim = (x: number, y: number): boolean => {
+      const v = inside(x, y)
+      return (
+        inside(x - 1, y) !== v ||
+        inside(x + 1, y) !== v ||
+        inside(x, y - 1) !== v ||
+        inside(x, y + 1) !== v
+      )
+    }
+    const field: SignedField = {
+      width: S,
+      height: S,
+      at: (x, y) => (rim(x, y) ? coverage(x, y) - 0.5 : inside(x, y) ? 0.5 : -0.5),
+      uncertainty: (x, y) => (rim(x, y) ? 0.02 : Number.NaN),
+      along: (x, y) => coverage(x, y) - 0.5,
+    }
+    if (underlaid) field.underlaid = (x, y) => inside(x, y) === 0
+    const outer = decomposeMask({ width: S, height: S, data: mask }, 'minority', 1).find(
+      (p) => p.area > 0,
+    )
+    if (!outer) throw new Error('no outer ring')
+    return { ring: outer.points, field, dist }
+  }
+
+  const onSide = (x: number, y: number, dist: (x: number, y: number) => number): boolean =>
+    x > 6 && y > 6 && x < S - 6 && y < S - 6 && Math.abs(dist(x, y)) < 2.5
+
+  const fitOf = (ring: number[], field: SignedField): PathCommand[] =>
+    polygonToCommands(ring, ringPolygon(ring, field), {
+      curveMode: 'spline',
+      smoothing: 0.8,
+      curveOptimize: true,
+      optTolerance: 0.2,
+      cornerThreshold: 100,
+    })
+
+  it.each([65, 75])(
+    'fits the side along the edge where its corners close on points moved through filled-in values (%i°)',
+    (deg) => {
+      const { ring, field, dist } = filledEdge(deg)
+      const off = outlinePoints(fitOf(ring, field))
+        .filter(([x, y]) => onSide(x, y, dist))
+        .map(([x, y]) => Math.abs(dist(x, y)))
+      expect(off.length).toBeGreaterThan(20)
+      expect(Math.max(...off)).toBeLessThan(0.3)
+    },
+  )
+
+  it('leaves the corners as lattice points where a layer below runs its edge beneath', () => {
+    // A layer painted below sets its own edge back a pixel from these corners:
+    // the outline keeps as close to them as a lattice point's band allows,
+    // where held at the reach it would run further in and leave that edge showing.
+    const reach = (underlaid: boolean): { held: number; far: number } => {
+      const { ring, field, dist } = filledEdge(75, underlaid)
+      const fit = ringPolygon(ring, field)
+      if (!fit) throw new Error('no fit')
+      const outline = outlinePoints(fitOf(ring, field))
+      let held = 0
+      let far = 0
+      for (let i = 0; i < ring.length >> 1; i++) {
+        const x = ring[i * 2]
+        const y = ring[i * 2 + 1]
+        if (!onSide(x, y, dist) || dist(x, y) > -1) continue
+        if (fit.sigma[i] >= 1) held++
+        let near = Infinity
+        for (const [ox, oy] of outline) near = Math.min(near, Math.hypot(ox - x, oy - y))
+        far = Math.max(far, near)
+      }
+      return { held, far }
+    }
+    const open = reach(false)
+    const under = reach(true)
+    expect(under.held).toBeLessThan(open.held)
+    expect(open.far).toBeGreaterThan(1.25)
+    expect(under.far).toBeLessThan(1.2)
   })
 })
