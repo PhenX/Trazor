@@ -2,6 +2,7 @@ import type { BinaryMask } from '@trazor/core'
 import { oklabToRgb } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { segmentRegions, upscaleImage } from '../src/index'
+import { linkTones } from '../src/segment'
 import { rasterOf } from './helpers'
 import type { Rgba } from './helpers'
 
@@ -28,6 +29,110 @@ function rampImage(w = 40, h = 20): ReturnType<typeof rasterOf> {
     const t = Math.min(1, Math.max(0, (x - (edge - 2)) / 4))
     const mix = (a: number, b: number): number => Math.round(a * (1 - t) + b * t)
     return [mix(BLACK[0], SKIN[0]), mix(BLACK[1], SKIN[1]), mix(BLACK[2], SKIN[2]), 255] as Rgba
+  })
+}
+
+/**
+ * A `w`×`h` image of two dark blues 0.04 apart in Oklab: each pixel the mean,
+ * over an 8×8 grid of points in it, of the first blended toward the second by
+ * `share` (0 to 1) at that point.
+ */
+function twoBlues(
+  w: number,
+  h: number,
+  share: (x: number, y: number) => number,
+): ReturnType<typeof rasterOf> {
+  const night = [22, 31, 63]
+  const dusk = [21, 26, 82]
+  return rasterOf(w, h, (x, y) => {
+    let t = 0
+    for (let sy = 0; sy < 8; sy++) {
+      for (let sx = 0; sx < 8; sx++) t += share(x + (sx + 0.5) / 8, y + (sy + 0.5) / 8)
+    }
+    t /= 64
+    return [...night.map((c, k) => Math.round(c * (1 - t) + dusk[k] * t)), 255] as Rgba
+  })
+}
+
+/** The share of {@link twoBlues} that parts the two blues along an arc: the first inside it. */
+const arc = (x: number, y: number): number => (Math.hypot(x - 2.875, y - 2) > 20 ? 1 : 0)
+
+const MAROON = [46, 6, 8]
+const BRICK = [70, 6, 8]
+
+/** Paints the rectangle from (`x0`, `y0`) to (`x1`, `y1`), end excluded, one color. */
+function paint(
+  image: ReturnType<typeof rasterOf>,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  [r, g, b]: number[],
+): void {
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const p = (y * image.width + x) * 4
+      image.data[p] = r
+      image.data[p + 1] = g
+      image.data[p + 2] = b
+    }
+  }
+}
+
+// Two blues 0.045 apart in Oklab, and what the scenes that pin the split of a
+// marker into its fills are painted with.
+const PALE = [60, 90, 150]
+const DEEP = [60, 104, 163]
+const SPLIT = { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24, keepVisibleColors: true }
+const clamp = (v: number, low: number, high: number): number => Math.min(high, Math.max(low, v))
+const clamp01 = (t: number): number => clamp(t, 0, 1)
+const blend = (a: readonly number[], b: readonly number[], t: number): number[] =>
+  a.map((v, k) => v + (b[k] - v) * t)
+
+/** A `w`×`h` image of `color(x, y)`, rounded to bytes. */
+function painted(
+  w: number,
+  h: number,
+  color: (x: number, y: number) => readonly number[],
+): ReturnType<typeof rasterOf> {
+  return rasterOf(w, h, (x, y) => {
+    const c = color(x, y)
+    return [Math.round(c[0]), Math.round(c[1]), Math.round(c[2]), 255]
+  })
+}
+
+/** {@link painted}, each pixel the mean of `color` over a `grid` × `grid` of points in it. */
+function rendered(
+  w: number,
+  h: number,
+  color: (x: number, y: number) => readonly number[],
+  grid = 4,
+): ReturnType<typeof rasterOf> {
+  return painted(w, h, (x, y) => {
+    const sum = [0, 0, 0]
+    for (let sy = 0; sy < grid; sy++) {
+      for (let sx = 0; sx < grid; sx++) {
+        const c = color(x + (sx + 0.5) / grid, y + (sy + 0.5) / grid)
+        for (let k = 0; k < 3; k++) sum[k] += c[k]
+      }
+    }
+    return sum.map((v) => v / (grid * grid))
+  })
+}
+
+/**
+ * A `w`×`h` image of the two blues of {@link twoBlues} side by side, the
+ * first on the left, blended across `ramp(y)` pixels around column `w / 2` in
+ * row `y` (an even count; none is a hard edge).
+ */
+function blueSeam(w: number, h: number, ramp: (y: number) => number): ReturnType<typeof rasterOf> {
+  const night = [22, 31, 63]
+  const dusk = [21, 26, 82]
+  return rasterOf(w, h, (x, y) => {
+    const r = ramp(y)
+    const t =
+      r === 0 ? (x < w / 2 ? 0 : 1) : Math.min(1, Math.max(0, (x + 0.5 - (w / 2 - r / 2)) / r))
+    return [...night.map((c, k) => Math.round(c * (1 - t) + dusk[k] * t)), 255] as Rgba
   })
 }
 
@@ -110,6 +215,385 @@ describe('segmentRegions — region growing', () => {
         expect(enlarged.labels.data[y * 2 * w + x]).toBe(at)
       }
     }
+  })
+
+  it('keeps two fills of close colors apart across their anti-aliased seam', () => {
+    // Two dark blues 0.04 apart meet along an arc, anti-aliased by coverage.
+    // Enlarged 2×, the seam's ramp steps under the flat threshold from one
+    // source pixel to the next where the arc runs diagonally, so the flat
+    // pixels of one fill reach the other's and both seed one marker, painted
+    // their mean. The marker holds two exact fills that meet across a seam a
+    // pixel wide: it is split into them.
+    const image = twoBlues(32, 32, arc)
+    const opts = { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24 }
+    const source = segmentRegions(image, opts)
+    expect(source.paletteHex.toSorted()).toEqual(['#151a52', '#161f3f'])
+    const enlarged = segmentRegions(upscaleImage(image, 2), {
+      ...opts,
+      minRegionArea: 16,
+      scale: 2,
+    })
+    expect(enlarged.paletteHex.toSorted()).toEqual(['#151a52', '#161f3f'])
+    // The seam's pixels go to the fill each is nearer to.
+    const dusk = enlarged.paletteHex.indexOf('#151a52')
+    expect(enlarged.labels.data[0]).not.toBe(dusk)
+    expect(enlarged.labels.data[63 * 64 + 63]).toBe(dusk)
+  })
+
+  it('spends no budget of its own on the fills a split marker held', () => {
+    // The two blues again, enlarged 2× so that they seed one marker, with a
+    // black bar that carries a maroon patch: four colors under a budget of
+    // three the engine spends for itself. The split's second blue is the
+    // drawing's own and takes no place in that budget, so nothing folds.
+    const image = twoBlues(96, 96, arc)
+    paint(image, 30, 60, 70, 70, [0, 0, 0])
+    paint(image, 40, 62, 52, 68, MAROON)
+    const opts = { mergeSizeBias: 0.8, minRegionArea: 16, maxRegions: 3, scale: 2 }
+    const seg = segmentRegions(upscaleImage(image, 2), { ...opts, keepVisibleColors: true })
+    expect(seg.paletteHex.toSorted()).toEqual(['#000000', '#151a52', '#161f3f', '#2e0608'])
+    // A budget the caller holds to stays the count.
+    const hard = segmentRegions(upscaleImage(image, 2), opts)
+    expect(hard.paletteHex).toHaveLength(3)
+  })
+
+  it('counts the fills two split markers share once', () => {
+    // Two skies of the two blues, parted by a black bar that carries two reds
+    // a shade apart. Each sky seeds one marker and is split, and their four
+    // fills are two colors: one more than the two markers held unsplit. The
+    // budget of three becomes four, and the cap folds the two reds.
+    const image = twoBlues(96, 200, (x, y) => arc(x, y >= 104 ? y - 104 : y))
+    paint(image, 0, 92, 96, 104, [0, 0, 0])
+    paint(image, 20, 95, 36, 101, MAROON)
+    paint(image, 56, 95, 72, 101, BRICK)
+    const seg = segmentRegions(upscaleImage(image, 2), {
+      mergeSizeBias: 0.8,
+      minRegionArea: 16,
+      maxRegions: 3,
+      scale: 2,
+      keepVisibleColors: true,
+    })
+    expect(seg.paletteHex.toSorted()).toEqual(['#000000', '#151a52', '#161f3f', '#3a0608'])
+  })
+
+  it('raises the budget by nothing for fills the merge joined again', () => {
+    // On an image this small the edges take too many pixels for the floor of
+    // noise-free art, and the two blues, split apart, merge back as
+    // near-duplicates of their size. The budget stays three: the two reds fold.
+    const image = twoBlues(48, 48, arc)
+    paint(image, 4, 36, 44, 46, [0, 0, 0])
+    paint(image, 8, 38, 20, 44, MAROON)
+    paint(image, 28, 38, 40, 44, BRICK)
+    const seg = segmentRegions(upscaleImage(image, 2), {
+      mergeSizeBias: 0.8,
+      minRegionArea: 16,
+      maxRegions: 3,
+      scale: 2,
+      keepVisibleColors: true,
+    })
+    expect(seg.paletteHex.toSorted()).toEqual(['#000000', '#151b4e', '#3a0608'])
+  })
+
+  it('leaves a soft shape of a close color in the field around it', () => {
+    // The same two blues, the second a disc that fades into the first over
+    // twelve pixels: its flat center and the field are two exact fills of one
+    // marker, large enough to stay apart once split, but they meet across a
+    // ramp, not a seam, and stay one marker.
+    const image = twoBlues(160, 160, (x, y) =>
+      Math.min(1, Math.max(0, (36 - Math.hypot(x - 80, y - 80)) / 12)),
+    )
+    const seg = segmentRegions(upscaleImage(image, 2), {
+      mergeSizeBias: 0.8,
+      minRegionArea: 16,
+      maxRegions: 24,
+      scale: 2,
+    })
+    expect(seg.labels.count).toBe(1)
+  })
+
+  it('reads a seam off the width its two fills meet across in most places', () => {
+    // Working pixels at 2×: the blues blend over 6 pixels, 10 between their
+    // exact pixels, a seam; over 12, 16 between, a ramp. The limit is 12.
+    const opts = { mergeSizeBias: 0.8, minRegionArea: 16, maxRegions: 24, scale: 2 }
+    const colors = (ramp: (y: number) => number): string[] =>
+      segmentRegions(blueSeam(480, 240, ramp), opts).paletteHex.toSorted()
+    expect(colors(() => 6)).toEqual(['#151a52', '#161f3f'])
+    expect(colors(() => 12)).toHaveLength(1)
+    // A seam along 25 rows in 30, a ramp of 40 pixels along the other five: a seam.
+    expect(colors((y) => (y % 30 < 5 ? 40 : 6))).toEqual(['#151a52', '#161f3f'])
+    // The reverse: one marker.
+    expect(colors((y) => (y % 30 < 5 ? 6 : 40))).toHaveLength(1)
+  })
+
+  it('counts no crossing through a third tone', () => {
+    // Two blues 0.033 apart with a band of their middle shade between them,
+    // five pixels wide and a pixel of blend on either side: 11 pixels from one
+    // blue's exact pixels to the other's, but the band's own lie between.
+    const night = [22, 31, 63]
+    const dusk = [21, 27, 79]
+    const levels = [0.25, 0.5, 0.5, 0.5, 0.5, 0.5, 0.75]
+    const image = rasterOf(240, 240, (x) => {
+      const k = x - 116
+      const t = k < 0 ? 0 : k >= levels.length ? 1 : levels[k]
+      return [...night.map((c, i) => Math.round(c * (1 - t) + dusk[i] * t)), 255] as Rgba
+    })
+    const seg = segmentRegions(image, {
+      mergeSizeBias: 0.8,
+      minRegionArea: 16,
+      maxRegions: 24,
+      scale: 2,
+    })
+    expect(seg.labels.count).toBe(1)
+  })
+
+  it('leaves two fills closer than the flat threshold in one marker', () => {
+    // Two blues 0.014 apart on a hard edge: every pixel is flat, and the two
+    // tones of the marker are too close to be read as fills.
+    const image = rasterOf(240, 120, (x) => (x < 120 ? [22, 31, 63, 255] : [22, 30, 70, 255]))
+    const seg = segmentRegions(image, { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24 })
+    expect(seg.labels.count).toBe(1)
+  })
+
+  it('keeps the bands of a gradient in one marker', () => {
+    // A slow ramp between the two blues, a level every eight pixels or so:
+    // the bands that stand apart as fills lie several bands from each other,
+    // with the exact pixels of those between, and meet nowhere.
+    const image = twoBlues(200, 96, (x) => Math.min(1, Math.max(0, (x - 5) / 190)))
+    const seg = segmentRegions(image, { mergeSizeBias: 0.8, minRegionArea: 4, maxRegions: 24 })
+    expect(seg.labels.count).toBe(1)
+  })
+
+  it('reads a tone as a fill from 64 source pixels of it', () => {
+    // A block of the deep blue in a field of the pale one, its border fading
+    // into the field over two pixels. A block of 10 × 10 holds 64 pixels equal
+    // to their four neighbors and is a fill; one of 9 × 11 holds 63 and stays
+    // the field's. Enlarged 2×, the count is in source pixels still.
+    const block = (bw: number, bh: number): ReturnType<typeof rasterOf> =>
+      painted(90, 70, (x, y) => {
+        const dx = x < 30 ? 30 - x : x >= 30 + bw ? x - (30 + bw - 1) : 0
+        const dy = y < 20 ? 20 - y : y >= 20 + bh ? y - (20 + bh - 1) : 0
+        const d = Math.max(dx, dy)
+        return d > 2 ? PALE : blend(DEEP, PALE, d / 3)
+      })
+    expect(segmentRegions(block(10, 10), SPLIT).paletteHex).toEqual(['#3c5a96', '#3c66a2'])
+    expect(segmentRegions(block(9, 11), SPLIT).paletteHex).toEqual(['#3c5a96'])
+    const twice = { ...SPLIT, minRegionArea: 16, scale: 2 }
+    expect(segmentRegions(upscaleImage(block(12, 12), 2), twice).labels.count).toBe(2)
+    expect(segmentRegions(upscaleImage(block(10, 10), 2), twice).labels.count).toBe(1)
+  })
+
+  it('reads a seam up to six pixels between the exact pixels of its two fills', () => {
+    // The two blues across a linear ramp: four pixels of it leave six between
+    // the exact pixels on its two sides, five leave seven.
+    const ramp = (r: number): ReturnType<typeof rasterOf> =>
+      painted(120, 80, (x) => blend(PALE, DEEP, clamp01((x - 59 + r) / (r + 1))))
+    expect(segmentRegions(ramp(4), SPLIT).paletteHex).toEqual(['#3c5a96', '#3c68a3'])
+    expect(segmentRegions(ramp(5), SPLIT).labels.count).toBe(1)
+  })
+
+  it('takes the wider width where two fills meet in as many wide places as narrow', () => {
+    // The blues on either side of a black bar, joined through it by two
+    // bridges five rows high: one a seam, the other a ramp of nine pixels.
+    const image = painted(140, 100, (x, y) => {
+      const r = y >= 20 && y < 25 ? 3 : y >= 70 && y < 75 ? 9 : -1
+      if (x < 52 || x >= 82) return x >= 70 ? DEEP : PALE
+      return r < 0 ? [0, 0, 0] : blend(PALE, DEEP, clamp01((x - 66 + r / 2) / (r + 1)))
+    })
+    expect(segmentRegions(image, SPLIT).paletteHex).toEqual(['#3c619d', '#000000'])
+  })
+
+  it('reads no fill in a tone that stands under the flat threshold from another', () => {
+    // Three light blues, each 0.017 from the next (ΔE00 2): the first and the
+    // third are fills, and the middle one, apart from neither, is not.
+    const tones = [
+      [150, 170, 200],
+      [150, 176, 206],
+      [150, 182, 212],
+    ]
+    const image = painted(160, 110, (x, y) => {
+      const dx = x < 70 ? 70 - x : x >= 114 ? x - 113 : 0
+      const dy = y < 35 ? 35 - y : y >= 75 ? y - 74 : 0
+      const d = Math.max(dx, dy)
+      if (d === 0) return tones[2]
+      if (d === 1) return blend(tones[2], tones[0], 0.5)
+      return x >= 90 ? tones[1] : tones[0]
+    })
+    expect(segmentRegions(image, SPLIT).paletteHex).toEqual(['#96aac8', '#96b1cf'])
+  })
+
+  it('splits two fills that differ in chroma alone, or in one channel', () => {
+    const across = (a: number[], b: number[]): string[] =>
+      segmentRegions(
+        painted(160, 100, (x) => blend(a, b, clamp01((x - 78) / 3))),
+        SPLIT,
+      ).paletteHex
+    expect(across([140, 120, 160], [124, 127, 160])).toEqual(['#8c78a0', '#7c7fa0'])
+    expect(across([60, 90, 150], [60, 90, 168])).toEqual(['#3c5a96', '#3c5aa8'])
+  })
+
+  it('counts the exact pixels of the last rows', () => {
+    // The deep blue fills the image's last three rows only.
+    const image = painted(100, 60, (_x, y) => blend(PALE, DEEP, clamp01((y - 54) / 3)))
+    expect(segmentRegions(image, SPLIT).labels.count).toBe(2)
+  })
+
+  it('reads a marker of up to 512 exact colors', () => {
+    // The blues across their seam, and in the pale one a mosaic of 3 × 3
+    // blocks, each a level from the next: 484 colors more are read, 529 are
+    // continuous tone and the marker stays one.
+    const mosaic = (side: number): ReturnType<typeof rasterOf> =>
+      painted(200, 110, (x, y) => {
+        const i = Math.floor((x - 6) / 3)
+        const j = Math.floor((y - 6) / 3)
+        if (x >= 6 && y >= 6 && i < side && j < side) return [PALE[0], PALE[1] - i, PALE[2] - j - 1]
+        return blend(PALE, DEEP, clamp01((x - 148) / 3))
+      })
+    expect(segmentRegions(mosaic(22), SPLIT).labels.count).toBe(2)
+    expect(segmentRegions(mosaic(23), SPLIT).labels.count).toBe(1)
+  })
+
+  it('reads a fill in patches of colors a level or two apart', () => {
+    // Each blue in 6 × 6 patches, no two alike within two levels a channel:
+    // no color has 64 exact pixels, and together they are the fill.
+    const side = 72
+    const image = rasterOf(2 * side + 3, side, (x, y) => {
+      const t = x < side ? 0 : x >= side + 3 ? 1 : (x - side + 1) / 4
+      const k =
+        x >= side && x < side + 3
+          ? 62
+          : Math.floor(y / 6) * (side / 6) + Math.floor((x < side ? x : x - side - 3) / 6)
+      const base = blend(PALE, DEEP, t).map(Math.round)
+      return [
+        base[0] + (k % 5) - 2,
+        base[1] + (Math.floor(k / 5) % 5) - 2,
+        base[2] + (Math.floor(k / 25) % 5) - 2,
+        255,
+      ]
+    })
+    expect(segmentRegions(image, SPLIT).paletteHex).toEqual(['#3c5a96', '#3c68a3'])
+  })
+
+  it('leaves a marker mostly of other tones as it is', () => {
+    // The blues across their seam, and a slow ramp on from the deep one, a
+    // level every three columns. Over 120 columns of 200 it is most of the
+    // marker, which stays one; over 60 the blues are split.
+    const faded = (fade: number): ReturnType<typeof rasterOf> =>
+      painted(200, 100, (x) => {
+        const k = x - (200 - fade)
+        if (k < 0) return blend(PALE, DEEP, clamp01((x - (200 - fade) / 2 + 1) / 3))
+        return [DEEP[0], DEEP[1] + 4 + Math.floor(k / 3), DEEP[2] + 2 + Math.floor(k / 3)]
+      })
+    expect(segmentRegions(faded(120), SPLIT).labels.count).toBe(1)
+    expect(segmentRegions(faded(60), SPLIT).paletteHex.slice(0, 2)).toEqual(['#3c5a96', '#3c69a3'])
+  })
+
+  it('holds the count to twice the budget, the fills of split markers included', () => {
+    // Four squares on black, each of two shades across a seam: four markers,
+    // split into eight fills. A budget of four is raised by the three colors
+    // that stay apart beyond one a marker, a budget of two only to its double.
+    const pairs = [
+      [PALE, DEEP],
+      [
+        [150, 90, 60],
+        [163, 104, 60],
+      ],
+      [
+        [60, 150, 90],
+        [60, 163, 104],
+      ],
+      [
+        [150, 60, 150],
+        [163, 60, 163],
+      ],
+    ]
+    const image = painted(200, 200, (x, y) => {
+      const k = (x >= 100 ? 1 : 0) + (y >= 100 ? 2 : 0)
+      const x0 = (k % 2) * 100 + 4
+      const y0 = (k >> 1) * 100 + 4
+      if (x < x0 || x >= x0 + 92 || y < y0 || y >= y0 + 92) return [0, 0, 0]
+      return blend(pairs[k][0], pairs[k][1], clamp01((x - x0 - 44) / 3))
+    })
+    const colors = (maxRegions: number): string[] =>
+      segmentRegions(image, { ...SPLIT, maxRegions }).paletteHex
+    expect(colors(4)).toEqual([
+      '#000000',
+      '#3c5a96',
+      '#3c68a3',
+      '#965a3c',
+      '#a3683c',
+      '#3c965a',
+      '#3ca368',
+      '#9c3c9c',
+    ])
+    // A budget of three is raised to its double: the first pair folds.
+    expect(colors(3)).toEqual(['#000000', '#3c619c', '#965a3c', '#a3683c', '#3c9c61', '#9c3c9c'])
+    expect(colors(2)).toHaveLength(4)
+    // Seven bands of one marker, six of them fills that stay apart.
+    const shades = Array.from({ length: 7 }, (_, k) => [30 + k * 3.2, 40 + k * 5.6, 90 + k * 8])
+    const bands = upscaleImage(
+      rendered(
+        300,
+        280,
+        (x, y) => shades[clamp(Math.floor((y + 6 * Math.sin(x / 25)) / 40), 0, 6)],
+      ),
+      2,
+    )
+    const twice = { ...SPLIT, minRegionArea: 16, scale: 2 }
+    expect(segmentRegions(bands, twice).paletteHex).toEqual([
+      '#1e285a',
+      '#212e62',
+      '#24336a',
+      '#2a3c76',
+      '#2e4482',
+      '#314a8a',
+    ])
+    expect(segmentRegions(bands, { ...twice, maxRegions: 2 }).labels.count).toBe(4)
+  })
+
+  it('numbers up to 255 fills in a marker', () => {
+    // 272 bands, each 0.03 in Oklab from the last along a lattice: one marker.
+    // The 255 largest tones are its fills; the bands of the others go to those
+    // beside them.
+    const lattice: number[][] = []
+    for (let k = 0; k < 17; k++) {
+      for (let jj = 0; jj < 4; jj++) {
+        for (let ii = 0; ii < 4; ii++) {
+          const j = k % 2 === 0 ? jj : 3 - jj
+          const i = (k * 4 + jj) % 2 === 0 ? ii : 3 - ii
+          lattice.push(
+            oklabToRgb(0.3 + k * 0.03, -0.05 + i * 0.03, -0.05 + j * 0.03).map((v) =>
+              clamp(Math.round(v * 255), 0, 255),
+            ),
+          )
+        }
+      }
+    }
+    const image = rendered(
+      lattice.length * 24,
+      48,
+      (x) => {
+        return lattice[clamp(Math.floor((x - 0.5) / 24), 0, lattice.length - 1)]
+      },
+      2,
+    )
+    const seg = segmentRegions(image, { mergeSizeBias: 0.8, minRegionArea: 4 })
+    expect(seg.labels.count).toBe(255)
+  })
+
+  it('makes room for the markers a split adds', () => {
+    // 63 squares of their own colors over the two blues: 64 markers, and the
+    // split's second blue a 65th.
+    const image = painted(320, 200, (x, y) => {
+      const i = Math.floor((x - 8) / 16)
+      const j = Math.floor((y - 8) / 16)
+      if (x >= 8 && y >= 8 && (x - 8) % 16 < 8 && (y - 8) % 16 < 8 && i < 9 && j < 7) {
+        const k = j * 9 + i
+        return [(k * 37 + 200) % 256, (k * 91 + 40) % 256, (k * 53 + 20) % 200]
+      }
+      return blend(PALE, DEEP, clamp01((x - 158) / 3))
+    })
+    const seg = segmentRegions(image, { mergeSizeBias: 0.8, minRegionArea: 4 })
+    expect(seg.paletteHex[seg.labels.data[190 * 320 + 4]]).toBe('#3c5a96')
+    expect(seg.paletteHex[seg.labels.data[190 * 320 + 316]]).toBe('#3c68a3')
   })
 
   it('rescues a downscaled glyph stem that has no flat core', () => {
@@ -919,5 +1403,49 @@ describe('segmentRegions — near-duplicate consolidation', () => {
     const img = rasterOf(w, 60, (x) => (x < 45 ? BLACK : x < 55 ? WHITE : DARK_GREY))
     const seg = segmentRegions(img, { mergeSizeBias: 0.8 })
     expect(seg.labels.count).toBe(3)
+  })
+})
+
+describe('linkTones', () => {
+  // Every pair compared, a tone numbered by its first color.
+  const pairwise = (lab: Float64Array, link: number): number[] => {
+    const count = lab.length / 3
+    const tone = Array.from({ length: count }, (_, i) => i)
+    const find = (x: number): number => (tone[x] === x ? x : (tone[x] = find(tone[x])))
+    for (let i = 0; i < count; i++) {
+      for (let j = i + 1; j < count; j++) {
+        const d = Math.hypot(
+          lab[i * 3] - lab[j * 3],
+          lab[i * 3 + 1] - lab[j * 3 + 1],
+          lab[i * 3 + 2] - lab[j * 3 + 2],
+        )
+        const a = find(i)
+        const b = find(j)
+        if (d < link && a !== b) tone[Math.max(a, b)] = Math.min(a, b)
+      }
+    }
+    return tone.map((_, i) => find(i))
+  }
+
+  it('links what a comparison of every pair links, whatever the order of the colors', () => {
+    let seed = 7
+    const random = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
+    for (let round = 0; round < 200; round++) {
+      // Colors in a box a few links across: chains, lone colors and several tones.
+      const count = 2 + Math.floor(random() * 40)
+      const span = 0.01 + random() * 0.08
+      const lab = new Float64Array(count * 3)
+      for (let i = 0; i < lab.length; i++) lab[i] = random() * span
+      expect(Array.from(linkTones(lab, 0.01))).toEqual(pairwise(lab, 0.01))
+    }
+  })
+
+  it('chains colors each within the link of the next into one tone', () => {
+    // Lightness out of order: the middle color comes last.
+    const lab = Float64Array.of(0.5, 0, 0, 0.516, 0, 0, 0.508, 0, 0, 0.6, 0, 0)
+    expect(Array.from(linkTones(lab, 0.01))).toEqual([0, 0, 0, 3])
   })
 })

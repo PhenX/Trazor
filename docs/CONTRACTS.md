@@ -430,6 +430,36 @@ export function fitRegionGradients(
 - Oklab gradient = max ΔE to any 4-neighbor (`scale` pixels away on an enlarged
   image). Markers are 4-connected components of in-mask pixels with gradient <
   `flatThreshold`, each seeded with its mean.
+- A marker that holds two fills of the drawing is split into them. Two fills
+  under twice `flatThreshold` apart can meet across an anti-aliased boundary
+  whose every step stays under the threshold, and seed one marker. A fill is a
+  tone of the marker's exact pixels (gradient 0; exact colors linked at half
+  `flatThreshold`, so a gradient's bands are one tone) of at least 64 source
+  pixels, `flatThreshold` from the marker's other fills and where the merge
+  would keep the two apart: no closer than its near-duplicate floor, and
+  1.5 ΔE00 apart (Oklab spreads the darkest values: the near-blacks of one
+  black are one ink). Where the fills hold at least half the marker and meet
+  across at most 6 source pixels (the median run, along rows and columns,
+  between an exact pixel of one fill and the next exact pixel, of another, with
+  no exact pixel of a third tone between; the upper of the two middle runs of
+  an even count), each fill's pixels (within half `flatThreshold` of it) become
+  markers by 4-connected component, a component with no exact pixel left out,
+  and the marker's other pixels go to the flood — and to the rescue before it
+  where they form a piece under 64 source pixels. A marker of more than 512
+  exact colors is continuous tone and is not read; 255 fills are numbered in
+  one marker. The evidence is exact pixels: a lossy copy (its median run is 9 to
+  18 pixels at its own size) or one enlarged 2× by a cubic or a windowed sinc
+  beforehand (7 to 9) keeps its fills fused, and so does a fill that holds no 64
+  exact pixels (a band under 4 to 6 pixels wide, a disc under 12 to 14 across).
+  With `keepVisibleColors`, the cap counts
+  `maxRegions` plus the colors the split markers hold beyond one each once the
+  merge is done (the regions their fills ended up in, less one per set of
+  regions that markers tie together), within the same bound of twice
+  `maxRegions` (and 64): fills the merge joined again add nothing, and fills
+  two markers share add one. Past that bound the cap folds by cost alone, as
+  without a split: a split marker's extra color can then cost a small feature
+  its own, and split fills, close colors, fold when theirs is the cheapest fold
+  left with the count within the bound and above the budget.
 - A priority flood (binary min-heap keyed by Oklab distance to the claiming
   marker's mean; ties by pixel index) grows markers over the remaining
   edge/ramp pixels — an anti-aliased ramp splits between its two neighbors, so

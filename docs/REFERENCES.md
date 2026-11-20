@@ -609,6 +609,13 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   covered pixels must clear the mixture tolerance by more than the standard error of
   their residuals — compression ringing tints an outline's rim unevenly, so its mean
   can stray past the tolerance by less than its own uncertainty.
+- **P. H. A. Sneath, “The Application of Computers to Taxonomy”, _Journal of
+  General Microbiology_ 17(1), 1957.** Single-linkage grouping: two items are of
+  one group when a chain of items, each within a threshold of the next, joins
+  them. The region-growing segmentation groups the exact colors of a marker
+  into tones that way (`packages/raster/src/segment.ts`, `splitExactFills`,
+  at half the flat threshold), so the levels a fill was left in by dithering or
+  compression are one tone, and reads the marker's fills off the tones.
 - **Joe H. Ward Jr., “Hierarchical Grouping to Optimize an Objective Function”,
   _Journal of the American Statistical Association_ 58(301), 1963.** Minimum-
   variance agglomeration: the pair whose union adds the least total squared
