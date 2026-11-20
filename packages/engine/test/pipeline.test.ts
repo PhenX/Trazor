@@ -364,6 +364,41 @@ describe('native engine pipeline', () => {
     expect(result.palette).toHaveLength(1)
   })
 
+  it('trains a pixel-art palette on every pixel', async () => {
+    // Two flat fields and, every third pixel, a detail in one of 80 colors:
+    // the details are all the edges there are, and nearly all the colors.
+    const img = createRaster(120, 120)
+    for (let y = 0; y < 120; y++) {
+      for (let x = 0; x < 120; x++) {
+        const k = ((x / 3) | 0) * 7 + ((y / 3) | 0) * 13
+        if (x % 3 === 1 && y % 3 === 1) {
+          const c = k % 80
+          setPixel(
+            img,
+            x,
+            y,
+            20 + 40 * (c % 6),
+            20 + 40 * (((c / 6) | 0) % 6),
+            20 + 40 * ((c / 36) | 0),
+          )
+        } else if (x < 60) setPixel(img, x, y, 250, 250, 250)
+        else setPixel(img, x, y, 8, 8, 8)
+      }
+    }
+    const res = await vectorize(
+      img,
+      normalizeSettings({
+        curveMode: 'pixel',
+        layering: 'cutout',
+        paletteSize: 64,
+        autoPaletteSize: false,
+        minRegionArea: 0,
+      }),
+    )
+    const fills = new Set(res.svg.match(/fill="#[0-9a-f]{6}"/g))
+    expect(fills.size).toBeGreaterThanOrEqual(60)
+  })
+
   it('honors a fixed palette', async () => {
     const result = await vectorize(
       redSquareOnWhite(),

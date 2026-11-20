@@ -577,7 +577,8 @@ export function findEnclosedComponents(labels: LabelMap): EnclosedComponent[]
 
 // edges.ts — 1 where the L1 RGB difference to any 4-neighbor is ≥ threshold
 // (0..765). Brackets both sides of an anti-aliased boundary; feeds quantize's
-// sampleMask so rim mixtures stay out of the palette. Deterministic.
+// sampleMask so rim mixtures stay out of the palette (not in pixel curve mode,
+// whose pixels are nearly all edges and none of them a rim). Deterministic.
 export function detectEdges(image: RasterImage, threshold: number, step?: number): BinaryMask // neighbors `step` px apart (default 1; a source pixel of an enlarged image)
 
 // morphology.ts — remove 8-connected foreground specks < minArea AND fill 4-connected

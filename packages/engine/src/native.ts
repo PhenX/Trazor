@@ -1351,15 +1351,20 @@ async function colorPipeline(
     if (canCachePal) cacheStats(cache!).palMisses++
     // Keep anti-aliased boundary pixels out of the k-means training sample so
     // rim mixtures cannot capture a palette entry (no effect on the exact and
-    // fixed-palette paths, which quantize resolves without clustering).
-    const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
-    const clusterSample: BinaryMask = {
-      width: image.width,
-      height: image.height,
-      data: new Uint8Array(image.width * image.height),
-    }
-    for (let i = 0; i < clusterSample.data.length; i++) {
-      clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+    // fixed-palette paths, which quantize resolves without clustering). Pixel
+    // art has no such rim, and nearly all of its pixels lie on an edge: its
+    // colors are trained on every pixel.
+    let clusterSample: BinaryMask | undefined
+    if (settings.curveMode !== 'pixel') {
+      const edges = detectEdges(image, CLUSTER_EDGE_THRESHOLD, settings.supersample)
+      clusterSample = {
+        width: image.width,
+        height: image.height,
+        data: new Uint8Array(image.width * image.height),
+      }
+      for (let i = 0; i < clusterSample.data.length; i++) {
+        clusterSample.data[i] = edges.data[i] === 0 ? 1 : 0
+      }
     }
     const quantOpts = {
       k: settings.paletteSize,
