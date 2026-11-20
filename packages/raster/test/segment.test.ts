@@ -833,6 +833,86 @@ describe('segmentRegions — near-duplicate consolidation', () => {
     expect(segmentRegions(img, { mergeSizeBias: 0.8, maxRegions: 4 }).labels.count).toBe(4)
   })
 
+  // Two pinks a drawing shades a skirt with (ΔE00 6.9), each a fill of its own
+  // past a white gap, and a fold line of the darker one, 3 × 16 pixels, inside
+  // the lighter; `k` enlarges the scene.
+  const LIGHT_PINK: Rgba = [236, 78, 155, 255]
+  const DARK_PINK: Rgba = [239, 44, 123, 255]
+  const skirt = (k: number): ReturnType<typeof rasterOf> =>
+    rasterOf(512 * k, 256 * k, (px, py) => {
+      const x = Math.floor(px / k)
+      const y = Math.floor(py / k)
+      if (x >= 20 && x < 220 && y >= 20 && y < 220) return DARK_PINK
+      if (x >= 260 && x < 410 && y >= 40 && y < 190) {
+        return x >= 330 && x < 333 && y >= 100 && y < 116 ? DARK_PINK : LIGHT_PINK
+      }
+      return WHITE
+    })
+
+  it.each([1, 2])(
+    "leaves a fill its own color when a line of another fill's tone runs inside it (%i×)",
+    (k) => {
+      // The line is too small to stand against the panel around it and folds into
+      // it, votes for its ink included; the panel is still its own pink.
+      const w = 512 * k
+      const seg = segmentRegions(skirt(k), { ...ENGINE, keepVisibleColors: true, scale: k })
+      const at = (x: number, y: number): number[] => {
+        const label = seg.labels.data[y * k * w + x * k]
+        return [0, 1, 2].map((c) => seg.paletteRgb[label * 3 + c])
+      }
+      expect(seg.labels.count).toBe(3)
+      expect(at(100, 100)).toEqual(DARK_PINK.slice(0, 3))
+      expect(at(280, 60)).toEqual(LIGHT_PINK.slice(0, 3))
+      expect(at(400, 180)).toEqual(LIGHT_PINK.slice(0, 3))
+    },
+  )
+
+  // A near-black line two pixels wide on red, every third row of it lighter (a
+  // compressed outline: no pixel of it is flat), `rows` long, and a black fill
+  // it does not touch; `k` enlarges the scene, and `knot` paints working pixels
+  // of the line's own tone over it.
+  const roughLine = (
+    k: number,
+    rows: number,
+    knot: (px: number, py: number) => boolean,
+  ): ReturnType<typeof rasterOf> =>
+    rasterOf(200 * k, 100 * k, (px, py) => {
+      const x = Math.floor(px / k)
+      const y = Math.floor(py / k)
+      if (x >= 120 && x < 180 && y >= 20 && y < 80) return BLACK
+      if (knot(px, py)) return [6, 6, 6, 255]
+      if (x >= 40 && x < 42 && y >= 50 - rows / 2 && y < 50 + rows / 2) {
+        return y % 3 === 0 ? [40, 40, 40, 255] : [6, 6, 6, 255]
+      }
+      return [200, 60, 40, 255]
+    })
+
+  it('joins a rough line to the fill of its ink by its votes', () => {
+    // The line's mean is a dark gray 2.6 ΔE00 and more from the black; the pixels
+    // that vote for it are its darkest, and they are that black.
+    const w = 200
+    const seg = segmentRegions(
+      roughLine(1, 40, () => false),
+      { ...ENGINE, keepVisibleColors: true },
+    )
+    const line = seg.labels.data[50 * w + 40]
+    expect(seg.labels.count).toBe(2)
+    expect(line).toBe(seg.labels.data[50 * w + 150])
+    expect([0, 1, 2].map((c) => seg.paletteRgb[line * 3 + c])).toEqual([0, 0, 0])
+  })
+
+  it('joins it too when a knot gives it a few flat pixels that do not speak for it, enlarged 2×', () => {
+    // A knot of 5 × 9 working pixels on a line of 14 rows: flat pixels, fewer
+    // than a core needs at 2× (`CORE_MIN_PIXELS` source pixels).
+    const w = 400
+    const seg = segmentRegions(
+      roughLine(2, 14, (px, py) => px >= 80 && px < 85 && py >= 96 && py < 105),
+      { ...ENGINE, keepVisibleColors: true, scale: 2 },
+    )
+    expect(seg.labels.count).toBe(2)
+    expect(seg.labels.data[100 * w + 82]).toBe(seg.labels.data[100 * w + 300])
+  })
+
   it('keeps two dark fills apart that differ at a glance', () => {
     const DARK_GREY: Rgba = [40, 40, 40, 255]
     const w = 100

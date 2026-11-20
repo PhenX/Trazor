@@ -1483,13 +1483,16 @@ function mergeRegions(
   // are within the consolidation distance even when they do not touch, regions
   // rendered in colors no eye tells apart (under `SAME_INK_DE00`: Oklab spreads
   // the darkest values, so #000000 and #010101 lie further apart there than the
-  // distance allows while CIEDE2000 puts them 0.3 apart), and a rare ink into the
-  // region of the same ink — two separate black outlines become one palette
-  // color. Greedy by descending size,
-  // so the largest region of a color is the representative. Perceptual-distance
-  // gated, so it can never merge genuinely different colors (a blue strap into a
-  // black outline). Under size-aware merging it uses the near-duplicate `floor`
-  // so it consolidates true duplicates without re-merging the close-but-distinct
+  // distance allows while CIEDE2000 puts them 0.3 apart), and a rare ink no
+  // flat core speaks for into the region of the same ink — two separate black
+  // outlines become one palette color. Greedy by descending size, so the
+  // largest region of a color is the representative. The first two tests are
+  // gated on the distance between the colors the regions paint, so they never
+  // merge genuinely different ones (a blue strap into a black outline); the
+  // third reads a region's votes, which a union hands on from the part it
+  // drops, so a coreless region can still join the ink of a fragment it took
+  // in. Under size-aware merging the pass uses the near-duplicate `floor` so it
+  // consolidates true duplicates without re-merging the close-but-distinct
   // dominant colors the adjacency pass deliberately kept apart.
   const consolidateDist = sizeBias > 0 ? floor : mergeThreshold
   const roots: number[] = []
@@ -1500,11 +1503,15 @@ function mergeRegions(
     let repFor = -1
     for (const rep of reps) {
       // A rare ink's fragment cut off from the rest of its ink (a strand of
-      // hair between two outlines) joins it: its votes are for that ink.
+      // hair between two outlines) joins it: its votes are for that ink. They
+      // speak only where no flat core does: a fill that took in such a fragment
+      // carries its votes and is still the color of its own core.
       if (
         meanDelta(r, rep) < consolidateDist ||
         renderedDe00(r, rep) < SAME_INK_DE00 ||
-        (represented[r] > 0 && inkDe00(r, rep) < SAME_INK_DE00)
+        (represented[r] > 0 &&
+          !coreSpeaks(coreN[r], size[r], scale * scale) &&
+          inkDe00(r, rep) < SAME_INK_DE00)
       ) {
         repFor = rep
         break

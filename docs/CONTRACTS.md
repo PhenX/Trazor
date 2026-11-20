@@ -480,8 +480,10 @@ export function fitRegionGradients(
   ≥ 1.5 ΔE00 from the mean of those voting pixels (`represent.ts`; Aksoy et al. 2017)
   — or, when its votes reach only half its own pixels (a claw on a large image), from
   a neighbor ≥ 10 ΔE00 from that mean —
-  and joins a non-adjacent region of that same ink. A pupil or a star a few pixels
-  across keeps its color.
+  and, where no flat core speaks for it, joins a non-adjacent region of that same
+  ink. A pupil or a star a few pixels across keeps its color. A union hands the
+  votes of the region it drops to the one it keeps when that one has none, or
+  only the weaker kind, so a region can carry the votes of a fragment it took in.
 - After the merge, a seam a third region captured goes back to the two regions
   it separates (`returnSeamPixels`), and a thin band of blend colors grown along
   a soft edge dissolves into the two it runs between, while a hair running
