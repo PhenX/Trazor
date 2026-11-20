@@ -34,7 +34,8 @@
  *      colors; `maxRegions` then caps the count, folding the pairs whose union
  *      costs the least total squared color error (Ward 1963) until it is met
  *      (or, with `keepVisibleColors`, until the cheapest fold left would show,
- *      within twice the budget; the fills step 2 split apart raise the budget
+ *      within its ceiling (`visibleCeiling`: twice the budget, 64 for a
+ *      budget of 24 and more); the fills step 2 split apart raise the budget
  *      by as many, within that same bound).
  *   5. The flood claims each pixel for the cheapest region already touching it,
  *      so a third region that reaches a seam from one end — its color nearer the
@@ -53,7 +54,15 @@
  * broken by pixel index, merge candidates ordered by (ΔE, region ids). The
  * result mirrors {@link QuantizeResult} so the engine consumes it identically.
  */
-import { ciede2000, createLabelMap, oklabToRgb, rgbToHex, rgbToLab, rgbToOklab } from '@trazor/core'
+import {
+  ciede2000,
+  createLabelMap,
+  getProfile,
+  oklabToRgb,
+  rgbToHex,
+  rgbToLab,
+  rgbToOklab,
+} from '@trazor/core'
 import type { BinaryMask, LabelMap, RasterImage } from '@trazor/core'
 import { toOklabBuffer } from './convert'
 import { dissolveBlendBands, returnSeamPixels } from './mixture'
@@ -90,8 +99,8 @@ export interface SegmentOptions {
    * Stop the `maxRegions` cap at the first fold an eye would see: when the
    * cheapest fold left joins two regions at least `CAP_VISIBLE_DE00` apart,
    * neither of them a speck, the cap stops and the count stays above it — never
-   * above twice `maxRegions` (at most `CAP_VISIBLE_LIMIT`), past which it folds
-   * on as the hard cap does. Its folds are a prefix of the hard cap's own. The
+   * above twice `maxRegions`, or `CAP_VISIBLE_LIMIT` for a budget of
+   * `CAP_RICH_BUDGET` and more, past which it folds on as the hard cap does. Its folds are a prefix of the hard cap's own. The
    * colors a marker split into its fills holds beyond one are the drawing's and
    * raise the cap by as many, within that same bound. Off, the cap is hard.
    */
@@ -233,6 +242,23 @@ const CAP_VISIBLE_HEADROOM = 2
 
 /** Most colors `keepVisibleColors` keeps: the largest budget the settings allow. */
 const CAP_VISIBLE_LIMIT = 64
+
+/**
+ * Budget from which the count may stay up to `CAP_VISIBLE_LIMIT`: the
+ * illustration profile's, which the recommender gives rich color whatever the
+ * drawing holds (a cartoon of sixty visibly distinct colors and one of thirty
+ * get the same), so twice it is no measure of the drawing. A budget under it is
+ * most often the count of a clean drawing's flat colors, and the colors past
+ * twice such a count are rim blends about a pixel wide (on flags of 4 and of 16
+ * flat colors, 26 of the 28 a ceiling of 64 would add).
+ */
+const CAP_RICH_BUDGET = getProfile('illustration').patch.paletteSize ?? Infinity
+
+/** Most colors `keepVisibleColors` leaves under a budget of `maxRegions`. */
+function visibleCeiling(maxRegions: number): number {
+  if (maxRegions >= CAP_RICH_BUDGET) return Math.max(maxRegions, CAP_VISIBLE_LIMIT)
+  return Math.min(CAP_VISIBLE_HEADROOM * maxRegions, CAP_VISIBLE_LIMIT)
+}
 
 /**
  * CIEDE2000 below which two regions are the same ink whatever their evidence
@@ -1688,9 +1714,9 @@ function splitColors(split: MarkerStat[], find: (region: number) => number): num
  * so two regions that would paint the same become one palette entry. The cap
  * folds pairs by least added squared color error (Ward) until the count is
  * met, however different the remaining hues are — or, under `keepVisible`,
- * until the cheapest fold left would repaint a feature, within twice the
- * budget, raised by the colors the markers of `split` hold beyond one each
- * (`splitColors`).
+ * until the cheapest fold left would repaint a feature, within the budget's
+ * ceiling (`visibleCeiling`), the budget raised by the colors the markers of
+ * `split` hold beyond one each (`splitColors`).
  * Returns the parent array (each region's representative root).
  */
 function mergeRegions(
@@ -1987,10 +2013,10 @@ function mergeRegions(
   // large distinct hues fold last, so a budget spends its damage where it shows
   // least. Under `keepVisible` the cap stops at the first fold that would
   // repaint a feature — a pair at least `CAP_VISIBLE_DE00` apart, neither of
-  // them a speck (`CAP_SPECK_AREA`) — once the count is within
-  // `CAP_VISIBLE_HEADROOM` times the cap (and `CAP_VISIBLE_LIMIT`): its folds
-  // are a prefix of the hard cap's own, cut short where they would start to
-  // show, and the count may stay above the cap.
+  // them a speck (`CAP_SPECK_AREA`) — once the count is within the cap's
+  // ceiling (`visibleCeiling`): its folds are a prefix of the hard cap's own,
+  // cut short where they would start to show, and the count may stay above the
+  // cap.
   // Each root tracks its cheapest partner; a merge refreshes the merged root
   // and every root whose partner it consumed. Ties break on the lower id.
   // A budget the engine spends for itself is raised by the colors the split
@@ -1999,10 +2025,7 @@ function mergeRegions(
   // a split marker can then cost a small feature its own, and split fills,
   // close colors, fold when theirs is the cheapest fold left with the count
   // within the bound and above the budget.
-  const ceiling = Math.max(
-    maxRegions,
-    Math.min(CAP_VISIBLE_HEADROOM * maxRegions, CAP_VISIBLE_LIMIT),
-  )
+  const ceiling = visibleCeiling(maxRegions)
   const budget =
     maxRegions > 0 && keepVisible
       ? Math.min(maxRegions + splitColors(split, find), ceiling)

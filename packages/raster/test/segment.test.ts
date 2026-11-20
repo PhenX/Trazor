@@ -1,5 +1,5 @@
 import type { BinaryMask } from '@trazor/core'
-import { oklabToRgb } from '@trazor/core'
+import { ciede2000, oklabToRgb, rgbToLab } from '@trazor/core'
 import { describe, expect, it } from 'vitest'
 import { segmentRegions, upscaleImage } from '../src/index'
 import { linkTones } from '../src/segment'
@@ -753,6 +753,42 @@ describe('segmentRegions — region growing', () => {
         2 * cap,
       )
     }
+  })
+
+  // Fields of 24 pixels a side, ten a row, every two of them at least `apart`
+  // ΔE00 from each other: the first `count` such colors of a 9-level RGB grid.
+  const distinctFields = (count: number, apart: number): ReturnType<typeof rasterOf> => {
+    const cols: Rgba[] = []
+    const labs: number[][] = []
+    for (let k = 0; k < 729 && cols.length < count; k++) {
+      const rgb = [(k % 9) * 31, (Math.floor(k / 9) % 9) * 31, Math.floor(k / 81) * 31]
+      const lab = rgbToLab(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+      if (labs.some((o) => ciede2000(o[0], o[1], o[2], lab[0], lab[1], lab[2]) < apart)) continue
+      labs.push(lab)
+      cols.push([rgb[0], rgb[1], rgb[2], 255])
+    }
+    expect(cols).toHaveLength(count)
+    return rasterOf(240, 24 * Math.ceil(count / 10), (x, y) => {
+      const k = ((x / 24) | 0) + 10 * ((y / 24) | 0)
+      return cols[Math.min(k, count - 1)]
+    })
+  }
+
+  it('lets a budget of 24 keep visibly different fills up to 64, a smaller one twice itself', () => {
+    // Fifty fields that differ at a glance: the illustration profile's budget
+    // keeps them all; one of 23 keeps twice itself, as do 16 and 8.
+    const fifty = distinctFields(50, 12)
+    const count = (img: ReturnType<typeof rasterOf>, maxRegions: number): number =>
+      segmentRegions(img, { mergeSizeBias: 0.8, maxRegions, keepVisibleColors: true }).labels.count
+    expect(count(fifty, 24)).toBe(50)
+    expect(count(fifty, 23)).toBe(46)
+    expect(count(fifty, 16)).toBe(32)
+    expect(count(fifty, 8)).toBe(16)
+    expect(segmentRegions(fifty, { mergeSizeBias: 0.8, maxRegions: 24 }).labels.count).toBe(24)
+    // Seventy: past 64 the cap folds on, whatever shows.
+    const seventy = distinctFields(70, 12)
+    expect(count(seventy, 24)).toBe(64)
+    expect(count(seventy, 40)).toBe(64)
   })
 
   it('still folds shades no eye tells apart, and specks of any color, to meet the budget', () => {

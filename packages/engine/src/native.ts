@@ -1291,7 +1291,7 @@ async function colorPipeline(
     // and cutout or nested faces. On stacked layers under `autoPaletteSize` it
     // is the engine's own budget, spent until the next fold would repaint a
     // visibly distinct feature, which keeps its color past it (at most twice
-    // the budget).
+    // the budget, or 64 colors for a budget of 24 and more).
     const seg = segmentRegions(image, {
       mergeThreshold: SEGMENT_MERGE_THRESHOLD,
       mergeSizeBias: SEGMENT_SIZE_BIAS,

@@ -377,7 +377,7 @@ export interface SegmentOptions {
   mergeSizeBias?: number // 0..1; >0 = size-aware merge (SRM): tolerance shrinks as regions grow, keeping close-but-distinct large colors apart; 0/absent = byte-identical to mergeThreshold
   minRegionArea?: number // regions below this (px) fold into their most similar neighbor; default 16
   maxRegions?: number // cap: fold pairs by least added squared color error (Ward) until met; 0 = none
-  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions (≤ 64) remain; the count may stay above maxRegions. Off = hard cap (default)
+  keepVisibleColors?: boolean // the cap stops at the first (cheapest) fold of a pair ≥ 10 ΔE00 apart, neither a speck (< 16 source px), once at most 2 × maxRegions remain, or 64 for a budget of 24 and more (never over 64); the count may stay above maxRegions. Off = hard cap (default)
   mask?: BinaryMask | null // only in-mask pixels segmented; others get -1
   scale?: number // working pixels per source pixel (supersampling, default 1): gradient read a source pixel apart; sizes/widths in source pixels
 }
@@ -454,8 +454,8 @@ export function fitRegionGradients(
   With `keepVisibleColors`, the cap counts
   `maxRegions` plus the colors the split markers hold beyond one each once the
   merge is done (the regions their fills ended up in, less one per set of
-  regions that markers tie together), within the same bound of twice
-  `maxRegions` (and 64): fills the merge joined again add nothing, and fills
+  regions that markers tie together), within the same ceiling as the cap's
+  (below): fills the merge joined again add nothing, and fills
   two markers share add one. Past that bound the cap folds by cost alone, as
   without a split: a split marker's extra color can then cost a small feature
   its own, and split fills, close colors, fold when theirs is the cheapest fold
@@ -496,10 +496,12 @@ export function fitRegionGradients(
   so a budget spends its damage on the smallest, closest regions first; with
   `keepVisibleColors` the cap stops at the first fold that would join a pair
   ≥ 10 ΔE00 apart, neither a speck (< 16 source pixels), once the count is
-  within twice the budget (and 64), and the count stays above it — its folds a
-  prefix of the hard cap's (the engine sets it from `autoPaletteSize` on stacked
-  layers not grouped by color; grouped, cutout and nested output keep the hard
-  cap). With
+  within twice the budget and 64 — or within 64 for a budget of 24 and more,
+  the illustration profile's `paletteSize`, which the recommender gives rich
+  color whatever the drawing holds — and the count stays above the budget: its
+  folds a prefix of the hard cap's (the engine sets it from `autoPaletteSize` on
+  stacked layers not grouped by color; grouped, cutout and nested output keep
+  the hard cap). With
   `mergeSizeBias > 0` the adjacency threshold is size-aware (SRM; Nock & Nielsen 2004) — it decays toward a near-duplicate floor as regions grow, so large
   close-but-distinct colors stay apart while small regions still fold — unless the
   smaller is a rare ink: a region the size term alone could fold whose own pixels

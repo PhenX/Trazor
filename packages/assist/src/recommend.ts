@@ -696,7 +696,8 @@ export function recommendSettings(
     // speck floor stands (a flag's stars and a scene's small marks survive),
     // and the palette budget caps the fills that remain — hard with
     // `autoPaletteSize` off; under it, on stacked layers, a visibly distinct
-    // feature keeps its color past the cap (up to twice it).
+    // feature keeps its color past the cap (up to twice it, or 64 colors for
+    // a budget of 24 and more).
     // Gradient-heavy, sprite-fine or hard-edged art is excluded (`isCartoon`)
     // and stays on quantization, which keeps a gradient's bands and traces a
     // pixel palette exactly.

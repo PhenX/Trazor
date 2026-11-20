@@ -624,7 +624,7 @@ tangents}.rs`, cross-checked against an inkvec build): the description length
   until the color budget is met, so the budget's damage lands on the smallest,
   closest regions; under `keepVisibleColors` it stops at the first fold that
   would join two non-speck regions ≥ 10 ΔE₀₀ apart, once the count is within
-  twice the budget.
+  twice the budget, or within 64 for a budget of 24 and more.
 - **Azriel Rosenfeld, “Digital Straight Line Segments”, _IEEE Transactions on
   Computers_ C-23(12), 1974.** The digitization of a straight line is an
   8-connected arc: at a slope under 45° it steps to the next row across a
